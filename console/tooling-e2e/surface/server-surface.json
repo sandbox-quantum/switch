@@ -667,6 +667,13 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/management/workspace",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
       "route": "GET /gateway/messaging-apps",
       "auth": "session",
       "flags": []

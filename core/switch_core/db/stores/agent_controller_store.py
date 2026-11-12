@@ -140,6 +140,17 @@ class AgentControllerStore:
         )
         return list(result.scalars().all())
 
+    async def list_for_tenant(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[AgentController]:
+        """Every controller in the workspace, whoever owns it."""
+        result = await session.execute(
+            select(AgentController)
+            .where(AgentController.tenant_id == tenant_id)
+            .order_by(AgentController.created_at, AgentController.id)
+        )
+        return list(result.scalars().all())
+
     async def update_details(
         self,
         session: AsyncSession,

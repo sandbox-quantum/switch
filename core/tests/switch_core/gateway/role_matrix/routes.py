@@ -962,6 +962,11 @@ ROUTES: dict[str, Case] = {
         },
     ),
     "GET /gateway/management/controllers": get(f"{G}/management/controllers", SELF),
+    "GET /gateway/management/workspace": get(
+        f"{G}/management/workspace",
+        SELF,
+        why="Everyone's devices to an admin, your own to anyone else.",
+    ),
     "PATCH /gateway/management/controllers/{controller_id}": patch(
         f"{G}/management/controllers/{{controller}}",
         owner(),
@@ -969,7 +974,9 @@ ROUTES: dict[str, Case] = {
         why="Every machine is its owner's alone; anyone else is told it isn't there.",
     ),
     "DELETE /gateway/management/controllers/{controller_id}": delete(
-        f"{G}/management/controllers/{{controller}}", owner()
+        f"{G}/management/controllers/{{controller}}",
+        owner_or_admins(refused=404),
+        why="Removing a device: its owner's, and the workspace's admins'.",
     ),
     "GET /gateway/management/controllers/{controller_id}/provider-logins": get(
         f"{G}/management/controllers/{{controller}}/provider-logins", owner()
@@ -1015,7 +1022,9 @@ ROUTES: dict[str, Case] = {
         json={"desired_state": "stopped"},
     ),
     "DELETE /gateway/management/agents/{agent_id}": delete(
-        f"{G}/management/agents/{{managed_agent}}", owner()
+        f"{G}/management/agents/{{managed_agent}}",
+        owner_or_admins(refused=404),
+        why="Stopping managing an agent: its owner's, and the workspace's admins'.",
     ),
     "POST /gateway/management/operations": post(
         f"{G}/management/operations",

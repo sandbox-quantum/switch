@@ -826,9 +826,13 @@ class ManagementService:
 
         A revoked one may still be renamed: its agents stay shown against it
         until they are moved. A new name reaches Core's bindings too, since
-        that is the name the room is told when the machine is offline.
+        that is the name the room is told when the machine is offline. A cloud
+        device is Switch's to name (`refuse_cloud`).
         """
-        await self.owned_controller(session, tenant_id, owner_id, controller_id)
+        controller = await self.owned_controller(
+            session, tenant_id, owner_id, controller_id
+        )
+        refuse_cloud(controller, "renamed")
         return await self._update_details(session, tenant_id, controller_id, changes)
 
     async def update_own_controller(
@@ -909,25 +913,72 @@ class ManagementService:
     async def revoke_controller(
         self, session: AsyncSession, tenant_id: str, owner_id: str, controller_id: str
     ) -> None:
-        """Revoke: delete the credential, cancel open operations, and nudge.
-
-        Definitions placed on it stay placed, and are shown against a revoked
-        controller until their owner moves or removes them.
-        """
+        """Revoke the owner's controller, as `remove_controller` does, a cloud
+        device's too: its machine enrolls a new controller in its place, which
+        the agents move onto. For taking everything of a person's away, when
+        their account goes."""
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
+        await self._remove(session, tenant_id, controller)
+
+    async def remove_controller(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        *,
+        owner_id: str | None,
+    ) -> None:
+        """Remove a device: revoke it, and take its agents off it.
+
+        With `owner_id`, only that person's device, 404 for anyone else's;
+        without, anyone's, for a caller that has made sure it may (an admin of
+        the workspace, or of its organization). A cloud device is not removed
+        here (`refuse_cloud`).
+        """
+        controller = (
+            await self.controllers.get(session, tenant_id, controller_id)
+            if owner_id is None
+            else await self.owned_controller(
+                session, tenant_id, owner_id, controller_id
+            )
+        )
+        if controller is None:
+            raise not_found("Controller")
+        refuse_cloud(controller, "removed")
+        await self._remove(session, tenant_id, controller)
+
+    async def _remove(
+        self, session: AsyncSession, tenant_id: str, controller: AgentController
+    ) -> None:
+        """Revoke: delete the credential, cancel open operations, and nudge.
+
+        Its agents stop, and are taken off it: placed nowhere until their owner
+        places them again. A cloud device's machine enrolls again instead, and
+        the agents move onto the controller it enrolls (`enroll`).
+        """
         if controller.revoked_at is not None:
             return
+        controller_id, owner_id = controller.id, controller.owner_id
         await self._revoke(session, tenant_id, controller_id)
-        machine = (
-            await enroll_revoked_again(session, controller_id, self.now())
-            if controller.kind == "ec2"
-            else None
-        )
+        detached: list[AgentDefinitionRow] = []
+        machine = None
+        if controller.kind == "ec2":
+            machine = await enroll_revoked_again(session, controller_id, self.now())
+        else:
+            detached = await self._detach_placed(session, tenant_id, controller)
         await session.commit()
         self.user_changes.publish(tenant_id, owner_id, MACHINE, controller_id)
-        logger.info("Revoked agent controller %s", controller_id)
+        for row in detached:
+            self.user_changes.publish(
+                tenant_id, row.owner_id, MANAGED_AGENT, row.agent_id
+            )
+        logger.info(
+            "Revoked agent controller %s, taking %d agent(s) off it",
+            controller_id,
+            len(detached),
+        )
         if machine is not None:
             logger.info(
                 "Cloud machine %s enrolls a new controller for workspace %s at revision %s",
@@ -936,6 +987,35 @@ class ManagementService:
                 machine.revision,
             )
         self._announce_revoked(controller_id)
+        for row in detached:
+            await self._bind(session, tenant_id, row)
+
+    async def _detach_placed(
+        self, session: AsyncSession, tenant_id: str, controller: AgentController
+    ) -> list[AgentDefinitionRow]:
+        """Take every agent off `controller`, as they were otherwise. A
+        workspace it made for one means nothing on the next device, so the
+        definition stops naming it. The caller commits, then unbinds them."""
+        detached = []
+        for row, _agent in await self.definitions.list_for_controller(
+            session, tenant_id, controller.id
+        ):
+            definition = dict(row.definition)
+            directory = definition.get("directory")
+            if isinstance(directory, str) and _inside_workspaces(controller, directory):
+                definition["directory"] = None
+            detached.append(
+                await self.definitions.update(
+                    session,
+                    tenant_id,
+                    row.agent_id,
+                    controller_id=None,
+                    desired_state=row.desired_state,
+                    definition=definition,
+                    expected_revision=None,
+                )
+            )
+        return detached
 
     async def _revoke(
         self, session: AsyncSession, tenant_id: str, controller_id: str
@@ -1549,13 +1629,28 @@ class ManagementService:
         )
 
     async def delete_managed_agent(
-        self, session: AsyncSession, tenant_id: str, owner_id: str, agent_id: str
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        agent_id: str,
+        *,
+        owner_id: str | None,
     ) -> None:
         """Stop managing the agent. Its controller stops it; the agent itself
-        is not deleted."""
-        row, _agent = await self._owned_definition(
-            session, tenant_id, owner_id, agent_id
-        )
+        is not deleted.
+
+        With `owner_id`, only that person's agent, 404 for anyone else's;
+        without, anyone's, for a caller that has made sure it may (an admin of
+        the workspace, or of its organization)."""
+        if owner_id is None:
+            found = await self.definitions.get_for_agent(session, tenant_id, agent_id)
+            if found is None:
+                raise not_found("Managed agent")
+            row = found
+        else:
+            row, _agent = await self._owned_definition(
+                session, tenant_id, owner_id, agent_id
+            )
         await self.definitions.delete(session, tenant_id, agent_id)
         if row.controller_id is not None:
             await self.operations.cancel_open(
@@ -1565,7 +1660,7 @@ class ManagementService:
             session, tenant_id, {row.controller_id}
         )
         await session.commit()
-        self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, agent_id)
+        self.user_changes.publish(tenant_id, row.owner_id, MANAGED_AGENT, agent_id)
         self.presence.unbind(agent_id, DETACH_UNASSIGNED)
         self._nudge(tenant_id, revisions)
 
@@ -1744,6 +1839,18 @@ def _resume_cursors(recorded: dict[str, Any] | None) -> dict[str, int | None]:
         agent_id: cursor if isinstance(cursor, int) else None
         for agent_id, cursor in recorded.items()
     }
+
+
+def refuse_cloud(controller: AgentController, done: str) -> None:
+    """Raise unless `controller` is one its owner names and removes. Switch
+    does that for a cloud device: it serves its owner in every workspace they
+    hold one in, and comes and goes with its machine."""
+    if controller.kind == "ec2":
+        raise ManagementError(
+            409,
+            reason_codes.CLOUD_MANAGED,
+            f"Switch manages cloud devices, so this one can't be {done}.",
+        )
 
 
 def placement_from(

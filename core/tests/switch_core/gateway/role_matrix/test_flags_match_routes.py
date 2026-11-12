@@ -514,6 +514,62 @@ CHECKS: dict[str, Check] = {
                 match=("agent_id", "managed_agent"),
             ),
         ],
+        "a device, among the workspace's": [
+            Check(
+                "can_edit",
+                _get(f"{G}/management/workspace"),
+                _act(
+                    "PATCH",
+                    f"{G}/management/controllers/{{controller}}",
+                    {"description": "x"},
+                ),
+                match=("id", "controller"),
+                within="devices",
+            ),
+            Check(
+                "can_recheck",
+                _get(f"{G}/management/workspace"),
+                _act(
+                    "POST",
+                    f"{G}/management/operations",
+                    {
+                        "controller_id": "{controller}",
+                        "agent_id": None,
+                        "kind": "provider.recheck",
+                        "params": {"provider": "claude"},
+                    },
+                ),
+                match=("id", "controller"),
+                within="devices",
+            ),
+            Check(
+                "can_remove",
+                _get(f"{G}/management/workspace"),
+                _act("DELETE", f"{G}/management/controllers/{{controller}}"),
+                match=("id", "controller"),
+                within="devices",
+            ),
+        ],
+        "a managed agent, among the workspace's": [
+            Check(
+                "can_edit",
+                _get(f"{G}/management/workspace"),
+                _act(
+                    "PATCH",
+                    f"{G}/management/agents/{{managed_agent}}",
+                    {"desired_state": "stopped"},
+                ),
+                match=("agent_id", "managed_agent"),
+                within="managed_agents",
+            ),
+            Check(
+                "can_delete",
+                _get(f"{G}/management/workspace"),
+                _act("DELETE", f"{G}/management/agents/{{managed_agent}}"),
+                match=("agent_id", "managed_agent"),
+                within="managed_agents",
+            ),
+        ],
         "a messaging app": [
             Check(
                 "can_manage",
