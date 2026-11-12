@@ -1688,6 +1688,21 @@ describe('GitHub connection transport', () => {
     fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
     expect(await fetchWorkspaceServices(SERVER)).toBeNull();
   });
+  it('reads the switches as a member sees them, without who each reaches', async () => {
+    const service = {
+      slug: 'example',
+      name: 'Example',
+      enabled: true,
+      updated_by_name: null,
+      updated_at: null,
+      connected_members: null,
+      granted_agents: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ can_change: false, services: [service] }))
+    );
+    expect(await fetchWorkspaceServices(SERVER)).toEqual([service]);
+  });
   it('raises a refusal or a failure of the switches, never an empty list', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

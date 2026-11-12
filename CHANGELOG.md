@@ -286,6 +286,14 @@ version of their own to them without also giving them a release of their own.
   reason. Unarchiving still acts at once.
 
 #### Fixed
+- **A workspace's connector list credits an organization's default to the
+  organization.** It named nobody as having set a connector the organization
+  turned on or off for its workspaces without locking it.
+- **A workspace admin can no longer clear the workspace's own setting for a
+  connector its organization has locked**, as they already couldn't switch
+  it. The workspace's choice is kept for when the organization unlocks it.
+  A switch or clear made while an organization admin changes that connector
+  now waits for the change, so it never acts on a lock that is changing.
 - **Agents can maintain the documents a room template creates.** A
   template's `docs:` made documents no agent had written, and only the agent
   that wrote a document could update or delete it, so every agent got 403.
@@ -527,6 +535,19 @@ version of their own to them without also giving them a release of their own.
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
   "Yours", and every user. A count that cannot be read shows a dash and why.
+- **The new layout's Workspace › Connectors chooses which connectors the
+  workspace may use.** Each connector says whether it is enabled here and
+  what decided that: the organization's lock ("Set by" the organization, with
+  no switch for anyone), the organization's default, the workspace's own
+  choice, or the workspace's default. Workspace and organization admins
+  switch what is not locked, and a workspace that set its own can go back to
+  the default, the organization's where it set one; turning off a connector
+  people or agents use asks first. Members see the same page read-only. Each card says whether it
+  signs in through the organization's app or Switch's, or what stops anyone
+  using it. The workspace's connector list (`GET /workspace/services`) is now
+  readable by every member, with the counts of who a switch reaches left to
+  admins, and says which setting decides each connector, the organization's
+  default, whether the caller may change it, and why it can't be used.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:

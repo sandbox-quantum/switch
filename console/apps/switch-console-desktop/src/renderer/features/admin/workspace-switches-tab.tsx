@@ -152,9 +152,11 @@ export function WorkspaceSwitchesTab({
             {category && (
               <span className="mt-1 block text-xs text-foreground-muted">{category}</span>
             )}
-            <span className="mt-2 block text-sm text-foreground-muted">
-              {switchStanding(service)}
-            </span>
+            {switchStanding(service) !== null && (
+              <span className="mt-2 block text-sm text-foreground-muted">
+                {switchStanding(service)}
+              </span>
+            )}
             {service.updated_at !== null && (
               <span className="mt-1 block text-xs text-foreground-muted">
                 {workspaceSwitchNote(service, (iso) => format(new Date(iso), 'MMM d, yyyy'))}

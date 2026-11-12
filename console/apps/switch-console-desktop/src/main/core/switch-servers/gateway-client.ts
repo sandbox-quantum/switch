@@ -4253,7 +4253,7 @@ export async function fetchConnectionAgents(
 }
 
 /**
- * Every service the workspace can switch on or off, for a workspace admin; null
+ * Every service the workspace can switch on or off, as the caller may see it; null
  * when the server has no workspace switch (a 404: it predates it, or its
  * `service_connections` flag is off). Any other failure, a refusal included,
  * is thrown for the caller to show.

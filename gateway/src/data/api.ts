@@ -2895,6 +2895,83 @@ export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
     .connections;
 }
 
+/** Why nobody in a workspace can use a service: `UnavailableCode` in
+ * `core/switch_core/connections/broker.py`. A server newer than this
+ * dashboard may send one it doesn't know yet. */
+export type UnavailableCode =
+  | "coming_soon"
+  | "switched_off"
+  | "needs_https"
+  | "needs_public_url"
+  | "app_not_set_up"
+  | "not_set_up"
+  | "organization_app_unusable"
+  | "not_fully_set_up"
+  | "key_never_expires";
+
+/** Which setting decides whether a service is on in the workspace. */
+export type WorkspaceServiceDecider =
+  | "organization_locked"
+  | "workspace"
+  | "organization_default"
+  | "workspace_default";
+
+/** A catalog service as the workspace's settings show it: on or off here, and why. */
+export interface WorkspaceService {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  auth_type: "oauth" | "api_key";
+  enabled: boolean;
+  decided_by: WorkspaceServiceDecider;
+  organization_locked: boolean;
+  /** The organization's unlocked setting, which applies once the workspace drops its own; null where it has none. */
+  organization_default: boolean | null;
+  /** Whether the caller may switch it here: an admin, on a service the organization has not locked. */
+  can_change: boolean;
+  /** Who made the setting that decides it; null for the workspace's default or a deleted account. */
+  updated_by_name: string | null;
+  updated_at: string | null;
+  /** Whether the workspace's admin set it themselves. */
+  workspace_set: boolean;
+  /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
+  app_source: "organization" | "server";
+  /** Why nobody here can use it whatever the switch says; null when they can. */
+  unavailable_reason: string | null;
+  unavailable_code: string | null;
+  /** How many people have connected it and agents are granted it; null for anyone but an admin. */
+  connected_members: number | null;
+  granted_agents: number | null;
+}
+
+export interface WorkspaceServices {
+  /** Whether the caller administers the workspace, and so may switch what isn't locked. */
+  can_change: boolean;
+  /** Whether a service nobody has set is on here. */
+  on_by_default: boolean;
+  /** The workspace's organization, where it has a say in connectors; null where it has none. */
+  organization_name: string | null;
+  services: WorkspaceService[];
+}
+
+export async function fetchWorkspaceServices(): Promise<WorkspaceServices> {
+  return jsonRequest<WorkspaceServices>("/workspace/services", "GET");
+}
+
+/** Switch a service on or off for the workspace; `warning` says what could not be revoked yet. */
+export async function setWorkspaceService(
+  service: string,
+  enabled: boolean,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/workspace/services/${service}`, "PUT", { enabled });
+}
+
+/** Drop the workspace's own setting, so its organization's default applies. */
+export async function clearWorkspaceService(service: string): Promise<{ warning: string | null }> {
+  return jsonRequest(`/workspace/services/${service}`, "DELETE");
+}
+
 export async function removeServiceGrant(
   agentId: string,
   service: string,

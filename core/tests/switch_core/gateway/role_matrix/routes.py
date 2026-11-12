@@ -319,7 +319,11 @@ ROUTES: dict[str, Case] = {
         anyone(ok=404),
         why="Offered only to the domains it lists, and it lists none.",
     ),
-    "GET /gateway/workspace/services": get(f"{G}/workspace/services", admins()),
+    "GET /gateway/workspace/services": get(
+        f"{G}/workspace/services",
+        anyone(),
+        why="Every member reads what the workspace offers; only admins switch it.",
+    ),
     "PUT /gateway/workspace/services/{service}": put(
         f"{G}/workspace/services/github", admins(), json={"enabled": True}
     ),
