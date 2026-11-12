@@ -53,6 +53,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **People connect their own connectors from the dashboard.** Behind
+  `gateway_v2`, Connectors is a catalogue of every connector, with Yours and
+  All tabs and a search. Each card shows its category, whether you have
+  connected it, and "Off here" where the workspace has it off; a workspace
+  admin also sees how many people have connected each one. A key-based
+  connector takes its keys from its card or its page. A connector whose
+  vendor returns sign-ins to Switch (Google Workspace, Airtable, GitLab and
+  GitHub) now connects in the browser: Switch exchanges the code at its
+  callback, writes the same connection a sign-in from Switch Console writes,
+  and returns to the connector's page, which says how the sign-in ended or
+  why it failed, and offers Reconnect when a connection needs a fresh
+  sign-in. The callback writes the connection only for the person who
+  started the sign-in, and only in a browser signed in to Switch as them.
+  Atlassian, Notion and Sentry return sign-ins only to Switch Console, which
+  still connects them. `GET /service-connections` reports `web_sign_in`, and
+  `POST /service-connections/{service}/flows/web` and
+  `POST /provider-connections/github/flows/web` start a sign-in.
 - **Templates have a page of their own in the new dashboard layout, and say
   how often each one is run.** Behind `gateway_v2`, Templates leaves the
   Resources tabs: the workspace's own templates and the ones that come with

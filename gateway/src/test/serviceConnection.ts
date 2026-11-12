@@ -30,6 +30,7 @@ export function serviceConnection(overrides: Partial<ServiceConnection> = {}): S
     workspace_enabled: true,
     organization_locked: false,
     decided_by: "workspace",
+    web_sign_in: false,
     consent: null,
     external_identity: null,
     can_revoke: false,

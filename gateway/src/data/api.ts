@@ -2909,6 +2909,9 @@ export interface ServiceConnection {
   organization_locked: boolean;
   /** Which setting `workspace_enabled` comes from; null where workspaces have no switch. */
   decided_by: WorkspaceServiceDecider | null;
+  /** Whether a sign-in can start and finish here in the browser; false where
+   * it returns only to Switch Console, and for a key. */
+  web_sign_in: boolean;
   /** The level the person allowed when connecting; null while not connected. */
   consent: "read" | "write" | null;
   /** The account connected, as the vendor names it. */
@@ -3304,6 +3307,41 @@ export async function revokeServiceConnection(
 /** End your own connection; `warning` names what could not be revoked. */
 export async function disconnectService(service: string): Promise<{ warning: string | null }> {
   return jsonRequest(`/service-connections/${service}`, "DELETE");
+}
+
+/** Where a sign-in started here sends the browser, and the id the
+ * connector's page reads its outcome by when the browser comes back. GitHub
+ * signs in through its own App, so its flows have their own routes. */
+function signInFlows(service: string): string {
+  return service === "github" ? "/provider-connections/github/flows" : `/service-connections/${service}/flows`;
+}
+
+export async function startWebSignIn(service: string): Promise<{ id: string; url: string }> {
+  return jsonRequest(`${signInFlows(service)}/web`, "POST");
+}
+
+/** How a sign-in ended, as the connector's page reads it on the way back:
+ * `pending` while it never got back from the vendor. */
+export interface SignInOutcome {
+  status: "pending" | "checking" | "connected" | "failed";
+  account: string | null;
+  error: string | null;
+  warning: string | null;
+}
+
+export async function fetchSignInOutcome(service: string, id: string): Promise<SignInOutcome> {
+  const answer = await jsonRequest<SignInOutcome & { login?: string }>(`${signInFlows(service)}/${id}`, "GET");
+  return {
+    status: answer.status,
+    account: answer.account ?? (answer.login || null),
+    error: answer.error,
+    warning: answer.warning,
+  };
+}
+
+/** Done with a sign-in's outcome: it is dropped rather than left to expire. */
+export async function dropSignIn(service: string, id: string): Promise<void> {
+  return noContentRequest(`${signInFlows(service)}/${id}`, "DELETE");
 }
 
 /** Connect a key-based connector, or replace its key, once the vendor accepts it. */

@@ -115,7 +115,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/templates/:id", EVERYONE),
     built("/agents", EVERYONE),
     built("/agents/:agentId", EVERYONE),
-    planned("/connectors", EVERYONE),
+    built("/connectors", EVERYONE),
     built("/connectors/:connectorId", EVERYONE),
 
     built("/settings/general", EVERYONE),

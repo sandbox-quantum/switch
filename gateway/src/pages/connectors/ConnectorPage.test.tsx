@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ServiceAgent,
   ServiceConnection,
@@ -56,6 +56,14 @@ interface Call {
   body: unknown;
 }
 
+/** A reply other than 200, for the routes that need one. */
+class Reply {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+  ) {}
+}
+
 function answer(routes: Record<string, unknown>): Call[] {
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -67,7 +75,9 @@ function answer(routes: Record<string, unknown>): Call[] {
       const key = `${method} ${path}`;
       if (!(key in routes))
         return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
-      return new Response(JSON.stringify(routes[key]), { status: 200 });
+      const reply = routes[key];
+      if (reply instanceof Reply) return new Response(JSON.stringify(reply.body), { status: reply.status });
+      return new Response(JSON.stringify(reply), { status: 200 });
     }),
   );
   return calls;
@@ -92,11 +102,23 @@ function Where() {
   return <output data-testid="where">{location.pathname}</output>;
 }
 
-function renderPage(slug = "example", state: unknown = null) {
+function Query() {
+  return <output data-testid="query">{useLocation().search}</output>;
+}
+
+function renderPage(slug = "example", state: unknown = null, search = "") {
   return render(
-    <MemoryRouter initialEntries={[{ pathname: `/connectors/${slug}`, state }]}>
+    <MemoryRouter initialEntries={[{ pathname: `/connectors/${slug}`, search, state }]}>
       <Routes>
-        <Route path="/connectors/:connectorId" element={<ConnectorPage />} />
+        <Route
+          path="/connectors/:connectorId"
+          element={
+            <>
+              <ConnectorPage />
+              <Query />
+            </>
+          }
+        />
         <Route path="*" element={<Where />} />
       </Routes>
     </MemoryRouter>,
@@ -423,5 +445,120 @@ describe("a connector's page", () => {
     renderPage("nowhere");
 
     expect(await screen.findByText("There is no connector named nowhere.")).toBeTruthy();
+  });
+});
+
+describe("connecting from a connector's page", () => {
+  const originalLocation = window.location;
+  const assign = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { ...originalLocation, assign } });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    assign.mockClear();
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: originalLocation });
+  });
+
+  it("leaves for a sign-in that comes back here", async () => {
+    signedIn();
+    const calls = server(serviceConnection({ web_sign_in: true }), [], null, {
+      "POST /service-connections/example/flows/web": { id: "flow-1", url: "https://switch.example.test/authorize?state=flow-1" },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/authorize?state=flow-1"));
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toContain("POST /service-connections/example/flows/web");
+    expect(screen.queryByText("Connect from Switch Console")).toBeNull();
+  });
+
+  it("signs in to GitHub through its own App's flow", async () => {
+    signedIn();
+    const calls = server(serviceConnection({ slug: "github", name: "GitHub", web_sign_in: true }), [], null, {
+      "POST /provider-connections/github/flows/web": { id: "flow-2", url: "https://switch.example.test/gh?state=flow-2" },
+    });
+    renderPage("github");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/gh?state=flow-2"));
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toContain("POST /provider-connections/github/flows/web");
+  });
+
+  it("offers a fresh sign-in when the connection needs one", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true, status: "needs_reauthorization", can_revoke: true }));
+    renderPage();
+
+    expect(await screen.findByText("It needs a fresh sign-in before agents can use it again.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+  });
+
+  it("says it connected on the way back, then forgets the sign-in", async () => {
+    signedIn();
+    const calls = server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": {
+        status: "connected",
+        account: "ada@example.test",
+        error: null,
+        warning: null,
+      },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+
+    expect(await screen.findByText("Connected to Example as ada@example.test.")).toBeTruthy();
+    await waitFor(() =>
+      expect(calls.map((call) => `${call.method} ${call.path}`)).toContain(
+        "DELETE /service-connections/example/flows/flow-1",
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId("query").textContent).toBe(""));
+  });
+
+  it("says why a sign-in failed on the way back", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": {
+        status: "failed",
+        account: null,
+        error: "This Example account is already linked to another Switch user in this workspace. Remove that link first.",
+        warning: null,
+      },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+
+    expect(await screen.findByText(/already linked to another Switch user/)).toBeTruthy();
+  });
+
+  it("says a sign-in that never came back didn't finish, and one that expired has", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": { status: "pending", account: null, error: null, warning: null },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+    expect(await screen.findByText("The Example sign-in didn't finish. Connect again.")).toBeTruthy();
+
+    cleanup();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-2": new Reply(410, { detail: "Sign-in was interrupted." }),
+    });
+    renderPage("example", null, "?sign_in=flow-2");
+    expect(await screen.findByText("That Example sign-in has expired. Connect again.")).toBeTruthy();
+  });
+
+  it("reads GitHub's outcome from its own flow", async () => {
+    signedIn();
+    server(serviceConnection({ slug: "github", name: "GitHub", web_sign_in: true }), [], null, {
+      "GET /provider-connections/github/flows/flow-3": { status: "connected", login: "octocat", error: null, warning: null },
+      "DELETE /provider-connections/github/flows/flow-3": {},
+    });
+    renderPage("github", null, "?sign_in=flow-3");
+
+    expect(await screen.findByText("Connected to GitHub as octocat.")).toBeTruthy();
   });
 });
