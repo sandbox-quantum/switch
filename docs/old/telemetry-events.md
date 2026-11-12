@@ -581,7 +581,7 @@ then rolls back is never reported.
 | Event | Properties | Sent when |
 |---|---|---|
 | `account_created` | `method`: `signup` (the sign-up page) / `oidc` (a first single sign-on sign-in) / `admin` (an admin created it) | a new account exists. A single sign-on sign-in that links an existing account is not one |
-| `signup_refused` | `reason`: `disabled` / `rate_limited` (the hourly cap) / `email_taken` | the sign-up page was refused |
+| `signup_refused` | `reason`: `disabled` / `rate_limited` (the hourly cap) / `email_taken` / `country` (the request came from a country without sign-up; also a first OIDC sign-in) | a sign-up was refused |
 | `workspace_created` | `new_organization` (boolean): an organization was created with it | a workspace and its owner's membership exist |
 | `cloud_machine_requested` | `change`: `new` / `joined_workspace` (the owner's machine now serves another workspace) / `unretained` (a machine kept after its agents left, running again) / `restarted` (a stopped machine started by a claim) | a claim changed something; a claim on a machine already running is not reported. One event per claim, naming the first of these that applies, so a retained machine joined from another workspace is `joined_workspace` though it also runs again |
 | `cloud_machine_ready` | `new_machine` (boolean): the machine has never been ready before, however many attempts that took · `provisioning_seconds`: from the claim to the first controller report for a new machine, left out for a later start | the machine's controller reported at its current revision |

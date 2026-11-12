@@ -160,6 +160,10 @@ export async function stopOpencodeServer(
       stopProvider(child, 'SIGTERM');
     });
   }
+  // A CLI that outlived its stop (Windows, where it runs under `cmd.exe`)
+  // would otherwise hold these pipes open and keep this process alive.
+  child.stdout?.destroy();
+  child.stderr?.destroy();
   await rm(server.configHome, { recursive: true, force: true });
 }
 

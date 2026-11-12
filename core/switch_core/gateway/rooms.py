@@ -22,10 +22,12 @@ from switch_core.bridges.agent.operations.agent_management import management_por
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
+    ChannelInUse,
     ChannelRetirement,
     ChannelType,
     RetireOutcome,
 )
+from switch_core.chats import is_console_chat, people_are_members
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -214,6 +216,10 @@ async def _build_room_detail(
         connected_names = sorted(
             ext_client_to_name[cid] for cid in client_ids if cid in ext_client_to_name
         )
+    if people_are_members(room):
+        # A Console chat's people are its members, not accounts on an app.
+        members = await room_store.member_users_by_room(session, [room.id])
+        connected_names = [name for _, name in members.get(room.id, [])]
 
     name = room.name
     if bridge_display_name and name.startswith(f"{bridge_display_name}: "):
@@ -256,7 +262,8 @@ async def _build_room_detail(
         created_at=str(room.created_at),
         archived=room.archived_at is not None,
         viewer_is_member=takes_part,
-        is_console_chat=_is_console_chat(room),
+        is_console_chat=is_console_chat(room),
+        people_are_members=people_are_members(room),
         transport_room_id=room.transport_room_id,
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
@@ -283,11 +290,6 @@ async def _build_room_detail(
         can_change_members=_can_change_members(principal, room),
         auto_route=_auto_route_detail(auto_route),
     )
-
-
-def _is_console_chat(room: Room) -> bool:
-    """Whether `room` is a Switch Console chat, made through the chats API."""
-    return "chat_operation_id" in (room.metadata_ or {})
 
 
 def _can_change_members(principal: Principal, room: Room) -> bool:
@@ -420,17 +422,24 @@ async def list_rooms(
     agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
     involved = await room_store.involved_room_ids(session, user.id, room_ids)
+    chat_members = await room_store.member_users_by_room(
+        session, [room.id for room in rooms if people_are_members(room)]
+    )
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
     principal = Principal(user.id, is_admin)
     summaries = []
     for room in rooms:
-        connected_names = sorted(
-            ext_client_to_name[cid]
-            for cid in client_ids_by_room.get(room.id, [])
-            if cid in ext_client_to_name
-        )
+        if people_are_members(room):
+            # A Console chat's people are its members, not accounts on an app.
+            connected_names = [name for _, name in chat_members.get(room.id, [])]
+        else:
+            connected_names = sorted(
+                ext_client_to_name[cid]
+                for cid in client_ids_by_room.get(room.id, [])
+                if cid in ext_client_to_name
+            )
         bridge = bridges.get(room.bridge_id) if room.bridge_id else None
         bridge_display_name = bridge.display_name if bridge else None
         name = room.name
@@ -459,7 +468,8 @@ async def list_rooms(
                 created_at=str(room.created_at),
                 archived=room.archived_at is not None,
                 viewer_is_member=room.id in involved,
-                is_console_chat=_is_console_chat(room),
+                is_console_chat=is_console_chat(room),
+                people_are_members=people_are_members(room),
                 can_write=can(principal, "write", room),
                 can_manage=can(principal, "delete", room),
                 can_unlink=can_unlink_from_room(
@@ -513,6 +523,10 @@ async def create_room(
     )
     try:
         result = await room_service.create_room(config)
+    except ChannelInUse as e:
+        # The channel is someone else's room's: not a malformed request, a
+        # conflict with what exists.
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except BridgeOperationError as e:
@@ -600,6 +614,8 @@ async def create_room_from_yaml(
             creator_name=builtins["$creator"],
             template_name=template_name or parsed.spec.name,
         )
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -799,6 +815,8 @@ async def run_template_document(
         )
     except AgentsNotCreated as error:
         return _refused_run(error)
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     result = await _run_as_person(
@@ -865,7 +883,7 @@ async def _run_as_person(
                 document, inputs=inputs, builtins=builtins
             )
             await rooms_yaml.check_entity_params(parsed, reader=reader)
-            await rooms_yaml.check_bridges(parsed)
+            await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None
@@ -903,6 +921,8 @@ async def _run_as_person(
                 ) from error
     except (AgentsNotCreated, RunUndone) as error:
         return _refused_run(error)
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:

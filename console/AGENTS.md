@@ -9,7 +9,7 @@ Switch Console is a cross-platform, local-first Electron app for orchestrating m
 coding agents in parallel. Each agent runs in its own session in its location's directory
 (there are no Git worktrees). An agent runs either locally or — when configured remote — on an
 SSH host — through a persistent SDK host. The supported providers are Claude Code,
-Codex, OpenCode, Antigravity and Cursor. Local and SSH sessions use the same
+Codex, OpenCode, Antigravity, Cursor, DeepSeek Harness, Pi, Kiro CLI and Junie. Local and SSH sessions use the same
 adapters, durable commands and transcript recovery. See [SDK sessions](docs/sdk-sessions.md).
 
 ## The name: display vs identity (CHOO-2008)
@@ -644,7 +644,7 @@ pnpm run test
   [Add an agent provider](docs/add-an-agent-provider.md).
 - **The Switch skill every session receives** lives in
   `packages/plugins/src/switch-skill/SKILL.md`, the one copy Console pushes to
-  every host (system context for Claude Code, Cursor and Antigravity; a
+  every host (system context for Claude Code, Cursor, Antigravity and Junie; a
   `SKILL.md` for Codex and OpenCode). A change to how agents interact with Switch
   — MCP tools, in-room commands, room workflow — updates it.
 - Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,

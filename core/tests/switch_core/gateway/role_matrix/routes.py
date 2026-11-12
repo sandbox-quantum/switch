@@ -198,6 +198,11 @@ ROUTES: dict[str, Case] = {
         anyone(ok=422),
         why="Your own: refused without the account's e-mail typed to confirm it.",
     ),
+    "POST /gateway/auth/me/reset-test-account": Case(
+        Ask("POST", f"{G}/auth/me/reset-test-account"),
+        anyone(ok=422),
+        why="Your own: refused without the account's e-mail typed to confirm it.",
+    ),
     # ── Workspaces ───────────────────────────────────────────────────────
     "GET /gateway/tenants": get(f"{G}/tenants", SELF),
     "GET /gateway/tenants/counts": get(f"{G}/tenants/counts", SELF),
@@ -244,6 +249,9 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/tenants/{tenant_id}/members": get(f"{W}/members", anyone()),
     "PATCH /gateway/tenants/{tenant_id}/members/{user_id}": patch(
         f"{W}/members/{{member_target}}", admins(), json={"role": "member"}
+    ),
+    "GET /gateway/tenants/{tenant_id}/members/{user_id}/removal": get(
+        f"{W}/members/{{member_target}}/removal", admins()
     ),
     "DELETE /gateway/tenants/{tenant_id}/members/{user_id}": delete(
         f"{W}/members/{{member_target}}", admins()
@@ -311,7 +319,11 @@ ROUTES: dict[str, Case] = {
         anyone(ok=404),
         why="Offered only to the domains it lists, and it lists none.",
     ),
-    "GET /gateway/workspace/services": get(f"{G}/workspace/services", admins()),
+    "GET /gateway/workspace/services": get(
+        f"{G}/workspace/services",
+        anyone(),
+        why="Every member reads what the workspace offers; only admins switch it.",
+    ),
     "PUT /gateway/workspace/services/{service}": put(
         f"{G}/workspace/services/github", admins(), json={"enabled": True}
     ),
@@ -519,6 +531,41 @@ ROUTES: dict[str, Case] = {
         owner_or_admins(),
         json={"on": False},
         why="Write access to the room; this room's write access is private.",
+    ),
+    "GET /gateway/rooms/{room_id}/schedules": get(
+        f"{G}/rooms/{{room}}/schedules", owner_or_admins()
+    ),
+    "POST /gateway/rooms/{room_id}/schedules": post(
+        f"{G}/rooms/{{room_agent}}/schedules",
+        owner_or_admins(),
+        json={
+            "agent_ids": ["{agent}"],
+            "text": "Summarise the new issues.",
+            "cron": "0 9 * * *",
+            "run_at": None,
+            "timezone": "UTC",
+        },
+        why="Changing a room's schedules takes managing it, not writing in it.",
+    ),
+    "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}": put(
+        f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}",
+        owner_or_admins(),
+        json={
+            "agent_ids": ["{agent}"],
+            "text": "Summarise the new issues.",
+            "cron": "0 9 * * *",
+            "run_at": None,
+            "timezone": "UTC",
+        },
+    ),
+    "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}/paused": put(
+        f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}/paused",
+        owner_or_admins(),
+        json={"paused": True},
+    ),
+    "DELETE /gateway/rooms/{room_id}/schedules/{schedule_id}": delete(
+        f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}",
+        owner_or_admins(),
     ),
     "PUT /gateway/rooms/{room_id}/protection": put(
         f"{G}/rooms/{{room}}/protection",
@@ -749,6 +796,11 @@ ROUTES: dict[str, Case] = {
     ),
     "GET /gateway/templates/{template_id}/content": get(
         f"{G}/templates/{{template}}/content", owner_or_admins(refused=404)
+    ),
+    "POST /gateway/templates/{template_id}/runs": post(
+        f"{G}/templates/{{template}}/runs",
+        owner_or_admins(refused=404),
+        why="Only a template the caller could have run is counted.",
     ),
     "PATCH /gateway/templates/{template_id}": patch(
         f"{G}/templates/{{template}}",
@@ -1001,6 +1053,14 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/service-connections": get(f"{G}/service-connections", SELF),
     "GET /gateway/service-connections/{service}/agents": get(
         f"{G}/service-connections/github/agents", SELF
+    ),
+    "GET /gateway/service-connections/{service}/workspace": get(
+        f"{G}/service-connections/github/workspace", admins()
+    ),
+    "DELETE /gateway/service-connections/{service}/people/{user_id}": delete(
+        f"{G}/service-connections/github/people/{{member_target}}",
+        admins(ok=404),
+        why="An admin ends someone else's connection; this member has none.",
     ),
     "PUT /gateway/service-connections/{service}/key": put(
         f"{G}/service-connections/datadog/key",

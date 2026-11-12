@@ -77,6 +77,7 @@ import {
   type AgentRenameOutcome,
   type BridgeConfigField,
   type BridgeDirectoryUser,
+  type BridgePerson,
   type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
@@ -99,6 +100,7 @@ import {
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
+  type RemoteRoomSchedule,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
   type RoomRoleInput,
@@ -108,6 +110,7 @@ import {
   type ApiKeyLifetime,
   type CreatedRegistrationKey,
   type RoomAutoRoute,
+  type RoomScheduleDraft,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -747,12 +750,26 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me', 'DELETE', email);
+}
+
+/**
+ * Wipe the signed-in account and everything it owns on a server that allows
+ * test-account resets, confirmed by its email. A server that does not, or
+ * refuses, is raised with its own reason.
+ */
+export async function resetMyTestAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me/reset-test-account', 'POST', email);
+}
+
+async function confirmByEmail(
+  server: SwitchServer,
+  path: string,
+  method: 'DELETE' | 'POST',
+  email: string
+): Promise<void> {
   try {
-    await gatewayFetch(server, '/auth/me', {
-      authenticated: true,
-      method: 'DELETE',
-      body: { email },
-    });
+    await gatewayFetch(server, path, { authenticated: true, method, body: { email } });
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
@@ -1808,6 +1825,8 @@ type BridgeJson = {
   display_name: string;
   status: string;
   is_default?: boolean;
+  // Absent on a server predating the flag.
+  preconfigured?: boolean;
   home_url?: string | null;
   // Both absent on a server predating the capability — defaulting each to
   // true reproduces how every bridge behaved before it existed: any platform
@@ -1822,6 +1841,12 @@ type BridgeJson = {
   attention?: string | null;
   team_placement_supported?: boolean;
   channel_ids_refused?: string | null;
+  // Both absent on a server predating them, which could make a private
+  // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
+  private_channels_supported?: boolean;
+  private_channel_needs_linked_account?: boolean;
+  // Absent on a server predating it, which put nobody in a public channel.
+  public_channel_adds_creator?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1836,6 +1861,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     displayName: b.display_name,
     status: b.status,
     isDefault: b.is_default ?? false,
+    preconfigured: b.preconfigured ?? null,
     homeUrl: b.home_url ?? null,
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
@@ -1843,6 +1869,9 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
     channelIdsRefused: b.channel_ids_refused ?? null,
+    privateChannels: b.private_channels_supported ?? null,
+    privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
+    publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
@@ -3349,6 +3378,28 @@ export async function updateTemplate(
   return { ...toSummary(t), definition: t.content };
 }
 
+/**
+ * Count a run of a stored or official template (`POST /templates/{id}/runs`),
+ * once the whole run has succeeded, whichever way it ran. Only a count for the
+ * catalogue. False when the server did not count it (404): one from before
+ * runs were counted, or a template the person can no longer read.
+ */
+export async function recordTemplateRun(
+  server: SwitchServer,
+  templateId: string
+): Promise<boolean> {
+  try {
+    await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}/runs`, {
+      authenticated: true,
+      method: 'POST',
+    });
+    return true;
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return false;
+    throw e;
+  }
+}
+
 /** Remove a template from the server's registry (`DELETE /templates/{id}`). */
 export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
   await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
@@ -3480,6 +3531,8 @@ type RoomSummaryJson = {
   owner_id?: string | null;
   viewer_is_member?: boolean;
   is_console_chat?: boolean;
+  /** Its people are its Switch members; absent from a server too old to count them. */
+  people_are_members?: boolean;
   archived: boolean;
   created_at: string;
   write_visibility?: string;
@@ -3508,6 +3561,7 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
     isConsoleChat: r.is_console_chat ?? false,
+    ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
     createdAt: r.created_at,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
@@ -3764,23 +3818,6 @@ export async function fetchArchivedRooms(server: SwitchServer): Promise<RemoteRo
 }
 
 /**
- * The messaging-app usernames Switch knows on one bridge
- * (`GET /collaborations/{id}/users`) — the people a bridged room can be given.
- */
-export async function fetchBridgeUserNames(
-  server: SwitchServer,
-  bridgeId: string
-): Promise<string[]> {
-  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
-    authenticated: true,
-  });
-  const users = (await res.json()) as ExternalUserSummaryJson[];
-  return [...new Set(users.map((user) => user.external_username))].sort((a, b) =>
-    a.localeCompare(b)
-  );
-}
-
-/**
  * Change a room's auto-route setting (`PUT /rooms/{id}/auto-route`), the same
  * store `!auto-route` writes; a field left out is left alone. Answers with the
  * setting as it now stands.
@@ -3799,6 +3836,33 @@ export async function setRoomAutoRoute(
     },
   });
   return mapRoomAutoRoute((await res.json()) as RoomAutoRouteJson);
+}
+
+/**
+ * The people Switch knows on one bridge (`GET /collaborations/{id}/users`),
+ * with who has linked each account, for the New room dialog to offer them and
+ * to match them to the workspace's people. A link counts only once confirmed;
+ * a server that predates confirming leaves `verified` out, and its links count.
+ */
+export async function fetchBridgePeople(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<BridgePerson[]> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
+    authenticated: true,
+  });
+  const users = (await res.json()) as ExternalUserSummaryJson[];
+  return users
+    .map((user) => {
+      const linked = (user.claimed_by ?? []).filter((claim) => claim.verified !== false);
+      return {
+        username: user.external_username,
+        externalUserId: user.external_user_id,
+        linkedUserIds: linked.map((claim) => claim.user_id),
+        linkedName: linked[0]?.user_name ?? null,
+      };
+    })
+    .sort((a, b) => a.username.localeCompare(b.username));
 }
 
 /**
@@ -3833,6 +3897,123 @@ export async function removeRoomAgent(
     `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`,
     { authenticated: true, method: 'DELETE' }
   );
+}
+
+/** The gateway `RoomScheduleDetail` wire shape. */
+type RoomScheduleJson = {
+  id: string;
+  author_id: string;
+  author_agent_id?: string | null;
+  agent_ids: string[];
+  text: string;
+  cron: string | null;
+  run_at: string | null;
+  timezone: string;
+  paused: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+};
+
+function mapRoomSchedule(json: RoomScheduleJson): RemoteRoomSchedule {
+  return {
+    id: json.id,
+    authorId: json.author_id,
+    authorAgentId: json.author_agent_id ?? null,
+    agentIds: json.agent_ids,
+    text: json.text,
+    cron: json.cron,
+    runAt: json.run_at,
+    timezone: json.timezone,
+    paused: json.paused,
+    nextRunAt: json.next_run_at,
+    lastRunAt: json.last_run_at,
+  };
+}
+
+function roomScheduleBody(draft: RoomScheduleDraft) {
+  return {
+    agent_ids: draft.agentIds,
+    text: draft.text,
+    cron: draft.cron,
+    run_at: draft.runAt,
+    timezone: draft.timezone,
+  };
+}
+
+function roomSchedulesPath(roomId: string): string {
+  return `/rooms/${encodeURIComponent(roomId)}/schedules`;
+}
+
+function roomSchedulePath(roomId: string, scheduleId: string): string {
+  return `${roomSchedulesPath(roomId)}/${encodeURIComponent(scheduleId)}`;
+}
+
+/** A room's schedules (`GET /rooms/{id}/schedules`), oldest first. Requires read access. */
+export async function fetchRoomSchedules(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomSchedule[]> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), { authenticated: true });
+  return ((await res.json()) as RoomScheduleJson[]).map(mapRoomSchedule);
+}
+
+/**
+ * Add a schedule to a room (`POST /rooms/{id}/schedules`), with the signed-in
+ * user as its author. Requires write access. The server checks the timing and
+ * that every agent is in the room, and refuses with the reason otherwise.
+ */
+export async function createRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  draft: RoomScheduleDraft
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), {
+    authenticated: true,
+    method: 'POST',
+    body: roomScheduleBody(draft),
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Replace what a schedule says, to whom and when; the signed-in user becomes its author. */
+export async function updateRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  draft: RoomScheduleDraft
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, roomSchedulePath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'PUT',
+    body: roomScheduleBody(draft),
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Pause a schedule, or resume it from now: runs missed while it was paused are not sent. */
+export async function setRoomSchedulePaused(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  paused: boolean
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, `${roomSchedulePath(roomId, scheduleId)}/paused`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { paused },
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+export async function deleteRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<void> {
+  await gatewayFetch(server, roomSchedulePath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /**
@@ -3892,6 +4073,8 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
+    /** Usernames on the bridge's app to add to the channel. */
+    userNames?: string[];
     /** Null for a new public channel. */
     channel: NewRoomChannel | null;
     groupId: string | null;
@@ -3923,6 +4106,7 @@ export async function createRoom(
           }
         : {}),
       agent_ids: params.agentIds,
+      ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
@@ -4011,6 +4195,7 @@ export async function getConnectionCatalog(
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
+    agent_access_note: entry.agent_access_note,
     loopback_ports: entry.loopback_ports,
     key: entry.key,
     external_identity: entry.external_identity,
@@ -4034,6 +4219,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: null,
@@ -4067,7 +4253,7 @@ export async function fetchConnectionAgents(
 }
 
 /**
- * Every service the workspace can switch on or off, for a workspace admin; null
+ * Every service the workspace can switch on or off, as the caller may see it; null
  * when the server has no workspace switch (a 404: it predates it, or its
  * `service_connections` flag is off). Any other failure, a refusal included,
  * is thrown for the caller to show.

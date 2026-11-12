@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
-import { withWindowsAgyBinDir } from '@switch-console/plugins/agents';
+import {
+  withWindowsAgyBinDir,
+  withWindowsCodexBinDir,
+  withWindowsGitBashDir,
+} from '@switch-console/plugins/agents';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
 import { getWindowsPathEnvKey, prependWindowsPathEntry } from './windows-env';
@@ -101,17 +105,47 @@ export function ensureWindowsNpmGlobalBinInPath(
 /**
  * Adds the folders Windows provider installers write CLIs to without telling
  * a running app: Google's Antigravity installer puts `agy.exe` in
- * `%LOCALAPPDATA%\agy\bin` and adds it to the user's PATH, which an app
- * started before the install does not see. Added last, in the same order as
- * the agent controller adds it (`withWindowsAgyBinDir`).
+ * `%LOCALAPPDATA%\agy\bin`, and OpenAI's official Codex installer puts
+ * `codex.exe` in `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`. Each adds its
+ * folder to the user's PATH, which an app started before the install does not
+ * see. Added last, in the same order as the agent controller adds them
+ * (`withWindowsAgyBinDir`, then `withWindowsCodexBinDir`). Returns the folders
+ * added.
  */
 export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.env): string[] {
   const pathKey = getWindowsPathEnvKey(env);
   const before = env[pathKey] ?? '';
-  const after = withWindowsAgyBinDir(before, getWindowsEnvValue(env, 'LOCALAPPDATA'));
+  const localAppData = getWindowsEnvValue(env, 'LOCALAPPDATA');
+  const after = withWindowsCodexBinDir(withWindowsAgyBinDir(before, localAppData), localAppData);
   if (after === before) return [];
   env[pathKey] = after;
-  return [after.split(path.win32.delimiter).at(-1)!];
+  const had = new Set(before.split(path.win32.delimiter));
+  return after.split(path.win32.delimiter).filter((entry) => entry && !had.has(entry));
+}
+
+/**
+ * Puts Git Bash on PATH for the provider CLIs that run shell commands through
+ * it (`withWindowsGitBashDir`), as the agent controller does. Returns the
+ * folder added, or null.
+ */
+export function ensureWindowsGitBashInPath(
+  env: NodeJS.ProcessEnv,
+  fileExists: (file: string) => boolean
+): string | null {
+  const pathKey = getWindowsPathEnvKey(env);
+  const before = env[pathKey] ?? '';
+  const after = withWindowsGitBashDir(
+    before,
+    {
+      localAppData: getWindowsEnvValue(env, 'LOCALAPPDATA'),
+      programFiles: getWindowsEnvValue(env, 'ProgramFiles'),
+      programFilesX86: getWindowsEnvValue(env, 'ProgramFiles(x86)'),
+    },
+    fileExists
+  );
+  if (after === before) return null;
+  env[pathKey] = after;
+  return after.split(path.win32.delimiter).at(-1)!;
 }
 
 /**
@@ -128,6 +162,7 @@ export async function resolveUserEnv(): Promise<void> {
     // Windows PATH is managed differently; no login-shell capture needed.
     ensureWindowsNpmGlobalBinInPath();
     ensureWindowsUserBinDirsInPath();
+    ensureWindowsGitBashInPath(process.env, fs.existsSync);
     return;
   }
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Literal
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
+    FollowUp,
     MessagePayload,
     RoomJoinPayload,
 )
@@ -53,6 +54,7 @@ def message_event(
     sender_role: str | None = None,
     switch_notice: str | None = None,
     routed_reason: Literal["decided", "fallback"] | None = None,
+    follow_up: FollowUp | None = None,
 ) -> AgentEvent:
     """Build the `message` event the agent receives, with any attached files.
 
@@ -90,6 +92,7 @@ def message_event(
             switch_notice=switch_notice,
             routed=routed_reason is not None,
             routed_reason=routed_reason,
+            follow_up=follow_up,
         ),
     )
 

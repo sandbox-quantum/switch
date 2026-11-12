@@ -49,6 +49,7 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
+    FollowUp,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
@@ -71,7 +72,7 @@ from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine, TenantMember
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.standing import organization_admin_of
-from switch_core.db.stores.hosted_machine_store import owner_stopped
+from switch_core.db.stores.hosted_machine_store import admin_stopped, owner_stopped
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
@@ -79,6 +80,7 @@ from switch_core.delivery.addressing import (
     AddressingResolver,
     IncomingMessage,
 )
+from switch_core.delivery.conversation import ConversationRoute
 from switch_core.events import (
     CommandEvent,
 )
@@ -406,6 +408,7 @@ class CloudMachineState:
     state: str
     revision: int
     owner_stopped: bool
+    admin_stopped: bool
 
     @classmethod
     def of(cls, machine: CloudMachine) -> CloudMachineState:
@@ -413,6 +416,7 @@ class CloudMachineState:
             state=machine.state,
             revision=machine.revision,
             owner_stopped=owner_stopped(machine),
+            admin_stopped=admin_stopped(machine),
         )
 
 
@@ -431,6 +435,15 @@ def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> st
     return (
         f"My device, **{machine}**, is stopped, so I can't answer. "
         f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
+    )
+
+
+def _cloud_machine_admin_stopped_message(machine: str) -> str:
+    """A managed agent whose Switch cloud machine a server administrator
+    stopped: neither a message nor its owner can start it again."""
+    return (
+        f"My device, **{machine}**, was stopped by a server administrator, so "
+        "I can't answer until they release it."
     )
 
 
@@ -641,6 +654,7 @@ class AgentRecipient:
             sender_role,
             notice,
             routed_reason=None,
+            follow_up=None,
         )
 
         async def after(row: InboundEvent) -> None:
@@ -697,6 +711,7 @@ class AgentRecipient:
                 sender_role,
                 notice,
                 routed_reason=None,
+                follow_up=_follow_up(decision),
             ),
             after=after,
         )
@@ -764,7 +779,8 @@ class AgentRecipient:
         agent = await self._fresh_agent(session)
         gate = await self._gate_addressed(session, agent, event, meta)
         if not gate.addressed:
-            logger.info(
+            # The router's decision record says so (`dropped_not_allowed`).
+            logger.debug(
                 "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
                 "outcome=dropped_not_permitted reason=the sender may not "
                 "instruct this agent, or it is over budget",
@@ -790,6 +806,7 @@ class AgentRecipient:
                 sender_role,
                 notice,
                 routed_reason=reason,
+                follow_up=None,
             ),
             after=after,
         )
@@ -945,11 +962,14 @@ class AgentRecipient:
         anchor = post_anchor(files, lead)
         gate = _GateOutcome(addressed=False, refusal=None)
         followed = False
+        follow_up: FollowUp | None = None
         if named:
             agent = await self._fresh_agent(session)
             gate = await self._gate_addressed(session, agent, anchor, meta)
         elif follow is not None:
             followed = await self._follows(session, anchor, follow)
+            if followed:
+                follow_up = _follow_up(follow)
         delivered = gate.addressed or followed
 
         sender_name = lead.sender_name
@@ -1007,6 +1027,7 @@ class AgentRecipient:
                 opening_message=opening,
                 sender_role=sender_role,
                 switch_notice=switch_notice,
+                follow_up=follow_up,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1497,6 +1518,8 @@ class AgentRecipient:
             return _machine_removed_message(binding.controller_name, owner)
         if not controllers.is_live(self.agent.id):
             machine = await self._wake_cloud_machine(binding.controller_id)
+            if machine is not None and machine.admin_stopped:
+                return _cloud_machine_admin_stopped_message(binding.controller_name)
             if machine is None or machine.state == "error":
                 return _machine_offline_message(binding.controller_name, owner)
             if machine.owner_stopped:
@@ -1955,6 +1978,20 @@ def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
     return written.get("body")
 
 
+_FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
+    ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
+    ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
+    ConversationRoute.MAIN_AGENT: "main_agent",
+}
+
+
+def _follow_up(decision: ConversationDecision) -> FollowUp:
+    """The rule a follow-up was delivered by, as the agent's event names it."""
+    if decision.route is None:
+        raise ValueError(f"No rule delivered this follow-up: {decision.reason}")
+    return _FOLLOW_UPS[decision.route]
+
+
 def _message_own_event(
     meta: RoomMeta,
     event: InboundMessage,
@@ -1964,10 +2001,12 @@ def _message_own_event(
     switch_notice: str | None,
     *,
     routed_reason: Literal["decided", "fallback"] | None,
+    follow_up: FollowUp | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written. `routed_reason` marks a message Switch routed to the agent after
-    it tagged nobody (`delivery/decision.py`)."""
+    it tagged nobody (`delivery/decision.py`), and `follow_up` one that
+    following the conversation delivered (`delivery/conversation.py`)."""
     sender_name = event.sender_name
     if not sender_name:
         sender_name = event.sender
@@ -1991,6 +2030,7 @@ def _message_own_event(
             sender_role=sender_role,
             switch_notice=switch_notice,
             routed_reason=routed_reason,
+            follow_up=follow_up,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

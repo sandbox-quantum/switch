@@ -1,5 +1,5 @@
 {
-  "title": "Switch \u2014 core service health",
+  "title": "Switch — core service health",
   "description": "What switch-core reports about itself. Metric definitions live in core/switch_core/observability/catalogue.py; this dashboard is checked into deploy/observability/ in the switch repository, so edit it there rather than here.",
   "layout_type": "ordered",
   "reflow_type": "fixed",
@@ -165,7 +165,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**HTTP.** Routes are templates, never resolved paths \u2014 a path carries an id per request and would be a new series each time. Anything the router could not place is folded into `unmatched`.",
+        "content": "**HTTP.** Routes are templates, never resolved paths — a path carries an id per request and would be a new series each time. Anything the router could not place is folded into `unmatched`.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -226,7 +226,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Request duration p95 by route (ms) \u2014 needs distribution mapping, see README",
+        "title": "Request duration p95 by route (ms) — needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -245,7 +245,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Rooms.** Delivery lag is the age of a message when it reached a recipient, measured per delivery. Delivery failures are the exceptions the delivery loop swallows on purpose so one bad room cannot stop the others \u2014 which is also what makes them invisible without this.\n\n**Sent and delivered are not the same unit.** A send is one write; a delivery is one recipient, so a room with five clients delivers five times per send. Delivered sitting above sent is normal. What matters is the shape of each line, not the gap between them.",
+        "content": "**Rooms.** Delivery lag is the age of a message when it reached a recipient, measured per delivery. Delivery failures are the exceptions the delivery loop swallows on purpose so one bad room cannot stop the others — which is also what makes them invisible without this.\n\n**Sent and delivered are not the same unit.** A send is one write; a delivery is one recipient, so a room with five clients delivers five times per send. Delivered sitting above sent is normal. What matters is the shape of each line, not the gap between them.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -331,7 +331,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Delivery lag p95 / p99 (ms) \u2014 needs distribution mapping, see README",
+        "title": "Delivery lag p95 / p99 (ms) — needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -434,7 +434,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Resources.** Reported by the process about itself \u2014 there is no infrastructure agent in this cluster. Event-loop lag is the one no agent could produce: the server is single-threaded, so one blocking call stalls every room and bridge at once, and from outside that looks like an unrelated timeout somewhere else.\n\nPool overflow is zero until the pool is full, then counts the connections opened beyond it \u2014 saturation shows as in-use approaching size.",
+        "content": "**Resources.** Reported by the process about itself — there is no infrastructure agent in this cluster. Event-loop lag is the one no agent could produce: the server is single-threaded, so one blocking call stalls every room and bridge at once, and from outside that looks like an unrelated timeout somewhere else.\n\nPool overflow is zero until the pool is full, then counts the connections opened beyond it — saturation shows as in-use approaching size.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -668,7 +668,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Database query duration p95 / p99 (ms) by operation \u2014 needs distribution mapping, see README",
+        "title": "Database query duration p95 / p99 (ms) by operation — needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -691,7 +691,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Bridge call duration p95 (ms) by bridge and platform \u2014 needs distribution mapping, see README",
+        "title": "Bridge call duration p95 (ms) by bridge and platform — needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -710,7 +710,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Publications held back by a rate limit p95 (s) by platform and delivery \u2014 needs distribution mapping, see README",
+        "title": "Publications held back by a rate limit p95 (s) by platform and delivery — needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -758,7 +758,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 101,
+        "y": 105,
         "width": 6,
         "height": 4
       }
@@ -1038,6 +1038,37 @@
     {
       "definition": {
         "type": "timeseries",
+        "title": "Controller connections per second, by event (opened, adopted, taken_over, closed): a steady stream of taken_over is the reconnect storm",
+        "show_legend": true,
+        "requests": [
+          {
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q1",
+                "query": "sum:switch.controllers.connections{service:switch-core} by {event}.as_rate()"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q1"
+              }
+            ],
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 91,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
         "title": "Process starts (deploys and restarts)",
         "show_legend": false,
         "requests": [
@@ -1069,7 +1100,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 91,
+        "y": 95,
         "width": 12,
         "height": 2
       }
@@ -1088,7 +1119,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 93,
+        "y": 97,
         "width": 6,
         "height": 4
       }
@@ -1115,7 +1146,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 93,
+        "y": 97,
         "width": 6,
         "height": 4
       }
@@ -1138,7 +1169,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 97,
+        "y": 101,
         "width": 6,
         "height": 4
       }
@@ -1157,7 +1188,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 97,
+        "y": 101,
         "width": 6,
         "height": 4
       }
@@ -1176,7 +1207,289 @@
       },
       "layout": {
         "x": 0,
-        "y": 97,
+        "y": 109,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Decision routing.** With auto-route on, a person's untagged message waits while a decision backend picks which agent, if any, should answer it. Decisions and failures count requests to a backend; settled counts messages, however each one ended, and wait is how long the person waited for that. `backend` is the kind of backend asked, never which endpoint or workspace.\n\n**Waiting messages are server-wide.** Every pod reports the same pending count and oldest age, so they are read with max; a sum would multiply them by the number of pods. The health check exists only when the server has a default decision endpoint.",
+        "background_color": "blue",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 105,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Decisions per second, by outcome (agent = picked one, none = picked nobody, failed = no usable answer)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.decision.requests{$env,$service} by {outcome}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 107,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Decision failures per second, by reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.decision.failures{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 107,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Backend errors per second, by kind (what the backend said went wrong behind it)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.decision.backend_errors{$env,$service} by {kind}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 111,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Default decision service check (1 = passing; absent without a default endpoint)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "min:switch.health.check{$env,$service,check:decision}",
+            "display_type": "line",
+            "style": {
+              "palette": "cool",
+              "line_type": "solid",
+              "line_width": "normal"
+            }
+          }
+        ],
+        "yaxis": {
+          "min": "0",
+          "max": "1.2"
+        }
+      },
+      "layout": {
+        "x": 6,
+        "y": 111,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Decision duration p50 / p95 (ms) by backend — needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.decision.duration{$env,$service} by {backend}",
+            "display_type": "line"
+          },
+          {
+            "q": "p95:switch.decision.duration{$env,$service} by {backend}",
+            "display_type": "line"
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 1500",
+            "display_type": "warning dashed",
+            "label": "warning: 1.5 s"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 115,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Model time p50 / p95 (ms) by backend, the gap to duration is network and queue — needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.decision.model_time{$env,$service} by {backend}",
+            "display_type": "line"
+          },
+          {
+            "q": "p95:switch.decision.model_time{$env,$service} by {backend}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 115,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Confidence of answered decisions by backend: lowest, p50 and p90 (0 to 1) — needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "min:switch.decision.confidence{$env,$service} by {backend}",
+            "display_type": "line"
+          },
+          {
+            "q": "p50:switch.decision.confidence{$env,$service} by {backend}",
+            "display_type": "line"
+          },
+          {
+            "q": "p90:switch.decision.confidence{$env,$service} by {backend}",
+            "display_type": "line"
+          }
+        ],
+        "yaxis": {
+          "min": "0",
+          "max": "1"
+        }
+      },
+      "layout": {
+        "x": 0,
+        "y": 119,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Undecided messages settled per second, by how they ended",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.decision.settled{$env,$service} by {outcome}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 119,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Wait from message to settled p95 (ms) by outcome — needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.decision.wait{$env,$service} by {outcome}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 123,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Oldest undecided message's age (s) and messages waiting (right axis), read with max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.decision.pending.oldest_age{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.decision.pending{$env,$service}",
+            "display_type": "line",
+            "on_right_yaxis": true
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 60",
+            "display_type": "error dashed",
+            "label": "alert: 60 s"
+          },
+          {
+            "value": "y = 120",
+            "display_type": "warning dashed",
+            "label": "expires (default): 120 s"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 123,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "\"Auto-route is unavailable\" notices posted to rooms",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.decision.notices{$env,$service}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 127,
         "width": 12,
         "height": 4
       }

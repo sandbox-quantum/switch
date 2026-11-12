@@ -164,6 +164,7 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
         bridges_running_by_platform=lambda: {},
         bridges_configured=lambda: 0,
         bridges_crashed=lambda: [],
+        bridges_started=lambda: [],
         consumers_running=lambda: 0,
         agents_connected=agents_connected,
         pool_stats=lambda: None,
@@ -212,6 +213,21 @@ def test_a_crashed_bridge_reads_one_and_zero_once_it_runs_again() -> None:
     assert now() == {(("bridge_name", "SAQ Teams"), ("platform", "teams")): 1.0}
     crashed.clear()
     assert now() == {(("bridge_name", "SAQ Teams"), ("platform", "teams")): 0.0}
+
+
+def test_a_bridge_running_here_reads_zero_though_another_process_saw_it_crash() -> None:
+    """The crash was seen by a process that has gone; this one runs the bridge,
+    so it reports 0 and the alert recovers rather than holding its last value."""
+    probes = dataclasses.replace(
+        _probes(lambda: {}), bridges_started=lambda: [("slack", "sandboxaq_prod")]
+    )
+    readings = _state_readings(probes)
+
+    assert {
+        tuple(sorted(r.attributes.items())): r.value
+        for r in readings()
+        if r.spec.name == "switch.bridges.crashed"
+    } == {(("bridge_name", "sandboxaq_prod"), ("platform", "slack")): 0.0}
 
 
 def test_the_gauge_still_reports_zero_with_nobody_connected() -> None:

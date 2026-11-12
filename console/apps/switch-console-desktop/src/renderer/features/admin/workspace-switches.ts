@@ -31,12 +31,16 @@ export function switchTiles(
     );
 }
 
-/** Who a switch reaches: the members who have connected the service, and the agents using it. */
+/**
+ * Who a switch reaches: the members who have connected the service, and the
+ * agents using it; null when the server doesn't say, as for anyone but an admin.
+ */
 export function switchStanding(
   service: Pick<WorkspaceService, 'connected_members' | 'granted_agents'>
-): string {
+): string | null {
   const members = service.connected_members;
   const agents = service.granted_agents;
+  if (members === null || agents === null) return null;
   if (members === 0 && agents === 0) return 'Nobody has connected it yet';
   const connected = `${members} ${members === 1 ? 'member' : 'members'} connected`;
   const using = `${agents} ${agents === 1 ? 'agent uses' : 'agents use'} it`;

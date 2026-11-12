@@ -20,7 +20,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type BridgeDetail,
   beginAppInstall,
@@ -28,7 +28,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useBridges, useInstallablePlatforms } from "../../data/hooks";
-import { formatDate, platformLabel, sentenceCase } from "../../theme/hootFormat";
+import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import AddToChatDialog from "./AddToChatDialog";
 import AttentionBanner from "./AttentionBanner";
 import DeleteConnectionText from "./DeleteConnectionText";
@@ -161,6 +161,7 @@ export default function CollaborationsPage() {
             size="small"
             checked={row.agent_greetings_enabled}
             disabled={!row.can_manage || savingId === row.bridge_id}
+            slotProps={{ input: { "aria-label": `Agent greetings for ${row.display_name}` } }}
             onChange={(e) =>
               handleToggleGreetings(row.bridge_id, e.target.checked)
             }
@@ -177,6 +178,7 @@ export default function CollaborationsPage() {
             <Switch
               size="small"
               checked={row.channel_creation_supported && row.channel_creation_enabled}
+              slotProps={{ input: { "aria-label": `Channel creation for ${row.display_name}` } }}
               disabled={
                 !row.can_manage || savingId === row.bridge_id || !row.channel_creation_supported
               }
@@ -300,7 +302,17 @@ export default function CollaborationsPage() {
       {loading ? (
         <CircularProgress />
       ) : (
-        <DataTable rows={rows} columns={columns} />
+        <DataTable
+          rows={rows}
+          columns={columns}
+          emptyState={
+            <TableEmptyState title="No messaging apps yet">
+              {isAdmin
+                ? "Add one to bring a Slack, Mattermost, Discord, Teams or Telegram workspace into rooms."
+                : "A workspace admin adds them."}
+            </TableEmptyState>
+          }
+        />
       )}
 
       <InstalledAppsSection key={installsVersion} onConnectionsChanged={refetch} />

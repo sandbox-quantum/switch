@@ -26,7 +26,7 @@ import {
   checkConnectorApp,
   importConnectorApp,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import {
   actionLabel,
   attention,
@@ -42,6 +42,7 @@ import {
   notSetUpSentence,
   primaryAction,
   secretSummary,
+  setUpLine,
   stateLabel,
   usedBy,
 } from "./connectorApps";
@@ -177,6 +178,7 @@ export default function ConnectorAppCard({
   const actions = menuActions(app);
   const summary = secretSummary(app);
   const blocked = changeBlocked(app, publicUrl);
+  const setUp = setUpLine(app, formatDate);
 
   const check = async () => {
     setChecking(true);
@@ -243,13 +245,11 @@ export default function ConnectorAppCard({
 
         {app.client_id && <Row label="Client ID">{app.client_id}</Row>}
         {app.fields.slug && <Row label="App">{app.fields.slug}</Row>}
-        {summary && (
-          <Row label="Secret">
-            {summary}
-            {app.updated_by_name && app.updated_at
-              ? ` · updated by ${app.updated_by_name}, ${formatDate(app.updated_at)}`
-              : ""}
-          </Row>
+        {summary && <Row label="Secret">{summary}</Row>}
+        {setUp && (
+          <Typography variant="body2" color="text.secondary">
+            {setUp}
+          </Typography>
         )}
         {app.source !== "none" && (
           <Typography variant="body2" color="text.secondary">

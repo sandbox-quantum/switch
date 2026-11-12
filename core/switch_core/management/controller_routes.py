@@ -43,6 +43,7 @@ from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
+    ConnectionNotLetGoError,
     ControllerConnectionError,
     ControllerRevokedError,
 )
@@ -52,7 +53,6 @@ from switch_core.bridges.agent.protocol.controller_stream import (
     ControllerFrame,
     controller_event_stream,
 )
-from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_INTERVAL_SECONDS
 from switch_core.db.session_scope import tenant_session
 from switch_core.management import reason_codes, socket_calls
 from switch_core.management.auth import ManagementAuthenticator
@@ -84,6 +84,24 @@ PROTOCOL_HEADER = "Switch-Controller-Protocol"
 PROTOCOL_ACCEPTS_HEADER = "Switch-Controller-Protocol-Accepts"
 SUPPORTED_PROTOCOLS = "2-2"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2"})
+
+# How often the server pings a controller's socket. A controller released
+# before it learnt to wait three of the server's beats (switch#994) calls its
+# socket dead after 10 seconds with nothing on it, pings included, and never
+# changes that. At the heartbeat interval of the agent sockets (10 seconds)
+# such a controller dropped a healthy socket whenever a ping came a moment
+# late, so every few seconds its agents read as connecting. Half of that keeps
+# one late ping from costing the socket. The beat's TTL is unchanged.
+PING_INTERVAL_SECONDS = 5.0
+
+# How long a socket reattaching through this process waits for the process
+# that held its connection to record the socket going, and how often it reads
+# the controller's row again meanwhile. The holder records it as the socket
+# goes, in one write, and a controller waits at least a quarter of a second
+# before it reattaches; only a holder that is slow to write, or never saw its
+# socket go, runs this out, and the controller then opens a new connection.
+LET_GO_WAIT_SECONDS = 2.0
+LET_GO_POLL_SECONDS = 0.1
 
 
 class ControllerRoute(ManagementRoute):
@@ -388,7 +406,7 @@ async def open_connection(
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
-    logger.info(
+    logger.debug(
         "Controller %s opened connection %s (client=%s version=%s)",
         principal.controller_id,
         conn.id,
@@ -398,7 +416,7 @@ async def open_connection(
     return {
         "connection_id": conn.id,
         "generation": conn.generation,
-        "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+        "heartbeat_interval_s": PING_INTERVAL_SECONDS,
         "agents": sorted(presence.agents_of(principal.controller_id)),
     }
 
@@ -421,15 +439,28 @@ async def attach_stream(
     """
     presence = protocol.connections.controllers
     nudges = management.notifier.subscribe(principal.controller_id)
+    loop = asyncio.get_running_loop()
+    let_go_by = loop.time() + LET_GO_WAIT_SECONDS
     try:
-        async with tenant_session(session_factory, principal.tenant_id) as session:
-            # Wherever it was opened or last held: decided on the
-            # controller's row, which says whether it is still the one the
-            # controller opened last.
-            conn = await management.hold_connection(
-                session, principal, connection_id, generation
-            )
-            state = await management.connection_state(session, principal)
+        while True:
+            try:
+                async with tenant_session(
+                    session_factory, principal.tenant_id
+                ) as session:
+                    # Wherever it was opened or last held: decided on the
+                    # controller's row, which says whether it is still the
+                    # one the controller opened last.
+                    conn = await management.hold_connection(
+                        session, principal, connection_id, generation
+                    )
+                    state = await management.connection_state(session, principal)
+                break
+            except ConnectionNotLetGoError:
+                # Waited out of the session, so the wait holds no connection
+                # to the database.
+                if loop.time() >= let_go_by:
+                    raise
+                await asyncio.sleep(LET_GO_POLL_SECONDS)
         # Attached once nothing more is awaited, and refused if the connection
         # stopped being the controller's current one while the reads above
         # waited.
@@ -444,7 +475,7 @@ async def attach_stream(
         **state,
         "connection_id": conn.id,
         "generation": conn.generation,
-        "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+        "heartbeat_interval_s": PING_INTERVAL_SECONDS,
         # The socket takes its agents' operations as calls (`socket_calls`).
         "calls": socket_calls.calls_offered(),
     }
@@ -542,7 +573,7 @@ async def connection_socket(
 
     Attaches to a connection opened with `POST .../connection`. Frames are
     JSON `{"event", "data"}`, the events the stream carries. The server sends
-    `{"event": "ping"}` every heartbeat interval and the controller answers
+    `{"event": "ping"}` every `PING_INTERVAL_SECONDS` and the controller answers
     `{"type": "pong", "cursors": {agent_id: n}}`, which is its beat. A
     `{"type": "call", ...}` runs one of its agents' operations and is answered
     with a `call.result` frame (`socket_calls`). A refused attach is a
@@ -578,8 +609,13 @@ async def connection_socket(
             outbox=outbox,
         )
     )
+    # The writer below waits on the outbox, up to the next ping. A controller
+    # that goes, or a refused beat, wakes it at once: until the stream is let
+    # go, its connection reads as held here, and the controller reattaching
+    # through another process in the meantime is refused and opens a new one.
+    receiver.add_done_callback(lambda _: outbox.wake())
     loop = asyncio.get_running_loop()
-    next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+    next_ping = loop.time() + PING_INTERVAL_SECONDS
     try:
         # One writer: frames, call answers and pings all go out from this loop.
         while not pump.done() or not outbox.empty():
@@ -598,7 +634,7 @@ async def connection_socket(
                 await websocket.send_json(frame)
             if loop.time() >= next_ping:
                 await websocket.send_json({"event": "ping", "data": {}})
-                next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+                next_ping = loop.time() + PING_INTERVAL_SECONDS
     except WebSocketDisconnect:
         return
     except RuntimeError:
@@ -608,6 +644,10 @@ async def connection_socket(
         pump.cancel()
         receiver.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
+        # Cancelling only asks the pump to stop. Waiting for it means the
+        # stream has detached from the connection, and the ledger has been
+        # told the socket went, before this returns.
+        await asyncio.wait((pump, receiver))
         if failure is not None:
             logger.error(
                 "Controller %s connection %s: delivery failed, closing its socket",
@@ -657,8 +697,13 @@ class _Outbox:
         self._answers.append(answer)
         self._waiting.set()
 
+    def wake(self) -> None:
+        """End a `get` that is waiting, with nothing to send."""
+        self._waiting.set()
+
     async def get(self, timeout: float) -> ControllerFrame | None:
-        """The next frame to send, or None once `timeout` passes with none."""
+        """The next frame to send, or None once `timeout` passes with none or
+        the writer is woken (`wake`) with none."""
         if self.empty():
             self._waiting.clear()
             try:
@@ -667,6 +712,8 @@ class _Outbox:
                 return None
         if self._answers:
             return self._answers.popleft()
+        if not self._frames:
+            return None
         frame = self._frames.popleft()
         self._room.set()
         return frame

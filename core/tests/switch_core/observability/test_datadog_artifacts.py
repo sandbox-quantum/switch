@@ -33,7 +33,13 @@ def _load(name: str) -> object:
 
 
 @pytest.mark.parametrize(
-    "filename", ["dashboard.json", "monitors.json", "signal-board.json"]
+    "filename",
+    [
+        "dashboard.json",
+        "multi-pod-dashboard.json",
+        "monitors.json",
+        "signal-board.json",
+    ],
 )
 def test_every_metric_referenced_exists(filename: str) -> None:
     referenced = _referenced_metrics(_load(filename))
@@ -81,6 +87,32 @@ def test_monitors_are_individually_importable() -> None:
         assert "@REPLACE-WITH-NOTIFICATION-HANDLE" in monitor["message"], monitor[
             "name"
         ]
+
+
+# Every replica reports the same server-wide value for these, so a sum would
+# multiply the reading by the number of pods.
+_READ_WITH_MAX = ("switch.decision.pending",)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "dashboard.json",
+        "multi-pod-dashboard.json",
+        "monitors.json",
+        "signal-board.json",
+    ],
+)
+def test_server_wide_gauges_are_read_with_max(filename: str) -> None:
+    text = json.dumps(_load(filename))
+    for prefix in _READ_WITH_MAX:
+        for aggregation, name in re.findall(
+            rf"\b([a-z0-9]+):({re.escape(prefix)}[a-z0-9_.]*)\{{", text
+        ):
+            assert aggregation == "max", (
+                f"{filename} reads {name} with {aggregation}. Every pod reports "
+                "the same server-wide value, so only max gives the real reading."
+            )
 
 
 def _charts(widgets: list[dict]) -> list[dict]:

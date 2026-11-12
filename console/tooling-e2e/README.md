@@ -14,8 +14,10 @@ five lanes:
   asking a question, asking for approval, being interrupted.
 - **The browser lane** drives the gateway UI in headless Chromium against the
   same server: signing in, every page in the navigation rail, a room opened
-  from the list, signing out. A page that renders but is broken (an uncaught
-  error, a request the server failed, an error banner) fails it.
+  from the list, signing out, and the role matrix: a real account in each role
+  shown exactly the pages the matrix says, in whichever layout the server runs.
+  A page that renders but is broken (an uncaught error, a request the server
+  failed or refused, an error banner) fails it.
 - **The agentic lane** runs the provider lane's real session, but the
   conversations come from scenario files: a model plays the human, and another
   model grades the result against a rubric. Adding a scenario is adding a
@@ -43,7 +45,8 @@ just e2e-fast -- -t mattermost      # arguments after -- go to vitest
 `just e2e-browser` does the same for the browser lane. It also builds the
 gateway UI from `gateway/` and serves it on :4173 with `vite preview`, whose
 proxy sends `/gateway` requests to the server as nginx does in a deployment.
-On first run Playwright installs its Chromium.
+On first run Playwright installs its Chromium. `just e2e-browser-v2` runs the
+same lane with the dashboard's new layout turned on (`gateway_v2`).
 
 Its log, JUnit report and the stack's per-run secrets go to `build/e2e/ephemeral/`.
 The repository's own `.env` is never read or written.
@@ -87,6 +90,7 @@ Typecheck: `pnpm typecheck`.
 | `src/fast/` | Fast-lane scenarios, one file per area, listed in `index.ts` |
 | `src/provider/` | The provider lane: Console credential files, the shared agent and channel, the scenarios, `seed.ts` |
 | `src/browser/` | The browser lane: the gateway UI driver (`gateway-ui.ts`) and the scenarios, listed in `index.ts` |
+| `src/browser/role-matrix/` | The role matrix's scenarios: the accounts and organizations they make (`world.ts`) and the checks against `gateway/src/routes/roleMatrix.ts` (`checks.ts`) |
 | `src/explore/` | The explore lane: the Bombadil specification (`spec/gateway.ts`), the trace reader, the property list |
 | `src/agentic/` | The agentic lane: scenario files' format, the driver and judge, model calls, spend |
 | `agentic/` | The agentic scenarios, one YAML file each |
@@ -172,9 +176,51 @@ saved under `screenshots/` in the output directory.
 | `gateway-room-from-list` | A room made over the API is listed, and its page opens from the list. |
 | `gateway-create-room` | The new-room form makes a room with an agent and no bridge, and opens it; the server has it as asked. |
 | `gateway-sign-out` | Signing out returns to the login form, and the app stays there. |
+| `role-matrix-org-admin`, `role-matrix-workspace-admin`, `role-matrix-member`, `role-matrix-operator` | A real account in the role signs in and is shown what the role matrix says: the rail, each settings menu, every page and settings area opened by URL (the page, its "isn't built yet" slot, or the no-access page), and every redirect followed to where it lands. Pages that open one thing get one the account owns, and must show its name. |
+| `role-matrix-two-workspaces` | An admin of one workspace and a member of another in the same organization switches between them with the app's switcher, and each shows the view of the role held there. |
+| `role-matrix-two-organizations` | An organization admin who is a member in another organization: the switcher groups their workspaces by organization, the organization's reach makes them an admin of a workspace they are no member of, and the other organization's workspace shows them a member's view. |
 
 None runs against `prod`: a page may write on load, and the browser goes
 around the clients' read-only guard.
+
+The lane checks whichever layout of the dashboard the server serves:
+`gateway_v2` on is the new layout, off is today's. `just e2e-browser` runs it
+on today's and `just e2e-browser-v2` on the new one; CI runs both. Signing in
+lands on the layout's start page, the rooms list or Overview.
+
+### The role matrix
+
+Who may open each page, role by role and layout by layout, is written down in
+`gateway/src/routes/roleMatrix.ts`, from the gateway refactor's target matrix
+rather than from the code. Two tests hold the dashboard to it: the gateway's
+own `roleMatrix.test.ts` asks the route table with each role's capabilities on
+every gateway change, and this lane checks what real accounts are shown. The
+server side, every gateway route for every role, is the server's own role
+matrix test (`core/tests/switch_core/gateway/role_matrix/`); this lane stays
+on the UI.
+
+- **The roles.** An organization admin, who makes the organization; a
+  workspace admin and a member, each brought into its first workspace by an
+  invitation link; and the platform operator, the harness's own gateway admin,
+  entered into that workspace with no role in the organization. Each scenario
+  makes its own, and every name goes through the run's naming helper.
+- **The flags.** Every row assumes agent management, connectors and the
+  organization's connector apps are on, so every page is there to open. The
+  stack script turns them on for the browser lane, and the scenarios refuse to
+  run without them.
+- **Only on `ephemeral`.** Accounts and organizations cannot be removed
+  afterwards. What the accounts own is removed; the operator's choice of
+  workspace for its next sign-in is put back, since the other scenarios sign
+  in as the same account.
+- **Adding or building a page.** Add or update its row in `roleMatrix.ts` in
+  the same change; `roleMatrix.test.ts` fails until the two agree. A page whose
+  path names something new (`:somethingId`) also needs that thing made in
+  `RoleWorld.objects` and filled in `fill()`; the scenario says so if not.
+- **Reading a failure.** A scenario lists every place the dashboard and the
+  matrix disagree, as `URL: wanted <path> (<state>), got <path> (<state>)`,
+  where the state is `page`, `planned`, `refused`, `not-enabled` or
+  `not-found`, and fails on anything that went wrong on a page, as every
+  browser scenario does.
 
 ## Naming, isolation and the read-only guard
 
@@ -215,6 +261,7 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_SERVER_LOG` | no | The server's log, written with `LOG_FORMAT=json`. When set, a scenario fails if the server logged an error while it ran. The stack script sets it. |
 | `SWITCH_E2E_SECRETS_FILE` | no | File to append each credential the server issues during the run to (agent keys, gateway sessions), for CI's scan of the output. The stack script sets it. |
 | `SWITCH_GATEWAY_UI_URL` | browser and explore lanes | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` and `just e2e-explore` set it. |
+| `SWITCH_E2E_GATEWAY_LAYOUT` | no | Read by the stack script only: `v2` starts the browser lane's server with the dashboard's new layout (`gateway_v2`), `current` (the default) without it. The lane itself reads the layout from the server. |
 | `SWITCH_E2E_OUTPUT_DIR` | explore lane | Where the browser lane saves screenshots of failed pages, and the explore lane its trace (in `explore/`). The stack script sets it. |
 | `SWITCH_E2E_EXPLORE_TIME_LIMIT` | no | How long the explore lane explores, e.g. `90s`, `5m` (the default), `1h`. Read only by that lane. |
 | `SWITCH_E2E_DRIVER_MODEL` | agentic lane | Exact model id that plays the human, e.g. `claude-sonnet-5`. |
@@ -224,7 +271,7 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_MANIFEST` | provider lane | File the setup records its agent and room in, so a second process can reuse them. See "Seeding first". |
 | `SWITCH_E2E_REPLY_TIMEOUT_MS` | provider lane | How long a scenario waits for the agent (default 5 min). |
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | provider lane | How long setup waits for a live session (default 2 min). |
-| `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity` or `cursor` — which provider's runtime is under test. |
+| `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity`, `cursor` or `deepseek-harness` — which provider's runtime is under test. |
 | `SWITCH_E2E_QUESTION_MODE` | provider lane | `numbered` (default) or `prose`; see the `question` row below. |
 | `SWITCH_E2E_CONTROLLER_ID` | provider lane | An agent controller to run the agent on. `just e2e-provider` sets it. Unset, a Switch Console session is expected instead. |
 | `SWITCH_E2E_PROVIDER_ENV_FILE` | `just e2e-provider`, `just e2e-agentic` | A file of provider keys, handed to the controller as `--env-file`, and to the agentic lane's driver and judge. Leave it unset to use the CLI's own sign-in. |
@@ -535,9 +582,10 @@ hand.
 | When | Lane | Environment | Required check |
 | --- | --- | --- | --- |
 | Every PR, and every push to main (`pr-ci.yml`) | fast | ephemeral | yes |
+| PRs that touch the gateway, the server or the harness, and every push to main (`pr-ci.yml`) | browser, in both layouts | ephemeral | not yet |
 | After a merge to main (`e2e-scheduled.yml`) | provider | ephemeral | no |
 | Nightly (`e2e-scheduled.yml`) | provider | ephemeral | no |
-| A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic | ephemeral | no |
+| A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic; browser, in both layouts | ephemeral | no |
 | By hand (`e2e.yml`, dispatch) | any, including browser and explore | ephemeral | no |
 
 - **Secrets.** An ephemeral fast run generates every secret it uses on the

@@ -82,7 +82,7 @@ describe('CreateRoomModal', () => {
       ['remote-agents', 'ws'],
       [{ id: 'a1', name: 'agent-one', displayName: null, iconUrl: null, knownAgentType: null }]
     );
-    client.setQueryData(['chat-agent-candidates', 'srv', 'ws', null], ['a1']);
+    client.setQueryData(['chat-agent-candidates', 'srv', 'ws', null, null], ['a1']);
     expect(render(client)).toContain('aria-label="Remove agent-one"');
   });
   it('labels a bridged room’s description and instructions as optional', () => {

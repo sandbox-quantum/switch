@@ -10,8 +10,10 @@ and says nothing.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
+from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.room_service import RoomService
 
 
@@ -42,13 +44,18 @@ class _FakeCollaborationCore:
 
 
 async def _add(
-    *, known: dict[str, str], failing_ids: list[str], asked_for: list[str]
+    *,
+    known: dict[str, str],
+    failing_ids: list[str],
+    asked_for: list[str],
+    already_added: tuple[str, ...] = (),
 ) -> tuple[list[dict[str, Any]], _FakeCollaborationCore]:
     bridge = _FakeCollaborationCore(known=known, failing_ids=failing_ids)
     failures = await RoomService._add_users_to_channel(
         bridge,  # type: ignore[arg-type]
         "chan-1",
         asked_for,
+        already_added=already_added,
     )
     return failures, bridge
 
@@ -137,3 +144,111 @@ async def test_an_unmappable_failure_id_still_gets_reported() -> None:
             "error": "the platform would not add them to the channel",
         }
     ]
+
+
+async def test_someone_already_in_the_channel_is_not_asked_for_again() -> None:
+    # The creator of a private channel is put in it first; naming them in the
+    # request as well must not add them twice.
+    failures, bridge = await _add(
+        known={"ada": "ext-a", "bob": "ext-b"},
+        failing_ids=[],
+        asked_for=["ada", "bob"],
+        already_added=("ext-a",),
+    )
+
+    assert failures == []
+    assert bridge.adapter.calls == [(["bob"], ["ext-b"])]
+
+
+async def test_nobody_left_to_add_asks_the_platform_nothing() -> None:
+    failures, bridge = await _add(
+        known={"ada": "ext-a"},
+        failing_ids=[],
+        asked_for=["ada"],
+        already_added=("ext-a",),
+    )
+
+    assert failures == []
+    assert bridge.adapter.calls == []
+
+
+class _CreatorCore(_FakeCollaborationCore):
+    def __init__(self, *, failing_ids: list[str], needs_owner: bool) -> None:
+        super().__init__(known={}, failing_ids=failing_ids)
+        self.adapter.private_channel_needs_owner = needs_owner  # type: ignore[attr-defined]
+        self.in_room: list[str] = []
+
+    async def ensure_external_users_in_room(
+        self, room_id: str, transport_room_id: str, external_user_ids: list[str]
+    ) -> None:
+        self.in_room.extend(external_user_ids)
+
+
+async def _add_creator(
+    core: _CreatorCore, channel_type: ChannelType = "channel_private"
+) -> list[dict[str, Any]]:
+    creator = SimpleNamespace(external_user_id="ext-a", external_username="ada")
+    return await RoomService._add_creator_to_channel(
+        core,  # type: ignore[arg-type]
+        "room-1",
+        "!room:test",
+        "chan-1",
+        creator,  # type: ignore[arg-type]
+        channel_type,
+    )
+
+
+async def test_the_creator_is_put_in_the_channel_and_the_room() -> None:
+    core = _CreatorCore(failing_ids=[], needs_owner=False)
+
+    assert await _add_creator(core) == []
+    assert core.adapter.calls == [(["ada"], ["ext-a"])]
+    assert core.in_room == ["ext-a"]
+
+
+async def test_a_platform_refusing_the_creator_is_reported() -> None:
+    core = _CreatorCore(failing_ids=["ext-a"], needs_owner=False)
+
+    assert await _add_creator(core) == [
+        {
+            "kind": "user",
+            "id": "ada",
+            "error": "the platform would not add you to the channel",
+        }
+    ]
+
+
+async def test_a_creator_made_owner_is_not_added_to_the_channel_again() -> None:
+    core = _CreatorCore(failing_ids=[], needs_owner=True)
+
+    assert await _add_creator(core) == []
+    assert core.adapter.calls == []
+    assert core.in_room == ["ext-a"]
+
+
+async def test_the_creator_of_a_public_channel_is_asked_for_wherever_owners_are_named() -> (
+    None
+):
+    # Naming an owner (Teams) puts someone in a private channel only.
+    core = _CreatorCore(failing_ids=[], needs_owner=True)
+
+    assert await _add_creator(core, "channel_public") == []
+    assert core.adapter.calls == [(["ada"], ["ext-a"])]
+    assert core.in_room == ["ext-a"]
+
+
+async def test_no_creator_means_nothing_to_do() -> None:
+    core = _CreatorCore(failing_ids=[], needs_owner=False)
+
+    assert (
+        await RoomService._add_creator_to_channel(
+            core,  # type: ignore[arg-type]
+            "room-1",
+            "!room:test",
+            "chan-1",
+            None,
+            "channel_private",
+        )
+        == []
+    )
+    assert core.adapter.calls == []

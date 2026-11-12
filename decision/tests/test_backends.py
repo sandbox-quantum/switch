@@ -111,6 +111,7 @@ def test_read_systemone_choice_uses_probability():
     )
     assert (a.choice, a.confidence) == ("deploy-bot", 0.9)
     assert a.reason.startswith("probabilities: deploy-bot=0.90")
+    assert a.runner_up == 0.05
 
 
 def test_read_systemone_none():
@@ -131,8 +132,9 @@ def test_read_systemone_refuses_malformed():
         read_systemone({"answers": {}}, OPTIONS)
 
 
-def _settings(url="http://model.test/v1/systemone", threshold=0.6):
+def _settings(url="http://model.test/v1/systemone", threshold=0.6, min_lead=None):
     return Settings(
+        min_lead=min_lead,
         backend="systemone",
         model="clef-flash",
         systemone_url=url,
@@ -215,6 +217,115 @@ def test_decide_none_is_nobody(monkeypatch):
         ),
     )
     assert tc.post("/decide", json=_payload()).json()["agent"] is None
+
+
+# ── Lead rule (DECISION_MIN_LEAD) ──────────────────────────────────────────
+
+
+def _lead_client(monkeypatch, choice, probs, **kw):
+    return _client(
+        monkeypatch,
+        lambda r: httpx.Response(200, json=_answer(choice, probs)),
+        threshold=0.5,
+        min_lead=0.05,
+        **kw,
+    )
+
+
+def test_lead_rule_delivers_a_top_agent_under_the_threshold(monkeypatch, caplog):
+    # A pilot message for the right agent: top, but under half.
+    tc = _lead_client(
+        monkeypatch,
+        "deploy-bot",
+        {"deploy-bot": 0.445, NONE: 0.372, "billing-bot": 0.183},
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] == "deploy-bot"
+    assert body["rule"] == "lead" and body["min_lead"] == 0.05
+    assert abs(body["lead"] - 0.073) < 1e-9
+    line = next(
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("decide ")
+    )
+    assert "picked=deploy-bot" in line and "rule=lead lead=0.07" in line
+
+
+def test_lead_rule_refuses_a_near_tie_with_none(monkeypatch):
+    tc = _lead_client(
+        monkeypatch,
+        "billing-bot",
+        {"billing-bot": 0.48, NONE: 0.457, "deploy-bot": 0.063},
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] is None and body["model_choice"] == "billing-bot"
+    assert body["rule"] == "lead"
+
+
+def test_lead_rule_refuses_a_near_tie_between_agents(monkeypatch):
+    tc = _lead_client(
+        monkeypatch, "deploy-bot", {"deploy-bot": 0.62, "billing-bot": 0.6, NONE: 0.0}
+    )
+    # Above the threshold, but too close to call between the two agents.
+    assert tc.post("/decide", json=_payload()).json()["agent"] is None
+
+
+def test_lead_rule_counts_a_lead_of_exactly_min_lead(monkeypatch):
+    # 0.48 - 0.43 is 0.04999... in floating point.
+    tc = _lead_client(
+        monkeypatch, "deploy-bot", {"deploy-bot": 0.48, NONE: 0.43, "billing-bot": 0.09}
+    )
+    assert tc.post("/decide", json=_payload()).json()["agent"] == "deploy-bot"
+
+
+def test_lead_rule_none_on_top_is_nobody(monkeypatch):
+    tc = _lead_client(
+        monkeypatch, NONE, {NONE: 0.6, "deploy-bot": 0.3, "billing-bot": 0.1}
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] is None and body["rule"] == "lead"
+
+
+def test_a_request_threshold_keeps_the_threshold_rule(monkeypatch):
+    tc = _lead_client(
+        monkeypatch,
+        "deploy-bot",
+        {"deploy-bot": 0.445, NONE: 0.372, "billing-bot": 0.183},
+    )
+    body = tc.post("/decide", json=_payload(confidence_threshold=0.5)).json()
+    assert body["agent"] is None and body["rule"] == "threshold"
+    assert body["min_lead"] is None
+
+
+def test_without_min_lead_the_threshold_rule_applies(monkeypatch):
+    tc = _client(
+        monkeypatch,
+        lambda r: httpx.Response(
+            200,
+            json=_answer(
+                "deploy-bot", {"deploy-bot": 0.445, NONE: 0.372, "billing-bot": 0.183}
+            ),
+        ),
+        threshold=0.5,
+    )
+    body = tc.post("/decide", json=_payload()).json()
+    assert body["agent"] is None and body["rule"] == "threshold"
+    assert abs(body["lead"] - 0.073) < 1e-9
+
+
+def test_a_single_confidence_backend_keeps_the_threshold_rule():
+    # Haiku and Ollama rate one confidence and score no other option.
+    one = backends.ModelAnswer(choice="deploy-bot", confidence=0.45, reason="")
+    assert app_module.pick(one, 0.5, 0.05) == (None, "threshold", None)
+    sure = replace(one, confidence=0.9)
+    assert app_module.pick(sure, 0.5, 0.05) == ("deploy-bot", "threshold", None)
+
+
+def test_health_reports_min_lead(monkeypatch):
+    tc = _client(
+        monkeypatch,
+        lambda r: httpx.Response(200, json={"status": "ok", "model": "clef-flash"}),
+        min_lead=0.05,
+    )
+    assert tc.get("/health").json()["min_lead"] == 0.05
 
 
 def test_decide_unknown_name_is_nobody(monkeypatch):
@@ -416,6 +527,7 @@ def test_letter_readout_renormalises_over_options():
         lettered_options(["deploy-bot", "billing-bot"]),
     )
     assert a.choice == "deploy-bot" and abs(a.confidence - 0.6 / 0.9) < 1e-9
+    assert abs(a.runner_up - 0.2 / 0.9) < 1e-9
 
 
 def test_letter_readout_with_no_option_letter_fails():
@@ -524,3 +636,16 @@ def test_a_refused_model_server_token_is_a_502_without_the_token(monkeypatch, ca
         r = tc.post("/decide", json=_payload())
     assert r.status_code == 502 and "401" in r.json()["detail"]
     assert "s3cret" not in caplog.text and "s3cret" not in r.text
+
+
+def test_the_instructions_say_an_agent_spoken_to_by_name_answers():
+    """An agent named in plain text, without @, is being spoken to; one only
+    mentioned is not. Every backend gets the rule: SystemOne's instructions and
+    the prompt the language-model backends read."""
+    from switch_decision.prompt import NONE_CRITERION, SPEAKER_INSTRUCTIONS, SYSTEM
+
+    for text in (SPEAKER_INSTRUCTIONS, SYSTEM):
+        assert "with or without @" in text
+        assert "only mentioned" in text
+        assert "named person who is not an agent" in text
+    assert "only mentioned or talked about" in NONE_CRITERION

@@ -81,6 +81,7 @@ def _resource(kind: str, path: str, transfers: bool) -> list[Check]:
 AGENT = _get(f"{G}/agents/{{agent}}")
 MEMBERS = _get(f"{G}/tenants/{{tenant}}/members")
 ORG_MEMBERS = _get(f"{G}/organizations/current/members")
+WORKSPACE_SERVICES = _get(f"{G}/workspace/services")
 
 CHECKS: dict[str, Check] = {
     f"{check.flag} on {name}, asking {check.act.method} {check.act.path}": check
@@ -125,6 +126,36 @@ CHECKS: dict[str, Check] = {
                 _transfer("package", "{package}"),
             ),
         ],
+        # A list may name a private item to whoever may read what holds it;
+        # its `can_read` says whether its own page opens for them.
+        **{
+            f"a private {kind} in a {holder}": [
+                Check(
+                    "can_read",
+                    _get(f"{G}/{holders}/{{{held_by}}}/{kind}s"),
+                    _get(f"{G}/{kind}s/{{{thing}}}"),
+                    match=("id", thing),
+                )
+            ]
+            for kind, holder, holders, held_by, thing in (
+                (
+                    "reference",
+                    "package",
+                    "packages",
+                    "readable_package",
+                    "packaged_reference",
+                ),
+                (
+                    "document",
+                    "package",
+                    "packages",
+                    "readable_package",
+                    "packaged_document",
+                ),
+                ("reference", "room", "rooms", "readable_room", "shown_reference"),
+                ("document", "room", "rooms", "readable_room", "shown_document"),
+            )
+        },
         "a template": [
             Check(
                 "can_edit",
@@ -476,6 +507,37 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/collaborations"),
                 _act("DELETE", f"{G}/collaborations/{{bridge}}"),
                 match=("bridge_id", "bridge"),
+            ),
+        ],
+        "the workspace's connectors": [
+            Check(
+                "can_change",
+                WORKSPACE_SERVICES,
+                _act(
+                    "PUT",
+                    f"{G}/workspace/services/{{workspace_service}}",
+                    {"enabled": True},
+                ),
+            ),
+        ],
+        "a workspace connector": [
+            Check(
+                "can_change",
+                WORKSPACE_SERVICES,
+                _act(
+                    "PUT",
+                    f"{G}/workspace/services/{{workspace_service}}",
+                    {"enabled": True},
+                ),
+                match=("slug", "workspace_service"),
+                within="services",
+            ),
+            Check(
+                "can_change",
+                WORKSPACE_SERVICES,
+                _act("DELETE", f"{G}/workspace/services/{{workspace_service}}"),
+                match=("slug", "workspace_service"),
+                within="services",
             ),
         ],
         "an install": [

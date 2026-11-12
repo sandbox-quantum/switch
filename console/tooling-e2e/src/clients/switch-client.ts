@@ -21,6 +21,13 @@ import type { IssuedSecrets } from "../core/secrets.ts";
  * modelled here; see README.md for the verified request/response shapes.
  */
 
+/** Who receives what a removed workspace member owned there. */
+export interface WorkspaceMemberHeir {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
 export interface AgentRef {
   id: string;
   name: string;
@@ -37,6 +44,16 @@ export interface RoomSummary {
   bridgeId: string | null;
   bridgeType: string | null;
   archived: boolean;
+}
+
+/** A room schedule as the gateway returns it. */
+export interface RoomSchedule {
+  id: string;
+  agentIds: string[];
+  text: string;
+  paused: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
 }
 
 export interface RoomDetail extends RoomSummary {
@@ -457,13 +474,17 @@ export class SwitchClient {
     return other;
   }
 
-  /** `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator. */
+  /**
+   * `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator.
+   * The account signs in with `password` for as long as it lasts, so it goes to the run's issued secrets.
+   */
   async createUser(params: {
     name: string;
     email: string;
     password: string;
     role: "user" | "admin";
   }): Promise<{ id: string }> {
+    this.issued.record(params.password);
     return this.gateway<{ id: string }>("POST", "/users", params);
   }
 
@@ -575,6 +596,51 @@ export class SwitchClient {
       "/organizations/current/workspaces",
       { name },
     );
+  }
+
+  /**
+   * `POST /gateway/tenants/{tenant_id}/invitations` — a single-use invitation
+   * link to the bound workspace, granting `role`; its admins only. The token
+   * is a bearer credential, so it goes to the run's issued secrets.
+   */
+  async createInvitation(tenantId: string, role: "admin" | "member"): Promise<string> {
+    const { token } = await this.gateway<{ token: string }>(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/invitations`,
+      { role },
+    );
+    this.issued.record(token);
+    return token;
+  }
+
+  /**
+   * `POST /gateway/invitations/accept` — join the invitation's workspace. The
+   * server re-mints the session into it, so from here on this client acts
+   * there, and signing in again selects it.
+   */
+  async acceptInvitation(token: string): Promise<void> {
+    await this.rebinding("POST", "/gateway/invitations/accept", { token });
+  }
+
+  /**
+   * `POST /gateway/tenants/{tenant_id}/switch` — select a workspace this
+   * account may enter. As with accepting an invitation, this client acts
+   * there from here on, and signing in again selects it.
+   */
+  async switchTenant(tenantId: string): Promise<void> {
+    await this.rebinding("POST", `/gateway/tenants/${encodeURIComponent(tenantId)}/switch`);
+  }
+
+  /** A request the server answers by re-minting the session; the new cookie replaces this client's. */
+  private async rebinding(method: string, path: string, body?: unknown): Promise<void> {
+    const { response } = await this.rawRequest(method, path, {
+      cookie: await this.gatewayLogin(),
+      body,
+    });
+    const cookie = sessionCookieFrom(response);
+    if (!cookie) throw new Error(`${method} ${path} returned no switch_auth cookie.`);
+    this.issued.record(cookie.slice("switch_auth=".length));
+    this.gatewayCookie = cookie;
   }
 
   /** `POST /gateway/agents/register` — an agent owned by the signed-in user, in their current workspace. */
@@ -770,6 +836,61 @@ export class SwitchClient {
     await this.gateway("DELETE", `/packages/${packageId}`);
   }
 
+  /** `POST /gateway/references` — a private GitHub reference owned by the signed-in user. */
+  async createReference(params: {
+    name: string;
+    description: string;
+    url: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/references", {
+      type: "github",
+      name: params.name,
+      description: params.description,
+      instructions: "",
+      value: { urls: [params.url] },
+    });
+  }
+
+  async deleteReference(referenceId: string): Promise<void> {
+    await this.gateway("DELETE", `/references/${referenceId}`);
+  }
+
+  /** `POST /gateway/documents` — a private document in the library, owned by the signed-in user. */
+  async createDocument(params: {
+    name: string;
+    description: string;
+    content: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/documents", {
+      name: params.name,
+      description: params.description,
+      instructions: "",
+      content: params.content,
+    });
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    await this.gateway("DELETE", `/documents/${documentId}`);
+  }
+
+  /** `POST /gateway/rooms/{room_id}/documents/{document_id}` — attach a library document to a room. */
+  async attachDocumentToRoom(roomId: string, documentId: string): Promise<void> {
+    await this.gateway("POST", `/rooms/${roomId}/documents/${documentId}`);
+  }
+
+  /** `POST /gateway/templates` — a room template, owned by the signed-in user. */
+  async createTemplate(params: {
+    name: string;
+    description: string;
+    content: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/templates", params);
+  }
+
+  async deleteTemplate(templateId: string): Promise<void> {
+    await this.gateway("DELETE", `/templates/${templateId}`);
+  }
+
   /** `GET /gateway/rooms/{id}/packages` — the packages attached to a room. */
   async roomPackages(roomId: string): Promise<{ id: string; name: string }[]> {
     return this.gateway<{ id: string; name: string }[]>(
@@ -931,6 +1052,62 @@ export class SwitchClient {
     };
   }
 
+  /** `POST /gateway/rooms/{room}/schedules`: post `text` to `agentIds` once, at `runAt`. */
+  async scheduleOnce(
+    roomId: string,
+    agentIds: string[],
+    text: string,
+    runAt: Date,
+  ): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>("POST", `/rooms/${roomId}/schedules`, {
+        agent_ids: agentIds,
+        text,
+        cron: null,
+        run_at: runAt.toISOString(),
+        timezone: "UTC",
+      }),
+    );
+  }
+
+  async listSchedules(roomId: string): Promise<RoomSchedule[]> {
+    const rows = await this.gateway<RawRoomSchedule[]>("GET", `/rooms/${roomId}/schedules`);
+    return rows.map(toRoomSchedule);
+  }
+
+  /** `PUT /gateway/rooms/{room}/schedules/{schedule}`: replace what it says and when, as a daily rule. */
+  async scheduleDaily(
+    roomId: string,
+    scheduleId: string,
+    agentIds: string[],
+    text: string,
+    cron: string,
+  ): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>("PUT", `/rooms/${roomId}/schedules/${scheduleId}`, {
+        agent_ids: agentIds,
+        text,
+        cron,
+        run_at: null,
+        timezone: "UTC",
+      }),
+    );
+  }
+
+  async pauseSchedule(roomId: string, scheduleId: string, paused: boolean): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>(
+        "PUT",
+        `/rooms/${roomId}/schedules/${scheduleId}/paused`,
+        { paused },
+      ),
+    );
+  }
+
+  async deleteSchedule(roomId: string, scheduleId: string): Promise<void> {
+    await this.gateway<void>("DELETE", `/rooms/${roomId}/schedules/${scheduleId}`);
+  }
+
   /**
    * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
    * of `bridgeType` — start linking a chat account to the signed-in Switch
@@ -1085,9 +1262,34 @@ export class SwitchClient {
     return this.gateway("GET", `/tenants/${encodeURIComponent(tenantId)}/members`);
   }
 
-  /** `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone from a workspace. */
-  async removeWorkspaceMember(tenantId: string, userId: string): Promise<void> {
-    await this.gateway<unknown>(
+  /**
+   * `GET /gateway/tenants/{tenant_id}/members/{user_id}/removal` — who would
+   * receive what someone owns in a workspace if this client removed them now.
+   */
+  async previewWorkspaceMemberRemoval(
+    tenantId: string,
+    userId: string,
+  ): Promise<{ handed_over_to: WorkspaceMemberHeir | null }> {
+    return this.gateway(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/removal`,
+    );
+  }
+
+  /**
+   * `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone
+   * from a workspace. Says who received what they owned there, and how many
+   * of each kind.
+   */
+  async removeWorkspaceMember(
+    tenantId: string,
+    userId: string,
+  ): Promise<{
+    warning: string | null;
+    handed_over_to: WorkspaceMemberHeir | null;
+    handed_over: Record<string, number>;
+  }> {
+    return this.gateway(
       "DELETE",
       `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     );
@@ -1214,6 +1416,12 @@ export class SwitchClient {
   /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
   async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
     return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
+  }
+
+  /** `GET /gateway/auth/session` — the signed-in account's own id. */
+  async userId(): Promise<string> {
+    const state = await this.gateway<{ user: { id: string } }>("GET", "/auth/session");
+    return state.user.id;
   }
 
   /** `GET /gateway/auth/session` — the workspace this admin session is bound to. */
@@ -1386,8 +1594,8 @@ export class SwitchClient {
   /**
    * Register a "known agent" (`POST /agents/register-known`, registration-token
    * auth). `agentType` is one of the gateway's known types — `claude-code`,
-   * `codex`, `opencode`, `cursor` or `antigravity` — and `options` is that
-   * type's option schema, which for OpenCode is `{ auto_session, repo_dir }`.
+   * `codex`, `opencode`, `cursor`, `antigravity` or `deepseek-harness` — and
+   * `options` is that type's option schema, which for OpenCode is `{ auto_session, repo_dir }`.
    *
    * Registration is also what mints the agent's Mattermost bot account: the
    * protocol service calls `create_agent_identity` on every collaboration
@@ -1396,7 +1604,13 @@ export class SwitchClient {
    * be added to a channel.
    */
   async registerKnownAgent(params: {
-    agentType: "opencode" | "codex" | "claude-code" | "antigravity" | "cursor";
+    agentType:
+      | "opencode"
+      | "codex"
+      | "claude-code"
+      | "antigravity"
+      | "cursor"
+      | "deepseek-harness";
     name: string;
     description: string;
     options?: Record<string, unknown>;
@@ -1671,6 +1885,26 @@ export class SwitchClient {
       body: {},
     });
   }
+}
+
+interface RawRoomSchedule {
+  id: string;
+  agent_ids: string[];
+  text: string;
+  paused: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+}
+
+function toRoomSchedule(raw: RawRoomSchedule): RoomSchedule {
+  return {
+    id: raw.id,
+    agentIds: raw.agent_ids,
+    text: raw.text,
+    paused: raw.paused,
+    nextRunAt: raw.next_run_at,
+    lastRunAt: raw.last_run_at,
+  };
 }
 
 interface RawRoom {

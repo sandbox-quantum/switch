@@ -4,7 +4,9 @@ The decision service behind auto-route. When a room has auto-route on and a
 message tags no agent, switch-core asks this service which agent in the room,
 if any, should answer. The service puts the room's context to a decision model
 as one choice (each candidate agent, plus "none") and only names an agent when
-the model's confidence clears a threshold.
+the model is sure enough: its confidence clears a threshold, or, with
+`DECISION_MIN_LEAD` set, its top option leads the next one by that much (see
+[Who gets the message](#who-gets-the-message)).
 
 It is a small FastAPI app (`switch_decision`). It holds no state and keeps no
 message content after answering.
@@ -51,20 +53,50 @@ sat at 0.51–0.61 confidence, just under the threshold.
 switch-core talks only to this contract; the backend behind it is configuration.
 
 - **`GET /health`** returns `200 {"ok": true, "backend", "model", "model_server",
-  "model_server_status", "confidence_threshold", "backends_available"}`, or
+  "model_server_status", "confidence_threshold", "min_lead", "backends_available"}`, or
   `503 {"detail"}` when the default backend's model server is down.
   `backends_available` is `["default", "anthropic"]`, plus `"bedrock"` when
   `DECISION_BEDROCK_ENABLED=1`. It never needs a token.
 - **`POST /decide`** takes `room` (`name`, `instructions`), `message` (`sender`,
   `text`, `thread_id`), `agents` (`name`, `description`, `role`), `thread`,
   `recent` and an optional `confidence_threshold`. It returns
-  `{"agent", "model_choice", "confidence", "threshold", "reason", "model", "backend", "latency_ms"}`.
-  `agent` is null for "none", for a pick below the threshold, and for an answer
-  that names an agent who is not a candidate (logged as an error).
-- **Status codes:** `422` for a bad body, `502` when the backend failed (the
-  detail says why), `401` when a service token is set and the request lacks
-  it, and `400 {"detail", "code": "backend_unavailable"}` for an unknown or
-  unavailable backend override.
+  `{"agent", "model_choice", "confidence", "threshold", "rule", "min_lead", "lead", "reason", "model", "backend", "latency_ms"}`.
+  `agent` is null for "none", for a pick the rule turned down (`rule` says
+  which: `threshold` or `lead`), and for an answer that names an agent who is
+  not a candidate (logged as an error). `lead` is the chosen option's
+  probability minus the next one's, when the backend scores every option.
+
+### Who gets the message
+
+The model scores each candidate agent and "none". By default the chosen agent
+gets the message when its confidence is at least the threshold
+(`DECISION_CONFIDENCE_THRESHOLD`, or the request's `confidence_threshold`).
+
+With `DECISION_MIN_LEAD` set, a backend that scores every option (`systemone`,
+`llamacpp`) uses the lead rule instead: the top option wins when it leads the
+next option, another agent or "none", by at least that much, and "none" on top
+reaches nobody. A request that sends its own `confidence_threshold` (a
+workspace that set one) keeps the threshold rule, and so do backends that rate
+a single confidence (`anthropic`, `bedrock`, `ollama`).
+
+Why: with "none" as one of the options, Strands spreads its probability over
+"none" and the agents, so a message plainly for one agent can sit at 0.45 with
+"none" at 0.37 and stay undelivered under a 0.5 bar. On the 124 eval scenarios
+(`scenarios_hard`, `scenarios_extra60`, `scenarios_names`) Strands Decider 4B
+scored the same with a lead of 0.05 as with a 0.5 threshold (112 correct, 11
+answered when nobody should, 1 missed), and six real pilot messages for a
+named agent all reached it, against five of six with the threshold. Plain
+argmax (a lead of 0) answered two more messages that were for nobody, both
+near ties with "none".
+- **Status codes:** `422` for a bad body, `502 {"detail", "error_kind"}` when
+  the backend failed (see "Error kinds" below), `401` when a service token is
+  set and the request lacks it, and `400 {"detail", "code": "backend_unavailable"}`
+  for an unknown or unavailable backend override.
+- **`X-Request-Id`:** switch-core sends its decision id in this header. The
+  service writes it as `request_id` on every log line for that request
+  (the decide line and the access line) and echoes it on the response. When
+  the header is missing, or is not 1 to 128 characters of letters, digits and
+  `.`, `_`, `:`, `-`, the service uses a fresh id instead.
 - **Auth:** with `DECISION_SERVICE_TOKEN` set, every request except
   `GET /health` needs `Authorization: Bearer <token>`. Unset means no auth,
   for use inside a cluster behind a NetworkPolicy.
@@ -84,8 +116,28 @@ switch-core talks only to this contract; the backend behind it is configuration.
   - `X-Decision-Model`: the model for `anthropic` (default `claude-haiku-5-5`)
     or `bedrock` (default `DECISION_BEDROCK_MODEL`).
 - **Logs:** one line per decision: backend, model, number of candidates,
-  choice, confidence, threshold, pick and latency. No message text, room name,
-  room instructions or keys.
+  choice, confidence, threshold, pick and latency, the rule and the lead, plus
+  the error kind when it
+  failed. No message text, room name, room instructions or keys, and no error
+  body from the backend. See "Logs" below.
+
+### Error kinds
+
+A failed model call answers `502` with `detail` (a human-readable reason, as
+before) and `error_kind`, one of a fixed set. switch-core counts failures by
+`error_kind` and never reads `detail`.
+
+| `error_kind` | What happened |
+|---|---|
+| `model_server_unreachable` | could not connect to the model server or API (refused, DNS, connect timeout, connection dropped) |
+| `model_server_timeout` | connected, but no answer within `DECISION_TIMEOUT_S` (read timeout, `504`, Bedrock `ModelTimeoutException`) |
+| `model_server_error` | the server answered with an error (`5xx`, `400`), or with something that is not a decision (not JSON, no pick, no option letter) |
+| `model_unavailable` | the model is not there yet or at all: llama.cpp `503` while loading, Ollama `404` for a model not pulled, Anthropic `404`/`529`, Bedrock `ResourceNotFoundException`/`ModelNotReadyException` |
+| `credentials_missing` | no `ANTHROPIC_API_KEY` for the `anthropic` backend, or no AWS credentials for Bedrock |
+| `backend_refused` | the server refused the call: `401`/`403` (a wrong `MODEL_SERVER_TOKEN` or key), `429`, Bedrock access denied or throttled, or the model declined to answer (a refusal or guardrail) |
+
+An answer that names an agent who is not a candidate is not a failure: it is
+`200` with `agent: null`.
 
 ## Backends
 
@@ -107,6 +159,7 @@ switch-core talks only to this contract; the backend behind it is configuration.
 | `SYSTEMONE_URL` | `http://127.0.0.1:8100/v1/systemone` | SystemOne server |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama |
 | `DECISION_CONFIDENCE_THRESHOLD` | `0.6` | 0 to 1; a request can override it |
+| `DECISION_MIN_LEAD` | unset | 0 to 1. Set, the lead rule replaces the threshold for a backend that scores every option (`systemone`, `llamacpp`): see [Who gets the message](#who-gets-the-message) |
 | `DECISION_TIMEOUT_S` | `30` | per backend call |
 | `DECISION_HISTORY_LIMIT` | `8` | recent and thread messages kept, each (8 recent + 8 thread). Measured on an L4: a room at switch-core's full limits took 0.55 s with 30 and 0.23 s with 8, with the same accuracy |
 | `DECISION_WITH_REASON` | `1` | `0` drops the reason from Haiku's tool call |
@@ -117,6 +170,58 @@ switch-core talks only to this contract; the backend behind it is configuration.
 | `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | standard AWS credential chain |
 | `ANTHROPIC_API_KEY` | unset | service-wide key when `DECISION_BACKEND=anthropic` |
 | `PORT` | `8230` | the image's listen port |
+| `LOG_FORMAT` | `text` | `json` for one JSON object per line, in switch-core's layout |
+| `LOG_LEVEL` | `INFO` | the root level |
+| `SERVICE_NAME` | `switch-decision` | `service` on every JSON line and in shipped logs |
+| `ENVIRONMENT` | unset | `env` on every JSON line (the deployment: pilot, development, …) |
+| `POD_NAME` | unset | the pod (from the downward API); the host name stands in when unset |
+| `OTLP_ENDPOINT` | unset | an OTLP/HTTP collector's base URL, with no path; logs go to `/v1/logs` |
+| `OTLP_LOGS_ENABLED` | `false` | with `OTLP_ENDPOINT`, also ship logs to the collector |
+| `OTLP_HEADERS` | unset | `key=value` pairs, comma-separated, on every request to the collector |
+| `OTLP_TIMEOUT_SECONDS` | `10` | per request to the collector |
+| `DEPLOYMENT_ID` | unset | a UUID naming the deployment; required when logs are shipped |
+
+The logging and OTLP settings are switch-core's, read the same way, so a
+deployment sets them once for both.
+
+## Logs
+
+Logs go to stderr. `LOG_FORMAT=text` is one readable line per record;
+`LOG_FORMAT=json` is one JSON object per line with the same fields as
+switch-core's:
+
+```
+{"timestamp": "2026-11-09T14:03:04.811+00:00", "status": "warning",
+ "message": "decide failed backend=llamacpp model=qwen3.5-4b-q4_k_m candidates=1 latency_ms=0 error_kind=model_server_unreachable error=…",
+ "logger": {"name": "switch_decision", "thread_name": "MainThread"},
+ "service": "switch-decision", "process_id": "decision-pod-0-d0fad9fb",
+ "env": "pilot", "version": "0.1.0", "request_id": "3f2b9c1d…"}
+```
+
+- `process_id` is the pod (or host) name followed by a random suffix drawn at
+  each start, so two lives of one pod read apart. `version` is the installed
+  `switch-decision` package's version. `env` and `version` are left out when
+  unknown. A logged exception adds `error` (`kind`, `message`, `stack`).
+- `request_id` is the `X-Request-Id` of the request the line was written
+  for. Search for switch-core's decision id to find the service's line for it.
+- uvicorn's own lines go through the same handler. Its access log leaves out
+  `GET /health` (the probes) and cuts the query string off every other path.
+- Never logged: message text, room names and instructions, keys and tokens,
+  and error bodies from the model server. The Anthropic SDK, botocore and
+  httpx write request bodies at `DEBUG`, so they stay at `WARNING` whatever
+  `LOG_LEVEL` says.
+
+**Shipping to a collector.** With `OTLP_ENDPOINT` set and
+`OTLP_LOGS_ENABLED=true` (and `DEPLOYMENT_ID`), the service also sends every
+record to `<OTLP_ENDPOINT>/v1/logs` as OTLP/HTTP JSON, every 5 seconds, with
+`request_id` as an attribute and `service.name`, `service.version`,
+`service.instance.id` (the `process_id`) and `deployment.environment` on the
+resource. stderr stays the primary copy. The queue holds 10,000 records and
+drops the oldest when the collector falls behind, saying how many on stderr;
+a failed export is a warning on stderr and is never itself shipped; logging
+never waits on the collector. On shutdown it tries to send what is left for
+up to 2 seconds and reports anything it could not. With no `OTLP_ENDPOINT`
+nothing is sent and nothing is logged about it.
 
 ## Run locally
 
@@ -130,6 +235,19 @@ uv run uvicorn switch_decision.app:app --port 8230
 curl localhost:8230/health
 uv run pytest
 ```
+
+With JSON logs, and a request id to find in them:
+
+```
+LOG_FORMAT=json uv run uvicorn switch_decision.app:app --port 8230
+curl -s localhost:8230/decide -H 'X-Request-Id: try-1' -H 'Content-Type: application/json' \
+  -d '{"room": {"name": "r"}, "message": {"sender": "s", "text": "who deploys?"},
+       "agents": [{"name": "deploy-bot", "description": "CI and deploys"}]}'
+```
+
+The decide line and the access line both carry `"request_id": "try-1"`. With
+the model server stopped, the answer is
+`502 {"detail": …, "error_kind": "model_server_unreachable"}`.
 
 ## Run with Docker
 
@@ -220,13 +338,19 @@ terms can run without this image: Qwen on llama.cpp's CPU image (compose's
 
 ## Evaluate
 
-`eval/` holds two scenario sets: `scenarios.json` (15 easy cases, three agents)
-and `scenarios_hard.json` (40 cases, five agents with overlapping jobs;
-regenerate it with `eval/make_hard_scenarios.py`).
+`eval/` holds four scenario sets: `scenarios.json` (15 easy cases, three agents),
+`scenarios_hard.json` (40 cases, five agents with overlapping jobs; regenerate
+it with `eval/make_hard_scenarios.py`), `scenarios_extra60.json` (60 cases
+across four rooms), and `scenarios_names.json` (24 cases where an agent is
+named in plain text: spoken to, so it answers, or only mentioned, quoted or
+named in code or a link, so it doesn't; each case's `note` says which). The
+standard run is the hard, extra60 and names sets.
 
 ```
 uv run python eval/eval.py --url http://localhost:8230
 uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json
+uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_extra60.json
+uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_names.json
 # through the Haiku override (reads ANTHROPIC_API_KEY)
 uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json --backend anthropic
 ```

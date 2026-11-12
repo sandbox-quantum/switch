@@ -101,6 +101,7 @@ import {
   createRegistrationKey,
   deleteApiKey,
   deleteMyAccount,
+  resetMyTestAccount,
   fetchMyApiKeys,
   revealApiKey,
   updateMyName,
@@ -774,6 +775,13 @@ export const switchServersController = createRPCController({
   deleteAccount: async (params: { serverId: string; email: string }): Promise<void> => {
     const server = await requireReachableServer(params.serverId);
     await deleteMyAccount(server, params.email);
+    await forgetSession(params.serverId);
+  },
+
+  /** Wipe the signed-in test account on the server, then forget its session here. */
+  resetTestAccount: async (params: { serverId: string; email: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await resetMyTestAccount(server, params.email);
     await forgetSession(params.serverId);
   },
 

@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
+from switch_core.bridges.agent.protocol.types import OverallStatus
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -92,6 +93,10 @@ class RoomSummary(BaseModel):
     viewer_is_member: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
+    # Its people (`connected_user_*`) are its Switch members rather than
+    # accounts on a messaging app: a Console chat on no app. Lets a client tell
+    # a chat with no members from a server too old to count them.
+    people_are_members: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
     # links and attaching resources; `can_change_members` covers adding and
@@ -435,6 +440,35 @@ class GatewayAgentSummary(AgentSummary, AgentCapabilities):
     pass
 
 
+class AgentDevice(BaseModel):
+    """The device a managed agent is placed on."""
+
+    id: str
+    name: str
+    # Whose device it is: two people's devices can share a name, as every
+    # Switch cloud device does.
+    owner_name: str
+    # Removed from Switch. The agent stays placed on it, and runs nowhere,
+    # until its owner moves it.
+    removed: bool
+
+
+class GatewayAgentListEntry(GatewayAgentSummary):
+    """A row of the Gateway's agent list: the summary and what the caller may
+    do, with where the agent stands now. Only the list carries these: they are
+    read for every agent at once, and nothing else that returns an agent shows
+    them."""
+
+    # `online` while it holds a live connection or session, or its device
+    # runs it; `offline` otherwise; `not_tracked` for an agent that only
+    # polls, which holds nothing Switch can see between polls.
+    status: OverallStatus
+    # Named to the device's owner and to workspace admins, who see every
+    # device in the workspace. Null for an agent placed on no device, and for
+    # anyone else.
+    device: AgentDevice | None
+
+
 class GatewayAgentDetail(AgentDetail, AgentCapabilities):
     # Its owner only, not an admin: turning on that it may manage its
     # owner's agents.
@@ -756,6 +790,18 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Whether a new room here can have a private channel, and whether that
+    # channel needs the person asking to have linked their account on the
+    # platform, through which Switch puts them in it (on Teams, as its owner).
+    # Lets a room form offer "New private channel" from the server rather than
+    # a list of its own.
+    private_channels_supported: bool = True
+    private_channel_needs_linked_account: bool = False
+    # Whether a new public channel here has the person asking put in it, when
+    # they have a confirmed linked account on the platform. It is made without
+    # them when they have none. False on Teams, where it would add them to the
+    # whole team.
+    public_channel_adds_creator: bool = False
     # Why no existing channel can be bound to a room by id on this connection,
     # or None when one can. Set for a connection whose chats arrive only one
     # way, so the room form can say so instead of offering the choice.
@@ -1602,10 +1648,14 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
-    # What the caller may do with it (`switch_core.authz`). `can_edit`: change
-    # it — its owner, an admin, or anyone when it is publicly writable.
-    # `can_manage`: delete it, change who may see or edit it, transfer it — its
-    # owner or an admin.
+    # What the caller may do with it (`switch_core.authz`). `can_read`: open
+    # it — its owner, an admin, or anyone when it is publicly readable. Every
+    # route returns only what the caller may read, except a package's or a
+    # room's list, which names a private item to everyone who may read the
+    # package or room. `can_edit`: change it — its owner, an admin, or anyone
+    # when it is publicly writable. `can_manage`: delete it, change who may see
+    # or edit it, transfer it — its owner or an admin.
+    can_read: bool
     can_edit: bool
     can_manage: bool
 
@@ -1816,8 +1866,11 @@ class DocumentDetail(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
-    # All three are false for a room's own document, which is changed and
-    # removed in its room, not through the library.
+    # Those three are false for a room's own document, which is changed and
+    # removed in its room, not through the library. `can_read` is whether the
+    # library opens it; the room routes say otherwise for a room's own document
+    # (`RoomDocumentDetail`).
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
@@ -1829,7 +1882,10 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in."""
+    """A document as seen from a room it is in. Its `can_read` is true for a
+    room's own document, which the room opens for everyone who may read the
+    room; an attached library document keeps the library's rule, which says
+    whether its own page opens."""
 
     can_remove: bool
 
@@ -1855,13 +1911,15 @@ class DocumentSummary(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `DocumentDetail`.
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in."""
+    """A document as listed in a room it is in. `can_read` as on
+    `RoomDocumentDetail`."""
 
     can_remove: bool
 
@@ -1980,6 +2038,12 @@ class TemplateSummary(BaseModel):
     # client cannot tell from the user's global role.
     can_edit: bool
     can_manage: bool
+    # Why a person should not run it by hand, for a client to give beside a
+    # greyed Run; None when nothing stands in the way. Advice, not a refusal.
+    run_blocked_reason: str | None
+    # How many times it has been run in this workspace, by people and agents,
+    # since runs were first counted.
+    run_count: int
     version: int
     size_bytes: int
     created_at: str
@@ -1988,6 +2052,11 @@ class TemplateSummary(BaseModel):
 
 class TemplateDetail(TemplateSummary):
     content: str
+
+
+class TemplateRunRecorded(BaseModel):
+    template_id: str
+    run_count: int
 
 
 # The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels

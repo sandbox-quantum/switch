@@ -34,9 +34,18 @@ from switch_core.decision.client import (
 )
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.keys import Keyring
+from switch_core.observability.catalogue import (
+    DECISION_BACKEND_ERRORS,
+    DECISION_CONFIDENCE,
+    DECISION_DURATION,
+    DECISION_FAILURES,
+    DECISION_MODEL_TIME,
+    DECISION_REQUESTS,
+)
 from switch_core.outbound import OutboundPolicy, guarded_async_client
 from switch_core.telemetry.catalogue import validate
 from tests.conftest import TEST_KEYRING
+from tests.metric_readings import Readings, recording_metrics
 
 _GOOD = {
     "agent": "deploy",
@@ -229,7 +238,9 @@ def _closed_port() -> int:
 
 
 async def _decide(client: DynamicDecisionClient, tenant_id: str = TENANT_ZERO_ID):
-    return await client.decide(_request(), tenant_id=tenant_id, room_id="room-1")
+    return await client.decide(
+        _request(), tenant_id=tenant_id, room_id="room-1", decision_id="decision-1"
+    )
 
 
 class TestTheServerDefault:
@@ -852,3 +863,207 @@ class TestTheOutboundPolicy:
         assert outcome.error_message is not None
         assert "OUTBOUND_ALLOWED_PRIVATE_HOSTS" in outcome.error_message
         assert other.received == []
+
+
+class TestMetrics:
+    """What an operator's collector receives for each decision: counts by
+    backend and outcome, failures by reason, and timings, with no room,
+    agent or message in any attribute."""
+
+    async def test_an_answer_with_an_agent(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        backend = "server_default"
+        assert (
+            readings.total(DECISION_REQUESTS.name, backend=backend, outcome="agent")
+            == 1
+        )
+        assert readings.count(DECISION_DURATION.name, backend=backend) == 1
+        assert readings.count(DECISION_CONFIDENCE.name, backend=backend) == 1
+        assert readings.count(DECISION_MODEL_TIME.name, backend=backend) == 1
+        assert readings.total(DECISION_FAILURES.name) == 0
+        assert readings.attribute_values() <= {backend, "agent"}
+
+    async def test_an_answer_of_nobody(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        stub.body = json.dumps({**_GOOD, "agent": None}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert readings.total(DECISION_REQUESTS.name, outcome="none") == 1
+        assert readings.total(DECISION_REQUESTS.name, outcome="agent") == 0
+
+    async def test_an_answer_without_model_time_still_routes(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        stub.body = json.dumps(
+            {k: v for k, v in _GOOD.items() if k != "latency_ms"}
+        ).encode()
+
+        with recording_metrics() as registry:
+            outcome = await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert isinstance(outcome, Decided) and outcome.answer.agent == "deploy"
+        assert readings.count(DECISION_DURATION.name) == 1
+        assert readings.count(DECISION_MODEL_TIME.name) == 0
+
+    async def test_a_timeout(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        stub.delay = 2.0
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert readings.total(DECISION_REQUESTS.name, outcome="failed") == 1
+        assert readings.total(DECISION_FAILURES.name, reason="timeout") == 1
+        assert readings.count(DECISION_DURATION.name) == 1
+        assert readings.total(DECISION_BACKEND_ERRORS.name) == 0
+
+    async def test_a_name_that_was_not_a_candidate(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        stub.body = json.dumps({**_GOOD, "agent": "docs"}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert readings.total(DECISION_FAILURES.name, reason="bad_answer") == 1
+        assert readings.total(DECISION_REQUESTS.name, outcome="failed") == 1
+        assert readings.count(DECISION_CONFIDENCE.name) == 0
+
+    async def test_a_key_the_server_cannot_decrypt_is_not_timed(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        other: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        await _save(
+            session_factory,
+            TENANT_ZERO_ID,
+            backend="endpoint",
+            endpoint=other.url,
+            api_key="lost-key",
+        )
+        rotated = Keyring.parse("other:" + "z" * 40, legacy_secret=None)
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url, keyring=rotated))
+            readings = Readings(registry)
+
+        assert (
+            readings.total(
+                DECISION_FAILURES.name, backend="endpoint", reason="key_unreadable"
+            )
+            == 1
+        )
+        assert readings.count(DECISION_DURATION.name) == 0
+
+
+class TestBackendErrorKind:
+    """A failed answer's `error_kind` is counted when it is one Switch knows;
+    nothing else in the body is read, so it never reaches a log."""
+
+    @pytest.mark.parametrize(
+        ("body", "kind"),
+        [
+            (
+                b'{"detail": "the words of the endpoint", "error_kind": "model_server_unreachable"}',
+                "model_server_unreachable",
+            ),
+            (
+                b'{"detail": "the words of the endpoint", "error_kind": "credentials_missing"}',
+                "credentials_missing",
+            ),
+            (
+                b'{"detail": "the words of the endpoint", "error_kind": "the words of the endpoint"}',
+                "unknown",
+            ),
+            (b'{"detail": "the words of the endpoint"}', "unknown"),
+            (b"the words of the endpoint", "unknown"),
+        ],
+    )
+    async def test_the_kind_is_counted_and_the_body_is_not_logged(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        caplog: pytest.LogCaptureFixture,
+        body: bytes,
+        kind: str,
+    ) -> None:
+        stub.status = 502
+        stub.body = body
+
+        with caplog.at_level(logging.DEBUG), recording_metrics() as registry:
+            outcome = await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert isinstance(outcome, Failed) and outcome.reason == "error_status"
+        assert (
+            readings.total(
+                DECISION_BACKEND_ERRORS.name, backend="server_default", kind=kind
+            )
+            == 1
+        )
+        assert "the words of the endpoint" not in caplog.text
+        assert "the words of the endpoint" not in outcome.message
+        assert "the words of the endpoint" not in readings.attribute_values()
+
+
+class TestTheDecisionId:
+    async def test_it_is_sent_as_the_request_id(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        await _decide(_client(session_factory, http, stub.url))
+
+        [(headers, _)] = stub.received
+        assert headers["x-request-id"] == "decision-1"
+
+    async def test_the_test_button_sends_one_of_its_own(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        client = _client(session_factory, http, stub.url)
+
+        await client.test(
+            backend="default", endpoint=None, api_key=None, threshold=None
+        )
+        await client.test(
+            backend="default", endpoint=None, api_key=None, threshold=None
+        )
+
+        [(first, _), (second, _)] = stub.received
+        assert first["x-request-id"] and second["x-request-id"]
+        assert first["x-request-id"] != second["x-request-id"]

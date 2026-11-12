@@ -2,12 +2,12 @@ import { Alert, Box, CircularProgress } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { AccessChip } from "../../components/AccessControls";
 import type { PackageDetail } from "../../data/api";
 import { usePackages } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;
@@ -106,6 +106,15 @@ export default function PackagesTab({ refreshKey }: Props) {
           rows={filtered}
           columns={columns}
           fillHeight
+          emptyState={
+            search || ownerId ? (
+              <TableEmptyState title="No packages match these filters">
+                Clear the search or filters to see them all.
+              </TableEmptyState>
+            ) : (
+              <TableEmptyState title="No packages yet">Create one to bundle references and documents for a room.</TableEmptyState>
+            )
+          }
           onRowClick={(params) => navigate(`/resources/packages/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />

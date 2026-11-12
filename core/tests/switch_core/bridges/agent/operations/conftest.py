@@ -202,6 +202,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_role_store=fake_protocol.room_role_store,
         session_factory=fake_protocol.session_factory,
         room_group_store=fake_protocol.room_group_store,
+        console_rooms=None,
         client_lifecycle=fake_protocol.client_lifecycle,
         telemetry=fake_protocol.telemetry,
     )

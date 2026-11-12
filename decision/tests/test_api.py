@@ -6,48 +6,17 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
-from switch_decision import app as app_module
 from switch_decision import backends
-from switch_decision.config import Settings
 from switch_decision.prompt import NONE
-
-SECRET_TEXT = "zebra-quartz-7731 rollback the purple cluster"
-ROOM_RULES = "never-log-these-room-rules-4412"
-ANTHROPIC_KEY = "fake-key-0001"
-
-BODY = {
-    "room": {"name": "eng-secret-room", "instructions": ROOM_RULES},
-    "message": {"sender": "sara", "text": SECRET_TEXT},
-    "agents": [
-        {"name": "deploy-bot", "description": "CI and deploys"},
-        {"name": "billing-bot", "description": "invoices"},
-    ],
-    "recent": [{"sender": "tom", "text": f"earlier: {SECRET_TEXT}"}],
-}
-
-
-def _settings(**kw) -> Settings:
-    base = dict(
-        backend="llamacpp",
-        model="qwen3.5-4b-q4_k_m",
-        systemone_url="http://s",
-        ollama_url="http://o",
-        llamacpp_url="http://llama.test",
-        aws_region="us-east-1",
-        aws_profile=None,
-        confidence_threshold=0.6,
-        timeout_s=5,
-        history_limit=30,
-    )
-    base.update(kw)
-    return Settings(**base)
-
-
-def _logprobs(letter: str):
-    top = [{"token": letter, "logprob": -0.05}, {"token": "N", "logprob": -3.0}]
-    return {"choices": [{"logprobs": {"content": [{"top_logprobs": top}]}}]}
+from tests.helpers import (
+    ANTHROPIC_KEY,
+    BODY,
+    ROOM_RULES,
+    SECRET_TEXT,
+)
+from tests.helpers import logprobs as _logprobs
+from tests.helpers import settings_for as _settings
 
 
 class FakeAnthropic:
@@ -66,23 +35,6 @@ class FakeAnthropic:
             input={"reason": "r", "agent": self.agent, "confidence": self.confidence},
         )
         return SimpleNamespace(stop_reason="tool_use", content=[block])
-
-
-@pytest.fixture
-def make_client(monkeypatch):
-    def make(settings: Settings | None = None, handler=None) -> TestClient:
-        monkeypatch.setattr(app_module, "settings", settings or _settings())
-        tc = TestClient(app_module.app)
-        tc.__enter__()
-        transport = httpx.MockTransport(
-            handler or (lambda r: httpx.Response(200, json=_logprobs("A")))
-        )
-        monkeypatch.setattr(
-            app_module, "client", httpx.AsyncClient(transport=transport)
-        )
-        return tc
-
-    return make
 
 
 @pytest.fixture

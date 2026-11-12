@@ -171,10 +171,9 @@ export function sessionBusy(
 }
 
 /**
- * The Switch tools that put something the agent wrote in front of a room: a
- * turn that called one of them has answered. Each posts to the room the
- * session is connected to (only `send_attachment` can name another), so a
- * call counts whichever room it reached.
+ * The Switch tools that put something the agent wrote in front of a room.
+ * Each posts to the room the session is connected to (only `send_attachment`
+ * can name another), so a refusal counts whichever room it was for.
  */
 export const ROOM_POSTING_TOOLS = new Set([
   'post_message',
@@ -201,6 +200,56 @@ export function postFailure(name: string, result: unknown): string | null {
 /** Whether a Switch tool result is a post that landed. */
 export function postedToRoom(name: string, result: unknown): boolean {
   if (!ROOM_POSTING_TOOLS.has(name)) return false;
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError !== true
+  );
+}
+
+/**
+ * The Switch tools that only read: what Switch holds (rooms, context, roles,
+ * agents, templates) or a file copied to this machine. Calling them changes
+ * nothing anyone else can see, so a turn that called only these did nothing
+ * in Switch. Any other Switch tool acts, including one added after this list.
+ */
+export const READ_ONLY_SWITCH_TOOLS = new Set([
+  'connect_to_room',
+  'download_attachment',
+  'get_advanced_config',
+  'get_agent_detail',
+  'get_my_context',
+  'get_role_detail',
+  'get_room_detail',
+  'get_room_group_detail',
+  'get_template',
+  'get_template_guide',
+  'get_template_status',
+  'list_agents',
+  'list_all_references',
+  'list_all_rooms',
+  'list_bridges',
+  'list_linked_rooms',
+  'list_machines',
+  'list_managed_agents',
+  'list_participants',
+  'list_reference_types',
+  'list_references',
+  'list_roles',
+  'list_room_groups',
+  'list_rooms',
+  'list_templates',
+  'load_internal_documents',
+  'read_context',
+]);
+
+/**
+ * Whether a Switch tool call did something in Switch: it succeeded, and the
+ * tool is not one that only reads. Every call through this session's Switch
+ * MCP server is a Switch tool, whatever it is called.
+ */
+export function actedInSwitch(name: string, result: unknown): boolean {
+  if (READ_ONLY_SWITCH_TOOLS.has(name)) return false;
   return (
     typeof result === 'object' &&
     result !== null &&
@@ -441,6 +490,7 @@ export async function runSharedHost(
     stopHearingTools =
       parentChannel?.onToolAnswered((name, result) => {
         if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        if (actedInSwitch(name, result)) hosted.agentActedInSwitch();
         const failure = postFailure(name, result);
         if (failure !== null) hosted.agentPostFailed(failure);
       }) ?? null;
@@ -474,16 +524,36 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
-      await send({ kind: 'activity', row });
-      return true;
+    // Retry new optional fields independently: a server may predate either
+    // usage or child progress. Preserve the tool row and its terminal status.
+    const sendCompatible = async (item: Report): Promise<void> => {
+      let report = item;
+      for (;;) {
+        try {
+          await send(report);
+          return;
+        } catch (error) {
+          if (
+            !(error instanceof RequestError) ||
+            error.status !== 422 ||
+            report.kind !== 'activity'
+          )
+            throw error;
+          if (report.row.usage) {
+            const { usage: _usage, ...row } = report.row;
+            console.warn(
+              `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.subagent) {
+            const { subagent: _subagent, ...row } = report.row;
+            console.warn(
+              `Switch does not accept subagent metadata; reporting ${row.item_id} as tool activity.`
+            );
+            report = { kind: 'activity', row };
+          } else throw error;
+        }
+      }
     };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
@@ -500,11 +570,10 @@ export async function runSharedHost(
         );
         for (const item of reports) {
           try {
-            await send(item);
+            await sendCompatible(item);
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -857,6 +926,8 @@ export async function runSharedHost(
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
         });
+        if (message.data.payload.routed || message.data.payload.follow_up)
+          host!.unaskedRoomTurn(command.commandId);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.

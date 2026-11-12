@@ -14,7 +14,7 @@ import { Link as RouterLink } from "react-router";
 import { useAuth } from "../../data/AuthContext";
 import { fetchMembers, loadAgents, loadRooms } from "../../data/api";
 import { type ListScope, agentsInScope, listScopeOf, roomsInScope } from "../../data/listScope";
-import { EM_DASH } from "../../theme/hootFormat";
+import { EM_DASH } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 
 interface Count {

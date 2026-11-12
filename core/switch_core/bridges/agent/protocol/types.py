@@ -103,6 +103,11 @@ class RoomDescriptor(BaseModel):
     bridge_id: str | None = None
 
 
+# Whether an agent is up at all, outside any one room: `not_tracked` for an
+# agent that only polls, which holds nothing Switch can see between polls.
+OverallStatus = Literal["online", "offline", "not_tracked"]
+
+
 class AgentStatus(StrEnum):
     LIVE = "live"
     DISCONNECTED = "disconnected"
@@ -152,13 +157,16 @@ class TrustFeedback(BaseModel):
     so the redaction does not hide it. `note` is the notice posted in the
     room under the message, when one was posted. When a notice was due but
     could not be posted, `note` is unset and `notice_error` says why, so the
-    agent is not told the room was warned when it was not."""
+    agent is not told the room was warned when it was not. `card` is
+    `dropped` when Switch Trust redacted the message's card, which was then
+    not sent: only `delivered` reached the room."""
 
     outcome: Literal["redacted", "alerted", "errored"]
     delivered: str | None
     alert: Literal["alerted", "errored"] | None = None
     note: str | None
     notice_error: str | None
+    card: Literal["dropped"] | None = None
 
     def to_result(self) -> dict[str, str]:
         """The tool-result form: the fields that are set, and no others."""
@@ -249,6 +257,9 @@ class AttachmentRef(BaseModel):
     msgtype: str
 
 
+FollowUp = Literal["thread_follow_up", "channel_follow_up", "main_agent"]
+
+
 class MessagePayload(BaseModel):
     addressed: bool
     sender: str
@@ -284,6 +295,14 @@ class MessagePayload(BaseModel):
     # routed.
     routed: bool = False
     routed_reason: Literal["decided", "fallback"] | None = None
+    # Which follow-the-conversation rule delivered a message that tagged
+    # nobody (`delivery/conversation.py`): "thread_follow_up", a reply in a
+    # thread the agent spoke or was tagged in last; "channel_follow_up", the
+    # sender's next channel message in an exchange with the agent;
+    # "main_agent", the agent is the room's assigned agent. The agent may stay
+    # silent on such a message. None when the message named the agent, or was
+    # routed (`routed_reason`).
+    follow_up: FollowUp | None = None
 
 
 class CommandPayload(BaseModel):

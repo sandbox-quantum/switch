@@ -15,7 +15,7 @@ import {
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
-  fetchBridgeUserNames,
+  fetchBridgePeople,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -54,6 +54,7 @@ import {
   fetchRoomDetail,
   fetchRoomGroups,
   fetchRoomRoles,
+  fetchRoomSchedules,
   fetchRooms,
   fetchTemplateDetail,
   fetchTemplateRuns,
@@ -61,6 +62,7 @@ import {
   fetchTemplateSchema,
   GatewayError,
   ownsOwnerAddressedAgent,
+  recordTemplateRun,
   releaseBridgeIdentity,
   removeBridgeTeam,
   removeRoomAgent,
@@ -97,6 +99,10 @@ import {
   fetchRoomResources,
   removeLinkedRoom,
   setRoomResourceAttached,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  setRoomSchedulePaused,
+  updateRoomSchedule,
 } from '@main/core/switch-servers/gateway-client';
 import {
   cancelLinkRequestOnServer,
@@ -181,6 +187,7 @@ import type {
   BridgeDirectorySearchResult,
   CancelLinkRequestResult,
   ChatClaim,
+  BridgePerson,
   ClaimIdentityParams,
   ConnectedChat,
   ClaimIdentityResult,
@@ -206,6 +213,8 @@ import type {
   SetRoomAutoRouteParams,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
+  RoomScheduleDraft,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
@@ -828,6 +837,7 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          userNames: params.userNames,
           channel: params.channel,
           groupId: params.groupId,
           access: params.access,
@@ -939,6 +949,34 @@ export const workspacesController = createRPCController({
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchTemplateDetail(server, params.templateId)
     ),
+
+  /**
+   * Count a stored or official template's run, once the whole run has
+   * succeeded. Never fails: the run is done either way, so a server that does
+   * not count runs, or one that cannot be reached, is logged and the run goes
+   * uncounted.
+   */
+  recordTemplateRun: async (params: { workspaceId: string; templateId: string }): Promise<void> => {
+    try {
+      const counted = await withWorkspaceSession(params.workspaceId, (server) =>
+        recordTemplateRun(server, params.templateId)
+      );
+      if (!counted) {
+        log.warn('A template run was not counted: the server does not count it', {
+          event: 'template_run_count',
+          errorCode: 'not_counted',
+          templateId: params.templateId,
+        });
+      }
+    } catch (error) {
+      log.warn('A template run was not counted', {
+        event: 'template_run_count',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        templateId: params.templateId,
+        error: String(error),
+      });
+    }
+  },
 
   deleteTemplate: (params: { workspaceId: string; templateId: string }): Promise<void> =>
     withWorkspaceSession(params.workspaceId, (server) => deleteTemplate(server, params.templateId)),
@@ -1273,10 +1311,60 @@ export const workspacesController = createRPCController({
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
     ),
 
-  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
-  listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
+  /** The people Switch knows on one bridge, with who linked each, for offering them to a room. */
+  listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      fetchBridgeUserNames(server, params.bridgeId)
+      fetchBridgePeople(server, params.bridgeId)
+    ),
+
+  /** A room's schedules, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /**
+   * Add, change, pause or remove one of a room's schedules. Failures propagate
+   * as-is, so a refusal (no write access, an agent not in the room, a time
+   * already past) reaches the form in the server's own words.
+   */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.draft)
+    ),
+
+  setRoomSchedulePaused: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    paused: boolean;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomSchedulePaused(server, params.roomId, params.scheduleId, params.paused)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
     ),
 
   /**

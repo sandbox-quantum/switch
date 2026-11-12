@@ -33,6 +33,7 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
     unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
+    agent_access_note: null,
     loopback_ports: null,
     key: null,
     external_identity: null,
@@ -147,5 +148,9 @@ describe('the workspace switches as tiles', () => {
     expect(switchStanding(service({ connected_members: 3, granted_agents: 1 }))).toBe(
       '3 members connected · 1 agent uses it'
     );
+  });
+
+  it('says nothing of who a switch reaches when the server keeps it to admins', () => {
+    expect(switchStanding(service({ connected_members: null, granted_agents: null }))).toBeNull();
   });
 });

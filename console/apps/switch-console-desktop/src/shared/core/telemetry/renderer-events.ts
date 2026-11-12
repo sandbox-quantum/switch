@@ -78,7 +78,23 @@ export type RendererTelemetryEvents = {
       | 'opened_existing'
       | 'intro_opened'
       | 'intro_dismissed';
-    provider: 'claude' | 'codex' | 'opencode' | 'cursor' | 'antigravity' | 'none';
+    provider:
+      | 'claude'
+      | 'codex'
+      | 'opencode'
+      | 'cursor'
+      | 'antigravity'
+      | 'deepseek-harness'
+      | 'pi'
+      | 'copilot'
+      | 'kiro'
+      | 'mistral-vibe'
+      | 'goose'
+      | 'qwen'
+      | 'droid'
+      | 'cline'
+      | 'junie'
+      | 'none';
   };
   /** A screen failed and the error boundary caught it. */
   renderer_crashed: Record<never, never>;

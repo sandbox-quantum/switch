@@ -17,6 +17,7 @@ const saveTeamsPackage = vi.hoisted(() => vi.fn());
 const createRoomFromTemplate = vi.hoisted(() => vi.fn());
 const runTemplateWithAgents = vi.hoisted(() => vi.fn());
 const runTemplateDocument = vi.hoisted(() => vi.fn());
+const recordTemplateRun = vi.hoisted(() => vi.fn());
 const fetchRoomDetail = vi.hoisted(() => vi.fn());
 const fetchManagedAgent = vi.hoisted(() => vi.fn());
 const claimIdentityOnServer = vi.hoisted(() => vi.fn());
@@ -136,6 +137,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchTemplateSchema: vi.fn(),
   GatewayError: class GatewayError extends Error {},
   ownsOwnerAddressedAgent: vi.fn(),
+  recordTemplateRun,
   releaseBridgeIdentity: vi.fn(),
   removeBridgeTeam,
   removeRoomAgent: vi.fn(),
@@ -162,6 +164,7 @@ vi.mock('./workspaces-store', () => ({
 
 const { workspacesController } = await import('./controller');
 const { GatewayError } = await import('@main/core/switch-servers/gateway-client');
+const { log } = await import('@main/lib/logger');
 
 function server(overrides: Record<string, unknown>) {
   return {
@@ -375,6 +378,48 @@ describe('linking a messaging account', () => {
         bridge_platform: 'slack',
         outcome: 'failure',
       })
+    );
+  });
+});
+
+describe('counting a template run', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  const RUN = { workspaceId: 'ws', templateId: 'official:switch-expert' };
+
+  it('reports the run to the server', async () => {
+    recordTemplateRun.mockResolvedValue(true);
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(recordTemplateRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'official:switch-expert'
+    );
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('says so, without failing, when the server does not count runs', async () => {
+    recordTemplateRun.mockResolvedValue(false);
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('not counted'),
+      expect.objectContaining({ errorCode: 'not_counted', templateId: 'official:switch-expert' })
+    );
+  });
+
+  it('never fails the run it follows, even when the server cannot be reached', async () => {
+    recordTemplateRun.mockRejectedValue(new Error('unreachable'));
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      'A template run was not counted',
+      expect.objectContaining({ event: 'template_run_count', error: 'Error: unreachable' })
     );
   });
 });
@@ -1015,5 +1060,36 @@ describe('selecting the workspace’s tenant before the call', () => {
 
     await expect(workspacesController.listBridges('ws')).rejects.toThrow('has not been matched');
     expect(fetchBridges).not.toHaveBeenCalled();
+  });
+});
+
+describe('creating a room from the New room dialog', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    canSend.mockResolvedValue(true);
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    fetchBridges.mockResolvedValue([]);
+    createRoomOnServer.mockResolvedValue({ kind: 'created', room: { id: 'r1' } });
+  });
+
+  it('passes on the people to add, by their username on the app', async () => {
+    await workspacesController.createRoom({
+      workspaceId: 'ws',
+      name: 'Room',
+      description: '',
+      bridgeId: 'b1',
+      agentIds: [],
+      userNames: ['bob'],
+      channel: { kind: 'new', private: true },
+      groupId: null,
+      access: null,
+    });
+
+    expect(createRoomOnServer).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userNames: ['bob'], channel: { kind: 'new', private: true } })
+    );
   });
 });

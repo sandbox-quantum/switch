@@ -9,14 +9,14 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type Invitation,
   fetchCurrentOrganization,
   fetchInvitations,
   revokeInvitation,
 } from "../../data/api";
-import { formatDate, sentenceCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/format";
 import CreateInvitationDialog from "./CreateInvitationDialog";
 import { useLoad } from "./useLoad";
 
@@ -150,6 +150,11 @@ export default function InvitationsSection({
         <DataTable
           rows={invitations ?? []}
           columns={columns}
+          emptyState={
+            <TableEmptyState title="No invitations">
+              Invite someone to give them a link to join with.
+            </TableEmptyState>
+          }
           height={Math.min(520, 108 + Math.max(1, invitations?.length ?? 0) * 52)}
           pageSize={25}
         />

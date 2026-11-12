@@ -25,7 +25,7 @@ import {
   MAX_MACHINE_DESCRIPTION,
   MAX_MACHINE_NAME,
 } from "../../data/management";
-import { MONO_SX, formatDate } from "../../theme/hootFormat";
+import { MONO_SX, formatDate } from "../../theme/format";
 
 function CopyBlock({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);

@@ -25,6 +25,10 @@ MACHINE_NEEDS_ADMIN = (
     "Your cloud machine needs attention. Contact your server administrator."
 )
 MACHINES_FULL = "Every Switch cloud machine on this server is in use. Try again later."
+MACHINE_STOPPED_BY_ADMIN = (
+    "Your cloud machine was stopped by a server administrator. Contact them to "
+    "have it released."
+)
 MACHINE_BEING_REMOVED = (
     "Your previous cloud machine is being removed. Try again in a minute."
 )
@@ -151,6 +155,12 @@ def owner_stopped(machine: CloudMachine) -> bool:
     return machine.desired_state == "stopped" and machine.stop_reason == "owner"
 
 
+def admin_stopped(machine: CloudMachine) -> bool:
+    """Whether a server administrator holds the machine stopped: neither its
+    owner nor Switch may start it until they release it."""
+    return machine.stop_reason == "admin"
+
+
 def machine_starting(machine: CloudMachine) -> bool:
     return machine.desired_state == "running" and machine.state in {
         "queued",
@@ -171,6 +181,8 @@ def retention_expired(machine: CloudMachine, now: datetime) -> bool:
 
 def claim_conflict(machine: CloudMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
+    if admin_stopped(machine):
+        return MACHINE_STOPPED_BY_ADMIN
     if machine.state == "error" and machine.error_code == "machine_needs_attention":
         return MACHINE_NEEDS_ADMIN
     if (
@@ -333,12 +345,49 @@ class CloudMachineStore:
     def stop(
         self,
         machine: CloudMachine,
-        reason: Literal["idle", "owner"],
+        reason: Literal["idle", "owner", "admin"],
         now: datetime,
     ) -> None:
         machine.desired_state = "stopped"
         machine.stop_reason = reason
         bump_revision(machine, now)
+
+    def admin_stop(self, machine: CloudMachine, now: datetime) -> None:
+        """Hold the machine stopped until an administrator releases it. A
+        retained machine stays retained, its disk kept, and cannot be claimed.
+        The caller holds the machine lock and commits."""
+        if admin_stopped(machine):
+            raise CloudMachineConflict(
+                "The cloud machine is already stopped by an administrator."
+            )
+        if machine.desired_state == "deleted" or machine.state in {
+            "deleting",
+            "deleted",
+        }:
+            raise CloudMachineConflict(
+                f"The cloud machine is being deleted ({machine.state}); it cannot be stopped."
+            )
+        if machine.desired_state == "retained":
+            machine.stop_reason = "admin"
+            machine.updated_at = now
+            return
+        self.stop(machine, "admin", now)
+
+    def admin_release(self, machine: CloudMachine, now: datetime) -> None:
+        """Lift an administrator's stop: a stopped machine stays stopped, as
+        if its owner had stopped it, until its owner starts it again. A machine
+        in error is retried, since its error is usually the isolation the
+        administrator has just undone; if the cause remains, the hosted
+        controller reports the error again. The caller holds the machine lock
+        and commits."""
+        if not admin_stopped(machine):
+            raise CloudMachineConflict(
+                "The cloud machine was not stopped by an administrator."
+            )
+        machine.stop_reason = "owner" if machine.desired_state == "stopped" else None
+        machine.updated_at = now
+        if machine.state == "error":
+            self.retry(machine, now)
 
     def retry(self, machine: CloudMachine, now: datetime) -> None:
         machine.state = "queued"

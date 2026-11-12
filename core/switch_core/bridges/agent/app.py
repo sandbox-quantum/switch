@@ -58,10 +58,10 @@ def http_error_level(status_code: int) -> int:
     """How loudly to log a refused request.
 
     A 4xx is the caller's mistake (an argument the tool does not take, a room
-    it is not in): the server worked, so it is a warning. A 5xx is the
-    server's own failure and an error.
+    it is not in): the server worked and the agent was told why, so it is
+    info. A 5xx is the server's own failure and an error.
     """
-    return logging.ERROR if status_code >= 500 else logging.WARNING
+    return logging.ERROR if status_code >= 500 else logging.INFO
 
 
 async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
@@ -86,7 +86,8 @@ async def log_validation_errors(
     # The log gets what the response gets and no more: the body that was sent,
     # or an error's `input`, would put message text and secrets in the logs.
     errors = public_errors(exc)
-    logger.warning(
+    logger.log(
+        http_error_level(422),
         "%s %s → 422 validation: errors=%s",
         request.method,
         request.url.path,

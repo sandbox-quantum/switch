@@ -2,7 +2,6 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
-import { fetchBridges, updateBridge } from '@main/core/switch-servers/gateway-client';
 import {
   assertManagedServerUrlFree,
   getManagedServer,
@@ -42,6 +41,7 @@ import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { managedSwitchVersion } from '../server-version';
 import { deployedTelemetryOf, telemetryConsent } from '../telemetry-consent';
 import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
+import { pointBundledMattermostBridgeAt } from './bundled-bridge-address';
 import {
   CORE_ENV_FILE,
   coreFailureLine,
@@ -249,24 +249,13 @@ async function startNativeMattermost(
   });
 }
 
-/**
- * Point an already-registered Mattermost bridge at the addresses that work
- * from this machine, before the seeder runs: the seeder sets the address only
- * when it first registers the bridge, and a server moved off Docker carries
- * one under the compose network's name for Mattermost, which the server then
- * refuses as unresolvable. A server with no bridge yet has nothing to point —
- * the seeder registers it with the right address.
- */
+/** {@link pointBundledMattermostBridgeAt} on the registered local server. */
 async function pointMattermostBridgeAt(url: string, callbackBaseUrl: string): Promise<void> {
   const server = await getManagedServer();
   if (!server) {
     throw new Error('The local server is not registered, so its bridge cannot be updated.');
   }
-  const bridge = (await fetchBridges(server)).find((candidate) => candidate.type === 'mattermost');
-  if (!bridge) return;
-  await updateBridge(server, bridge.id, {
-    connectionConfig: { url, callback_base_url: callbackBaseUrl },
-  });
+  await pointBundledMattermostBridgeAt(server, url, callbackBaseUrl);
 }
 
 /**

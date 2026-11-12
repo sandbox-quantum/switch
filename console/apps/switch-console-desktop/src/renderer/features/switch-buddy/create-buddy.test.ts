@@ -3,12 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const list = vi.hoisted(() => vi.fn());
 const getTemplateDetail = vi.hoisted(() => vi.fn());
 const runTemplateDocument = vi.hoisted(() => vi.fn());
+const recordTemplateRun = vi.hoisted(() => vi.fn());
 const report = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
     managedAgents: { list },
-    workspaces: { getTemplateDetail, runTemplateDocument },
+    workspaces: { getTemplateDetail, runTemplateDocument, recordTemplateRun },
   },
 }));
 vi.mock('@renderer/lib/telemetry/report', () => ({ report }));
@@ -64,6 +65,10 @@ describe('createBuddy', () => {
     // The template run reports the new buddy as `agent_created`; a second
     // report of the same buddy would count it twice.
     expect(report).not.toHaveBeenCalled();
+    expect(recordTemplateRun).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'ws-1',
+      templateId: 'official:switch-buddy',
+    });
   });
 
   it('opens the buddy the person already has rather than making a second', async () => {
@@ -76,6 +81,7 @@ describe('createBuddy', () => {
     expect(runTemplateDocument).not.toHaveBeenCalled();
     // Opened, not made: counting it as created would count a buddy twice.
     expect(report).not.toHaveBeenCalled();
+    expect(recordTemplateRun).not.toHaveBeenCalled();
   });
 
   it('never picks a name the person already uses', async () => {
@@ -99,6 +105,8 @@ describe('createBuddy', () => {
       'switch-buddy-max-tam-2',
       'switch-buddy-max-tam-3',
     ]);
+    // Three tries, one buddy: the run is counted once.
+    expect(recordTemplateRun).toHaveBeenCalledTimes(1);
   });
 
   it('gives up after five taken names, and says so', async () => {
@@ -106,6 +114,7 @@ describe('createBuddy', () => {
 
     await expect(createBuddy(input)).rejects.toThrow(/Every name tried/);
     expect(runTemplateDocument).toHaveBeenCalledTimes(5);
+    expect(recordTemplateRun).not.toHaveBeenCalled();
     expect(report).toHaveBeenCalledWith('buddy_step', {
       action: 'create_failed',
       provider: 'claude',

@@ -995,6 +995,243 @@
         "width": 4,
         "height": 8
       }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Digging into error logs: what is going wrong, and where?",
+        "show_title": true,
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "note",
+              "content": "**Start here when something is red above and you want the why.**\n\nThese panels read switch-core's own logs on pilot (`service:switch-core`), errors and warnings only. Info is routine and left out.\n\n1. The bars say when errors happened and which part of the server wrote them.\n2. The pattern list folds the same message with different ids into one line, most frequent first. That is usually the fastest way to the cause.\n3. The stream at the bottom is the latest errors as they arrived.\n\nOpen [the same view in Logs](https://app.datadoghq.com/logs?query=service%3Aswitch-core%20status%3A%28error%20OR%20warn%29&viz=pattern&agg_q=status%2C%40logger.name) to filter further, or [Error Tracking](https://app.datadoghq.com/error-tracking?query=service%3Aswitch-core) for stack traces grouped by issue.\n\nThe `env` tag can't pick out pilot: the telemetry relay sets it. The only other `service:switch-core` logs are staging's product events, all at info.",
+              "background_color": "white",
+              "font_size": "14",
+              "text_align": "left",
+              "vertical_align": "top",
+              "show_tick": false,
+              "has_padding": true
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 5
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "errors over time, by the part of the server that logged them",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "sum",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "logs",
+                      "name": "q",
+                      "indexes": [
+                        "*"
+                      ],
+                      "search": {
+                        "query": "service:switch-core status:error"
+                      },
+                      "compute": {
+                        "aggregation": "count"
+                      },
+                      "group_by": [
+                        {
+                          "facet": "@logger.name",
+                          "limit": 5,
+                          "sort": {
+                            "aggregation": "count",
+                            "order": "desc"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "bars",
+                  "style": {
+                    "palette": "warm",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 4,
+              "y": 0,
+              "width": 8,
+              "height": 5
+            }
+          },
+          {
+            "definition": {
+              "type": "list_stream",
+              "title": "most frequent error and warning messages, ids folded together",
+              "title_size": "13",
+              "requests": [
+                {
+                  "columns": [
+                    {
+                      "field": "timestamp",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "message",
+                      "width": "auto"
+                    }
+                  ],
+                  "query": {
+                    "data_source": "logs_pattern_stream",
+                    "query_string": "service:switch-core status:(error OR warn)",
+                    "clustering_pattern_field_path": "message",
+                    "indexes": [],
+                    "group_by": [
+                      {
+                        "facet": "status"
+                      },
+                      {
+                        "facet": "@logger.name"
+                      }
+                    ]
+                  },
+                  "response_format": "event_list"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 5,
+              "width": 8,
+              "height": 6
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "warnings, by the part of the server that logged them",
+              "title_size": "13",
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "limit": {
+                        "count": 10,
+                        "order": "desc"
+                      }
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "logs",
+                      "name": "q",
+                      "indexes": [
+                        "*"
+                      ],
+                      "search": {
+                        "query": "service:switch-core status:warn"
+                      },
+                      "compute": {
+                        "aggregation": "count"
+                      },
+                      "group_by": [
+                        {
+                          "facet": "@logger.name",
+                          "limit": 10,
+                          "sort": {
+                            "aggregation": "count",
+                            "order": "desc"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "style": {
+                    "palette": "grey"
+                  }
+                }
+              ]
+            },
+            "layout": {
+              "x": 8,
+              "y": 5,
+              "width": 4,
+              "height": 6
+            }
+          },
+          {
+            "definition": {
+              "type": "list_stream",
+              "title": "latest errors",
+              "title_size": "13",
+              "requests": [
+                {
+                  "columns": [
+                    {
+                      "field": "status_line",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "timestamp",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "content",
+                      "width": "full"
+                    }
+                  ],
+                  "query": {
+                    "data_source": "logs_stream",
+                    "query_string": "service:switch-core status:error",
+                    "indexes": [],
+                    "sort": {
+                      "column": "timestamp",
+                      "order": "desc"
+                    }
+                  },
+                  "response_format": "event_list"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 11,
+              "width": 12,
+              "height": 5
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 18,
+        "width": 12,
+        "height": 17
+      }
     }
   ],
   "template_variables": []

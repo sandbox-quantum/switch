@@ -14,6 +14,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import { detachDocumentFromRoom } from "../../data/api";
 import { useRoomDocument } from "../../data/hooks";
 
@@ -24,8 +25,7 @@ export default function RoomScopedDocumentView() {
   }>();
   const navigate = useNavigate();
   const { data: doc, loading, error } = useRoomDocument(roomId, documentId);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   if (loading) {
     return (
@@ -54,31 +54,17 @@ export default function RoomScopedDocumentView() {
   const isRoomScoped = doc.scope === "room";
 
   // A room-scoped document lives only here, so removing it deletes it. An
-  // attached one is only unlinked from the room.
+  // attached one is only unlinked from the room. Failing, it throws, and the
+  // dialog stays open with the server's reason.
   const handleDelete = async () => {
-    if (
-      !window.confirm(
-        isRoomScoped
-          ? `Delete room document “${doc.name}”? This cannot be undone.`
-          : `Unlink “${doc.name}” from this room? The document itself is kept.`,
-      )
-    )
-      return;
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      await detachDocumentFromRoom(roomId, documentId);
-      navigate(`/rooms/${roomId}`);
-    } catch (e) {
-      setDeleteError(e instanceof Error ? e.message : "Failed to delete");
-      setDeleting(false);
-    }
+    await detachDocumentFromRoom(roomId, documentId);
+    navigate(`/rooms/${roomId}`);
   };
 
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate(`/rooms/${roomId}`)} size="small">
+        <IconButton onClick={() => navigate(`/rooms/${roomId}`)} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -138,27 +124,37 @@ export default function RoomScopedDocumentView() {
 
           <Divider />
 
-          {deleteError && <Alert severity="error">{deleteError}</Alert>}
           {doc.can_remove && (
             <Stack direction="row" justifyContent="flex-end">
               {isRoomScoped ? (
-                <Button
-                  color="error"
-                  startIcon={<DeleteOutline />}
-                  onClick={handleDelete}
-                  disabled={deleting}
-                >
+                <Button color="error" startIcon={<DeleteOutline />} onClick={() => setConfirming(true)}>
                   Delete
                 </Button>
               ) : (
-                <Button onClick={handleDelete} disabled={deleting}>
-                  Unlink from room
-                </Button>
+                <Button onClick={() => setConfirming(true)}>Unlink from room</Button>
               )}
             </Stack>
           )}
         </Stack>
       </Paper>
+      <ConfirmDialog
+        open={confirming}
+        onClose={() => setConfirming(false)}
+        onConfirm={handleDelete}
+        {...(isRoomScoped
+          ? {
+              title: `Delete ${doc.name || doc.description || "this document"}?`,
+              description: "It lives only in this room, so deleting it removes it for good. This cannot be undone.",
+              confirmLabel: "Delete document",
+              tone: "destructive" as const,
+            }
+          : {
+              title: `Unlink ${doc.name || doc.description || "this document"}?`,
+              description: "It's taken out of this room; the document itself is kept in the library.",
+              confirmLabel: "Unlink",
+              tone: "plain" as const,
+            })}
+      />
     </Box>
   );
 }

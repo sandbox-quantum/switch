@@ -24,6 +24,7 @@ vi.mock("./RegisterAgentDialog", () => ({ default: () => null }));
 // The data grid lays rows out from measured sizes, which jsdom does not have,
 // so it renders none. This draws each row and its action cell plainly.
 vi.mock("../../components/DataTable", () => ({
+  TableEmptyState: () => null,
   default: ({ rows, columns }: { rows: AgentSummary[]; columns: GridColDef<AgentSummary>[] }) => {
     const actions = columns.find((c) => c.field === "actions");
     return (
