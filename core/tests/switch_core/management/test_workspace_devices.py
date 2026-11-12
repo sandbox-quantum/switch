@@ -5,6 +5,8 @@ takes its agents off it. A cloud device is Switch's to name and remove.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 from sqlalchemy import update
@@ -129,6 +131,25 @@ class TestTheWorkspaceList:
         )
         [own_agent] = as_ada.json()["managed_agents"]
         assert _flags(own_agent, "can_edit", "can_delete") == (True, True)
+
+    async def test_an_offline_device_runs_nothing_it_can_say(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller, _agent = await _device_with_agent(harness, client, ada, "scout")
+            async with harness.session_factory() as session:
+                await session.execute(
+                    update(AgentController)
+                    .where(AgentController.id == controller.controller_id)
+                    .values(disconnected_at=datetime.now(UTC))
+                )
+                await session.commit()
+            listed = await client.get(WORKSPACE, cookies=cookies_for(ada))
+
+        [device] = listed.json()["devices"]
+        assert device["state"] == "offline"
+        assert (device["agents_total"], device["agents_running"]) == (1, 0)
 
     async def test_a_removed_device_is_left_out(self, harness: Harness) -> None:
         ada = await add_member(harness.session_factory, "ada")

@@ -61,8 +61,10 @@ def _device(
 ) -> dict[str, Any]:
     owns = controller.owner_id == viewer.id
     cloud = controller.kind == "ec2"
+    # What it last reported running, while it is connected: an offline
+    # device's last report says nothing of now.
     running = 0
-    for row in placed:
+    for row in placed if state == "online" else []:
         status = agent_status_from(controller, row.agent_id)
         if status is not None and status.get("process") == "running":
             running += 1
