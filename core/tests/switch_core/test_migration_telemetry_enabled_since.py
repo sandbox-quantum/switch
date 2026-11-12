@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from tests.switch_core.test_migration_oidc_identities_backfill import _upgrade_to
 
 _DB = "migration_telemetry_enabled_since"
-_PRE_MIGRATION_REVISION = "689d7d8ff913"
+_PRE_MIGRATION_REVISION = "d3a8f1c62b07"
 _MIGRATION_UNDER_TEST = "861ff8767cf4"
 
 _INSTALLED = datetime(2026, 3, 1, tzinfo=UTC)

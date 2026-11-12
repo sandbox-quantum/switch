@@ -22,7 +22,7 @@ Two nullable columns, both read only by product telemetry:
 Expand only: a process from before this revision never reads either column.
 
 Revision ID: 861ff8767cf4
-Revises: 689d7d8ff913
+Revises: d3a8f1c62b07
 Create Date: 2026-11-09 00:00:00.000000
 
 """
@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "861ff8767cf4"
-down_revision: str | Sequence[str] | None = "689d7d8ff913"
+down_revision: str | Sequence[str] | None = "d3a8f1c62b07"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
