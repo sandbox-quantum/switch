@@ -28,8 +28,12 @@ import io
 import json
 import logging
 import posixpath
-import resource
 import sys
+
+try:
+    import resource
+except ImportError:
+    resource = None  # type: ignore[assignment]
 import weakref
 import zipfile
 import zlib
@@ -568,7 +572,7 @@ async def _read_in_worker(kind: DocumentKind, data: bytes, filename: str) -> Fil
 def _limit_memory(limit: int) -> None:
     # Only Linux enforces an address-space limit; elsewhere the time limit
     # is the only bound.
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux") and resource is not None:
         resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 
