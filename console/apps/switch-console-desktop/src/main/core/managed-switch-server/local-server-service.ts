@@ -78,6 +78,7 @@ import { resetStack, startStack, stopStack } from './pipeline';
 import { readPersistedPorts, rememberPorts } from './ports';
 import { readLocalRuntime, writeLocalRuntime } from './runtime';
 import { managedSwitchVersion, serverVersionChoice, serverVersionSetting } from './server-version';
+import { readStartAtLaunch, writeStartAtLaunch } from './start-at-launch';
 import { readDeployedTelemetry } from './telemetry-consent';
 
 /**
@@ -86,9 +87,10 @@ import { readDeployedTelemetry } from './telemetry-consent';
  * every state transition is pushed to the renderer over
  * `localServerStatusChannel`.
  *
- * Deliberately does NOT stop the containers on app quit — the local stack keeps
- * running so its rooms stay live while Switch Console is closed, matching the remote
- * sidecar model. `dispose()` only aborts an in-flight health wait.
+ * The server lives as long as the app: {@link stopForQuit} stops it as Switch
+ * Console quits, and the boot reconcile starts it again at the next launch,
+ * unless it was stopped from the app (see {@link readStartAtLaunch}). A remote
+ * stack is the one that stays up while Switch Console is closed.
  *
  * A stack behind this build's switch-core pin is upgraded on its own at boot
  * (or at its next start, if it is stopped), and {@link ensureReady} holds
@@ -319,7 +321,8 @@ export class LocalServerService {
   }
 
   /** Reconcile status at boot so a stack that survived the last quit shows as
-   * running without the user re-starting it, and so an app update that moved
+   * running without the user re-starting it, so a stopped one comes back up
+   * with the app unless it was stopped from the app, and so an app update that moved
    * the switch-core pin underneath it is acted on rather than leaving the user
    * on a stale core (CHOO-1736): a running stack that is behind — or one whose
    * last upgrade was interrupted — is upgraded now; a stopped one is marked to
@@ -342,6 +345,7 @@ export class LocalServerService {
     const host: ServerHost = new LocalServerHost();
     let upgradeNow = false;
     let moveNow = false;
+    let startNow = false;
     try {
       this.setStatus({ checkoutBuild: await this.readCheckoutBuild(host) });
       const native = (await this.runtime()) === 'native';
@@ -393,7 +397,23 @@ export class LocalServerService {
       // A Docker server that is up moves off Docker now, as an owed upgrade
       // runs now; a stopped one moves when it is next started.
       moveNow = !native && running && !upgradeNow && (await this.canMove(host));
-      this.setStatus({ ...version, drift, upgrade: owed && upgradeState(owed, upgradeNow) });
+      // A start owes whatever upgrade or move is due, so it runs them too.
+      startNow =
+        !running &&
+        (await readStartAtLaunch(localServerDir()).catch((error: unknown) => {
+          log.error(
+            'local-switch-server: could not read whether to start at launch; left stopped',
+            {
+              error: errorMessage(error),
+            }
+          );
+          return false;
+        }));
+      this.setStatus({
+        ...version,
+        drift,
+        upgrade: owed && upgradeState(owed, upgradeNow || startNow),
+      });
     } catch (error) {
       log.warn('local-switch-server: boot status reconcile failed', { error });
     } finally {
@@ -402,7 +422,7 @@ export class LocalServerService {
     }
     // Not awaited: the boot check is done once the upgrade is under way, and a
     // Start click or a session joins the upgrade through `starting`.
-    if (upgradeNow || moveNow) void this.beginStart(false);
+    if (upgradeNow || moveNow || startNow) void this.beginStart(false);
   }
 
   private startWatching(): void {
@@ -712,6 +732,7 @@ export class LocalServerService {
           mattermostState: bringUpMattermost ? 'starting' : ranNative ? 'off' : null,
         });
         if (bringUpMattermost) void this.runMattermost(bringUpMattermost);
+        await writeStartAtLaunch(localServerDir(), true);
         if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);
         await recordLocalActivity('started', null);
         if (this.refused) {
@@ -808,7 +829,41 @@ export class LocalServerService {
     this.setStatus({ upgrade: { state: 'failed', from: upgrade.from, to: upgrade.to, error } });
   }
 
+  /** Stop the server because it was asked to, and keep it stopped across launches. */
   async stop(): Promise<void> {
+    let outcome: 'stopped' | 'stopped-after-error';
+    try {
+      outcome = await this.halt();
+    } catch (error) {
+      reportManagedServerOutcome('stop', 'local', 'failure');
+      throw error;
+    }
+    await writeStartAtLaunch(localServerDir(), false);
+    reportManagedServerOutcome('stop', 'local', outcome === 'stopped' ? 'success' : 'failure');
+  }
+
+  /**
+   * Stop the server as Switch Console quits, leaving it to start again at the
+   * next launch. A start in flight is cancelled and waited out first, so the
+   * server it was bringing up is stopped rather than left behind. A server
+   * already stopped, or another stop or reset under way, is left alone.
+   *
+   * Not reported as a stop: nobody asked for one.
+   */
+  async stopForQuit(): Promise<void> {
+    this.startAbort?.abort();
+    if (this.starting) await this.starting;
+    if (this.busy) {
+      log.warn('local-switch-server: another operation is under way at quit; not stopping');
+      return;
+    }
+    if (this.status.phase === 'stopped') return;
+    await this.halt();
+  }
+
+  /** Stop whatever runs, and say whether the stop itself went cleanly. Throws
+   * only when the server is still running afterwards. */
+  private async halt(): Promise<'stopped' | 'stopped-after-error'> {
     if (this.busy) throw new Error('A local-server operation is already in progress.');
     this.busy = true;
     const host: ServerHost = new LocalServerHost();
@@ -833,9 +888,8 @@ export class LocalServerService {
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
-      reportManagedServerOutcome('stop', 'local', 'success');
+      return 'stopped';
     } catch (error) {
-      reportManagedServerOutcome('stop', 'local', 'failure');
       // A stop that errors may still have stopped the containers. Say what is
       // true rather than what the command reported.
       // Asked so that a failure to ask counts as still running.
@@ -866,6 +920,7 @@ export class LocalServerService {
         upgrade: upgrade && upgradeState(upgrade, false),
       });
       await recordLocalActivity('stopped', null);
+      return 'stopped-after-error';
     } finally {
       host.dispose();
       this.busy = false;
