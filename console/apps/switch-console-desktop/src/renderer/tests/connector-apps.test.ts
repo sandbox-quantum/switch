@@ -392,6 +392,20 @@ describe('Airtable, and an app that sends people back to Switch Console', () => 
     expect(texts.at(-1)).toMatch(/support email, privacy policy URL and terms of service URL/);
   });
 
+  it("lists the scopes to give another vendor's app, and none when it asks for none", () => {
+    const scopes = ['mcp', 'read_api', 'read_user', 'api'];
+    const scoped = app({ ...AIRTABLE, slug: 'example', name: 'Example', scopes });
+    const steps = setupInstructions(scoped, 'internal', PUBLIC_URL);
+    expect(steps.map((s) => s.text)).toEqual([
+      'Register an OAuth client for Switch at Example, with this redirect URI:',
+      'Give it exactly these scopes:',
+    ]);
+    expect(steps[1]!.items).toEqual(scopes);
+    expect(setupInstructions(app({ ...scoped, scopes: [] }), 'internal', PUBLIC_URL)).toHaveLength(
+      1
+    );
+  });
+
   it('an app that sends people back to Switch Console needs no public URL, and raises no banner', () => {
     expect(changeBlocked(LOOPBACK, null)).toBe(false);
     expect(changeBlocked(NONE, null)).toBe(true);

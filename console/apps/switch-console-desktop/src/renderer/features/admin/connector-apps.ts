@@ -398,12 +398,16 @@ export function setupInstructions(
       },
     ];
   const redirects = redirectUris(app);
-  return [
+  const steps = [
     redirectStep(
       `Register an OAuth client for Switch at ${app.name}, with ${redirects.length > 1 ? 'these redirect URIs' : 'this redirect URI'}:`,
       redirects
     ),
   ];
+  // A vendor refuses a sign-in that asks for a scope its app lacks.
+  if (app.scopes.length > 0)
+    steps.push({ text: 'Give it exactly these scopes:', copy: [], link: null, items: app.scopes });
+  return steps;
 }
 
 export const UPDATE_SECRET_NOTE = 'Nobody is disconnected.';
