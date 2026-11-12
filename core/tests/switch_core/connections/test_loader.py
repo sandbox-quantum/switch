@@ -12,6 +12,7 @@ from switch_core.connections.loader import (
     ChoicesError,
     choice_key,
     load_catalog,
+    url_placements,
     with_access_profiles,
 )
 
@@ -38,6 +39,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "notion",
         "sentry",
         "linear",
+        "snowflake",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -49,6 +51,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "linear",
         "notion",
         "sentry",
+        "snowflake",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -60,6 +63,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
+    assert "SKILL.md" in CATALOG["snowflake"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -1786,6 +1790,43 @@ def test_the_shipped_datadog_entry_signs_in_at_the_site_people_pick():
     assert "SKILL.md" in CATALOG["datadog"].skill_files
 
 
+def test_the_shipped_snowflake_entry_holds_the_account_to_snowflakes_domain():
+    definition = CATALOG["snowflake"].definition
+    assert definition.enabled is True
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("account", False),
+        ("database", False),
+        ("schema", False),
+        ("server", False),
+        ("pat", True),
+    ]
+    assert sign_in.pattern_names() == {"account", "database", "schema", "server"}
+    url = (
+        "https://{account}.snowflakecomputing.com/api/v2/databases/{database}"
+        "/schemas/{schema}/mcp-servers/{server}"
+    )
+    assert sign_in.identity.url == url
+    assert url_placements(url) == {
+        "account": {"host"},
+        "database": {"path"},
+        "schema": {"path"},
+        "server": {"path"},
+    }
+    # Snowflake answers a server it cannot use with 200 and a JSON-RPC error.
+    assert sign_in.identity.requires == "result.tools"
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url == url
+    assert server.headers == {"Authorization": "Bearer {pat}"}
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+    assert definition.access is None
+
+
 def test_loads_an_api_key_entry(catalog_copy):
     _write_example(catalog_copy, API_KEY_ENTRY)
     definition = load_catalog(catalog_copy)["example"].definition
@@ -1822,7 +1863,7 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
         (
             '      url: "https://mcp.{region}/mcp"\n',
             '      url: "https://mcp.example.test/{api_key}"\n',
-            "may name only a choice field",
+            "may name only a choice or pattern field",
         ),
         (
             '      headers: { Authorization: "Token token={api_key}" }\n',
@@ -1847,7 +1888,7 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
         (
             "        secret: false\n",
             "        secret: true\n",
-            "one of the two",
+            "exactly one of those",
         ),
         ("  refresh: none\n", "  refresh: rotating\n", "refresh is none"),
         (
@@ -1970,3 +2011,64 @@ def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
     raw = path.read_bytes().replace(b"\r\n", b"\n")
     path.write_bytes(raw.replace(b"\n", b"\r\n"))
     assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
+
+
+PATTERN_ENTRY = API_KEY_ENTRY.replace(
+    "        choices: [us.example.test, eu.example.test]\n",
+    '        pattern: "[a-z0-9][a-z0-9-]{0,62}"\n',
+).replace("https://api.{region}/me", "https://{region}.example.test/api/me")
+
+
+def test_loads_a_field_held_to_a_pattern(catalog_copy):
+    _write_example(
+        catalog_copy,
+        PATTERN_ENTRY.replace(
+            "https://mcp.{region}/mcp", "https://mcp.example.test/{region}/mcp"
+        ),
+    )
+    sign_in = load_catalog(catalog_copy)["example"].definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.pattern_names() == {"region"}
+    assert sign_in.choice_names() == set()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Beside other text in a label, or in the domain itself.
+        "https://mcp-{region}.example.test/mcp",
+        "https://mcp.{region}/mcp",
+        "https://mcp.{region}.test/mcp",
+        "https://{region}.{region}.example.test/mcp",
+        # Beside other text in a path segment, or in the query.
+        "https://mcp.example.test/v{region}/mcp",
+        "https://mcp.example.test/mcp?account={region}",
+    ],
+)
+def test_a_pattern_field_cannot_move_the_host(catalog_copy, url):
+    _write_example(catalog_copy, PATTERN_ENTRY.replace("https://mcp.{region}/mcp", url))
+    with pytest.raises(CatalogError, match="only as a whole host label"):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "message"),
+    [("[a-z", "not a regular expression"), ("[a-z]*", "matches an empty value")],
+)
+def test_a_pattern_must_compile_and_need_a_value(catalog_copy, pattern, message):
+    _write_example(
+        catalog_copy,
+        PATTERN_ENTRY.replace('"[a-z0-9][a-z0-9-]{0,62}"', f'"{pattern}"').replace(
+            "https://mcp.{region}/mcp", "https://mcp.example.test/mcp"
+        ),
+    )
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
+
+
+def test_url_placements_names_where_each_field_lands():
+    assert url_placements("https://{account}.example.com/v1/{database}/x?q=1") == {
+        "account": {"host"},
+        "database": {"path"},
+    }
+    assert url_placements("https://{account}.com/") == {"account": {"other"}}
