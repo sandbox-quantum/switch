@@ -65,6 +65,7 @@ beforeEach(async () => {
       server: core.url,
       auth: { token: () => tokens.get(), invalidate: () => {}, revoked: () => {} },
       log: silentLogger,
+      sessionStarted: () => {},
     }),
   });
   await relay.start(null);

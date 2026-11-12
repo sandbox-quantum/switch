@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
+  type ConversationHistoryTurn,
   ProviderConversationUnavailableError,
   type ProviderAdapter,
   type TurnAttachment,
@@ -13,6 +14,7 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import type * as processFence from './process-fence';
 import { Redactions } from './redaction';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
@@ -31,6 +33,13 @@ import { hostParked } from './shared-state';
 // Windows runners take many times longer over that. The waits have no deadline
 // of their own (see `until`), so this is the one clock.
 vi.setConfig({ testTimeout: 30_000 });
+
+// These providers run in-process; the OS probe is covered by process-fence
+// tests and need not spawn ps in this harness.
+vi.mock('./process-fence', async (original) => ({
+  ...(await original<typeof processFence>()),
+  ownProcessGroup: async () => null,
+}));
 
 /**
  * `vi.waitFor`, for state the host writes to disk without telling anyone,
@@ -144,6 +153,8 @@ async function start(
     /** The provider reports work, such as subagents, still running outside any turn. */
     backgroundWork?: { running: boolean };
     resettable?: boolean;
+    /** The provider compacts its conversation natively. */
+    compactable?: boolean;
     /**
      * Stopping a conversation reports it stopped and exited, as every provider
      * adapter does, and returns only after the host has had time to look.
@@ -175,6 +186,8 @@ async function start(
     readyLater?: boolean;
     /** How long a reset waits for a session still starting. */
     sessionReadyMs?: number;
+    /** The session continues a conversation started outside Switch, which had these turns. */
+    continuing?: ConversationHistoryTurn[];
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -287,6 +300,9 @@ async function start(
       };
     },
   };
+  if (opts.compactable) adapter.compactSession = vi.fn(async () => {});
+  const continuing = opts.continuing;
+  if (continuing) adapter.conversationHistory = vi.fn(async () => structuredClone(continuing));
   if (opts.conversationLost)
     vi.mocked(adapter.startSession).mockRejectedValueOnce(
       new ProviderConversationUnavailableError(
@@ -328,8 +344,10 @@ async function start(
         env: {},
         mcpServers: {},
         connectorMcpServers: [],
+        ...(continuing ? { resume: { nativeSessionId: 'cli-copy' } } : {}),
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
+      importHistory: continuing !== undefined,
       parent: channel,
       parkAfterMs: opts.parkAfterMs ?? null,
       instructions: opts.instructions ?? null,
@@ -352,6 +370,18 @@ async function start(
       expect(
         (await journal()).some(
           (event) => event.body.type === 'session.upsert' && event.body.session.status === 'ready'
+        )
+      ).toBe(true)
+    );
+  // The host works out which attachments the session takes once its models are listed,
+  // after it reports ready; a room message sent before then is planned against the stub's.
+  if (opts.rooms && !opts.readyLater)
+    await until(async () =>
+      expect(
+        (await journal()).some(
+          (event) =>
+            event.body.type === 'session.upsert' &&
+            event.body.session.capabilities.attachmentMimeTypes.includes('image/png')
         )
       ).toBe(true)
     );
@@ -406,6 +436,47 @@ const roomMessage = (sequence: number, body: string, attachments: unknown[] = []
     },
     missed: { count: 2, reason: null },
   },
+});
+
+it.each([false, true])('reports child activity (older Core=%s)', async (olderCore) => {
+  const host = await start({ rooms: true });
+  host.switchCore.state.refusesSubagent = olderCore;
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'inspect using a child') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const turnId = host.turns[0]!.turnId;
+    const child = {
+      id: 'child',
+      nativeChildId: 'child',
+      type: 'subagent',
+      status: 'in_progress',
+      title: 'Review tests',
+    };
+    host.emit({ type: 'item.started', turnId, item: child });
+    const rows = () =>
+      host.switchCore.calls.filter((call) => {
+        const row = call.body as { subagent?: boolean; title?: string; status?: string } | null;
+        return (
+          call.path.endsWith('/activity') &&
+          row?.title === 'Review tests' &&
+          (!olderCore || !row.subagent)
+        );
+      });
+    await until(() =>
+      expect(rows().at(-1)?.body).toMatchObject({ kind: 'tool-activity', status: 'in-progress' })
+    );
+    host.emit({ type: 'item.completed', turnId, item: { ...child, status: 'completed' } });
+    await until(() =>
+      expect(rows().at(-1)?.body).toMatchObject({ kind: 'tool-activity', status: 'completed' })
+    );
+    expect(
+      host.switchCore.calls.some((call) => (call.body as { subagent?: boolean } | null)?.subagent)
+    ).toBe(true);
+    if (olderCore) expect(rows().at(-1)?.body).not.toHaveProperty('subagent');
+    else expect(rows().at(-1)?.body).toHaveProperty('subagent', true);
+  } finally {
+    await host.stop();
+  }
 });
 
 it('names itself to its parent, which makes its tool calls, before the provider starts', async () => {
@@ -479,6 +550,36 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
     expect(turn!.text).toContain('(2 unaddressed room messages arrived');
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('starts a continued conversation as new here: its instructions are not news, and its first room message opens it', async () => {
+  const host = await start({
+    rooms: true,
+    instructions: '',
+    continuing: [
+      {
+        turnId: 'prompt-1',
+        items: [
+          {
+            itemId: 'prompt-1',
+            kind: 'user-message',
+            status: 'completed',
+            title: '',
+            text: 'Fix the build',
+          },
+        ],
+      },
+    ],
+  });
+  try {
+    expect(await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') })).toMatchObject({
+      ok: true,
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).not.toContain('instructions were');
   } finally {
     expect(await host.stop()).toBeNull();
   }
@@ -1049,7 +1150,11 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
     expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
     expect(host.turns[0]!.text).toContain('in thread "thread"');
-    expect(host.turns[0]!.text).toContain('targeted message to "louisa"');
+    expect(host.turns[0]!.text).toContain(
+      'post_message a short note in the room in thread "thread"'
+    );
+    expect(host.turns[0]!.text).toContain('mention "louisa" only if list_participants lists them');
+    expect(host.turns[0]!.text).toContain('Do not use send_targeted_message');
     expect(host.turns[0]!.text).toContain('your session has been reset');
     // Asked again (a relay retried), the follow-up is not sent twice.
     await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
@@ -1201,6 +1306,36 @@ it('says it could not reset, not that it is busy, when the session never finishe
   }
 }, 20000);
 
+it('owes no follow-up for a reset asked for in a direct chat', async () => {
+  const host = await start({ resettable: true });
+  try {
+    const reset: Command = {
+      ...relayed('current', 'room-reset', { type: 'session.reset' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: reset,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-reset', status: 'applied' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(host.turns).toHaveLength(0);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
 it('logs a refusal by its code, or its first word, and never the rest of its text', () => {
   expect(refusalCode('Error: SESSION_BUSY: finish or interrupt the current turn first.')).toBe(
     'SESSION_BUSY'
@@ -1250,6 +1385,36 @@ it('adds no line of its own to an awake reset that Switch already announced', as
     await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(asks()).toEqual([]);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('still owes the follow-up for a compaction asked for in a direct chat', async () => {
+  const host = await start({ compactable: true });
+  try {
+    const compact: Command = {
+      ...relayed('current', 'room-compact', { type: 'session.compact' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: compact,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-compact', status: 'applied' },
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
   } finally {
     expect(await host.stop()).toBeNull();
   }

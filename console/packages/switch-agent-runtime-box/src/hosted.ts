@@ -565,15 +565,18 @@ async function sendAttachmentTool(
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
     }
-    const data = (await resp.json()) as { event_id?: string };
+    const data = (await resp.json()) as { event_id?: string; trust?: unknown };
     const names = files.map((f) => f.name).join(', ');
+    // What Switch Trust did to the caption or flagged in the files, only when
+    // it did something, in the same `trust` form post_message returns.
+    const trust = data.trust === undefined ? '' : `\nSwitch Trust: ${JSON.stringify(data.trust)}`;
     return {
       content: [
         {
           type: 'text',
           text:
             `Sent ${files.length === 1 ? names : `${files.length} files (${names})`} ` +
-            `to the room (event_id: ${data.event_id ?? 'unknown'}).`,
+            `to the room (event_id: ${data.event_id ?? 'unknown'}).${trust}`,
         },
       ],
     };

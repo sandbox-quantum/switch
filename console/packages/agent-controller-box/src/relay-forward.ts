@@ -7,10 +7,12 @@ import {
 } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { pipeline } from 'node:stream/promises';
+import { type OwedSessionStart, reportedStartSource } from '@switch-console/agent-providers-box';
 import { isRevoked, PROTOCOL_HEADER } from './api';
 import { errorMessage, type Logger } from './log';
 import type { Forwarder } from './relay';
 import { PROTOCOL_VERSION } from './schemas';
+import type { CallAnswer, SocketCalls } from './socket-calls';
 
 /** The headers that describe one hop, not the request, and are never passed on. */
 const HOP_BY_HOP = new Set([
@@ -50,6 +52,11 @@ const REPLACED = new Set([
 export const REPLAYABLE_BODY_BYTES = 1024 * 1024;
 const ERROR_BODY_BYTES = 64 * 1024;
 
+/** An agent operation, `POST /agents/{agent}/ops/{operation}`, which the socket can carry. */
+const OPERATION = /^\/agents\/([^/?]+)\/ops\/([^/?]+)$/;
+/** A session host's report that its session started (`host/session-start.ts`). */
+const SESSION_STARTED = /^\/agent-sessions\/([^/?]+)\/started$/;
+
 export type UpstreamAuth = {
   /** The controller's current access token. */
   token: () => Promise<string>;
@@ -67,6 +74,14 @@ export class UpstreamForwarder implements Forwarder {
       server: string;
       auth: UpstreamAuth;
       log: Logger;
+      /** Carries the agents' operations on the controller's socket, when it takes them. */
+      calls?: SocketCalls;
+      /** A session host's start report that Switch took. */
+      sessionStarted: (started: {
+        agentId: string;
+        sessionId: string;
+        startSource: OwedSessionStart;
+      }) => void;
     }
   ) {}
 
@@ -85,6 +100,24 @@ export class UpstreamForwarder implements Forwarder {
     if (!bodyless && size !== null && Number.isSafeInteger(size) && size <= REPLAYABLE_BODY_BYTES)
       buffered = await readAll(req, REPLAYABLE_BODY_BYTES);
     const replayable = bodyless || buffered !== null;
+    if (method === 'POST' && buffered !== null) {
+      let answer: CallAnswer | null;
+      try {
+        answer = await this.overSocket(req, buffered, target);
+      } catch (error) {
+        return refuse(res, 502, `${errorMessage(error)} It may have run.`);
+      }
+      if (answer !== null) {
+        if (res.destroyed) return; // the agent host went away while Switch answered
+        const text = JSON.stringify(answer.body);
+        res.writeHead(answer.status, {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(text),
+        });
+        res.end(text);
+        return;
+      }
+    }
     const headers = forwardedHeaders(req.headers, target);
     for (let attempt = 0; ; attempt++) {
       let token: string;
@@ -133,7 +166,10 @@ export class UpstreamForwarder implements Forwarder {
         res.end(text);
         return;
       }
-      res.writeHead(upstream.statusCode ?? 502, responseHeaders(upstream.headers, true));
+      const status = upstream.statusCode ?? 502;
+      if (method === 'POST' && status >= 200 && status < 300 && buffered !== null)
+        this.noticeStart(target, buffered);
+      res.writeHead(status, responseHeaders(upstream.headers, true));
       try {
         await pipeline(upstream, res);
       } catch (error) {
@@ -144,6 +180,71 @@ export class UpstreamForwarder implements Forwarder {
       }
       return;
     }
+  }
+
+  /** Passes on a session start Switch took, when this was the host's report of one. */
+  private noticeStart(target: { agentId: string; path: string }, body: Buffer): void {
+    const route = SESSION_STARTED.exec(new URL(target.path, 'http://relay.invalid').pathname);
+    if (!route) return;
+    let sessionId: string;
+    let startSource: OwedSessionStart | null;
+    try {
+      sessionId = decodeURIComponent(route[1]!);
+      startSource = reportedStartSource(
+        (JSON.parse(body.toString('utf8')) as { start_source?: unknown }).start_source
+      );
+    } catch {
+      return;
+    }
+    if (startSource === null) return;
+    try {
+      this.deps.sessionStarted({ agentId: target.agentId, sessionId, startSource });
+    } catch (error) {
+      // Passing the start on is a courtesy to whoever runs this controller;
+      // the report itself reached Switch, and its answer still goes back.
+      this.deps.log.warn('Could not pass on a session start', {
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  /**
+   * An operation sent as a call on the controller's socket rather than as an
+   * HTTP request (`SocketCalls`), answered with the status and body the HTTP
+   * route would have. Null when it goes over HTTP instead: no socket that
+   * takes calls, as many calls in flight as Switch takes, or a body that is
+   * not a JSON object, which Switch refuses over HTTP in its own words.
+   */
+  private async overSocket(
+    req: IncomingMessage,
+    body: Buffer,
+    target: { agentId: string; roomId: string | null; path: string }
+  ): Promise<CallAnswer | null> {
+    const calls = this.deps.calls;
+    const operation = OPERATION.exec(target.path);
+    if (!calls || !operation || decodeURIComponent(operation[1]!) !== target.agentId) return null;
+    let args: unknown;
+    try {
+      args = body.length === 0 ? {} : JSON.parse(body.toString('utf8'));
+    } catch {
+      return null;
+    }
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) return null;
+    const answered = calls.call({
+      agentId: target.agentId,
+      roomId: target.roomId,
+      operation: decodeURIComponent(operation[2]!),
+      args: args as Record<string, unknown>,
+      requestId: header(req, 'x-request-id'),
+    });
+    if (answered === null) return null;
+    const answer = await answered;
+    const code = errorCode(JSON.stringify(answer.body));
+    // Switch had as many calls in flight on the socket as it takes, so this
+    // one did not run.
+    if (answer.status === 429 && code === 'capacity_exceeded') return null;
+    if (answer.status === 401 && code === 'controller_revoked') this.deps.auth.revoked();
+    return answer;
   }
 }
 
@@ -229,6 +330,12 @@ function errorCode(text: string): string | null {
   } catch {
     return null;
   }
+}
+
+function header(req: IncomingMessage, name: string): string | null {
+  const value = req.headers[name];
+  const text = Array.isArray(value) ? value[0] : value;
+  return text ? text : null;
 }
 
 function refuse(res: ServerResponse, status: number, detail: string): void {

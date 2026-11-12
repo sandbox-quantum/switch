@@ -14,6 +14,15 @@ export type SessionStatus = 'starting' | 'ready' | 'running' | 'stopped' | 'erro
 export type TurnOutcome = 'completed' | 'interrupted' | 'error';
 
 /**
+ * A turn the provider stopped because the account's usage or rate limit was
+ * reached. `resetsAt` (epoch ms) is when the provider says the limit lifts,
+ * or null when it did not say in a form the adapter can read.
+ */
+export interface UsageLimit {
+  resetsAt: number | null;
+}
+
+/**
  * What an item in a turn represents, independent of how the vendor names it.
  * `tool_call` is the fallback for a tool the vocabulary does not single out.
  */
@@ -111,6 +120,8 @@ export type ProviderRuntimeEvent = EventBase &
         turnId: string;
         outcome: TurnOutcome;
         message?: string;
+        /** Set when the turn failed because the provider's usage limit was reached. */
+        usageLimit?: UsageLimit;
         usage: TokenUsage[];
       }
     | { type: 'item.started'; turnId: string; item: ProviderItem }

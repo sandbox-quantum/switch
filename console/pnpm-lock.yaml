@@ -352,7 +352,7 @@ importers:
         specifier: ^8.21.3
         version: 8.21.3
       zod:
-        specifier: ^4.4.3
+        specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
       '@sandboxaq/switch-agent-runtime-box':
@@ -443,8 +443,11 @@ importers:
       smol-toml:
         specifier: ^1.8.0
         version: 1.8.0
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
       zod:
-        specifier: ^4.4.3
+        specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
       '@types/node':

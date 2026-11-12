@@ -441,8 +441,18 @@ export const connectionStateSchema = z.object({
   connection_id: id,
   generation: z.number().int(),
   heartbeat_interval_s: z.number().positive(),
+  /** The socket takes the agents' operations as calls; absent from a server from before them. */
+  calls: z.object({ max_in_flight: z.number().int().positive() }).optional(),
 });
 export type ConnectionState = z.infer<typeof connectionStateSchema>;
+
+/** A call's answer: the status and body the operation's HTTP route would have answered with. */
+export const callResultSchema = z.object({
+  id: z.union([z.string(), z.number().int()]),
+  status: z.number().int(),
+  body: z.unknown(),
+});
+export type CallResult = z.infer<typeof callResultSchema>;
 
 /** The stream ends; `taken_over` is terminal, anything else is recovered by opening again. */
 export const evictedSchema = z.object({ code: z.string().min(1), reason: z.string() });

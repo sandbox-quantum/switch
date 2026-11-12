@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { commandSchema } from '@switch-console/shared/session-v1';
+import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
@@ -101,6 +101,8 @@ export type SharedHostOptions = {
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
   grant?: { roomId: string; messageId: string };
+  /** The session continues a native conversation started outside Switch. */
+  importHistory: boolean;
   /** The IPC channel to the process that started this host, or null if none did. */
   parent: ParentChannel | null;
   /** How long the host waits with nothing to do before parking; null never parks. */
@@ -470,6 +472,7 @@ export async function runSharedHost(
           : {}),
         session: options.session,
         input: options.input,
+        importHistory: options.importHistory,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         redactions: options.redactions,
@@ -533,16 +536,36 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
-      await send({ kind: 'activity', row });
-      return true;
+    // Retry new optional fields independently: a server may predate either
+    // usage or child progress. Preserve the tool row and its terminal status.
+    const sendCompatible = async (item: Report): Promise<void> => {
+      let report = item;
+      for (;;) {
+        try {
+          await send(report);
+          return;
+        } catch (error) {
+          if (
+            !(error instanceof RequestError) ||
+            error.status !== 422 ||
+            report.kind !== 'activity'
+          )
+            throw error;
+          if (report.row.usage) {
+            const { usage: _usage, ...row } = report.row;
+            console.warn(
+              `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.subagent) {
+            const { subagent: _subagent, ...row } = report.row;
+            console.warn(
+              `Switch does not accept subagent metadata; reporting ${row.item_id} as tool activity.`
+            );
+            report = { kind: 'activity', row };
+          } else throw error;
+        }
+      }
     };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
@@ -559,11 +582,10 @@ export async function runSharedHost(
         );
         for (const item of reports) {
           try {
-            await send(item);
+            await sendCompatible(item);
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -641,7 +663,13 @@ export async function runSharedHost(
     type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
     const followups = (): Followup[] =>
       state.journal.records.filter((record): record is Followup => record.type === 'followup');
-    const followupFor = (command: Command, requesterName: string | null): Followup | null => {
+    const followupFor = (
+      command: Command,
+      requesterName: string | null,
+      direct: boolean
+    ): Followup | null => {
+      // A direct chat's reset is meant to forget the conversation; its placement survives, so nothing is owed.
+      if (direct && command.body.type === 'session.reset') return null;
       const action =
         command.body.type === 'session.reset'
           ? 'reset'
@@ -721,12 +749,14 @@ export async function runSharedHost(
     // A conversation that has not started yet is given the current ones as it
     // starts. One that has, and was told others, gets a note with the next
     // room message: its provider would otherwise keep the old ones.
+    // Turns copied in from a conversation started outside Switch are not this
+    // conversation having started here: it resumes under Switch's context.
+    const startedHere = () => hasOwnActivity(host!.snapshot());
     const instructions = options.instructions;
     let instructionsNote: string | null = null;
     if (instructions !== null) {
       const told = await readToldInstructions(options.root);
-      if (host.snapshot().turns.length === 0)
-        await recordToldInstructions(options.root, instructions);
+      if (!startedHere()) await recordToldInstructions(options.root, instructions);
       else if (told !== instructions) instructionsNote = instructionsChangedNote(instructions);
     }
     const instructionsTold = async (): Promise<void> => {
@@ -761,7 +791,7 @@ export async function runSharedHost(
       roomId: string
     ): Promise<{ note: string | null; instructions: string | null }> => {
       if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
-      if (host!.snapshot().turns.length === 0) toldRooms = {};
+      if (!startedHere()) toldRooms = {};
       try {
         const { instructions } = roomInstructionsAnswerSchema.parse(
           await parentChannel.ask({ type: 'room-instructions', roomId })
@@ -808,7 +838,11 @@ export async function runSharedHost(
     const run = async (
       value: unknown,
       requesterName: string | null,
-      room: { told: boolean; resting: boolean } = { told: true, resting: false }
+      room: { told: boolean; resting: boolean; direct: boolean } = {
+        told: true,
+        resting: false,
+        direct: false,
+      }
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -827,7 +861,7 @@ export async function runSharedHost(
       // about a conversation a reset or a restart has since replaced.
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
-      const control = followupFor(command, requesterName);
+      const control = followupFor(command, requesterName, room.direct);
       // A resting session's reset is answered with a line, not a turn: its
       // next reply starts the fresh conversation.
       const restingReset = room.resting && control?.action === 'reset';
@@ -962,7 +996,7 @@ export async function runSharedHost(
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
-          firstOfConversation: host!.snapshot().turns.length === 0,
+          firstOfConversation: !startedHere(),
         });
         if (message.data.payload.routed || message.data.payload.follow_up)
           host!.unaskedRoomTurn(command.commandId);
@@ -1020,10 +1054,11 @@ export async function runSharedHost(
     parent?.serve({
       // Busy is announced before the reply, so a parent that has the reply has
       // already heard any change the command made.
-      command: async ({ command, requesterName, roomTold, resting }) => {
+      command: async ({ command, requesterName, roomTold, resting, direct }) => {
         const outcome = await run(command, requesterName, {
           told: roomTold !== false,
           resting: resting === true,
+          direct: direct === true,
         });
         announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
@@ -1331,6 +1366,7 @@ export async function hostSessionProcess(input: {
         input: prepared.input,
         roomConnection: config.roomConnection,
         grant: config.grant,
+        importHistory: config.importHistory ?? false,
         parent,
         parkAfterMs: parkAfterMs(),
         instructions: config.execution?.instructions ?? null,

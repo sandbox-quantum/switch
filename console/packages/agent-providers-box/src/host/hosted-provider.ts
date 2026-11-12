@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { AGY_LOGIN, isLegacyAntigravityRuntime } from '../antigravity/runtime';
 import { refreshCodexAuthentication } from '../codex/home';
 import { parseVertexLogin, VERTEX_CREDENTIALS_FILE } from '../vertex-login';
 import { importOpenCodeConsole } from './opencode-console';
@@ -182,6 +183,14 @@ export async function materializeHostedProvider(
       await writeAuthentication(env.XDG_DATA_HOME, 'opencode/auth.json', credential.credential);
     }
   } else if (credential.provider === 'antigravity') {
+    // The login Switch holds is the token file of the runtime Switch Console
+    // used to install. Google's agy keeps its sign-in in the system keychain
+    // and never reads that file, so handing it the token would leave the
+    // session signed out, or signed in as whoever the machine already has.
+    if (!isLegacyAntigravityRuntime(binaryPath))
+      throw new Error(
+        `This agent's Antigravity sign-in was made for Antigravity ACP (antigravity-acp), which Google's agy CLI cannot use. Sign in on the execution machine with ${AGY_LOGIN}, or set GEMINI_API_KEY there, and disconnect the Antigravity login Switch holds for the agent.`
+      );
     env.GEMINI_HOME = join(root, 'provider-home');
     await writeAuthentication(
       env.GEMINI_HOME,

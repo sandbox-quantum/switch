@@ -5,10 +5,13 @@ upstream's `agent-controller`, `agent-providers` and `switch-agent-runtime`. Onl
 They are private workspace packages: nothing outside the three depends on them, and the public registry is never
 asked for them.
 
-Upstream's packages beside them stay byte for byte as upstream main `0f7f96732`, so the desktop app and v1 cloud
+Upstream's packages beside them stay byte for byte as upstream main `1a0d5002f`, so the desktop app and v1 cloud
 machines run upstream's code whatever the hosted switch says. `switch-agent-runtime-box/src/upstream-packages.test.ts`
 fails on any change to those four packages (`agent-controller`, `agent-providers`, `switch-agent-runtime`,
 `shared`), and on any package outside the box ones depending on a box package.
+
+The box copies are synced to upstream `1a0d5002f`, the same commit `upstream-packages.json` pins. Move the pin
+only together with a port of upstream's changes into the box copies, never on its own.
 
 ## What the box versions change
 
@@ -49,6 +52,12 @@ Behind the scenes:
 20. Leftover folders of removed agents are deleted after two checks 10 minutes apart. (`reconcile.ts`)
 21. Messages between controller and agent host are capped at 1 MiB. (`hub-socket.ts`)
 
+Where the box keeps its own rule over upstream's:
+
+22. A recorded process id that answers EPERM is neither alive nor gone (`process-alive.ts`). Upstream reads it as
+    gone, but on a box the controller and the agents run as different users, so a live agent host answers EPERM too.
+    Listing sessions counts it as alive, as before. (`process-alive.ts`, `session-list.ts`)
+
 Plus the box features themselves: the split box (launcher, credential gateway, sealed logins), the box valve and
 memory guard, resting and parking, the live status file, and the sign-in-after-wake and control-port fixes.
 
@@ -60,4 +69,7 @@ memory guard, resting and parking, the live status file, and the sign-in-after-w
 - After items 1, 3 and 9 have written their new journal records, an upstream build can't read those journals, so a
   box can't be rolled back to upstream's packages without clearing them.
 - Upstream fixes to the four upstream packages reach these copies only when they are synced by hand. Each rebase
-  lists upstream's changes to those packages since the last sync.
+  lists upstream's changes to those packages since the last sync. The last sync took upstream from `0f7f96732` to
+  `1a0d5002f`.
+- Some box files had been copied from upstream earlier than the recorded base (the controller's relay and stream from
+  30 October, Claude's result mapping from 2 November), so the last sync took them from those points instead.

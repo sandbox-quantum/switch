@@ -60,6 +60,8 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
      * goes back to rest.
      */
     resting: z.boolean().optional(),
+    /** The command came from a direct chat; absent from a parent older than the field. */
+    direct: z.boolean().optional(),
   }),
   /** A room message the agent was addressed with, as the controller routed it. */
   z.object({

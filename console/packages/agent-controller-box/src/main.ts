@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -12,7 +12,14 @@ import {
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
   OWNER_MARKER_ENV,
+  SESSION_STARTED_KIND,
+  type SessionStartedNotice,
 } from '@switch-console/agent-providers-box';
+import {
+  withWindowsAgyBinDir,
+  withWindowsCodexBinDir,
+  withWindowsGitBashDir,
+} from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -399,7 +406,7 @@ async function setInfoCommand(args: string[]): Promise<number> {
     const credential = await secrets.get(CONTROLLER_CREDENTIAL);
     if (!credential)
       throw new ConfigurationError(
-        `${dataDir} holds no controller credential (it is handed over at run time, or was removed). Change the name and description in the gateway's Machines page instead.`
+        `${dataDir} holds no controller credential (it is handed over at run time, or was removed). Change the name and description in the gateway's Devices page instead.`
       );
     const log = createLogger({
       level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
@@ -438,7 +445,21 @@ async function setInfoCommand(args: string[]): Promise<number> {
  */
 function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
-    if (process.platform === 'win32') return;
+    if (process.platform === 'win32') {
+      process.env.PATH = withWindowsGitBashDir(
+        withWindowsCodexBinDir(
+          withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+          process.env.LOCALAPPDATA
+        ),
+        {
+          localAppData: process.env.LOCALAPPDATA,
+          programFiles: process.env.ProgramFiles,
+          programFilesX86: process.env['ProgramFiles(x86)'],
+        },
+        existsSync
+      );
+      return;
+    }
     const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
     const path = await loginShellPath(shell, process.env.PATH ?? '');
     if (path === null)
@@ -824,6 +845,19 @@ async function runCommand(args: string[]): Promise<number> {
         rechecks,
         refreshPath,
         providerSeed,
+        // Only Switch Console's own controller has a parent listening on IPC.
+        sessionStarted: (started) => {
+          if (!process.send || !process.connected) return;
+          const notice: SessionStartedNotice = { kind: SESSION_STARTED_KIND, ...started };
+          // With a callback, a channel that closed meanwhile is reported here
+          // rather than as an `error` event on the process, which nothing handles.
+          process.send(notice, undefined, undefined, (error) => {
+            if (error)
+              log.warn('Could not tell Switch Console a session started', {
+                error: errorMessage(error),
+              });
+          });
+        },
         tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         openWebSocket: nodeWebSocket,

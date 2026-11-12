@@ -4,6 +4,7 @@ import { link, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isProcessAlive } from '../process-alive';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import {
   commandLineNames,
@@ -268,35 +269,35 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
  * as different from whatever is asking — so it is replaced.
  */
 export async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
+  const ownerPath = join(root, 'supervisor', 'owner.json');
+  let owner;
   try {
-    const ownerPath = join(root, 'supervisor', 'owner.json');
-    const owner = JSON.parse(await readFile(ownerPath, 'utf8'));
-    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
-      throw new Error('Invalid shared host supervisor owner.');
-    // Judged first, so a record from before this box is seen (and logged) as
-    // such even when it names this process's own id.
-    if (await recordPredatesHolder(ownerPath, owner.pid)) return null;
-    // A record this process never wrote, naming its own id, was left by an
-    // earlier process with the same id (a restarted container): no supervisor.
-    if (leftByEarlierSupervisor(ownerPath, owner)) return null;
-    process.kill(owner.pid, 0);
-    return { build: owner.build };
+    owner = JSON.parse(await readFile(ownerPath, 'utf8'));
   } catch (error) {
-    if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-    return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
   }
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
+    throw new Error('Invalid shared host supervisor owner.');
+  // Judged first, so a record from before this box is seen (and logged) as
+  // such even when it names this process's own id.
+  if (await recordPredatesHolder(ownerPath, owner.pid)) return null;
+  // A record this process never wrote, naming its own id, was left by an
+  // earlier process with the same id (a restarted container): no supervisor.
+  if (leftByEarlierSupervisor(ownerPath, owner)) return null;
+  return isProcessAlive(owner.pid, 'recorded') ? { build: owner.build } : null;
 }
 
 async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {
   let pid: number;
   try {
     pid = JSON.parse(await readFile(ownerPath, 'utf8')).pid;
-    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
-    process.kill(pid, 0);
   } catch (error) {
-    if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
+  if (!isProcessAlive(pid, 'recorded')) return;
   // Only an owner judged alive may be stopped (and then only if its command
   // line names this root, below). A stale record names nothing of ours: it
   // goes, or the session would read as still running, and nothing is killed.
@@ -343,12 +344,7 @@ export const STOP_GRACE_MS = 20_000;
 
 async function exitsWithin(pid: number, ms: number): Promise<boolean> {
   for (let waited = 0; ; waited += 200) {
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
-      throw error;
-    }
+    if (!isProcessAlive(pid, 'recorded')) return true;
     if (waited >= ms) return false;
     await delay(200);
   }

@@ -145,7 +145,7 @@ describe('buildWatcherTemplate', () => {
       `sandbox_mode = "workspace-write"\n${console.codexConfig}`
     );
     expect(template.execution!.codexConfig).toContain('model_verbosity = "low"');
-    expect(template.execution!.codexConfig).toContain('web_search = true');
+    expect(template.execution!.codexConfig).toContain('web_search = "live"');
     expect(template.start.input).not.toHaveProperty('agentDefinition');
   });
 

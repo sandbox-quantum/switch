@@ -10,6 +10,11 @@ export const providerReadinessSchema = z.object({
    * older than this field, and wherever signing in may help.
    */
   loginHelps: z.boolean().optional(),
+  /**
+   * The command that signs in the executable checked, where it differs from
+   * the provider's usual login command (an older runtime of the provider).
+   */
+  loginCommand: z.string().optional(),
 });
 export type ProviderReadiness = z.infer<typeof providerReadinessSchema>;
 
@@ -27,6 +32,22 @@ export function readiness(status: ProviderReadiness['status'], message: string):
 /** `result`, marked as something the provider's login command cannot fix. */
 export function loginWontHelp(result: ProviderReadiness): ProviderReadiness {
   return { ...result, loginHelps: false };
+}
+
+/**
+ * What an agent's error says when it refused because it is not signed in.
+ * Narrower than any mention of "auth": an MCP server's or a tool's
+ * authorization failing is not the provider's sign-in.
+ */
+export const SIGNED_OUT_ERROR =
+  /sign in|auth required|authentication required|unauthenticated|not logged in|not signed in/i;
+
+/** The command that signs in `provider`'s executable at `binaryPath`. */
+export function loginCommandOf(
+  provider: { loginCommand: string; loginCommandFor?(binaryPath: string): string },
+  binaryPath: string
+): string {
+  return provider.loginCommandFor?.(binaryPath) ?? provider.loginCommand;
 }
 
 export function signInWith(loginCommand: string): string {

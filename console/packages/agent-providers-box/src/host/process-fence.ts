@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { isProcessAlive } from '../process-alive';
 import { descendants, listWindowsProcesses, reused, windowsProcess } from './windows-processes';
 
 /** Bound when called, so a test that mocks `node:child_process` without it can still import this. */
@@ -94,7 +95,7 @@ export async function fenceDeadOwner(
   if (group !== pid)
     throw new Error('FENCING_REQUIRED: the previous host did not isolate its provider processes.');
   try {
-    if (!exists(-group)) return;
+    if (!isProcessAlive(-group, 'any-user')) return;
     process.kill(-group, 'SIGKILL');
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -104,11 +105,7 @@ export async function fenceDeadOwner(
     if (code !== 'EPERM') throw error;
   }
   for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      if (!exists(-group)) return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
-    }
+    if (!isProcessAlive(-group, 'any-user')) return;
     await delay(50);
   }
   throw new Error('FENCING_REQUIRED: the previous provider process group has not exited.');

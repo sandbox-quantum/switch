@@ -13,13 +13,14 @@ export function roomControlFollowup(input: {
 }): string {
   const done = input.action === 'reset' ? 'has been reset' : 'has been compacted';
   const thread = input.threadId ? ` in thread ${JSON.stringify(input.threadId)}` : '';
+  const mention = input.requesterName
+    ? ` (mention ${JSON.stringify(input.requesterName)} only if list_participants lists them)`
+    : '';
   return [
     `The requested ${input.action} completed successfully.`,
     `Connect to Switch room ${JSON.stringify(input.roomId)} (reuse its connection if already connected) and read_context before responding.`,
-    `If you held a role in that room before the ${input.action}, re-assume it and follow its instructions; if it is unavailable, report that clearly instead of claiming it was restored.`,
-    input.requesterName
-      ? `Then send a short targeted message to ${JSON.stringify(input.requesterName)}${thread} saying your session ${done} and whether you are ready to continue.`
-      : `Then send a short message in the room${thread} saying your session ${done} and whether you are ready to continue.`,
+    `If you held a role in that room before the ${input.action}, re-assume it and follow its instructions; if it is unavailable, report that clearly instead of claiming it was restored. If you held no role, say nothing about roles.`,
+    `Then post_message a short note in the room${thread}${mention} saying your session ${done} and whether you are ready to continue. Do not use send_targeted_message for it.`,
   ].join(' ');
 }
 

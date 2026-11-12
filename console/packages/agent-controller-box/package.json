@@ -28,7 +28,7 @@
     "@switch-console/agent-providers-box": "workspace:*",
     "@switch-console/plugins": "workspace:*",
     "ws": "^8.21.3",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@sandboxaq/switch-agent-runtime-box": "workspace:*",

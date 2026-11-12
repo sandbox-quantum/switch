@@ -5,6 +5,7 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { isProcessAlive } from '../process-alive';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import {
   fenceDeadOwner,
@@ -15,16 +16,6 @@ import {
 import { pipeRedactedLogs } from './redaction';
 import type { SessionLinks } from './session-channel';
 import { requestChildStop } from './stop-request';
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
 
 /**
  * The supervisor records this process holds right now, by path. A record
@@ -141,7 +132,11 @@ export async function superviseSharedHost(input: {
   const owner = { pid: process.pid, token: randomUUID(), build: input.build };
   await withOwnershipLock(directory, async () => {
     const record = await ownerRecord(ownerPath);
-    if (record !== null && !leftByEarlierSupervisor(ownerPath, record) && alive(record.pid)) {
+    if (
+      record !== null &&
+      !leftByEarlierSupervisor(ownerPath, record) &&
+      isProcessAlive(record.pid, 'recorded')
+    ) {
       const verdict = await (input.judge ?? judgeOwnerRecord)(ownerPath, record.pid);
       if (verdict.kind === 'alive')
         throw new Error('The shared host supervisor is already running.');
@@ -164,7 +159,7 @@ export async function superviseSharedHost(input: {
       // A stale lock (left by an earlier worker, before this box, or naming a
       // thread of another process) has no living worker to adopt.
       const verdict =
-        existing !== null && alive(existing)
+        existing !== null && isProcessAlive(existing, 'recorded')
           ? await (input.judge ?? judgeOwnerRecord)(lockPath, existing)
           : ({ kind: 'stale', reason: 'gone' } as const);
       if (verdict.kind === 'alive') {

@@ -87,7 +87,7 @@ async function ticketPredatesHolder(path: string, pid: number): Promise<boolean>
 }
 
 /**
- * `fileMode(0o600)` from `host-permissions`, written out: this module takes
+ * `recordMode()` from `host-permissions`, written out: this module takes
  * no relative import, since its tests load it on its own in a child process.
  */
 function recordMode(): number {

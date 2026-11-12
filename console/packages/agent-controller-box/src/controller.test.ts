@@ -108,6 +108,7 @@ function deps(server = core.url): ControllerDeps {
     rechecks: new ProviderRechecks(),
     refreshPath: async () => {},
     providerSeed: [],
+    sessionStarted: () => {},
     tools: async () => [],
     fetch,
     openWebSocket: core.openWebSocket,

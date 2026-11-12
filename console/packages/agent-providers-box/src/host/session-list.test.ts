@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type { ServerEvent, Session } from '@switch-console/shared/session-v1';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { isProcessAlive } from '../process-alive';
 import { JournalUnavailableError, readJournalSnapshot } from './journal-snapshot';
 import type * as launch from './launch';
 import {
@@ -89,7 +90,7 @@ it('lists every agent on the host, each with its owner, when no agent is named',
   const scripted = JSON.parse(
     execFileSync(process.execPath, ['-e', LIST_SCRIPT, '', paths.base], { encoding: 'utf8' })
   );
-  expect(readHostSessions(fs, path, null, paths.base)).toEqual(scripted);
+  expect(readHostSessions(fs, path, null, paths.base, isProcessAlive)).toEqual(scripted);
   const byAgent = hostSessionsByAgent(scripted);
   expect([...byAgent.keys()].sort()).toEqual(['agent', 'someone-else']);
   expect(
@@ -121,7 +122,7 @@ it('lists the same sessions in-process as LIST_SCRIPT does over a shell', async 
   const scripted = JSON.parse(
     execFileSync(process.execPath, ['-e', LIST_SCRIPT, 'agent', paths.base], { encoding: 'utf8' })
   );
-  expect(readHostSessions(fs, path, 'agent', paths.base)).toEqual(scripted);
+  expect(readHostSessions(fs, path, 'agent', paths.base, isProcessAlive)).toEqual(scripted);
   const listed = listSessions('agent');
   expect(listed).toEqual(hostSessions(scripted));
   expect(
@@ -199,7 +200,7 @@ it('skips launch staging directories beside the state roots', async () => {
   const scripted = JSON.parse(
     execFileSync(process.execPath, ['-e', LIST_SCRIPT, 'agent', paths.base], { encoding: 'utf8' })
   );
-  expect(readHostSessions(fs, path, 'agent', paths.base)).toEqual(scripted);
+  expect(readHostSessions(fs, path, 'agent', paths.base, isProcessAlive)).toEqual(scripted);
   expect(hostSessions(scripted).map((s) => s.sessionId)).toEqual(['real']);
 });
 
@@ -220,7 +221,7 @@ it('counts an owner that answers EPERM as alive, and only ESRCH or no owner as g
   });
   try {
     const alive = Object.fromEntries(
-      readHostSessions(fs, path, 'agent', paths.base).map((s) => [
+      readHostSessions(fs, path, 'agent', paths.base, isProcessAlive).map((s) => [
         (s.session as Session).sessionId,
         s.alive,
       ])

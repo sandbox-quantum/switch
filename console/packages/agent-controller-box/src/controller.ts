@@ -11,6 +11,7 @@ import {
   type ProviderReadiness,
   type RestartNotice,
   SESSION_ALLOWANCE_BYTES,
+  type SessionStartedNotice,
   startReserveFromEnv,
 } from '@switch-console/agent-providers-box';
 import { AgentHub } from './agent-hub';
@@ -89,6 +90,7 @@ import {
 import { type GivenLogin, registerSealingKey, SealedLogins, sealingKeys } from './sealed-logins';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import type { SelfUpdater } from './self-update';
+import { SocketCalls } from './socket-calls';
 import { readSplitBoxMemory } from './split-memory';
 import type { LaunchGate, ProbeEnv } from './split-runtime';
 import {
@@ -244,6 +246,11 @@ export type ControllerDeps = {
   refreshPath: () => Promise<void>;
   /** Provider checks made before this controller started, taken as its own (`ProviderStatuses.seed`). */
   providerSeed: ProviderSeed;
+  /**
+   * A session of an agent here started, and Switch took its host's report:
+   * passed to whoever runs this controller (`SessionStartedNotice`).
+   */
+  sessionStarted: (started: Omit<SessionStartedNotice, 'kind'>) => void;
   /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
   tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
@@ -655,6 +662,8 @@ export async function runController(
   );
   /** The hub over a WebSocket, kept for the status's joined-hosts count. */
   let hubSocket: HubSocket | null = null;
+  // The agents' operations go to Switch on the controller's socket while it takes them.
+  const calls = new SocketCalls();
   const relay = new LocalRelay({
     log,
     roomFor: (agentId, sessionId) => hub.roomFor(agentId, sessionId),
@@ -730,6 +739,12 @@ export async function runController(
         revoked: () => void revoke(),
       },
       log,
+      sessionStarted: ({ agentId, sessionId, startSource }) => {
+        const entry = assignment?.agents.find((held) => held.agent_id === agentId);
+        if (!entry) return;
+        deps.sessionStarted({ sessionId, provider: entry.definition.provider, startSource });
+      },
+      calls,
     }),
   });
   /** The agents whose saved cursor the hub has been given. */
@@ -1608,6 +1623,7 @@ export async function runController(
       initialBackoffMs: timing.streamInitialBackoffMs,
       maxBackoffMs: timing.streamMaxBackoffMs,
       random: deps.random,
+      calls,
     });
     if (ending === 'revoked') await revoke();
     if (ending === 'taken_over')
