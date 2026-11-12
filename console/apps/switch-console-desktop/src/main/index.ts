@@ -52,7 +52,10 @@ import { startActivationTracking } from './core/telemetry/activation';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
-import { telemetryService } from './core/telemetry/telemetry-service';
+import {
+  forgetInstallIdWithoutConsent,
+  telemetryService,
+} from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
@@ -182,6 +185,9 @@ void app.whenReady().then(async () => {
   // before it is sent, and never before the database it is read from.
   registerTelemetryListeners();
   telemetryService.setInternalSource(currentInternalFlag);
+  void forgetInstallIdWithoutConsent().catch((error: unknown) => {
+    log.error('telemetry: could not delete the install id while sharing is off', { error });
+  });
   void reportLaunch(readThisLaunch);
   startActivationTracking();
 

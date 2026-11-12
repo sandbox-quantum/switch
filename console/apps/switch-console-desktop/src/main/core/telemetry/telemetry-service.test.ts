@@ -6,12 +6,17 @@ vi.mock('@main/lib/logger', () => ({
 }));
 vi.mock('@main/core/app/utils', () => ({ resolveAppVersion: vi.fn(async () => '1.2.3') }));
 vi.mock('./consent', () => ({ isTelemetryAllowed: vi.fn() }));
-vi.mock('./install-id', () => ({ getInstallId: vi.fn(async () => 'install-abc') }));
+vi.mock('./install-id', () => ({
+  getInstallId: vi.fn(async () => 'install-abc'),
+  forgetInstallId: vi.fn(async () => {}),
+}));
 
 import { durationMs } from '@tooling/utils/telemetry-duration';
 import { log } from '@main/lib/logger';
 import { isTelemetryAllowed } from './consent';
-import { telemetryService, trackEvent } from './telemetry-service';
+import { forgetInstallId, getInstallId } from './install-id';
+import { coarseOsVersion } from './os-version';
+import { forgetInstallIdWithoutConsent, telemetryService, trackEvent } from './telemetry-service';
 
 const fetchMock = vi.fn();
 
@@ -86,12 +91,66 @@ describe('the consent gate', () => {
   });
 
   it('asks the gate again for every event, so revoking consent stops the next one', async () => {
-    vi.mocked(isTelemetryAllowed).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    vi.mocked(isTelemetryAllowed)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
 
     await telemetryService.track('app_launched', { install_kind: 'same' });
+    await telemetryService.track('app_launched', { install_kind: 'same' });
+
+    expect(isTelemetryAllowed).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('touches no install id when consent is off', async () => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(false);
+
+    await telemetryService.track('app_launched', { install_kind: 'same' });
+
+    expect(getInstallId).not.toHaveBeenCalled();
+  });
+
+  it('asks again immediately before the request, and sends nothing if the answer changed', async () => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValueOnce(true).mockResolvedValue(false);
+
     await telemetryService.track('app_launched', { install_kind: 'same' });
 
     expect(isTelemetryAllowed).toHaveBeenCalledTimes(2);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('stops an event already past the first check when sharing is turned off', async () => {
+    // The event clears the gate, then waits on the install id; the user turns
+    // sharing off in that gap. Nothing may be sent, and the id the event was
+    // waiting for must not be left behind.
+    let consent = true;
+    vi.mocked(isTelemetryAllowed).mockImplementation(async () => consent);
+    let releaseId!: (id: string) => void;
+    vi.mocked(getInstallId).mockImplementationOnce(
+      () => new Promise<string>((resolve) => (releaseId = resolve))
+    );
+
+    const inFlight = telemetryService.track('app_launched', { install_kind: 'same' });
+    await vi.waitFor(() => expect(getInstallId).toHaveBeenCalled());
+    consent = false;
+    releaseId('install-abc');
+    await inFlight;
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(forgetInstallId).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues nothing to send later once sharing is turned back on', async () => {
+    // Events refused while sharing was off are gone, not held: turning it
+    // back on sends only what happens from then on.
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(false);
+    await telemetryService.track('app_launched', { install_kind: 'same' });
+    await telemetryService.track('renderer_crashed', {});
+
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+    await telemetryService.track('app_launched', { install_kind: 'new' });
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -109,6 +168,24 @@ describe('the consent gate', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toBe('https://telemetry.switchagents.ai/v1/logs');
+  });
+});
+
+describe('forgetting the install id at boot', () => {
+  it('deletes it when sharing is off', async () => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(false);
+
+    await forgetInstallIdWithoutConsent();
+
+    expect(forgetInstallId).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps it when sharing is on', async () => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+
+    await forgetInstallIdWithoutConsent();
+
+    expect(forgetInstallId).not.toHaveBeenCalled();
   });
 });
 
@@ -258,7 +335,13 @@ describe('the payload', () => {
     await telemetryService.track('app_launched', { install_kind: 'same' });
 
     expect(sentResource()['os.type']).toBe(expected ?? 'other');
-    expect(sentResource()['os.version']).toBe(release());
+    expect(sentResource()['os.version']).toBe(coarseOsVersion(process.platform, release()));
+  });
+
+  it('sends the operating system version cut down, never the full release string', async () => {
+    await telemetryService.track('app_launched', { install_kind: 'same' });
+
+    expect(sentResource()['os.version']).toMatch(/^(\d+(\.\d+)?|unknown)$/);
   });
 
   it('sends nothing beyond the fields this test names', async () => {

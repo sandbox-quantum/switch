@@ -1,12 +1,15 @@
-# Switch Console telemetry — what we collect, where it goes, and why it cannot be traced to a person
+# Switch Console telemetry — what we collect, where it goes, and how it is kept from identifying a person
 
 **Audience:** InfoSec.
 **Scope:** the Switch Console desktop app, and the consent decision it carries
 to a Switch server it runs for the user (§4.1). What that server itself
 collects is documented in [`old/telemetry-events.md`](old/telemetry-events.md);
 Switch server-side logging is out of scope here and needs its own pass.
-**Claim:** the data we transmit is anonymous. No field identifies a person, and
-no combination of the fields we transmit can be resolved back to one.
+**Claim:** the data we transmit is pseudonymous, not anonymous. Every event
+carries one random identifier that groups an installation's events and is
+replaced every 30 days (§5). No field identifies a person — no account, email
+address, content or IP address is in the data — and no combination of the fields
+we transmit can be resolved back to one.
 
 Sections 1–6 describe the Console as it is today, verified against the source.
 Section 7 describes the relay, which lives in a separate repository.
@@ -39,7 +42,7 @@ abbreviated:
     "flint_env": "prod",
     "flint_internal": "false",
     "os.type": "darwin",
-    "os.version": "23.6.0"
+    "os.version": "23.6"
   },
   "event.name": "session_started",
   "timeUnixNano": "1789572278158000000",
@@ -58,7 +61,8 @@ abbreviated:
 }
 ```
 
-Read it as: *an installation identified only by a random UUID, on macOS, started
+Read it as: *an installation identified only by a random UUID that changes every
+30 days, on macOS, started
 a Claude session locally from the command palette; it had some initial prompt
 text, and was not connected to a room.* Nothing in it says who, where, on what
 machine, in what repository, or what the prompt said.
@@ -77,8 +81,8 @@ machine, in what repository, or what the prompt said.
 | `flint_env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
 | `flint_internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address**. Once an installation has been signed in with one, it stays `true`, so staff usage stays labelled after that account signs out | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
-| `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
-| `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
+| `os.version` | the OS kernel release, cut down to its major version — major.minor on macOS, where the Darwin minor tracks the macOS point release. Never the full string: no Windows build number, no Linux patch level or distribution flavour | `23.6` (macOS), `10` (Windows), `6` (Linux), `unknown` |
+| `flint.client_id` | random install UUID, replaced every 30 days (§5) | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
 | `event.name` | the event | `session_started` |
 | timestamp | event time | `1789572278158000000` |
 
@@ -262,8 +266,12 @@ the instructions; `agent_count` not the agents; `result_count` not the query;
 **Consent.** Opt-out: telemetry is on by default. A non-dismissible notice on
 first run states what is shared and what never is, and carries the off switch;
 the same toggle lives in Settings → General. The setting is re-read before every
-single event rather than cached, so turning it off stops transmission
-immediately, with no further requests and no queued backlog. Dev builds never
+single event rather than cached — and read again immediately before the request
+goes out, so an event already being prepared when the toggle is turned off is
+not sent either. Turning it off stops transmission immediately, with no further
+requests and no queued backlog: nothing is queued, persisted or retried, so
+nothing refused while sharing was off is sent when it is turned back on. Turning
+it off also deletes the identifier (§5). Dev builds never
 transmit regardless of the setting. Opting out is itself not reported — the one
 thing we do not measure is someone asking not to be measured.
 
@@ -340,23 +348,41 @@ hold it back again.
 ## 5. The identifier
 
 Exactly one identifier is attached: `flint.client_id`, e.g.
-`3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` — a random UUID generated on the machine
-the first time telemetry runs, stored in the app's local database.
+`3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` — a random UUID generated on the machine,
+stored in the app's local database with the time it was created.
 
 - **Generated randomly.** Not derived from hardware, MAC address, disk serial, OS
   account, network, email, licence, or any Switch identity.
+- **Replaced every 30 days.** When an event is about to be sent and the stored
+  id is 30 days old or more, a new random UUID replaces it. The old one is
+  overwritten, not kept, and nothing in the payload or on the machine links one
+  to the next. Rotation is checked at send time, so an install that sends
+  nothing keeps its id until it next sends. An id stored by a version of the app
+  before rotation carries no creation time, and is replaced on the first send
+  after the upgrade. The 30 days is `TELEMETRY_ID_LIFETIME_DAYS` in the Console
+  source.
+- **Deleted on opt-out.** Turning sharing off deletes the stored id; turning it
+  back on starts a new, unrelated one. The app also deletes it at startup when
+  sharing is off, which covers an installation that opted out before this was
+  so.
 - **No Switch identity travels with it** — no user id, agent id, room id, tenant
   id, server id.
 - Deleting the app's data directory produces a **new, uncorrelated** UUID; there
   is no mechanism to relink the old one.
-- Downstream it is used as the analytics `device_id` — it groups one
-  installation's events together, and nothing more.
+- Downstream it is used as Amplitude's `device_id` — it groups one
+  installation's events together for up to 30 days, and nothing more. The app
+  sends no user id and no session id.
+
+**What it is, honestly.** While an id lasts, it links that installation's
+events, which makes the data pseudonymous rather than anonymous. Rotation bounds
+that link to a 30-day window: product analytics can count active installations
+and follow a funnel within a month, but cannot follow one installation across
+months.
 
 **There is no join key.** To resolve a UUID to a person you would need a second
 dataset holding that UUID next to an identity. No such dataset exists: the UUID
-lives only on the user's own machine and in the analytics store, and is never
-sent to, or recorded by, any account, licensing, billing or support system. It is
-an anonymous installation counter, not an identity.
+lives only on the user's own machine and in the analytics stores, and is never
+sent to, or recorded by, any account, licensing, billing or support system.
 
 ---
 
@@ -428,8 +454,9 @@ this document is verified against the Console source directly.
   workspace and channel names, error text — are precisely the ones replaced by
   enums, counts and booleans. §3 lists every permitted value; none of them is
   user-supplied.
-- **No join key exists.** The only stable value is a locally generated random
-  UUID present in no other system (§5).
+- **No join key exists.** The only identifier is a locally generated random
+  UUID present in no other system, replaced every 30 days and deleted when
+  sharing is turned off (§5).
 - **Field entropy is very low.** Every field is drawn from a short fixed
   vocabulary — 2 to 30 possible values — so any event is one of a small number of
   shapes. Fingerprinting by field combination fails because the combinations are
@@ -437,7 +464,11 @@ this document is verified against the Console source directly.
 - **The IP is controlled at a single point** and is neither logged, forwarded,
   nor used for enrichment (§7).
 - **The user is told on first run, and one toggle stops it** — with effect on the
-  very next event, since consent is checked per event rather than cached.
+  very next event, since consent is checked per event rather than cached, and on
+  an event already being prepared, since it is checked again just before the
+  request.
 
-Because the payload identifies nobody, the opt-out default changes how many
-installations are counted, not what is knowable about any of them.
+Sharing is on by default (opt-out). The payload names nobody, but the rotating
+identifier does link an installation's events for up to 30 days, so the default
+decides whose usage is recorded under such an identifier, not only how many
+installations are counted.

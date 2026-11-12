@@ -975,10 +975,12 @@ A Switch server reporting its usage to a vendor relay is a different question
 from a desktop app doing it, because the deployment may be a customer's and the
 usage may be theirs.
 
-The Console's answer is opt-in, defaulting to off, gated on an explicit choice
-having been made, and re-read on every event so revoking takes effect
-immediately. **The server takes the same position**: telemetry is off unless
-switched on, it is one setting, and when it is off no request is made at all.
+The Console's answer is opt-out: sharing defaults to on, a first-run notice
+says so and carries the off switch, and the answer is re-read on every event so
+revoking takes effect immediately (see `docs/TELEMETRY.md` §4). **The server's
+own default is the opposite**: telemetry is off unless switched on, it is one
+setting, and when it is off no request is made at all. On a server the Console
+runs, that one setting is the Console's answer, as below.
 
 Who sets that one setting depends on who deployed the server. On a stack an
 operator brought up themselves, they set `TELEMETRY_ENABLED` — in the `.env` for

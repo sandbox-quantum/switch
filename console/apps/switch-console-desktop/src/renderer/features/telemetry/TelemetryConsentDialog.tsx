@@ -23,9 +23,10 @@ import {
  * the user it is happening and put the off switch in front of them before they
  * go any further.
  *
- * It says the data is anonymous and links to the full account rather than
- * listing fields: the itemised version runs to every event and every field, and
- * a dialog that tries to hold it gets skimmed instead of read.
+ * It states what identifies the data — a random identifier that is replaced
+ * periodically, and nothing about the person — and links to the full account
+ * rather than listing fields: the itemised version runs to every event and
+ * every field, and a dialog that tries to hold it gets skimmed instead of read.
  */
 export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void }) {
   const { value, updateAsync } = useAppSettingsKey('telemetry');
