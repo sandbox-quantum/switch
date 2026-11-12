@@ -239,6 +239,12 @@ export interface AcpProviderHooks {
   clientCapabilities?: Record<string, unknown>;
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
+  /**
+   * The vendor ends its whole turn with `stopReason: "cancelled"` once a tool
+   * call is declined (Grok Build). Such a turn ended because the person said
+   * no, not because Switch interrupted it, so it completes.
+   */
+  declineEndsTurn?: boolean;
 }
 
 export interface AcpSignedInQuery {

@@ -423,6 +423,78 @@ it('offers allow-for-session, maps it to the agent option, and answers decline w
   });
 });
 
+const declining: AcpProviderHooks = { ...dummy, declineEndsTurn: true };
+
+it.each([
+  ['completes a turn its provider ends once a call is declined', declining, 'decline', 'completed'],
+  [
+    'still reports a cancelled turn as interrupted without the hook',
+    dummy,
+    'decline',
+    'interrupted',
+  ],
+  [
+    'reports a turn Switch interrupted as interrupted, hook or not',
+    declining,
+    'interrupt',
+    'interrupted',
+  ],
+  [
+    'reports a turn cancelled with no decline in it as failed, hook or not',
+    declining,
+    'none',
+    'error',
+  ],
+  [
+    'reports a turn cancelled after an approved call as failed, hook or not',
+    declining,
+    'accept',
+    'error',
+  ],
+] as const)('%s', async (_name, hooks, action, outcome) => {
+  const { adapter, events, server } = await start(hooks);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const prompt = await server.waitFor('session/prompt');
+  if (action === 'decline' || action === 'accept') {
+    server.send(askFor(70, 'call'));
+    await flush();
+    const opened = events.find((e) => e.type === 'request.opened');
+    if (opened?.type !== 'request.opened') throw new Error('No approval');
+    await adapter.respondToRequest('s', opened.requestId, action);
+  }
+  if (action === 'interrupt') await adapter.interruptTurn('s');
+  server.send({ id: prompt.id, result: { stopReason: 'cancelled' } });
+  await flush();
+  await flush();
+  const done = events.find((e) => e.type === 'turn.completed');
+  if (done?.type !== 'turn.completed') throw new Error('The turn did not end');
+  expect(done.outcome).toBe(outcome);
+});
+
+it("starts each turn without the last one's decline", async () => {
+  const { adapter, events, server } = await start(declining);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'go' });
+  const first = await server.waitFor('session/prompt');
+  server.send(askFor(71, 'call'));
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  await adapter.respondToRequest('s', opened.requestId, 'decline');
+  server.send({ id: first.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  server.received.length = 0;
+  await adapter.sendTurn({ sessionId: 's', turnId: 't2', text: 'again' });
+  const second = await server.waitFor('session/prompt');
+  server.send({ id: second.id, result: { stopReason: 'cancelled' } });
+  await flush();
+  await flush();
+  const done = events.filter((e) => e.type === 'turn.completed');
+  expect(done.map((e) => (e.type === 'turn.completed' ? e.outcome : null))).toEqual([
+    'completed',
+    'error',
+  ]);
+});
+
 it('approves without asking in full access, approves only edits in auto-accept-edits, and asks in auto', async () => {
   for (const [runtimeMode, kind, prompted] of [
     ['full-access', 'execute', 0],

@@ -834,6 +834,9 @@ version of their own to them without also giving them a release of their own.
   owner to run `kiro-cli login`. A chat now names the provider of any agent
   registered through a provider's known-agent spec, read from the provider
   table rather than a list of its own.
+- **Grok Build is a provider.** Definitions, the gateway's provider list and
+  known-agent registration accept `grok`, and an offline Grok Build agent
+  tells its owner to run `grok login`. It has no advanced settings.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -3489,6 +3492,15 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
+- **Grok Build is an agent provider.** Agents can run on xAI's Grok Build
+  (`grok agent stdio`, ACP): created in Console with a model from Grok's own
+  list, talking in rooms, asking before each tool from the chat, answering
+  Grok's own questions as question cards, and resuming after a restart.
+  Console says whether Grok is installed and signed in without starting a
+  sign-in, and tells you to run `grok login` (`grok login --device-auth` on a
+  machine without a browser) or set `XAI_API_KEY`. Declining a
+  tool call ends Grok's turn, which now completes rather than reading as
+  interrupted (`declineEndsTurn` on the ACP hooks).
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
