@@ -27,7 +27,11 @@ async function rootDirectory() {
 async function child(root: string, stage: string): Promise<number | null> {
   const script = `
     import fs from 'node:fs/promises';
-    import { syncBuiltinESMExports } from 'node:module';
+    import { registerHooks, syncBuiltinESMExports } from 'node:module';
+    registerHooks({
+      resolve: (specifier, context, next) =>
+        next(/^\\.\\.?\\/(.*\\/)?[^./]+$/.test(specifier) ? specifier + '.ts' : specifier, context),
+    });
     const root = ${JSON.stringify(root)};
     const stage = ${JSON.stringify(stage)};
     for (const operation of ['link', 'rename']) {

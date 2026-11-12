@@ -34,6 +34,7 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.db_server import DbServerSampler
 from switch_core.observability.exporter import MetricsExporter
 from switch_core.observability.health import (
+    HealthCheck,
     HealthMonitor,
     agent_event_listener_check,
     bridges_check,
@@ -94,6 +95,9 @@ class RuntimeProbes:
     bridges_configured: Callable[[], int]
     # (platform, display name) per bridge whose task has died.
     bridges_crashed: Callable[[], Sequence[tuple[str, str]]]
+    # (platform, display name) per bridge this process has started, running
+    # or not.
+    bridges_started: Callable[[], Sequence[tuple[str, str]]]
     consumers_running: Callable[[], int]
     # Agents per (transport, client); see
     # `AgentConnectionRegistry.live_agents_by_transport`.
@@ -140,8 +144,9 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
     # Every (transport, client) pair reported so far: one that empties out is
     # reported as 0, or the dashboard would keep showing its last count.
     seen: set[tuple[str, str]] = {("websocket", "unknown")}
-    # Every bridge reported down so far: once it runs again it reads 0, so its
-    # alert recovers instead of going quiet.
+    # Every bridge reported down so far, and every bridge this process runs:
+    # each reads 0 while it runs, so its alert recovers instead of going
+    # quiet, even when the process that saw the crash is gone.
     crashed_seen: set[tuple[str, str]] = set()
 
     def readings() -> Iterator[GaugeReading]:
@@ -162,6 +167,7 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
             )
         crashed = set(probes.bridges_crashed())
         crashed_seen.update(crashed)
+        crashed_seen.update(probes.bridges_started())
         for platform, name in sorted(crashed_seen):
             yield GaugeReading(
                 BRIDGES_CRASHED,
@@ -188,6 +194,7 @@ def start_observability(
     session_factory: async_sessionmaker,
     probes: RuntimeProbes,
     process_id: str,
+    optional_checks: Sequence[HealthCheck],
     db_server_engine: Callable[[], AsyncEngine] | None = None,
 ) -> Observability:
     """Install the registry, start the loops, and hand back the handle.
@@ -195,8 +202,15 @@ def start_observability(
     Called once, from the server's lifespan. `db_server_engine` builds the
     engine the database sampler takes its one connection from; it must not be
     the application's pooled engine. `process_id` names this process on
-    everything it reports (`process_identity.py`).
+    everything it reports (`process_identity.py`). `optional_checks` are
+    checks of optional services, reported beside the rest; none may gate
+    readiness.
     """
+    gating = [check.name for check in optional_checks if check.gates_readiness]
+    if gating:
+        raise ValueError(
+            f"Optional health checks must not gate readiness, but {gating} do."
+        )
     # With another replica to take the traffic, a process that would answer
     # late is better out of service; with one, it is the only one there is.
     listeners_gate = config.core_replicas > 1
@@ -212,6 +226,7 @@ def start_observability(
             ),
             signal_bus_check(probes.signal_bus_connected, listeners_gate),
             bridges_check(probes.bridges_running, probes.bridges_configured),
+            *optional_checks,
         ],
         interval_seconds=HEALTH_REFRESH_INTERVAL_SECONDS,
     )

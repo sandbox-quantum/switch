@@ -33,6 +33,8 @@ vi.mock('node:child_process', () => ({
   },
 }));
 const { createAcpAdapter } = await import('./acp-adapter');
+const { antigravityAcp } = await import('../antigravity/antigravity-adapter');
+const { cursorAcp } = await import('../cursor/cursor-adapter');
 
 /** The least a new ACP provider has to say about itself. */
 const dummy: AcpProviderHooks = {
@@ -184,6 +186,43 @@ it('embeds file contents when the agent takes embedded context', async () => {
   });
 });
 
+it('starts a tool call again under the type a later update gives it, and only then', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    itemType: (toolCall) => (toolCall._meta?.kind === 'agent' ? 'subagent' : undefined),
+  };
+  const { adapter, events, server } = await start(hooks);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  for (const update of [
+    { sessionUpdate: 'tool_call', status: 'pending', title: 'Tool', kind: 'other' },
+    {
+      sessionUpdate: 'tool_call_update',
+      status: 'in_progress',
+      title: 'Agent',
+      _meta: { kind: 'agent' },
+    },
+    { sessionUpdate: 'tool_call_update', status: 'in_progress', title: 'Agent: working' },
+    { sessionUpdate: 'tool_call_update', status: 'completed' },
+  ])
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { toolCallId: 'call', ...update },
+    });
+  await flush();
+  expect(
+    events.flatMap((e) =>
+      e.type.startsWith('item.') && 'item' in e && e.item.id === 'call'
+        ? [`${e.type}:${e.item.type}`]
+        : []
+    )
+  ).toEqual([
+    'item.started:tool_call',
+    'item.started:subagent',
+    'item.updated:subagent',
+    'item.completed:subagent',
+  ]);
+});
+
 it('auto-approves a tool the hooks place on any session-registered MCP server', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,
@@ -214,6 +253,140 @@ it('auto-approves a tool the hooks place on any session-registered MCP server', 
   });
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
 });
+
+it('asks mcpServerOf about a request with its own call, then with the call as it was last placed', async () => {
+  const asked: Array<[string | undefined, string[], string | undefined]> = [];
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    // Copilot CLI's shape: a tool is announced as `<server>-<tool>` and
+    // requested as `<tool>`, so a request is placed only when the two agree.
+    mcpServerOf: (toolCall, servers, request) => {
+      if (request) asked.push([toolCall.title, [...servers], request.title]);
+      return [...servers].find(
+        (name) =>
+          toolCall.title?.startsWith(`${name}-`) &&
+          (!request || toolCall.title.slice(name.length + 1) === request.title)
+      );
+    },
+  };
+  const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.js'] };
+  const { adapter, events, server } = await start(hooks, {
+    mcpServers: { switch: stdio, acme: stdio },
+    connectorMcpServers: ['acme'],
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const update = (sessionUpdate: string, toolCallId: string, title?: string) =>
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: {
+        sessionUpdate,
+        toolCallId,
+        kind: 'other',
+        status: 'pending',
+        ...(title && { title }),
+      },
+    });
+  const ask = (id: number, toolCallId: string, title: string) =>
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId, title, kind: 'other' },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+  // Placed on Switch's server by an update, and kept through one naming nothing.
+  update('tool_call', 'call-1', 'lights');
+  update('tool_call_update', 'call-1', 'switch-lights');
+  update('tool_call_update', 'call-1');
+  ask(90, 'call-1', 'lights');
+  // Announced on the connector, with a tool whose own name starts `switch-`.
+  update('tool_call', 'call-2', 'acme-switch-lights');
+  ask(91, 'call-2', 'switch-lights');
+  await flush();
+  expect(server.received.find((m) => m.id === 90)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(server.received.some((m) => m.id === 91 && 'result' in m)).toBe(false);
+  expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+    { requestType: 'mcp_tool_approval', connector: 'acme' },
+  ]);
+  expect(asked).toEqual([
+    ['lights', ['switch', 'acme'], 'lights'],
+    ['switch-lights', ['switch', 'acme'], 'lights'],
+    ['switch-lights', ['switch', 'acme'], 'switch-lights'],
+    ['acme-switch-lights', ['switch', 'acme'], 'switch-lights'],
+  ]);
+});
+
+it.each([
+  [
+    'Cursor',
+    cursorAcp.mcpServerOf,
+    (server?: string) => ({ rawInput: server ? { providerIdentifier: server } : {} }),
+  ],
+  [
+    'Antigravity',
+    antigravityAcp.mcpServerOf,
+    (server?: string) => ({ _meta: server ? { is_mcp_tool_call: true, mcp: { server } } : {} }),
+  ],
+] as const)(
+  "places a %s request by the server only a later update of its call names, after the request's own",
+  async (_provider, mcpServerOf, naming) => {
+    const stdio = { transport: 'stdio' as const, command: 'node', args: ['server.js'] };
+    const { adapter, events, server } = await start(
+      { ...dummy, mcpServerOf },
+      { mcpServers: { switch: stdio, gws: stdio }, connectorMcpServers: ['gws'] }
+    );
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    const update = (sessionUpdate: string, toolCallId: string, named?: string) =>
+      server.notify('session/update', {
+        sessionId: 'native',
+        update: {
+          sessionUpdate,
+          toolCallId,
+          title: 'search',
+          kind: 'other',
+          status: 'pending',
+          ...naming(named),
+        },
+      });
+    const ask = (id: number, toolCallId: string, named?: string) =>
+      server.send({
+        id,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'native',
+          toolCall: { toolCallId, title: 'search', kind: 'other', ...naming(named) },
+          options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+        },
+      });
+    // Each call is announced on no server, named by the next update, and the
+    // update after that names none again.
+    for (const [toolCallId, named] of [
+      ['call-1', 'switch'],
+      ['call-2', 'gws'],
+      ['call-3', 'gws'],
+    ] as const) {
+      update('tool_call', toolCallId);
+      update('tool_call_update', toolCallId, named);
+      update('tool_call_update', toolCallId);
+    }
+    ask(101, 'call-1');
+    ask(102, 'call-2');
+    // A server the request names itself comes first, as it always has.
+    ask(103, 'call-3', 'switch');
+    await flush();
+    const allowed = { outcome: { outcome: 'selected', optionId: 'once' } };
+    expect(server.received.find((m) => m.id === 101)?.result).toEqual(allowed);
+    expect(server.received.some((m) => m.id === 102 && 'result' in m)).toBe(false);
+    expect(server.received.find((m) => m.id === 103)?.result).toEqual(allowed);
+    expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+      { requestType: 'mcp_tool_approval', connector: 'gws' },
+    ]);
+  }
+);
 
 it('offers allow-for-session, maps it to the agent option, and answers decline with cancelled when no reject is offered', async () => {
   const { adapter, events, server } = await start();
@@ -272,6 +445,174 @@ it('approves without asking in full access, approves only edits in auto-accept-e
     await flush();
     expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(prompted);
   }
+});
+
+const announce = (toolCallId: string, title: string, rawInput?: Record<string, unknown>) => ({
+  method: 'session/update',
+  params: {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId,
+      title,
+      kind: 'other',
+      status: 'in_progress',
+      ...(rawInput ? { rawInput } : {}),
+    },
+  },
+});
+const askFor = (id: number, toolCallId: string) => ({
+  id,
+  method: 'session/request_permission',
+  params: {
+    sessionId: 'native',
+    toolCall: { toolCallId },
+    options: [
+      { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+    ],
+  },
+});
+const typed: AcpProviderHooks = {
+  ...dummy,
+  itemType: (call) =>
+    call.title === 'bash'
+      ? 'command_execution'
+      : call.title === 'write'
+        ? 'file_change'
+        : undefined,
+};
+
+it('describes and decides a permission request naming only its tool call by the call announced', async () => {
+  const { adapter, events, server } = await start(typed);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(announce('a', 'bash'));
+  server.send(askFor(90, 'a'));
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.requestType).toBe('command_execution_approval');
+  expect(opened.title).toBe('bash');
+
+  for (const [title, prompted] of [
+    ['write', 0],
+    ['bash', 1],
+  ] as const) {
+    const edits = await start(typed, { runtimeMode: 'auto-accept-edits' });
+    await edits.adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    edits.server.send(announce('b', title));
+    edits.server.send(askFor(91, 'b'));
+    await flush();
+    expect(edits.events.filter((e) => e.type === 'request.opened')).toHaveLength(prompted);
+  }
+});
+
+it('titles tool calls and their approvals with the hooks, keeping the title on later updates', async () => {
+  const titled: AcpProviderHooks = {
+    ...typed,
+    toolTitle: (call) =>
+      typeof call.rawInput?.command === 'string' ? call.rawInput.command : undefined,
+  };
+  const { adapter, events, server } = await start(titled);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(announce('a', 'bash', { command: 'npm test' }));
+  server.send(askFor(92, 'a'));
+  await flush();
+  expect(events.find((e) => e.type === 'request.opened')).toMatchObject({ title: 'npm test' });
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call_update', toolCallId: 'a', status: 'completed' },
+    },
+  });
+  await flush();
+  expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
+    item: { id: 'a', type: 'command_execution', title: 'npm test', status: 'completed' },
+  });
+  // An update repeating the bare tool name does not undo the hook's title.
+  server.send(announce('b', 'bash', { command: 'npm run build' }));
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'b',
+        title: 'bash',
+        status: 'completed',
+      },
+    },
+  });
+  await flush();
+  expect(events.filter((e) => e.type === 'item.completed').at(-1)).toMatchObject({
+    item: { id: 'b', title: 'npm run build' },
+  });
+});
+
+it("keeps a permission request's own kind and title over the announced call's", async () => {
+  const { adapter, events, server } = await start(typed, { runtimeMode: 'auto-accept-edits' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(announce('a', 'write'));
+  server.send({
+    id: 93,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'a', kind: 'execute', title: 'Run the migration' },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  expect(events.find((e) => e.type === 'request.opened')).toMatchObject({
+    requestType: 'command_execution_approval',
+    title: 'Run the migration',
+  });
+});
+
+it('tells the launch hook the runtime mode, and nothing during a sign-in check', async () => {
+  const seen: Array<string | undefined> = [];
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    launch: ({ binaryPath, env, runtimeMode }) => {
+      seen.push(runtimeMode);
+      return { command: binaryPath, args: [], env };
+    },
+  };
+  await start(hooks, { runtimeMode: 'auto' });
+  const { checkAcpSignIn } = await import('./acp-adapter');
+  await checkAcpSignIn(hooks, { binaryPath: 'dummy-acp', cwd: '/work', env: {} });
+  expect(seen).toEqual(['auto', undefined]);
+});
+
+it('reads a permission request that names only its call from the call announced before it', async () => {
+  const { adapter, events, server } = await start(dummy, { runtimeMode: 'auto-accept-edits' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  for (const [id, toolCallId, kind, title] of [
+    [55, 'patch', 'edit', 'Edit a.ts'],
+    [56, 'shell', 'execute', 'echo hi'],
+  ] as const) {
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', toolCallId, kind, title, status: 'pending' },
+    });
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+  }
+  await flush();
+  expect(server.received.find((m) => m.id === 55)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toMatchObject([
+    { requestType: 'command_execution_approval', title: 'echo hi' },
+  ]);
 });
 
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
