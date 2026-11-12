@@ -75,6 +75,7 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
       decision: ${{ steps.filter.outputs.decision }}
+      observability: ${{ steps.filter.outputs.observability }}
       e2e: ${{ steps.filter.outputs.e2e }}
       local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
     steps:
@@ -113,6 +114,10 @@ jobs:
             decision:
               - *shared
               - 'decision/**'
+            # The morning report, tested with its own dependencies, not core's.
+            observability:
+              - *shared
+              - 'deploy/observability/**'
             console:
               - *shared
               - 'console/**'
@@ -279,6 +284,27 @@ jobs:
       - name: pytest
         working-directory: decision
         run: uv run pytest -q
+
+  observability:
+    name: Morning report
+    needs: changes
+    if: ${{ needs.changes.outputs.observability == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      # The script's own dependencies, read from its header, plus pytest.
+      - name: pytest
+        working-directory: deploy/observability
+        run: uv run --no-project --with-requirements daily_report.py --with pytest pytest -q
 
   console:
     name: Switch Console
