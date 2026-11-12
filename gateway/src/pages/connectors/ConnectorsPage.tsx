@@ -15,16 +15,17 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import CatalogueGrid from "../../components/connectors/CatalogueGrid";
 import ConnectorCard from "../../components/connectors/ConnectorCard";
 import InfoTip from "../../components/InfoTip";
+import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import { type ServiceConnection, fetchServiceConnections, fetchWorkspaceServices } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { brokenLine, catalogueMeta, connectWay, isConnected, offNotice } from "./connectorProfile";
 import KeyDialog from "./KeyDialog";
-import { leaveToSignIn } from "./signIn";
+import { useLeaveToSignIn } from "./signIn";
 
 type Tab = "yours" | "all";
 
@@ -32,6 +33,22 @@ type Tab = "yours" | "all";
  * the catalog's own order. */
 function ordered(connections: ServiceConnection[]): ServiceConnection[] {
   return [...connections.filter((c) => c.enabled), ...connections.filter((c) => !c.enabled)];
+}
+
+/** A badge whose reason shows on hover, and is read out with the card by a
+ * screen reader. It sits inside the card's button, so it can't take focus
+ * itself; the connector's page says the same in full. */
+function Reason({ label, why, icon }: { label: string; why: string; icon?: ReactElement }) {
+  return (
+    <>
+      <Tooltip title={why}>
+        <Chip size="small" variant="outlined" icon={icon} label={label} />
+      </Tooltip>
+      <Box component="span" sx={SCREEN_READER_ONLY}>
+        {why}
+      </Box>
+    </>
+  );
 }
 
 /** The card's one control, top right. Not connected: a button that starts
@@ -107,13 +124,17 @@ export default function ConnectorsPage() {
   const [tab, setTab] = useState<Tab | null>(null);
   const [query, setQuery] = useState("");
   const [keyFor, setKeyFor] = useState<ServiceConnection | null>(null);
-  const [leaving, setLeaving] = useState<string | null>(null);
+  const { leaving, leave } = useLeaveToSignIn();
   const [toast, setToast] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setConnections(ordered(await fetchServiceConnections()));
+      const listed = ordered(await fetchServiceConnections());
+      setConnections(listed);
+      // Yours, unless there is nothing of yours yet to show; chosen on the
+      // first read only, so connecting one later doesn't switch tabs.
+      setTab((chosen) => chosen ?? (listed.some(isConnected) ? "yours" : "all"));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -135,22 +156,17 @@ export default function ConnectorsPage() {
   }, [admin]);
 
   const connected = useMemo(() => (connections ?? []).filter(isConnected), [connections]);
-  // Yours, unless there is nothing of yours yet to show.
-  const shown: Tab = tab ?? (connected.length > 0 ? "yours" : "all");
+  const shown: Tab = tab ?? "all";
 
-  const connect = async (connection: ServiceConnection) => {
+  const connect = (connection: ServiceConnection) => {
     setConnectError(null);
     if (connectWay(connection) === "key") {
       setKeyFor(connection);
       return;
     }
-    setLeaving(connection.slug);
-    try {
-      await leaveToSignIn(connection.slug);
-    } catch (err) {
-      setLeaving(null);
-      setConnectError(err instanceof Error ? err.message : String(err));
-    }
+    leave(connection.slug).catch((err: unknown) =>
+      setConnectError(err instanceof Error ? err.message : String(err)),
+    );
   };
 
   return (
@@ -219,14 +235,10 @@ export default function ConnectorsPage() {
                       !connection.enabled ? (
                         <Chip size="small" label="Coming soon" />
                       ) : off ? (
-                        <Tooltip title={off.text}>
-                          <Chip size="small" variant="outlined" icon={<BlockOutlined />} label="Off here" />
-                        </Tooltip>
+                        <Reason label="Off here" why={off.text} icon={<BlockOutlined />} />
                       ) : (
                         !connection.connectable && (
-                          <Tooltip title={connection.unavailable_reason ?? "It can't be connected here."}>
-                            <Chip size="small" variant="outlined" label="Unavailable" />
-                          </Tooltip>
+                          <Reason label="Unavailable" why={connection.unavailable_reason ?? "It can't be connected here."} />
                         )
                       )
                     }
@@ -238,7 +250,7 @@ export default function ConnectorsPage() {
                       <CardState
                         connection={connection}
                         leaving={leaving === connection.slug}
-                        onConnect={() => void connect(connection)}
+                        onConnect={() => connect(connection)}
                       />
                     }
                   />

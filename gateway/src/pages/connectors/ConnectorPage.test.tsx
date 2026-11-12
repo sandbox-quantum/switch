@@ -489,11 +489,14 @@ describe("connecting from a connector's page", () => {
 
   it("offers a fresh sign-in when the connection needs one", async () => {
     signedIn();
-    server(serviceConnection({ web_sign_in: true, status: "needs_reauthorization", can_revoke: true }));
+    server(serviceConnection({ web_sign_in: true, status: "needs_reauthorization", can_revoke: true }), [], null, {
+      "POST /service-connections/example/flows/web": { id: "flow-9", url: "https://switch.example.test/authorize?state=flow-9" },
+    });
     renderPage();
 
     expect(await screen.findByText("It needs a fresh sign-in before agents can use it again.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/authorize?state=flow-9"));
   });
 
   it("says it connected on the way back, then forgets the sign-in", async () => {

@@ -52,7 +52,7 @@ import {
   signInOutcomeMessage,
 } from "./connectorProfile";
 import KeyDialog from "./KeyDialog";
-import { leaveToSignIn } from "./signIn";
+import { useLeaveToSignIn } from "./signIn";
 
 /** Where the back button goes: the page that opened this one, when it said,
  * else the connector catalogue. */
@@ -263,7 +263,7 @@ export default function ConnectorPage() {
   const [keyDialog, setKeyDialog] = useState<"add" | "replace" | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [revoking, setRevoking] = useState<ConnectedPerson | null>(null);
-  const [leaving, setLeaving] = useState(false);
+  const { leaving, leave } = useLeaveToSignIn();
   const [signInError, setSignInError] = useState<string | null>(null);
   const [params, setParams] = useSearchParams();
   const returnedFrom = params.get("sign_in");
@@ -271,6 +271,9 @@ export default function ConnectorPage() {
   // it twice (a re-render, or React's development double effect) would say
   // it had expired.
   const read = useRef<string | null>(null);
+  // The connector shown now, for an outcome read for one the page has since
+  // moved on from, which then changes nothing.
+  const shown = useRef(connectorId);
 
   const load = useCallback(async () => {
     try {
@@ -304,31 +307,41 @@ export default function ConnectorPage() {
   }, [load]);
 
   useEffect(() => {
-    // Read once the connector is, so what is said names it.
-    if (!returnedFrom || !connection || read.current === returnedFrom) return;
+    shown.current = connectorId;
+  }, [connectorId]);
+
+  useEffect(() => {
+    // Read once this connector is, so what is said names it.
+    if (!returnedFrom || connection?.slug !== connectorId || read.current === returnedFrom) return;
     read.current = returnedFrom;
+    const forId = connectorId;
     const name = connection.name;
-    fetchSignInOutcome(connectorId, returnedFrom)
+    const stillHere = () => shown.current === forId;
+    fetchSignInOutcome(forId, returnedFrom)
       .then((outcome) => {
-        const said = signInOutcomeMessage(outcome, name);
-        if (said.toast) setToast(said.toast);
-        setSignInError(said.error);
-        setNotice(outcome.warning);
-        return dropSignIn(connectorId, returnedFrom).catch((err: unknown) =>
+        if (stillHere()) {
+          const said = signInOutcomeMessage(outcome, name);
+          if (said.toast) setToast(said.toast);
+          setSignInError(said.error);
+          setNotice(outcome.warning);
+        }
+        return dropSignIn(forId, returnedFrom).catch((err: unknown) =>
           // Left to expire on its own in minutes; nothing is lost.
           console.warn("Could not drop the finished sign-in", err),
         );
       })
-      .catch((err: unknown) =>
+      .catch((err: unknown) => {
+        if (!stillHere()) return;
         setSignInError(
           err instanceof ApiError && err.status === 410
             ? `That ${name} sign-in has expired. Connect again.`
             : err instanceof Error
               ? err.message
               : String(err),
-        ),
-      )
+        );
+      })
       .finally(() => {
+        if (!stillHere()) return;
         void load();
         const rest = new URLSearchParams(params);
         rest.delete("sign_in");
@@ -336,15 +349,11 @@ export default function ConnectorPage() {
       });
   }, [returnedFrom, connectorId, connection, load, params, setParams, location.state]);
 
-  const connect = async () => {
-    setLeaving(true);
+  const connect = () => {
     setSignInError(null);
-    try {
-      await leaveToSignIn(connectorId);
-    } catch (err) {
-      setLeaving(false);
-      setSignInError(err instanceof Error ? err.message : String(err));
-    }
+    leave(connectorId).catch((err: unknown) =>
+      setSignInError(err instanceof Error ? err.message : String(err)),
+    );
   };
 
   const changed = (message: string | null, warning: string | null) => {
@@ -425,9 +434,9 @@ export default function ConnectorPage() {
             {way === "web" && (!connected || broken) && (
               <Button
                 variant={connected ? "outlined" : "contained"}
-                onClick={() => void connect()}
-                disabled={leaving}
-                startIcon={leaving ? <CircularProgress size={16} color="inherit" /> : undefined}
+                onClick={connect}
+                disabled={leaving !== null}
+                startIcon={leaving !== null ? <CircularProgress size={16} color="inherit" /> : undefined}
               >
                 {connected ? "Reconnect" : "Connect"}
               </Button>

@@ -322,6 +322,26 @@ function SetUpLink() {
   );
 }
 
+/** Where to connect a service before granting it: in the new layout its own
+ * page, which connects it or says how; otherwise Switch Console. */
+function ConnectFirst({ slug, what }: { slug: string; what: string }) {
+  const { capabilities } = useAuth();
+  if (!capabilities.features.gateway_v2)
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+        {what} in Switch Console, under Connectors.
+      </Typography>
+    );
+  return (
+    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+      {what}.
+      <Button component={RouterLink} to={`/connectors/${slug}`} size="small" sx={{ ml: 1 }}>
+        Connect
+      </Button>
+    </Typography>
+  );
+}
+
 /** A service whose agents use the owner's own token: on or off, at the connection's level. */
 function OnOffGrant({
   service,
@@ -378,9 +398,7 @@ function OnOffGrant({
         </Typography>
       )}
       {!grant && !connected && !service.unavailable_reason && (
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          To turn {service.name} on, first connect it in Switch Console, under Connectors.
-        </Typography>
+        <ConnectFirst slug={service.slug} what={`To turn ${service.name} on, first connect it`} />
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
         {onOffGrantNote(agentName, service)}
@@ -429,12 +447,7 @@ export function GitHubGrantForm({
   if (githubError) return <Alert severity="error">{githubError}</Alert>;
   if (github === null) return <CircularProgress size={20} />;
   if (github.status === "not_connected")
-    return (
-      <Typography variant="body2" color="text.secondary">
-        To grant GitHub, first connect your GitHub account in Switch Console, under
-        Connectors.
-      </Typography>
-    );
+    return <ConnectFirst slug="github" what="To grant GitHub, first connect your GitHub account" />;
 
   const installation = github.installations.find((i) => i.id === installationId) ?? null;
   const options = installation?.repositories ?? [];

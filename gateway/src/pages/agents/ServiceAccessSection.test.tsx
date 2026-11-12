@@ -271,6 +271,26 @@ describe("ServiceAccessSection", () => {
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
   });
 
+  it("in the new layout, sends a service to be connected on its own page", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      isOperator: false,
+      capabilities: { features: { gateway_v2: true } },
+    } as ReturnType<typeof useAuth>);
+    mockServer(NONE, [onOff("not_connected")]);
+    render(
+      <MemoryRouter>
+        <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/To turn Example on, first connect it\./)).toBeTruthy();
+    expect(screen.queryByText(/Switch Console, under Connectors/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Connect" }).getAttribute("href")).toBe("/connectors/example");
+    vi.mocked(useAuth).mockReturnValue({
+      isOperator: false,
+      capabilities: { features: { gateway_v2: false } },
+    } as ReturnType<typeof useAuth>);
+  });
+
   it("says a service signs in through the organization's app only while that app works", async () => {
     const through = "Signs in through your organization's Example app.";
     mockServer(NONE, [onOff("active", { app_source: "organization" })]);

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServiceConnection } from "../../data/api";
@@ -135,6 +135,57 @@ describe("the Connectors catalogue", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Connect Google Workspace" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/authorize?state=flow-1"));
     expect(calls).toContainEqual({ method: "POST", path: "/service-connections/google-workspace/flows/web" });
+  });
+
+  it("connects GitHub from its card through its own App's flow", async () => {
+    signedIn();
+    const calls = answer({
+      "GET /service-connections": { connections: [serviceConnection({ slug: "github", name: "GitHub", web_sign_in: true })] },
+      "POST /provider-connections/github/flows/web": { id: "flow-2", url: "https://switch.example.test/gh?state=flow-2" },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/gh?state=flow-2"));
+    expect(calls).toContainEqual({ method: "POST", path: "/provider-connections/github/flows/web" });
+  });
+
+  it("gives the plus back when the browser returns the page from its cache", async () => {
+    signedIn();
+    answer({
+      "GET /service-connections": { connections: [google] },
+      "POST /service-connections/google-workspace/flows/web": { id: "flow-1", url: "https://switch.example.test/authorize" },
+    });
+    renderPage();
+
+    const plus = await screen.findByRole("button", { name: "Connect Google Workspace" });
+    fireEvent.click(plus);
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    expect((plus as HTMLButtonElement).disabled).toBe(true);
+    act(() => {
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    });
+    expect((screen.getByRole("button", { name: "Connect Google Workspace" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("stays on All after connecting the first one", async () => {
+    signedIn();
+    const connections = [datadog, google];
+    answer({
+      "GET /service-connections": { connections },
+      "PUT /service-connections/datadog/key": { warning: null, external_identity: "org-1" },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Datadog" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "dd-key" } });
+    connections[0] = { ...datadog, status: "active", can_revoke: true };
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add keys" }));
+
+    expect(await screen.findByRole("img", { name: "Connected to Datadog" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Google Workspace")).toBeTruthy();
   });
 
   it("says why a sign-in could not start", async () => {
