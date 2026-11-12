@@ -3,17 +3,21 @@ import { useEffect, useRef, useState } from 'react';
 import { LocalSetupStep } from '@renderer/features/switch-servers/AddServerModal';
 import { localServerStore } from '@renderer/features/switch-servers/local-server-store';
 import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
+import { Progress } from '@renderer/lib/ui/progress';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
+import { SETUP_STAGES, setupProgress, setupStage } from './setup-stages';
+
+/** How long the setup runs before the page says that a long one is expected. */
+const LONG_SETUP_MS = 30_000;
 
 /**
  * The first run's server on this computer, set up without asking: choosing
  * "On this computer" was the answer, so the server starts as the page opens
  * and the flow moves on by itself once it is up.
  *
- * What it says while it works is deliberately one line. The first run's
- * download steps (PostgreSQL, Mattermost's image) read as alarming detail to
- * someone who only wanted to try Switch.
+ * What it says while it works is a bar and one plain line per stage (see
+ * {@link SETUP_STAGES}), not the steps themselves: the first run's downloads
+ * and versions read as alarming detail to someone who only wanted to try Switch.
  *
  * Anything that needs the person — a failed start, Docker missing for a server
  * that still runs on it, a status that could not be read — hands over to the
@@ -33,6 +37,20 @@ export const LocalSetupProgress = observer(function LocalSetupProgress({
   const [ready, setReady] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const done = useRef(false);
+  // The furthest stage reached: a step the list does not know, or one that
+  // repeats an earlier stage's work, never moves the bar back.
+  const [stage, setStage] = useState(0);
+  const [long, setLong] = useState(false);
+
+  const reported = setupStage(store.message);
+  useEffect(() => {
+    if (reported !== null) setStage((reached) => Math.max(reached, reported));
+  }, [reported]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setLong(true), LONG_SETUP_MS);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -88,10 +106,21 @@ export const LocalSetupProgress = observer(function LocalSetupProgress({
         </Button>
       }
     >
-      <div className="flex flex-col items-center gap-3 text-center" role="status">
-        <Spinner className="size-6" />
+      <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-4 text-center">
         <h1 className="text-2xl font-semibold">Setting things up…</h1>
-        <p className="text-sm text-foreground-muted">This might take a minute the first time.</p>
+        <Progress
+          value={running ? 100 : setupProgress(stage)}
+          aria-label="Setting things up"
+          className="w-full [&_[data-slot=progress-indicator]]:duration-700"
+        />
+        <p className="text-sm text-foreground-muted" role="status">
+          {SETUP_STAGES[stage]}
+        </p>
+        {long && (
+          <p className="text-xs text-foreground-muted">
+            Still working — the first setup can take a couple of minutes on a slow connection.
+          </p>
+        )}
       </div>
     </OnboardingSurface>
   );

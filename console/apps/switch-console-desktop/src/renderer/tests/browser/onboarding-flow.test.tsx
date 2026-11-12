@@ -301,6 +301,18 @@ describe('the first-run flow', () => {
     expect(el.textContent).not.toContain('Set up a server on this computer');
   });
 
+  it('tells the setup as plain stages, not the steps it reports', async () => {
+    Object.assign(localServer, { isTransitioning: true, message: 'Starting PostgreSQL…' });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(el.textContent).toContain('Preparing the database…');
+    expect(el.textContent).not.toContain('PostgreSQL');
+    expect(el.querySelector('[data-slot="progress"]')).not.toBeNull();
+  });
+
   it('moves on by itself, with the server, once the server on this computer is up', async () => {
     Object.assign(localServer, {
       status: { serverId: 'local-1', version: '1.0.0' },
