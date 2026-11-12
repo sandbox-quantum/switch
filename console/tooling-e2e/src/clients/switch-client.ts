@@ -1541,7 +1541,10 @@ export class SwitchClient {
   ): Promise<{ id: string; displayName: string }> {
     const rows = await this.gateway<
       {
-        id: string;
+        // `GET /gateway/collaborations` names it `bridge_id`; `id` is kept
+        // for servers that answered with that.
+        bridge_id?: string;
+        id?: string;
         bridge_type: string;
         display_name: string;
         is_default?: boolean;
@@ -1554,7 +1557,9 @@ export class SwitchClient {
       );
     }
     const row = ofType.find((candidate) => candidate.is_default) ?? ofType[0]!;
-    return { id: row.id, displayName: row.display_name };
+    const id = row.bridge_id ?? row.id;
+    if (!id) throw new Error(`The ${type} collaboration bridge came back without an id`);
+    return { id, displayName: row.display_name };
   }
 
   /**
