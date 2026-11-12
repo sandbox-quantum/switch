@@ -8,7 +8,11 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
-from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
+from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
+    InboundCommand,
+    InboundMessage,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -836,6 +840,147 @@ def test_create_dm_channel_raises_on_real_invite_failure() -> None:
     except SlackApiError:
         raised = True
     assert raised
+
+
+# ── Channel creation ─────────────────────────────────────────────────────────
+
+
+class _FakeCreateWebClient:
+    """Answers conversations_create with the refusals queued in `errors`, one
+    per call, then with success."""
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        self.names: list[str] = []
+        self._errors = list(errors)
+
+    async def conversations_create(self, **kwargs: Any) -> dict[str, Any]:
+        self.names.append(kwargs["name"])
+        if self._errors:
+            body = self._errors.pop(0)
+            raise SlackApiError(body["error"], response=body)
+        return {"channel": {"id": "C-NEW", "name": kwargs["name"]}}
+
+    async def conversations_setTopic(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": True}
+
+
+def test_create_channel_retries_a_taken_name_with_a_suffix() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "name_taken"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    created = _run(adapter.create_channel("Payments", "topic"))
+
+    assert fake.names[0] == "payments"
+    assert re.fullmatch(r"payments-[0-9a-f]{8}", fake.names[1])
+    assert created.id == "C-NEW"
+    assert created.name == fake.names[1]
+
+
+def test_create_channel_missing_scope_is_not_retried_and_names_the_scope() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient(
+        [{"ok": False, "error": "missing_scope", "needed": "groups:write"}]
+    )
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _run(
+            adapter.create_channel("Payments", "topic", channel_type="channel_private")
+        )
+
+    assert fake.names == ["payments"]
+    assert "missing_scope" in str(raised.value)
+    assert "groups:write" in str(raised.value)
+    assert isinstance(raised.value.__cause__, SlackApiError)
+
+
+def test_create_channel_invalid_name_is_the_callers_to_fix() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "invalid_name_required"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="invalid_name_required"):
+        _run(adapter.create_channel("!!!", "topic"))
+
+    assert len(fake.names) == 1
+
+
+def test_create_channel_taken_twice_reports_the_second_refusal() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient(
+        [{"ok": False, "error": "name_taken"}, {"ok": False, "error": "name_taken"}]
+    )
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="name_taken"):
+        _run(adapter.create_channel("Payments", "topic"))
+
+    assert len(fake.names) == 2
+
+
+def test_create_dm_channel_missing_scope_is_not_retried() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient(
+        [{"ok": False, "error": "missing_scope", "needed": "groups:write"}]
+    )
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="groups:write"):
+        _run(
+            adapter.create_dm_channel(
+                agent_name="a", user_name="u", user_external_id="U1"
+            )
+        )
+
+    assert fake.names == ["a-u"]
+
+
+def test_create_channel_with_a_revoked_token_says_to_reconnect() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "token_revoked"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="Reconnect the Slack bridge"):
+        _run(adapter.create_channel("Payments", "topic"))
+
+    assert len(fake.names) == 1
+
+
+def test_create_dm_channel_with_names_that_slug_to_nothing_still_has_a_name() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([])
+    fake.conversations_invite = _accept_invite  # type: ignore[attr-defined]
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    channel_id = _run(
+        adapter.create_dm_channel(
+            agent_name="助手", user_name="Żółć", user_external_id="U1"
+        )
+    )
+
+    assert channel_id == "C-NEW"
+    assert fake.names == ["dm"]
+
+
+def test_create_dm_channel_invalid_name_is_not_blamed_on_a_room_name() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "invalid_name_specials"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _run(
+            adapter.create_dm_channel(
+                agent_name="a", user_name="u", user_external_id="U1"
+            )
+        )
+
+    assert "invalid_name_specials" in str(raised.value)
+    assert "room name" not in str(raised.value)
+
+
+async def _accept_invite(**kwargs: Any) -> dict[str, Any]:
+    return {"ok": True}
 
 
 # ── Slash commands ───────────────────────────────────────────────────────────

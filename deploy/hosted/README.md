@@ -152,10 +152,16 @@ switch-hosted-controller --config /etc/switch-hosted/controller.json --gateway-c
 Every new instance of a machine launches from the configured image, as
 `gateway.json`'s `instance_type`: a relaunch for new user data, a recovery, or
 a retained machine starting again moves it onto a new `image_id` and instance
-type, keeping its disk. Stopping and starting a machine does not: it starts the
-same instance, which keeps its image and type for as long as it exists.
+type, keeping its disk. So does a stopped machine starting again: if its
+instance was launched from another image or as another type, the controller
+terminates it and launches a new one on the same data volume instead of
+starting it. A running machine is not stopped for this; it moves at its next
+start (machines stop after `HOSTED_IDLE_STOP_MINUTES` without a session). An
+instance whose data volume is not yet marked to survive termination is started
+as it is and moves at a later start.
 
-To move a machine onto the configured image and type now:
+To move a machine onto the configured image and type now, without waiting for
+it to stop:
 
 1. `stop` it, and wait for `status` to report `observed_state` `stopped`.
 2. Terminate its instance (`instance_id` in `status`) with the EC2 API or
@@ -177,6 +183,92 @@ sizes) are bound to the state database and cannot change. A queued command is no
 AWS has done it. Deletion needs `--confirm-machine-id` and exactly one of
 `--retain-volume` or `--delete-volume`. Deleting a machine does not remove
 snapshots, roles, the NAT gateway or the controller's database.
+
+## Stop and isolate a machine
+
+Use this to cut one machine off at once, for instance one you suspect is
+compromised or misused, while keeping its data disk to look at. Its owner
+cannot start it again, and neither can a message to one of its agents.
+
+The hosted controller's own `stop` does not hold: the controller takes the
+machine's desired state from Core on every poll, so the owner's Start or Retry
+undoes it. What holds is moving the instance onto the isolation security group,
+the Terraform `isolation_security_group_id` output, which allows no traffic
+either way. The controller treats an instance with any security groups other
+than the configured ones as needing attention and makes no further call on it:
+it does not start, stop, terminate or replace it, whatever Core asks, and its
+IAM role cannot change an instance's groups back. Core then shows the machine
+as needing repair and refuses to claim it.
+
+You need AWS credentials in the machines' account that can modify instance
+attributes, stop instances and create snapshots, and `kubectl exec` into the
+hosted controller and Switch Core pods. Below, `ctl` stands for
+`switch-hosted-controller --config /etc/switch-hosted/controller.json` in the
+controller pod and `core-admin` for `switch-cloud-machine` in a Core pod.
+
+Use `core-admin stop` only once every Core pod runs a version that has it. A
+pod still on an older version, during a rollout for instance, sees the machine
+as stopped by its owner, and its Start or a new claim starts it again.
+
+1. Find the machine. `core-admin find --owner-email <email>` lists the
+   person's machine and its `machine_id`. `ctl status <machine-id>` gives its
+   `instance_id` and `data_volume_id`.
+2. Isolate it:
+
+   ```sh
+   aws ec2 modify-instance-attribute --instance-id <instance-id> --groups <isolation-security-group-id>
+   ```
+
+   Within one poll `ctl status` reports `observed_state` `needs_attention`
+   with "instance security groups differ from immutable spec", and Core shows
+   the machine in error. Its controllers stop reporting.
+3. Stop it in Core, so that nobody can start it again even once its
+   security group is put back: `core-admin stop <machine-id> --reason "<why>"`.
+   The reason goes to the server audit log.
+4. Stop the instance with EC2. A security group change does not always end
+   connections already open, and a stop does:
+
+   ```sh
+   aws ec2 stop-instances --instance-ids <instance-id>
+   aws ec2 wait instance-stopped --instance-ids <instance-id>
+   ```
+
+   **Never terminate it.** A terminated instance is not checked for its
+   security groups, so the controller would launch a new instance on the
+   same data disk, with the regular security group.
+5. Snapshot the data disk. It stays attached to the stopped instance.
+
+   ```sh
+   aws ec2 create-snapshot --volume-id <data-volume-id> --description "isolated machine <machine-id>"
+   ```
+
+While the machine is isolated, leave the controller's `stop`, `start`,
+`delete` and `upgrade` alone and do not detach the disk. The owner sees
+"Stopped by an administrator" in Switch Console, with nothing to click, and
+the machine's agents answer that an administrator stopped their device.
+
+An installation applied before the isolation group existed gets it from the
+next Terraform apply. To isolate a machine before then, create a security
+group in the machines' VPC and delete the allow-all egress rule AWS adds to
+every new group; check that `describe-security-group-rules` lists no rule for
+it.
+
+### Release or retire it
+
+To give the machine back:
+
+1. Move the instance back onto the worker security group, the Terraform
+   `worker_security_group_id` output, first. The instance stays stopped.
+   Released while still isolated, the machine goes back to needing repair,
+   which its owner cannot clear.
+2. `core-admin release <machine-id>`. It clears the error, and within one
+   poll the machine is stopped as though its owner had stopped it.
+3. The owner presses Start in Switch Console, which starts the same instance
+   on the same disk. A message to one of its agents does not start it.
+
+Not releasing it is safe to leave: while it is stopped by an administrator,
+Core keeps its disk past any retention and starts nothing, and the snapshot
+stays until you delete it.
 
 ## Machine lifecycle
 

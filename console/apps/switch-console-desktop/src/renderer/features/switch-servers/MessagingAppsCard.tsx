@@ -56,7 +56,6 @@ import type {
 } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectedChatsList } from './ConnectedChatsList';
-import { LinkAccountPrompts } from './link-account-prompts';
 import { accountHandle, linkRequestFailureText } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
 import {
@@ -350,13 +349,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
           </Button>
         )}
       </div>
-
-      <LinkAccountPrompts
-        workspaceId={workspaceId}
-        bridges={bridges}
-        identities={identities}
-        pending={pending}
-      />
 
       {/* Same shape as the addressing editor's owner warning, so the two
         readings of one problem look like one problem.

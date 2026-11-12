@@ -604,7 +604,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>Set up PostgreSQL and the Switch server</SetupStepItem>
-              <SetupStepItem>Run them in the background on this computer</SetupStepItem>
+              <SetupStepItem>Run them on this computer while Switch Console is open</SetupStepItem>
               <SetupStepItem>{mattermostStep(docker, store.mattermost)}</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent

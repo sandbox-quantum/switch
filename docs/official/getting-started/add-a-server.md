@@ -24,7 +24,7 @@ You can also select **Add a server** at the top of the sidebar before you add yo
 
 ### Run a server on this computer
 
-Everything runs on your computer, as ordinary background processes. You don't need Docker.
+Everything runs on your computer, while Switch Console is open. You don't need Docker.
 
 You don't need to configure the server yourself. Switch Console starts it and everything it needs. It:
 
@@ -42,7 +42,7 @@ There is no URL to copy and no secret to enter. A first setup takes about a minu
 
 A local server you set up with an earlier version of Switch Console, which ran in Docker, moves itself to the Docker-free setup with everything in it: agents, rooms, history and its Mattermost. It happens on its own, the first time the server starts (or when Switch Console opens, if the server is already running), and takes a minute or so; Docker has to be running for it. If the move cannot finish, the server keeps running in Docker as before, its page says why, and the move is tried again at the next start. The old Docker volumes are kept but no longer used; Mattermost's files volume stays in use.
 
-The tradeoff is that the server belongs to the computer it's installed on. Colleagues can't connect to it. Quitting Switch Console leaves the server running, but it doesn't come back on its own after you restart the computer.
+The tradeoff is that the server belongs to the computer it's installed on, and runs only while Switch Console does. Colleagues can't connect to it. Quitting Switch Console stops the server, and opening it starts the server again. If you stop the server yourself from its page, it stays stopped until you start it.
 
 **Tip**
 
