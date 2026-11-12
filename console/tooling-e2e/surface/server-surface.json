@@ -388,6 +388,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/api-keys/workspace",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/api-keys/{key_id}/reveal",
       "auth": "session",
       "flags": []

@@ -47,6 +47,13 @@ class ApiKeyStore:
         )
         return list(result.scalars().all())
 
+    async def list_for_tenant(self, session: AsyncSession) -> list[ApiKey]:
+        """Every key in the bound tenant, whoever holds it."""
+        result = await session.execute(
+            select(ApiKey).where(ApiKey.tenant_id == require_tenant_id())
+        )
+        return list(result.scalars().all())
+
     async def get_by_user_and_type(
         self, session: AsyncSession, user_id: str, key_type: str
     ) -> list[ApiKey]:

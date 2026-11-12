@@ -167,6 +167,7 @@ ROUTES: dict[str, Case] = {
     ),
     # ── API keys ─────────────────────────────────────────────────────────
     "GET /gateway/api-keys": get(f"{G}/api-keys", SELF),
+    "GET /gateway/api-keys/workspace": get(f"{G}/api-keys/workspace", admins()),
     "POST /gateway/api-keys": post(f"{G}/api-keys", SELF, json={"label": "mine"}),
     "GET /gateway/api-keys/{key_id}/reveal": get(
         f"{G}/api-keys/{{registration_key}}/reveal",
@@ -174,7 +175,9 @@ ROUTES: dict[str, Case] = {
         why="A key is a credential: not even an admin may read another's.",
     ),
     "DELETE /gateway/api-keys/{key_id}": delete(
-        f"{G}/api-keys/{{registration_key}}", owner(refused=403)
+        f"{G}/api-keys/{{registration_key}}",
+        owner_or_admins(),
+        why="A key for adding agents: its owner's, and the workspace's admins'.",
     ),
     # ── Your account ─────────────────────────────────────────────────────
     "GET /gateway/version": get(f"{G}/version", SELF),

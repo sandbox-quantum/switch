@@ -455,6 +455,29 @@ CHECKS: dict[str, Check] = {
                 refused=REFUSED | {409},
             ),
         ],
+        "an API key, among the workspace's": [
+            Check(
+                "can_reveal",
+                _get(f"{G}/api-keys/workspace"),
+                _get(f"{G}/api-keys/{{registration_key}}/reveal"),
+                match=("id", "registration_key"),
+            ),
+            Check(
+                "can_delete",
+                _get(f"{G}/api-keys/workspace"),
+                _act("DELETE", f"{G}/api-keys/{{registration_key}}"),
+                match=("id", "registration_key"),
+            ),
+        ],
+        "an agent's key, among the workspace's": [
+            Check(
+                "can_delete",
+                _get(f"{G}/api-keys/workspace"),
+                _act("DELETE", f"{G}/api-keys/{{agent_key}}"),
+                match=("id", "agent_key"),
+                refused=REFUSED | {409},
+            ),
+        ],
         "a machine": [
             Check(
                 "can_edit",
