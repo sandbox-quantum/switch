@@ -46,8 +46,8 @@ always kept.
 
 **What stays.** The workspaces' audit history, for two years
 (`retention/audit_history.py`), and the server's own audit log, which records
-the purge. The organization's audit log goes with it: it has nowhere to
-live without the organization. Nothing at WorkOS is touched: the WorkOS
+the purge. The organization's audit log stays too, as a workspace's does;
+nothing purges it later. Nothing at WorkOS is touched: the WorkOS
 environment can be shared with other products, so the purge reports the
 WorkOS organization and users to remove there, for whoever owns it.
 """
@@ -98,7 +98,10 @@ from switch_core.db.models import (
     TenantMember,
     User,
 )
-from switch_core.db.rls_ddl import organization_scoped_tables
+from switch_core.db.rls_ddl import (
+    ORGANIZATION_HISTORY_TABLES,
+    organization_scoped_tables,
+)
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore, bump_revision
 from switch_core.db.stores.messaging_install_store import (
@@ -731,7 +734,10 @@ class OrganizationPurge:
             # Children first, so no foreign key between two of them holds a
             # delete back.
             for table in reversed(Base.metadata.sorted_tables):
-                if table.name in scoped:
+                if (
+                    table.name in scoped
+                    and table.name not in ORGANIZATION_HISTORY_TABLES
+                ):
                     await session.execute(
                         delete(table).where(
                             table.c[scoped[table.name]] == plan.organization_id

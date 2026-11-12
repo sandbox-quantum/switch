@@ -27,6 +27,7 @@ from switch_core.db.models import (
     CloudMachine,
     MessagingInstall,
     Organization,
+    OrganizationAuditEvent,
     OrganizationMember,
     Room,
     ServiceTokenIssuance,
@@ -43,7 +44,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.auth_routes import router
-from tests.conftest import TEST_KEYRING
+from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
     _agent,
@@ -260,6 +261,28 @@ async def test_it_purges_an_organization_nobody_else_is_in(
             assert not await session.scalar(
                 select(model.id).where(model.tenant_id == solo)
             )
+
+
+async def test_the_runtime_role_purges_the_organization_and_keeps_its_history(
+    rls_harness: RLSHarness,
+) -> None:
+    user_id, email, solo, organization_id = await _solo_workspace(rls_harness.owner)
+
+    app, _, _ = _app(rls_harness.restricted, enabled=True)
+    async with _client(app, user_id, email, solo) as client:
+        response = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+
+    assert response.status_code == 200, response.text
+    async with rls_harness.owner() as session:
+        assert await session.get(User, user_id) is None
+        assert await session.get(Organization, organization_id) is None
+        assert await session.scalar(
+            select(OrganizationAuditEvent.id).where(
+                OrganizationAuditEvent.organization_id == organization_id
+            )
+        )
 
 
 async def _other_user(

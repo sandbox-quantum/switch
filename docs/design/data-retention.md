@@ -298,9 +298,8 @@ Nothing waits for the customer to empty anything first.
    chat left). After, the processes running its agents, clients, bridges and
    machines are told: agents' connections close and their cached keys go at
    once, as when an agent is deleted.
-4. **The organization's own rows**, its audit log included: that log has
-   nowhere to live without the organization. The server's audit log records
-   the purge.
+4. **The organization's own rows**, except its audit log, which outlives it
+   as a workspace's does. The server's audit log records the purge.
 5. **Every account that belonged to nothing else**: no membership of another
    workspace or organization and no rows left in one. Others keep their
    account and lose only what was here; the server's administrator account is
@@ -345,7 +344,7 @@ setting, because the log protects the operator as well as the customer.
 - **Kept:** the server's `workspace.deleted` row, which proves when the
   workspace went and so why its history did; and the organization's audit log
   (`organization_audit_events`), which is the organization's history rather
-  than the workspace's and is bounded by the organization's own lifetime.
+  than the workspace's and outlives the organization: nothing purges it.
 
 The runtime role has `UPDATE` and `DELETE` revoked on the audit tables, so a
 compromised process cannot erase its tracks. The purge therefore runs on the
