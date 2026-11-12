@@ -113,6 +113,7 @@ class AdminMessageType(StrEnum):
     SELF_MENTION_UNALIASED = "self_mention_unaliased"
     NO_AGENTS = "no_agents"
     RUN_NOTICE = "run_notice"
+    INVITE_NOTICE = "invite_notice"
     TRUST_BLOCKED = "trust_blocked"
     TRUST_REDACTED = "trust_redacted"
     TRUST_ALERTED = "trust_alerted"

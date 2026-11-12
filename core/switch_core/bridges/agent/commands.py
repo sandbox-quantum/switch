@@ -14,6 +14,7 @@ from switch_core.agent_display_name import (
     agent_label_with_identifier,
     label_after_rename,
 )
+from switch_core.agent_invites import AgentInviteDenied, AgentInviter
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
@@ -1428,9 +1429,15 @@ async def _cmd_invite(
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
     # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    try:
+        await cast("CommandConsumer", client)._room_service.add_agents_to_room(
+            meta.room_id,
+            agent_names=[target.name],
+            inviter=AgentInviter(kind="sender", subject=event.user_id),
+        )
+    except AgentInviteDenied as error:
+        await _reply(client, room, event, str(error))
+        return
     await _reply(
         client,
         room,

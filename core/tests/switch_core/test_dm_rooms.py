@@ -7,6 +7,8 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
+from switch_core.db.models import Agent
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomService
 
 # A DM room is a 1:1 "direct" room provisioned outbound onto a bridge (on Slack,
@@ -65,6 +67,11 @@ class _FakeSessionCM:
 
     async def commit(self) -> None:
         return None
+
+    async def scalars(self, statement: Any) -> Any:
+        return SimpleNamespace(
+            all=lambda: [Agent(id="a1", name="agent.bot", addressing_policy={})]
+        )
 
 
 class _FakeAgentStore:
@@ -132,6 +139,7 @@ def _dm_service(
     svc = object.__new__(RoomService)
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
     svc._agent_store = _FakeAgentStore({"a1": "agent.bot"})  # type: ignore[assignment]
+    svc._room_store = RoomStore()  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle({"bridge-1": bridge})  # type: ignore[assignment]
     svc._collab_bridge_store = _FakeBridgeStore(  # type: ignore[assignment]
         channel_creation_enabled=channel_creation_enabled

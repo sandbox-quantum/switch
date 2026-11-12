@@ -246,6 +246,7 @@ class InboundAgentJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     agent_name: str
+    inviter_id: str | None = None
     channel_name: str | None = None
 
 
@@ -254,6 +255,7 @@ class InboundUserJoin(BaseModel):
     channel_type: ChannelType
     external_user_id: str
     external_username: str
+    inviter_id: str | None = None
     channel_name: str | None = None
 
 
@@ -265,6 +267,7 @@ class InboundAppJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     channel_name: str | None = None
+    inviter_id: str | None = None
 
 
 class BridgeInstallLink(BaseModel):

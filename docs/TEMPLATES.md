@@ -425,6 +425,10 @@ the run; `run_template` refuses a `join`.
 deployer may use an agent the server already has for this entry instead of
 creating it.
 
+Invitations to existing agents are checked against each agent's addressing
+policy as the person running the template. Newly created agents belong to that
+person. Workspace administrator status does not bypass an agent's policy.
+
 ## The room block
 
 ```yaml

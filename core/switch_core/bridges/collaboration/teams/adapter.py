@@ -4047,6 +4047,12 @@ class TeamsAdapter(PlatformAdapter):
                             channel_id=channel_id,
                             channel_type=channel_type,
                             channel_name=channel_name,
+                            inviter_id=str(
+                                (activity.get("from") or {}).get("aadObjectId")
+                                or (activity.get("from") or {}).get("id")
+                                or ""
+                            )
+                            or None,
                         )
                     )
             elif self._on_user_joined is not None:
@@ -4060,6 +4066,12 @@ class TeamsAdapter(PlatformAdapter):
                             joiner_id, str(member.get("name") or "")
                         ),
                         channel_name=channel_name,
+                        inviter_id=str(
+                            (activity.get("from") or {}).get("aadObjectId")
+                            or (activity.get("from") or {}).get("id")
+                            or ""
+                        )
+                        or None,
                     )
                 )
 

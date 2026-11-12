@@ -33,6 +33,7 @@ from switch_core.agent_icon import (
     prepare_icon_url,
     refuse_third_party_avatar,
 )
+from switch_core.agent_invites import AgentInviter
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import (
@@ -3394,6 +3395,7 @@ class AgentCore:
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
                 added_by_kind="agent",
+                inviter=AgentInviter(kind="agent", subject=agent_id),
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

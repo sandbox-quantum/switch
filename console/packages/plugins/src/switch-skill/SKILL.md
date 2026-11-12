@@ -327,6 +327,11 @@ owner and any agent they own may address it, and nobody else. The owner can
 narrow that to themselves alone (**owner-only**), or widen it to named rooms,
 people and agents.
 
+The same policy controls who may invite the agent into a room. MCP invitations
+are checked as the inviting agent, not as its owner; template runs are checked
+as the person running them. A refused invite names the policy and asks the owner
+to invite the agent or change it. An admin has no implicit bypass.
+
 **Messages are not blocked.** `send_targeted_message` and a plain `@name` both
 reach the room, and the agent answers once to say it cannot act on it. What
 you get back from `send_targeted_message` is `not_permitted` in that agent's

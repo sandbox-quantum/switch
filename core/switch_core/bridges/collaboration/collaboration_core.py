@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_display_name import ZERO_WIDTH_SPACE, defuse_label_markup
+from switch_core.agent_invites import AgentInviteDenied, AgentInviter
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
@@ -1699,7 +1700,11 @@ class CollaborationCore:
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
         async with lock:
-            await self._handle_agent_joined_channel_locked(join)
+            try:
+                await self._handle_agent_joined_channel_locked(join)
+            except AgentInviteDenied as error:
+                logger.warning("Agent platform invite refused: %s", error)
+                await self.adapter.send_message(join.channel_id, "Switch", str(error))
 
     async def _handle_agent_joined_channel_locked(self, join: InboundAgentJoin) -> None:
         logger.debug("Handling agent join to channel %s", join.channel_id)
@@ -1721,7 +1726,12 @@ class CollaborationCore:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
             await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
+                room_id,
+                agent_names=[join.agent_name],
+                added_by_kind="system",
+                inviter=AgentInviter(
+                    kind="platform", subject=join.inviter_id, bridge_id=self._bridge_id
+                ),
             )
             return
 
@@ -1730,6 +1740,9 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            inviter=AgentInviter(
+                kind="platform", subject=join.inviter_id, bridge_id=self._bridge_id
+            ),
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1747,6 +1760,9 @@ class CollaborationCore:
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
+                inviter=AgentInviter(
+                    kind="platform", subject=join.inviter_id, bridge_id=self._bridge_id
+                ),
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -1844,6 +1860,7 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        inviter: AgentInviter | None = None,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -1886,6 +1903,8 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            inviter=inviter
+            or AgentInviter(kind="platform", subject=None, bridge_id=self._bridge_id),
             named_after_channel=(
                 channel_name if channel_type != "direct" and channel_name else None
             ),
@@ -1893,6 +1912,10 @@ class CollaborationCore:
 
         try:
             result = await self._room_service.create_room(config)
+        except AgentInviteDenied as error:
+            logger.warning("Agent platform invite refused: %s", error)
+            await self.adapter.send_message(channel_id, "Switch", str(error))
+            return None
         except (IntegrityError, ChannelInUse):
             # Backstop: the (bridge_id, external_channel_id) unique index
             # rejected a concurrent duplicate (room creation reports that as
@@ -2498,6 +2521,7 @@ class CollaborationCore:
                     channel_type=join.channel_type,
                     agent_name=join.external_username,
                     channel_name=join.channel_name,
+                    inviter_id=join.inviter_id,
                 )
             )
             return

@@ -565,6 +565,26 @@ async def test_adding_an_agent_needs_its_permission_in_this_room(
     assert await _agent_ids(chats, allowed_room) == {helper.id, scoped.id}
 
 
+async def test_agent_policy_tightening_during_an_invite_returns_a_refusal(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+    scoped = await chats.agent("scoped", owner=chats.bob)
+    room_id = await chats.new_chat(chats.alice, helper, "c1")
+    add_agents = chats.room_service.add_agents_to_room
+
+    async def tighten_then_add(*args: Any, **kwargs: Any) -> None:
+        await _set_policy(chats, scoped, {"rules": [{"owner": True, "users": []}]})
+        await add_agents(*args, **kwargs)
+
+    monkeypatch.setattr(chats.room_service, "add_agents_to_room", tighten_then_add)
+    refused = await _add_agent(chats, chats.alice.id, room_id, scoped)
+    assert refused.status_code == 403
+    assert _code(refused) == "AGENT_NOT_ALLOWED"
+    assert await _agent_ids(chats, room_id) == {helper.id}
+    assert await _channel_type(chats, room_id) == "direct"
+
+
 async def test_only_a_manager_adds_or_removes_an_agent(chats: _Harness) -> None:
     helper = await chats.agent("helper", owner=chats.alice)
     other = await chats.agent("other", owner=chats.bob)

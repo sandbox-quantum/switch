@@ -3724,6 +3724,8 @@ class SlackAdapter(PlatformAdapter):
         channel_id = str(event.get("channel", ""))
         if not user_id or not channel_id:
             return
+        inviter_id = event.get("inviter")
+        inviter_id = inviter_id if isinstance(inviter_id, str) and inviter_id else None
 
         if user_id == self._bot_user_id:
             # The app itself was invited to / joined the channel. Surface it so
@@ -3738,6 +3740,7 @@ class SlackAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     channel_type=channel_type,
                     channel_name=channel_name,
+                    inviter_id=inviter_id,
                 )
             )
             return
@@ -3756,6 +3759,7 @@ class SlackAdapter(PlatformAdapter):
                 external_user_id=user_id,
                 external_username=user.name,
                 channel_name=channel_name,
+                inviter_id=inviter_id,
             )
         )
 

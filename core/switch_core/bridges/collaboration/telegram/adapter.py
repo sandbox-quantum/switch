@@ -2875,6 +2875,9 @@ class TelegramAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     channel_type=self._channel_type_of(chat),
                     channel_name=getattr(chat, "title", None),
+                    inviter_id=str(event.from_user.id)
+                    if getattr(event, "from_user", None) is not None
+                    else None,
                 )
             )
         # After provisioning, so the notice cannot arrive before the room it
@@ -2922,7 +2925,11 @@ class TelegramAdapter(PlatformAdapter):
         new_members = getattr(message, "new_chat_members", None) or []
         if new_members:
             await self._handle_new_members(
-                new_members, chat_id, channel_type, channel_name
+                new_members,
+                chat_id,
+                channel_type,
+                channel_name,
+                inviter_id=str(author.id) if author is not None else None,
             )
             return
 
@@ -3111,6 +3118,7 @@ class TelegramAdapter(PlatformAdapter):
         chat_id: str,
         channel_type: ChannelType,
         channel_name: str | None,
+        inviter_id: str | None = None,
     ) -> None:
         for member in members:
             if member.id == self._bot_user_id:
@@ -3120,6 +3128,7 @@ class TelegramAdapter(PlatformAdapter):
                             channel_id=chat_id,
                             channel_type=channel_type,
                             channel_name=channel_name,
+                            inviter_id=inviter_id,
                         )
                     )
                 continue
@@ -3132,6 +3141,7 @@ class TelegramAdapter(PlatformAdapter):
                     external_user_id=str(member.id),
                     external_username=self._display_name(member),
                     channel_name=channel_name,
+                    inviter_id=inviter_id,
                 )
             )
 

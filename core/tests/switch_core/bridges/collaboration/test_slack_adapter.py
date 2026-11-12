@@ -1285,7 +1285,8 @@ class _FakeConversationsInfoClient:
         return {"channel": self._channel}
 
 
-def test_bot_join_fires_on_app_joined() -> None:
+@pytest.mark.parametrize("inviter", [None, "UINVITER"])
+def test_bot_join_fires_on_app_joined(inviter) -> None:
     from switch_core.bridges.collaboration.models import InboundAppJoin
 
     adapter = _adapter()
@@ -1302,7 +1303,12 @@ def test_bot_join_fires_on_app_joined() -> None:
 
     _run(
         adapter._handle_member_joined_channel(
-            {"type": "member_joined_channel", "user": "UBOT", "channel": "C123"}
+            {
+                "type": "member_joined_channel",
+                "user": "UBOT",
+                "channel": "C123",
+                "inviter": inviter,
+            }
         )
     )
 
@@ -1310,9 +1316,11 @@ def test_bot_join_fires_on_app_joined() -> None:
     assert joins[0].channel_id == "C123"
     assert joins[0].channel_type == "channel_public"
     assert joins[0].channel_name == "general"
+    assert joins[0].inviter_id == inviter
 
 
-def test_user_join_does_not_fire_on_app_joined() -> None:
+@pytest.mark.parametrize("inviter", [None, "UINVITER"])
+def test_user_join_does_not_fire_on_app_joined(inviter) -> None:
     from switch_core.bridges.collaboration.models import (
         InboundAppJoin,
         InboundUserJoin,
@@ -1338,13 +1346,19 @@ def test_user_join_does_not_fire_on_app_joined() -> None:
 
     _run(
         adapter._handle_member_joined_channel(
-            {"type": "member_joined_channel", "user": "U1", "channel": "C123"}
+            {
+                "type": "member_joined_channel",
+                "user": "U1",
+                "channel": "C123",
+                "inviter": inviter,
+            }
         )
     )
 
     assert app_joins == []
     assert len(user_joins) == 1
     assert user_joins[0].external_user_id == "U1"
+    assert user_joins[0].inviter_id == inviter
 
 
 # ── Outbound attachments ─────────────────────────────────────────────────────
