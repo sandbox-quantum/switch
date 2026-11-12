@@ -1,0 +1,26 @@
+properties:
+  - id: revocation.takes-effect-everywhere
+    title: A revocation takes effect on every process within a bound
+    statement: >
+      Once something is revoked, no process acts on it after the bound, even
+      when the signal announcing the change was missed: a controller revoked
+      or expired, a connector grant revoked or an account disconnected, a
+      member removed from a room, a cached row changed.
+    kind: safety
+    formality: semi-formal
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+    gaps:
+      model: signals.qnt is not written yet
+      code: no machine over the revocations yet
+      system: waits on the two-replica lane
+    notes: >
+      One property with one checker parameterised by what is revoked, since the
+      mechanism is the same: a held row (`bridges/agent/held_rows.py`) kept
+      only while the bus listens, a short TTL when it was not, and the
+      periodic re-check. The resources are the controller token cache
+      (`ControllerAuthCache`), the room access cache (`RoomAccessCache`), room
+      membership (`transport/membership_signals.py`) and the connector broker
+      (`connections/broker.py`). Security-relevant: a revoked controller or a
+      removed member must not keep access through a cache.

@@ -2712,8 +2712,9 @@ it('tells the room once a session keeps not taking a message, instead of startin
   }
 });
 
-/** Under the host's retry interval of 5 s. */
-const HELD_ANSWER_MS = 3000;
+/** The host is given a retry interval of an hour, so only what it does at once is seen. */
+const NO_RETRY_MS = 60 * 60 * 1000;
+const HELD_ANSWER_MS = 5000;
 const PROPERTY_RUNS = Number(process.env.PROPERTY_RUNS ?? 15);
 
 type Step = { kind: 'address'; room: string } | { kind: 'toggle' };
@@ -2759,7 +2760,8 @@ it.each([{ startsOn: true }, { startsOn: false }])(
           abort.signal,
           supervision,
           new WatcherControl(),
-          openSwitchStream
+          openSwitchStream,
+          NO_RETRY_MS
         );
         try {
           await eventually(() => streams.length === 1);
@@ -2807,8 +2809,8 @@ it.each([{ startsOn: true }, { startsOn: false }])(
               await writeFlags(root, { enabled: true, spawn: on });
               await eventually(() => declarations.length > before);
               if (on) {
-                // Well inside the retry interval, so a host that waited for
-                // the next retry to answer what was held fails here.
+                // The host has no retry within the hour, so a host that waited
+                // for one to answer what was held fails here.
                 const until = Date.now() + HELD_ANSWER_MS;
                 while (!(await settled(root)) && Date.now() < until)
                   await new Promise((resolve) => setTimeout(resolve, 5));

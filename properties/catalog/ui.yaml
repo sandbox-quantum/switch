@@ -91,6 +91,7 @@ properties:
     levels: [ui]
     owner: platform
     status: checked
+    smoke: true
   - id: ui.no-server-errors
     title: The gateway answers no request from the UI with a 5xx
     statement: >

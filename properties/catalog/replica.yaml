@@ -10,6 +10,8 @@ properties:
     levels: [system]
     owner: platform
     status: proposed
+    gaps:
+      system: waits on the two-replica lane with killed processes
     notes: >
       The end-to-end statement of `lease.no-overlap`, which holds it at the model
       and code levels for one key: this one is about the work itself, in real
@@ -24,6 +26,9 @@ properties:
     levels: [model, system]
     owner: platform
     status: proposed
+    gaps:
+      model: needs an untimed abstraction of the lease
+      system: waits on the two-replica lane with killed processes
     notes: >
       Supersedes `lease.eventual-owner`. The model level needs an untimed
       abstraction of the lease (expiry as an event under fairness), because a

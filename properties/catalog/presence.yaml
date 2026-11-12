@@ -1,19 +1,4 @@
 properties:
-  - id: presence.reaches-every-replica
-    title: Presence is seen on every replica
-    statement: >
-      An agent's presence (going busy, say) is seen by the clients of its rooms
-      on every switch-core process, not only the one that announced it.
-    kind: safety
-    formality: semi-formal
-    levels: [system]
-    owner: platform
-    status: proposed
-    gaps:
-      system: >
-        fails today: presence travels over an in-process bus
-        (`transport/ephemeral.py`), so it reaches only the clients on the replica
-        that announced it. Recorded so the limitation is tracked.
   - id: presence.online-iff-lease
     title: A connection reads online only while its process holds
     statement: >

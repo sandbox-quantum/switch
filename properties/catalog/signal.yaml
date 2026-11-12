@@ -1,15 +1,17 @@
 properties:
   - id: signal.loss-only-delays
-    title: A lost signal only delays
+    title: A lost wake-up only delays
     statement: >
-      A dropped `NOTIFY` on the signal bus delays an update by at most the
-      periodic re-check and never causes a wrong answer: every handler and
-      re-check reads the database, and none acts on the payload.
+      A dropped or coalesced `NOTIFY`, or a `LISTEN` connection that drops and
+      comes back, delays an update by at most the periodic re-check and never
+      causes a wrong answer: every handler and re-check reads the database and
+      none acts on the payload, and every committed row is still read by every
+      consumer subscribed to its room.
     kind: safety
     formality: semi-formal
     levels: [model, system]
     owner: platform
     status: proposed
     notes: >
-      The rule `signals.py` states, and the same rule as `bus.lost-wakeup-only-delays`
-      for room wake-ups; one model (`signals.qnt`) covers both.
+      One rule on two channels: the signal bus (`signals.py`) and the room
+      wake-ups (`messages/notify.py`). One model, `signals.qnt`, covers both.

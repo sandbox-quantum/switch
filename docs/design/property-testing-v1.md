@@ -295,7 +295,6 @@ moves the delivery ones to `checked`.
 | `lease.eventual-owner` | Work whose holder stopped or stopped renewing is eventually held by a live process | liveness | model, system |
 | `session.addressed-reaches-controller` | Every event addressed to an agent a controller has attached reaches the controller's stream, in order, none skipped (one process; delivery across replicas is not covered) | liveness | code |
 | `session.controller-starts-on-addressed` | A controller with auto-start on starts a session for an addressed agent that has none, and never two for one room | liveness | code |
-| `task.lifecycle` | A task moves only delegate → ongoing → finalised; finalised is terminal (retired: the protocol was removed) | safety | model, code |
 | `tenancy.no-cross-tenant-ids` | No response to a principal in one tenant contains an id from another | safety | code, system |
 | `api.no-5xx` | No request, however malformed, is answered with a 5xx | safety | code, system |
 | `bridge.roundtrip-exactly-once` | A post from a collaboration platform appears in its room once, and an agent's reply appears on the platform once | safety | system |
@@ -410,7 +409,7 @@ adding under two minutes to PR CI (anything slower runs nightly).
    instructions; the `tasks` table was left), and
    `test_task_routes_removed.py` and the tool-surface test keep it removed.
    Nothing writes a task, so there is nothing to check, and `task.lifecycle` is
-   retired in the catalog rather than left proposed. The published agent-protocol
+   deleted from the catalog; git history keeps it if the protocol returns. The published agent-protocol
    page still lists the task events and tools, which is for the docs repository.
 3. **HTTP surface.** Schemathesis against the gateway with two workspaces: no
    5xx, responses that match their schema, and no id from the other workspace.
@@ -452,26 +451,34 @@ code: process leases on the database's clock (`process_lease.py`), signals that
 only say "look again" and are backed by a periodic re-check (`signals.py`), and
 caches held only while the bus keeps listening (`bridges/agent/held_rows.py`).
 Phase 3 puts those rules, and the boundaries to the controller, chats and
-connectors, in the catalog. Every property below is in it as `proposed`.
+connectors, in the catalog. Every property below is `proposed`.
+
+Review of the first draft changed it in four ways. Properties that said one
+thing in different words were merged: a revocation reaching every process is one
+property, however many things can be revoked, and a lost wake-up on the signal
+bus and on a room's wake-ups is one. Properties that need a multi-replica fault
+harness say so, as a gap, instead of looking nearly done. The order follows risk,
+not subsystem: security first, then the logic everything else assumes.
+And the checkers that need no infrastructure move ahead of the two-replica lane.
 
 | Property | Level | Checked by |
 | --- | --- | --- |
+| `tenancy.agent-surface-no-cross-tenant` | code, system | a machine over the agent operations as agents of two tenants |
+| `connector.token-only-to-granted` | code, system | broker machine with a reference model of who may hold what |
+| `connector.refresh-single-flight` | code | concurrent-refresh machine, fake provider |
+| `chats.owned-sync-reversible` | code | grant/revoke/transfer machine against `sync_owned_rooms` |
+| `chats.membership-is-read-authority` | code, system | the same machine; Schemathesis |
+| `revocation.takes-effect-everywhere` | model, code, system | `signals.qnt`; one machine per resource; two-replica lane |
+| `delivery.addressing-matches-reference` | code | a reference model of `addresses()` |
+| `retention.erasure-complete` | code, system | a sweep of every user-id column from the schema |
+| `signal.loss-only-delays` | model, system | `signals.qnt`; dropped `NOTIFY` |
+| `controller.stream-complete` | code | two more steps of the controller-stream machine |
+| `controller.takeover-fenced` | code, system | connection-ledger machine |
+| `presence.online-iff-lease` | code, system | lease clock seam; killing a replica |
 | `replica.single-owner` | system | two-replica lane, Antithesis |
 | `replica.ownership-eventual` | model, system | untimed lease model; killing a replica |
-| `signal.loss-only-delays` | model, system | `signals.qnt`; dropped `NOTIFY` |
-| `cache.no-stale-past-reconnect` | model, code, system | `signals.qnt`; cache machine |
-| `membership.removal-reaches-every-replica` | model, system | `signals.qnt`; two-replica lane |
-| `presence.reaches-every-replica` | system | two-replica lane (fails today) |
-| `presence.online-iff-lease` | code, system | lease clock seam; killing a replica |
-| `controller.stream-complete` | model, code | delivery model and machine with a controller reader |
-| `controller.revoked-refused` | code, system | two in-process replicas; two-replica lane |
-| `controller.takeover-fenced` | code, system | connection-ledger machine |
-| `chats.membership-is-read-authority` | code, system | grant/revoke machine; Schemathesis |
-| `chats.owned-sync-reversible` | code | grant/revoke/transfer machine |
 | `chats.streams-close-on-sign-out` | system, ui | fast-lane scenario; Bombadil |
-| `connector.token-only-to-granted` | code, system | broker machine; Schemathesis |
-| `connector.refresh-single-flight` | code | concurrent-refresh machine, fake provider |
-| `connector.revoke-stops-issue` | code, system | broker machine; two-replica lane |
+| `bridge.roundtrip-exactly-once` | code, system | a machine over `CollaborationCore` with a fake `PlatformAdapter` |
 
 How they relate to what is there:
 
@@ -479,83 +486,136 @@ How they relate to what is there:
   which holds it for one key at the model and code levels; this one is about
   the consumer or bridge connection itself, in processes that die.
 - `replica.ownership-eventual` supersedes `lease.eventual-owner`, now retired.
-- `signal.loss-only-delays` and `bus.lost-wakeup-only-delays` are one rule on
-  two channels, so one model covers both.
+- `revocation.takes-effect-everywhere` replaces `controller.revoked-refused`,
+  `connector.revoke-stops-issue`, `cache.no-stale-past-reconnect` and
+  `membership.removal-reaches-every-replica`: the same mechanism (a held row,
+  a short TTL when the bus was not listening, the periodic re-check) with a
+  different thing revoked, so one checker parameterised by resource.
+- `signal.loss-only-delays` is `bus.lost-wakeup-only-delays` as well: one rule
+  on two channels, one model.
+- `controller.stream-complete` is narrowed to what
+  `session.addressed-reaches-controller` does not cover: agents attached or
+  detached while the stream is open, and a cursor retention has passed. The
+  model level is dropped, since a Quint model would only restate the cursor
+  logic.
 - `controller.takeover-fenced` has the shape of `lease.fenced-takeover` on a
   different mechanism (the connection ledger's `taken_over`), so it stays a
   property of its own.
-- `presence.reaches-every-replica` would fail today: presence goes over an
-  in-process bus (`transport/ephemeral.py`). It is recorded with that as its
-  gap so the limitation is tracked, not checked into a failing lane.
-- `session.addressed-eventually-started` is replaced by the two properties
-  above: it assumed core asks the controller to start a session, and it does
-  not.
+- `delivery.addressing-matches-reference` replaces `delivery.unaddressed-silent`,
+  which was false: a direct chat, an alias and a role address without a
+  mention. Every other delivery property assumes this one.
+- `session.addressed-eventually-started` was replaced by the two session
+  properties in phase 2: it assumed core asks the controller to start a
+  session, and it does not.
 
-In this order, cheapest and most security-relevant first, each checker shown to
-fail on a planted bug:
+In this order, each checker shown to fail on a planted bug:
 
-1. **The signals model** (`properties/specs/signals.qnt`): processes with a
+1. **Security at the code level**, which needs no new infrastructure: several
+   processes in one test share Postgres, each with its own signal bus, as
+   `test_connections_across_processes.py` and the ownership machine already do,
+   and Hypothesis machines interleave real transactions the way the delivery
+   machine does. First the agent surface as agents of two tenants
+   (`tenancy.agent-surface-no-cross-tenant`: the operations are one definition
+   served over HTTP and MCP, so one machine covers both); then broker grants,
+   revokes and disconnects (`connector.token-only-to-granted`) and concurrent
+   refresh near expiry against a fake provider that rotates tokens and refuses
+   a used one (`connector.refresh-single-flight`); then chat grants, revokes
+   and ownership transfers against `sync_owned_rooms`, checked after every step
+   (`chats.owned-sync-reversible`, `chats.membership-is-read-authority`). An
+   `always` at each grant check, so the system level comes with the lane.
+2. **The addressing oracle.** A reference model of `addresses()` over generated
+   free text and room state: mentions, aliases, roles, groups, who may address
+   whom, direct chats; punctuation, code spans, case, one name inside another.
+   With it, assert in the code machine that who a row is for never changes after
+   it is written (`delivery.decided-at-write`, already in the model), and
+   promote it.
+3. **Erasure.** After an erase, walk every table and column that holds a user
+   id, from the schema's metadata, and assert none names the person: a table
+   added later is covered without anyone remembering it. It also closes the gap
+   on platform people, whose messages cannot be found afterwards without the
+   transport ids recorded before the erasure.
+4. **The signals model** (`properties/specs/signals.qnt`): processes with a
    listening connection that drops and comes back, signals sent after commit
    and lost, the periodic re-check, resync on reconnect, and a held cache with
-   its TTL and generation. Invariants for `signal.loss-only-delays` and
-   `bus.lost-wakeup-only-delays` (no wrong answer; staleness bounded by the
-   re-check), `cache.no-stale-past-reconnect` and
-   `membership.removal-reaches-every-replica`. Mutants: a handler that acts on
-   the payload, no resync on reconnect, no periodic re-check, a cache that keeps
-   its hold across a reconnect.
-2. **Security at the code level**, which needs no new infrastructure: several
-   processes in one test share Postgres, each with its own signal bus, as
-   `test_connections_across_processes.py` and the ownership machine already do.
-   Hypothesis machines for the held caches across bus disconnects
-   (`cache.no-stale-past-reconnect`), controller revocation and key expiry
-   (`controller.revoked-refused`), broker grants, revokes and disconnects
-   (`connector.token-only-to-granted`, `connector.revoke-stops-issue`), and
-   chat read authority (`chats.membership-is-read-authority`). An `always` at
-   each grant check, so the system level comes with the lane.
-3. **The two-replica lane.** A mode of the ephemeral stack with two switch-core
-   processes behind a load balancer that does not pin a client to one, and the
-   fast lane's scenarios run through it, each with a history check before
-   teardown. Then a replica killed mid-scenario
-   (`replica.ownership-eventual`, `presence.online-iff-lease`), and a scenario
-   for presence that documents the gap. This is the infrastructure the rest of
-   the system level needs.
-4. **The controller.** A controller reader in the delivery machine, with
-   bindings changing mid-stream (`controller.stream-complete`; the model gets
-   the same step). A machine over the connection ledger for
+   its TTL and generation. Invariants for `signal.loss-only-delays` (no wrong
+   answer; staleness bounded by the re-check) and the model level of
+   `revocation.takes-effect-everywhere`. Mutants: a handler that acts on the
+   payload, no resync on reconnect, no periodic re-check, a cache that keeps
+   its hold across a reconnect. Then a machine per resource for the revocation
+   property, one checker shared.
+5. **The controller.** Attach and detach agents, and let retention pass a
+   cursor, in the controller-stream machine from phase 2
+   (`controller.stream-complete`). A machine over the connection ledger for
    `controller.takeover-fenced`, and `presence.online-iff-lease` with the lease
    clock seam from phase 2.
-5. **Chats.** A machine of random grants, revokes and ownership transfers
-   against `sync_owned_rooms`, checked after every step
-   (`chats.owned-sync-reversible`). A fast-lane scenario and a Bombadil property
-   for `chats.streams-close-on-sign-out`.
-6. **Connector refresh.** A machine whose fake OAuth provider rotates refresh
-   tokens and refuses a used one, with concurrent requests near expiry
-   (`connector.refresh-single-flight`).
-7. **Faults.** Dropped `NOTIFY` and a severed listening connection in the lane
-   (`signal.loss-only-delays`), then the workload generator and trace
-   validation as before. Process kills and network partitions at scale are what
-   Antithesis gives (phase 4); the assertions above are already in place for it.
+6. **The bridge.** A machine over `CollaborationCore` with a fake
+   `PlatformAdapter`: a post appears once, an agent's reply appears once, and no
+   echo loops (`bridge.roundtrip-exactly-once`), plus format round-trips (Slack
+   mrkdwn and the internal form, Discord chunking) and an agent's retried write
+   posting once.
+7. **The two-replica lane.** A mode of the ephemeral stack with two switch-core
+   processes behind a load balancer that does not pin a client to one, and the
+   fast lane's scenarios run through it, each with a history check before
+   teardown. Then a replica killed mid-scenario (`replica.single-owner`,
+   `replica.ownership-eventual`, `presence.online-iff-lease`), dropped `NOTIFY`
+   and a severed listening connection (`signal.loss-only-delays`), and the
+   system level of the revocation property. Whether this is built in phase 3 or
+   left to Antithesis in phase 4 is open; the properties that wait on it say so.
+   Process kills and network partitions at scale are what Antithesis gives.
 
 Not planned here: the controller's own rules on its side (TypeScript), such as
 a handed-over session never being driven by two controllers at once in
 handover and the detached runtime. They look like properties of the same kind;
 whoever owns that code should say what they are first.
 
+## Known issues
+
+Found by the checks and not yet fixed, kept here until there is somewhere better
+to track them.
+
+- **Nine routes answer 500 or 503 to fuzzed input**, accepted in
+  `properties/http/baseline.json` so the nightly stays useful: `DELETE
+  /messaging-apps/installs/{install_id}`, `GET /hosted-controller/machines`,
+  `POST /agent-sessions/{agent_id}/{session_id}/approvals/{request_id}/answer`,
+  `POST /hosted-controller/machines/{machine_id}/observation`, `POST
+  /hosted-controller/machines/{machine_id}/prepare`, `POST /hosted-machines/ensure`,
+  `POST /invitations/mine/accept`, `POST /provider-connections/github/flows`
+  and `POST /rooms`. The baseline should shrink as each is fixed. The
+  fuzz also excludes a NUL in a string, which makes many routes answer 500
+  (the login among them) because Postgres cannot store one; fixing that first
+  lets the exclusion go.
+- **Nine routes answer in a shape their schema does not declare**
+  (`response_schema_conformance`: `POST /chats`, the chat sub-routes,
+  `POST /collaborations/setup/slack/check`, `POST /templates`, `PUT
+  /chats/{room_id}/read`), all on the type of `detail`. They look like one
+  error-shape fix, and are outside `api.no-5xx`, which only says 5xx.
+- **Presence reaches only the clients on the replica that announced it**,
+  because it goes over an in-process bus (`transport/ephemeral.py`). It is a
+  backlog item, not a property: a property known to fail is noise in the gate.
+  Online status is not cosmetic: the "I'm not online in this room" reply and
+  whether an agent is willing to start a session read it, so
+  `presence.online-iff-lease` matters, and moving presence to the signal bus is
+  worth deciding.
+- **The history check cannot see a platform person's messages once they are
+  erased**, because the erasure deletes the identity row they are found by, and
+  the fast lane erases only a member client. The erasure sweep above replaces it.
+
 ## Open questions
 
-- Whether the Hypothesis state machine can interleave real concurrent
-  transactions well enough, or needs explicit scheduling points (a pausable
-  session wrapper) to reach the races the model finds.
+- Whether a Hypothesis machine reaches the races a model finds in the
+  connector and chat code the way the delivery machine does (tasks holding
+  transactions open), or those need explicit scheduling points.
 - What the history checker learns of what each client received: it reads the
   database, not the clients, so it checks what the database says was owed and
   kept. What a client was handed needs the harness's record or an assertion on
   the delivery path.
 - Whether Schemathesis's tenant check needs the OpenAPI document to mark
   which fields are ids, or can find them from the schema's naming.
-- Which load balancer the two-replica lane uses, and whether it should also
-  break WebSocket connections on purpose, to reach reconnects.
-- Whether presence is to move to the signal bus. If not, the gap on
-  `presence.reaches-every-replica` stands, and it should say what a client on
-  another replica sees instead.
+- Whether the two-replica lane is built in phase 3 or left to Antithesis, and
+  if built, which load balancer it uses and whether it breaks WebSocket
+  connections on purpose, to reach reconnects.
+- Whether presence is to move to the signal bus. If so, "presence reaches every
+  replica" becomes a property to check; if not, say what a client on another
+  replica sees instead.
 - What rules the controller's handover and detached runtime keep, from whoever
   owns them.

@@ -23,13 +23,3 @@ properties:
     levels: [code]
     owner: platform
     status: proposed
-  - id: connector.revoke-stops-issue
-    title: Revoking stops tokens everywhere
-    statement: >
-      Revoking a grant or disconnecting an account stops tokens being issued for
-      it, on every process.
-    kind: safety
-    formality: semi-formal
-    levels: [code, system]
-    owner: platform
-    status: proposed
