@@ -87,6 +87,9 @@ from switch_core.gateway.trust_settings import router as trust_settings_router
 from switch_core.gateway.workos_sign_in_routes import (
     router as workos_sign_in_router,
 )
+from switch_core.gateway.workspace_guardrails import (
+    router as workspace_guardrails_router,
+)
 from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
@@ -254,6 +257,7 @@ def create_gateway_app(
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])
+    app.include_router(workspace_guardrails_router, tags=["trust-settings"])
     app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(

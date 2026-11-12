@@ -1033,6 +1033,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/workspace/guardrails",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/workspace/services",
       "auth": "session",
       "flags": [

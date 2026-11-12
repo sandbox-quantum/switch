@@ -438,6 +438,7 @@ ROUTES: dict[str, Case] = {
         json={"endpoint": "https://trust.example.invalid", "policy_id": None},
     ),
     "DELETE /gateway/trust-settings": delete(f"{G}/trust-settings", operator()),
+    "GET /gateway/workspace/guardrails": get(f"{G}/workspace/guardrails", SELF),
     "GET /gateway/connector-apps": get(f"{G}/connector-apps", operator()),
     "PUT /gateway/connector-apps/{service}": put(
         f"{G}/connector-apps/github",
