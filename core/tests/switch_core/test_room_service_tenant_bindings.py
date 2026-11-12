@@ -62,6 +62,7 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
@@ -272,6 +273,7 @@ def _service(
     svc = object.__new__(RoomService)
     svc._session_factory = session_factory  # type: ignore[assignment]
     svc._room_store = store  # type: ignore[assignment]
+    svc._agent_store = AgentStore()  # type: ignore[assignment]
     svc._client_lifecycle = clients  # type: ignore[assignment]
     svc._provisioning = matrix  # type: ignore[assignment]
     svc._collab_lifecycle = None  # type: ignore[assignment]

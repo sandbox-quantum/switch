@@ -46,7 +46,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
-from switch_core.agent_invites import AgentInviteDenied
+from switch_core.agent_invites import AgentInviteDenied, AgentInviter
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     administers_tenant,
@@ -1185,11 +1185,17 @@ class ChatService:
             )
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        await self._room_service.add_agents_to_room(
-            room.id,
-            agent_ids=[agent_id],
-            with_agents=lambda session: self._group_if_several_agents(session, room),
-        )
+        try:
+            await self._room_service.add_agents_to_room(
+                room.id,
+                agent_ids=[agent_id],
+                inviter=AgentInviter(kind="user", subject=actor.id),
+                with_agents=lambda session: self._group_if_several_agents(
+                    session, room
+                ),
+            )
+        except AgentInviteDenied as exc:
+            raise ChatError(403, "AGENT_NOT_ALLOWED", str(exc)) from exc
         async with tenant_session(self.session_factory, tenant_id) as session:
             return await self._room(session, tenant_id, room_id)
 
