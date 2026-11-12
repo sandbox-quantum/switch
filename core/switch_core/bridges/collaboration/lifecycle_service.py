@@ -712,6 +712,19 @@ class CollaborationBridgeLifecycleService:
             and adapter_cls.supports_private_channels
         )
 
+    def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
+        """Whether a new public channel on this platform has the person asking
+        for it put in it, when they have a confirmed linked account there.
+
+        Read from the adapter class, like `supports_private_channels`."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return False
+        return (
+            adapter_cls.supports_channel_creation
+            and adapter_cls.adds_creator_to_public_channel
+        )
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
 
@@ -1269,6 +1282,7 @@ class CollaborationBridgeLifecycleService:
             adapter.set_listening(active)
             adapter.set_tenant_id(tenant_id)
             adapter.set_bridge_id(bridge_id)
+            adapter.set_session_factory(self._session_factory)
             adapter.set_outbound_policy(self._config.outbound_policy)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(

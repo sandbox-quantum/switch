@@ -45,6 +45,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **`switch-purge-organization` deletes an organization when its owner
+  asks.** Run where switch-core runs, it shows what would go and what stays;
+  with `--execute --request REFERENCE` it ends the organization's messaging
+  app installs, revokes its service sign-ins, tears down its cloud machines,
+  then deletes every workspace with everything in it, the organization, and
+  the accounts that belonged to nothing else. It waits, and says so, while a
+  machine or token is still live outside Switch. WorkOS is left alone; the
+  command lists what to remove there.
+- **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
+  through Meta's Cloud API and people can talk to agents in one-to-one chats,
+  with files, quoted replies as threads and read receipts. Each connection
+  needs its own Meta app, and Switch checks the token's app and permissions
+  when you save it. Replies more than 24 hours after the person's last message
+  are refused by WhatsApp; Switch doesn't send template messages.
+- **Agents can use their owner's Sentry, through the Sentry connection.** Core
+  signs in through Sentry's MCP server and reads the account from its `whoami`
+  tool. Agents have Sentry for up to an hour after each sign-in.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
@@ -78,7 +95,9 @@ version of their own to them without also giving them a release of their own.
   and what to check, posts when it fires, every hour while it stays firing and
   once on recovery, and error
   alerts count failures instead of taking a percentage, so low traffic doesn't
-  page on noise. Causes such as slow queries stay on the dashboards.
+  page on noise. Causes such as slow queries stay on the dashboards. The
+  agents-dropping alert compares with the same time a week earlier, so it
+  keeps firing for as long as agents stay away.
   `deploy/observability/apply.sh` creates or updates them in Datadog by name.
 - **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
   per crashed collaboration bridge, tagged with its platform and display name,
@@ -94,6 +113,18 @@ version of their own to them without also giving them a release of their own.
   `alerted` or `errored`. A message Switch Trust left alone has no `trust`
   field, so its result is as before. Until now an agent whose words were
   redacted had no way to know.
+- **The Notion connection.** A person connects Notion from Switch Console,
+  choosing a workspace at Notion's consent screen, and a granted agent
+  searches, reads and edits pages, databases and comments there, as that
+  person, through Notion's hosted MCP server. Nothing needs configuring on the
+  server: Core registers its own client, and the sign-in comes back to Switch
+  Console. Notion has one scope and no read-only sign-in, so every connection
+  can write. Its tokens reach no account endpoint, so Switch reads the account
+  by token introspection (RFC 7662), which an `oauth` catalog entry can now
+  ask for in place of an account URL: the connection is that user in that
+  workspace. A person has one Notion connection. Connecting another workspace
+  replaces it, and agents must be granted Notion again. Disconnecting revokes
+  the sign-in at Notion.
 - **How many users and agents each workspace has.** `GET /gateway/tenants/counts`
   answers for every workspace the caller may enter, counting people as the
   workspace's members list shows them: its members, and its organization's
@@ -108,6 +139,10 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **The morning report's graph explains itself.** `daily_report.py` draws the
+  graph of the day itself instead of taking a Datadog snapshot, with a title,
+  the time span, labelled axes, a legend and a caption on how to read it, so
+  the image makes sense on its own in Slack.
 - **switch-core's logs keep to what matters.** Successful routine polls (health
   checks, controller status, assignment and operations polls, Console's
   controller and agent lists, host observations, session activity) and
@@ -203,6 +238,21 @@ version of their own to them without also giving them a release of their own.
   service sign-in lost its `confirm` route) but kept declaring revision 1. It
   now declares `speaks: 2, accepts: 2`, so a Switch Console can tell it apart
   from a server too old for it.
+- **A new switch-core pod takes traffic as soon as it can serve, so a rolling
+  update leaves the other pods carrying everything for less time.** With
+  more than one replica, a starting pod read not ready until the health
+  check after its listeners connected, ten seconds later, and the chart's
+  readiness probe looked every ten seconds, so pods became ready 11 to 19
+  seconds after they could serve. A not-ready answer is now checked again
+  after a second, and the chart probes readiness every two seconds. A pod is
+  still taken out of service only after a minute of failures.
+- **Kubernetes no longer restarts a switch-core pod that is still booting or
+  only busy.** The chart's liveness probe began 30 seconds after a pod started
+  and gave up after three answers slower than a second, so a pod whose boot
+  waited for others starting at the same time, or whose event loop was busy
+  taking over another pod's agents during a roll, was restarted and handed its
+  work over again. A startup probe now gives a booting pod up to five minutes,
+  and liveness waits five seconds for an answer.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
@@ -232,6 +282,8 @@ version of their own to them without also giving them a release of their own.
   closed only at its next ping. It now lets the socket go as it closes, and
   the other pod takes the connection up, waiting up to 2 seconds for the
   first pod to record the socket going if the controller comes back sooner.
+- **Junie in the provider table**, so a managed agent can run on JetBrains'
+  Junie CLI; its sign-in command is `junie`.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
@@ -493,7 +545,7 @@ version of their own to them without also giving them a release of their own.
   server refuses with a 4xx other than 401 or 429, the message gives the
   status. The identity call reaches only what the outbound policy allows
   (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`). `account_id` can list 2 to 8 paths,
-  joined into one id, so a person in two accounts has two connections. An
+  joined into one id, so two accounts of one person have two different ids. An
   entry whose vendor has no OAuth scopes can leave out `scope`. Its sign-ins
   are always read and write, and it has no access profiles. For a discovered
   server, Core now sends the `resource` that the server advertises. Core
@@ -3020,6 +3072,8 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A service's note on agent access.** The connector page and the connect
+  step show it where a service sets one (Sentry).
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on
   any model provider Pi is signed in to, with the model chosen in Switch.
   Each session loads a Switch extension with `-e`, written to a directory of
@@ -3049,6 +3103,15 @@ version of their own to them without also giving them a release of their own.
   starting a sign-in, and tells you to run `kiro-cli login` (or
   `kiro-cli login --use-device-flow` on a machine without a browser) when it
   is not. A `KIRO_API_KEY` on the machine is passed through.
+- **Junie as an agent provider.** JetBrains' Junie CLI (`junie`) can run a
+  Switch agent, through its ACP mode on the generic ACP adapter: approvals,
+  model choice, saved conversations and the Switch tools over MCP. Its sign-in
+  is read from the account Junie reports for an empty session, never by
+  signing it in; Switch's permission levels set its brave mode (Safe, Auto,
+  Brave); and its "Always allow", which Junie remembers for every later run,
+  is not offered. A provider whose permission level is a session config option
+  can now say so in its hooks, and a sign-in check can ask the agent more than
+  `initialize`.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

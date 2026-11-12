@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.app_credentials import UNREADABLE
-from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.broker import Principal, ServiceBroker, ServiceError
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import (
@@ -41,7 +41,13 @@ from switch_core.gateway.service_connections import (
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeOAuthServer
-from tests.switch_core.connections.test_loader import OAUTH_ENTRY, _write_example
+from tests.switch_core.connections.test_loader import (
+    GET_IDENTITY,
+    INTROSPECTION_IDENTITY,
+    OAUTH_ENTRY,
+    _write_example,
+)
+from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -73,6 +79,7 @@ def _world(
     session_factory: async_sessionmaker[AsyncSession],
     root: Path,
     *,
+    entry: str = OAUTH_ENTRY,
     redirect: str = "[loopback, core]",
     public_url: str | None = None,
     disabled: dict[str, str] | None = None,
@@ -84,9 +91,7 @@ def _world(
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
     _write_example(
         root,
-        OAUTH_ENTRY.replace(
-            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
-        ),
+        entry.replace("redirect: [loopback, core]", f"redirect: {redirect}{ports}"),
     )
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
@@ -858,3 +863,143 @@ class TestWorkspaceSwitch:
             "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None
+
+
+def _introspected_world(
+    session_factory: async_sessionmaker[AsyncSession], root: Path
+) -> World:
+    """The example entry read as Notion is: by introspection, as the
+    workspace and the user, with the sign-in revoked where it is advertised."""
+    return _world(
+        session_factory,
+        root,
+        entry=OAUTH_ENTRY.replace(GET_IDENTITY, INTROSPECTION_IDENTITY).replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_discovered: true\n",
+        ),
+    )
+
+
+async def _grant_agent(
+    session_factory: async_sessionmaker[AsyncSession], owner: User
+) -> str:
+    """An agent of the owner's, granted the owner's connection as it is now."""
+    connection = await _connection(session_factory, owner.id)
+    assert connection is not None
+    async with session_factory() as session:
+        agent = await add_agent(session, name="planner", owner_id=owner.id)
+        await STORE.save_grant(
+            session,
+            agent_id=agent.id,
+            owner_id=owner.id,
+            service="example",
+            access="write",
+            tool_mode="deny",
+            tools=[],
+            resources={},
+            account_id=connection.account_id,
+            created_by=owner.id,
+        )
+        await session.commit()
+        return agent.id
+
+
+async def _issue(
+    session_factory: async_sessionmaker[AsyncSession], world: World, agent_id: str
+):
+    async with session_factory() as session:
+        return await world.broker.issue(
+            session, agent_id, Principal.agent_key(), "example"
+        )
+
+
+class TestIntrospectedAccount:
+    async def test_switching_notion_workspace_replaces_the_connection_and_needs_a_new_grant(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        world.vendor.introspected.update(workspace_id="ws-A", user_id="user-1")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            first = await _connection(session_factory, ada.id)
+            assert first is not None
+            old_refresh = json.loads(TEST_KEYRING.decrypt(first.encrypted_secret))[
+                "refresh_token"
+            ]
+            agent_id = await _grant_agent(session_factory, ada)
+            await _issue(session_factory, world, agent_id)
+
+            world.vendor.introspected.update(workspace_id="ws-B")
+            await _loopback_connect(world, Console(client, ada))
+
+        async with session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(ServiceConnection).where(ServiceConnection.user_id == ada.id)
+                )
+            )
+        assert [row.account_id for row in rows] == ["ws-B:user-1"]
+        assert [form["token"] for form in world.vendor.revoked] == [old_refresh]
+        with pytest.raises(ServiceError) as refused:
+            await _issue(session_factory, world, agent_id)
+        assert refused.value.code == "grant_account_changed"
+
+    async def test_reconnecting_the_same_workspace_keeps_the_grant(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            agent_id = await _grant_agent(session_factory, ada)
+            await _loopback_connect(world, Console(client, ada))
+        issued = await _issue(session_factory, world, agent_id)
+        assert issued.token in world.vendor.live_access
+
+    async def test_the_ids_in_the_token_response_are_never_stored(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        world.vendor.token_extras = {"workspace_id": "ws-token", "user_id": "u-token"}
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert connection.account_id == "ws-1:user-1"
+
+    async def test_a_sign_in_without_introspection_is_refused_and_keeps_the_connection(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+        agent_id = await _grant_agent(session_factory, ada)
+        kept = await _connection(session_factory, ada.id)
+        assert kept is not None
+        flows_before = await _flow_ids(session_factory)
+
+        # The adapter keeps the endpoints it discovered, so a vendor that
+        # stops advertising introspection is a new world built without it.
+        lapsed = _introspected_world(session_factory, tmp_path / "lapsed")
+        del lapsed.vendor.metadata["introspection_endpoint"]
+        async with lapsed.harness.client() as client:
+            refused = await Console(client, ada).start()
+        assert refused.status_code == 502
+        assert refused.json()["detail"] == (
+            "Example's authorization server offers no token introspection, "
+            "so Switch cannot tell whose sign-in this is."
+        )
+        assert await _flow_ids(session_factory) <= flows_before
+        after = await _connection(session_factory, ada.id)
+        assert after is not None
+        assert (
+            after.account_id,
+            after.encrypted_secret,
+            after.secret_revision,
+            after.status,
+        ) == (kept.account_id, kept.encrypted_secret, kept.secret_revision, kept.status)
+        issued = await _issue(session_factory, world, agent_id)
+        assert issued.token in world.vendor.live_access

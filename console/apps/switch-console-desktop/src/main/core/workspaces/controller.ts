@@ -16,7 +16,6 @@ import {
   deleteRoomRole,
   fetchArchivedRooms,
   fetchBridgePeople,
-  fetchBridgeUserNames,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -1267,16 +1266,10 @@ export const workspacesController = createRPCController({
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
     ),
 
-  /** The people Switch knows on one bridge, with who linked each, for the New room dialog. */
+  /** The people Switch knows on one bridge, with who linked each, for offering them to a room. */
   listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchBridgePeople(server, params.bridgeId)
-    ),
-
-  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
-  listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
-    withWorkspaceSession(params.workspaceId, (server) =>
-      fetchBridgeUserNames(server, params.bridgeId)
     ),
 
   /** A room's schedules, for its configuration page. */

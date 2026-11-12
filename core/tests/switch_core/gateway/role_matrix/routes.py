@@ -198,6 +198,11 @@ ROUTES: dict[str, Case] = {
         anyone(ok=422),
         why="Your own: refused without the account's e-mail typed to confirm it.",
     ),
+    "POST /gateway/auth/me/reset-test-account": Case(
+        Ask("POST", f"{G}/auth/me/reset-test-account"),
+        anyone(ok=422),
+        why="Your own: refused without the account's e-mail typed to confirm it.",
+    ),
     # ── Workspaces ───────────────────────────────────────────────────────
     "GET /gateway/tenants": get(f"{G}/tenants", SELF),
     "GET /gateway/tenants/counts": get(f"{G}/tenants/counts", SELF),

@@ -105,7 +105,8 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     installIsEmpty: switchServersStore.installIsEmpty,
     viewWorksWithoutServer: viewWorksWithoutServer(currentViewId),
     onboardingInProgress: onboardingStore.inProgress,
-    onboardingEnabled: BUILD_FEATURE_FLAGS.onboarding,
+    // A rehearsal asked for from Settings shows the pages even in a build that has them off.
+    onboardingEnabled: BUILD_FEATURE_FLAGS.onboarding || onboardingStore.rehearsal,
   });
   const catchUpIntro = shouldCatchUpIntro({
     shape,

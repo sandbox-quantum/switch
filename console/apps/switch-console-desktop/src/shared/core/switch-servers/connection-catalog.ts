@@ -79,6 +79,11 @@ export const connectionCatalogEntrySchema = z.object({
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: z.number().nullable(),
   /**
+   * What limits agent access beyond that lifetime, for people to read (Sentry:
+   * agents have it for up to an hour after each sign-in); null for most services.
+   */
+  agent_access_note: z.string().nullable(),
+  /**
    * The only ports this Console's listener may take a sign-in back on, for a
    * vendor that matches the port registered; null for any port.
    */
@@ -109,6 +114,7 @@ export const connectionCatalogSchema = z.object({
         unavailable_code: true,
         pass_through: true,
         token_lifetime: true,
+        agent_access_note: true,
         loopback_ports: true,
         key: true,
         external_identity: true,
@@ -136,6 +142,7 @@ export const serviceConnectionsSchema = z.object({
       unavailable_code: z.string().nullable().default(null),
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),
+      agent_access_note: z.string().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
       external_identity: z.string().nullable().default(null),

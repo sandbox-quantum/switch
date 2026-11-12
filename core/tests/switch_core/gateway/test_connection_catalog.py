@@ -90,7 +90,9 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("canva") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
-    assert len(result) == 10
+    assert result.pop("notion") == "not_connected"
+    assert result.pop("sentry") == "not_connected"
+    assert len(result) == 9
     assert set(result.values()) == {"coming_soon"}
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"

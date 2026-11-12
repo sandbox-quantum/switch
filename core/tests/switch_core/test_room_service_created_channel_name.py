@@ -54,6 +54,8 @@ class _Adapter:
     """Makes a channel the platform names differently from what it was asked:
     the name was taken, so it carries a suffix."""
 
+    adds_creator_to_public_channel = False
+
     def __init__(self) -> None:
         self.asked: list[str] = []
 
