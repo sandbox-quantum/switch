@@ -16,7 +16,7 @@ from tests.switch_core.test_migration_operator_owns_tenant_zero import (
     _upgrade_to,
 )
 
-_PRE_MIGRATION_REVISION = "d3a8f1c62b07"
+_PRE_MIGRATION_REVISION = "861ff8767cf4"
 _MIGRATION_UNDER_TEST = "b7d24e9c1f53"
 
 
