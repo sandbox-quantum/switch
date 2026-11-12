@@ -291,6 +291,17 @@ class TestWhichChat:
                 },
                 "-1004",
             ),
+            (
+                {
+                    "update_id": 1,
+                    "edited_message": {
+                        "message_id": 3,
+                        "chat": {"id": -1005, "type": "supergroup"},
+                        "text": "/connect abc",
+                    },
+                },
+                "-1005",
+            ),
         ],
     )
     async def test_each_update_type_names_its_chat(
@@ -306,6 +317,20 @@ class TestWhichChat:
         payload["message"]["migrate_from_chat_id"] = -55
 
         assert installer.workspace_of_event(payload) == "-55"
+
+    async def test_an_edit_is_never_read_as_a_claim(self) -> None:
+        installer = await _installer()
+        payload = {
+            "update_id": 1,
+            "edited_message": {
+                "message_id": 3,
+                "chat": {"id": -1005, "type": "supergroup"},
+                "from": {"id": 7},
+                "text": "/connect abc",
+            },
+        }
+
+        assert installer.claim_of_event(payload) is None
 
     async def test_an_update_with_no_chat_is_refused(self) -> None:
         installer = await _installer()

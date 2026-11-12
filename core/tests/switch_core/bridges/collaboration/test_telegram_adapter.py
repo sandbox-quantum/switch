@@ -672,13 +672,48 @@ class _FakeUpdate:
         self,
         *,
         message: Any = None,
+        edited_message: Any = None,
         my_chat_member: Any = None,
         callback_query: Any = None,
     ) -> None:
         self.message = message
         self.channel_post = None
+        self.edited_message = edited_message
+        self.edited_channel_post = None
         self.my_chat_member = my_chat_member
         self.callback_query = callback_query
+
+
+def test_an_edit_is_reported_against_the_message_it_edits_and_not_bridged() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    edits: list[Any] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    async def _ignore(event: Any) -> None:
+        return None
+
+    adapter.set_takeback_handlers(
+        on_message_deleted=_ignore,
+        on_message_edited=lambda e: _collect(edits, e),
+        on_channel_removed=_ignore,
+    )
+
+    _run(
+        adapter._handle_update(
+            _FakeUpdate(edited_message=_FakeInbound(message_id=11, text="fixed"))
+        )
+    )
+
+    assert seen == []
+    assert [(e.channel_id, e.message_ref, e.content) for e in edits] == [
+        (str(CHAT_ID), f"{CHAT_ID}:11", "fixed")
+    ]
+
+
+def test_edits_are_asked_for() -> None:
+    assert "edited_message" in adapter_module._ALLOWED_UPDATES
+    assert "edited_channel_post" in adapter_module._ALLOWED_UPDATES
 
 
 # ── Sender names ─────────────────────────────────────────────────────────────
@@ -1649,6 +1684,8 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
     assert app.updater.polling_kwargs["allowed_updates"] == [
         "message",
         "channel_post",
+        "edited_message",
+        "edited_channel_post",
         "my_chat_member",
         "callback_query",
     ]

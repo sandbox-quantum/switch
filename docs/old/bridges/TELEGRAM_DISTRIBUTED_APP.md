@@ -83,7 +83,7 @@ redeploy, not a manual call. The webhook it sets, with `HOST` standing for
 ```json
 {
   "url": "https://HOST/messaging/telegram/events",
-  "allowed_updates": ["message", "channel_post", "my_chat_member", "callback_query"]
+  "allowed_updates": ["message", "channel_post", "edited_message", "edited_channel_post", "my_chat_member", "callback_query"]
 }
 ```
 

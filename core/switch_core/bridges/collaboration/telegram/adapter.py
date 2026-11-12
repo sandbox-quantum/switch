@@ -144,7 +144,14 @@ _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 _MEDIA_GROUP_MIN = 2
 _MEDIA_GROUP_MAX = 10
 
-_ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member", "callback_query"]
+_ALLOWED_UPDATES = [
+    "message",
+    "channel_post",
+    "edited_message",
+    "edited_channel_post",
+    "my_chat_member",
+    "callback_query",
+]
 
 # What a press on a card's button hands back. Telegram allows 64 bytes for the
 # whole of it, so it holds the request token and the option's position on the
@@ -561,6 +568,11 @@ class TelegramAdapter(PlatformAdapter):
     group or channel, so ``supports_channel_creation`` is False and a chat's
     Switch room is provisioned when the bot is added to it or on its first
     bridged message.
+
+    An edit is followed into the room (`_handle_edit`); a deletion cannot be.
+    The Bot API delivers no update when a message or a chat is deleted, so a
+    room keeps a message deleted in Telegram, and a deleted chat's room keeps
+    its messages, until retention, erasure or deleting the room removes them.
     """
 
     display_name: ClassVar[str] = "Telegram"
@@ -2696,11 +2708,35 @@ class TelegramAdapter(PlatformAdapter):
             await self._handle_callback_query(callback)
             return
 
+        edited = getattr(update, "edited_message", None) or getattr(
+            update, "edited_channel_post", None
+        )
+        if edited is not None:
+            await self._handle_edit(edited)
+            return
+
         message = getattr(update, "message", None) or getattr(
             update, "channel_post", None
         )
         if message is not None:
             await self._handle_message(message)
+
+    async def _handle_edit(self, message: Any) -> None:
+        """A message was edited in the chat: its room copy says the new text.
+
+        Deletions are not followed. The Bot API never tells a bot that a
+        message was deleted, in any chat, so a message deleted in Telegram
+        stays in its room until retention or erasure removes it, or the room
+        is deleted."""
+        await self.report_message_edited(
+            str(message.chat.id),
+            self._ref(message),
+            str(
+                getattr(message, "text", None)
+                or getattr(message, "caption", None)
+                or ""
+            ),
+        )
 
     async def _handle_callback_query(self, query: Any) -> None:
         """Someone pressed a button on a card or a status this bridge posted.
@@ -3043,7 +3079,14 @@ class TelegramAdapter(PlatformAdapter):
         Enough to tell whether Telegram is delivering, without putting message
         bodies or sender names into the log — this runs server-side, where the
         desktop app's redaction does not reach."""
-        for field in ("message", "channel_post", "my_chat_member", "callback_query"):
+        for field in (
+            "message",
+            "channel_post",
+            "edited_message",
+            "edited_channel_post",
+            "my_chat_member",
+            "callback_query",
+        ):
             payload = getattr(update, field, None)
             if payload is None:
                 continue
