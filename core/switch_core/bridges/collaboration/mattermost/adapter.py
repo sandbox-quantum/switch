@@ -3968,6 +3968,12 @@ class MattermostAdapter(PlatformAdapter):
         return resp.json()  # type: ignore[no-any-return]
 
     async def _find_existing_bot(self, username: str) -> dict[str, Any] | None:
+        """The bot named `username`, or None when Mattermost has no such bot.
+
+        A failed lookup raises instead of answering None: both callers read
+        None as "this bot does not exist yet" and go on to create it, so a
+        session expiry or a 500 that collapsed into None turned into a
+        username-taken failure with the real cause unrecorded."""
         try:
             page = 0
             per_page = 200
@@ -3986,5 +3992,10 @@ class MattermostAdapter(PlatformAdapter):
                     break
                 page += 1
         except Exception:
-            pass
+            logger.exception(
+                "Failed to look up the Mattermost bot %s; this is not the same "
+                "answer as 'no such bot'",
+                username,
+            )
+            raise
         return None
