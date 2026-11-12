@@ -524,9 +524,11 @@ class RoomStore:
 
     async def prune_admins(self, session: AsyncSession, room_id: str) -> list[str]:
         """Drop the room admins of `room_id` who no longer take part in it,
-        and return their user ids. Called wherever someone can leave a room,
-        so leaving takes the role with it rather than keeping it for a
-        return."""
+        and return their user ids. Called when someone leaves the room, and
+        before anyone joins it, so leaving takes the role with it rather than
+        keeping it for a return. Reads (`admin_room_ids`, `list_admins`) also
+        ignore a grant its holder has outlived, for the ways of leaving that
+        happen elsewhere."""
         gone = (
             select(Room.id)
             .where(Room.id == room_id, involves(RoomAdmin.user_id))
@@ -615,6 +617,7 @@ class RoomStore:
         """
         if not agent_ids:
             return
+        await self.prune_admins(session, room_id)
         listeners = join_event_listeners or set()
         await session.execute(
             pg_insert(room_agents).on_conflict_do_nothing(),
@@ -841,6 +844,10 @@ class RoomStore:
         else does: two writers racing for one membership must not greet the
         room twice.
         """
+        # Before the arrival: someone coming back doesn't bring back a role
+        # they lost by leaving in a way nothing pruned (an account unlinked,
+        # an agent deleted or handed on).
+        await self.prune_admins(session, room_id)
         recorded = await session.scalar(
             pg_insert(ClientRoom)
             .values(client_id=client_id, room_id=room_id)

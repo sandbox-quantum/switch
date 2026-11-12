@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 
-from switch_core import room_policy
+from switch_core import room_admins, room_policy
 from switch_core.addressing import (
     AddressingPolicy,
     can_address,
@@ -3652,8 +3652,17 @@ class AgentCore:
         if room_policy.allows(outside, room, action, owns_target=owns_target):
             return room
         in_room = await self._acts_in_room(session, agent_id, owner_id, room_id)
+        # An agent of a room admin acts as a room admin, as it acts as its owner.
+        room_admin = in_room and await room_admins.is_room_admin(
+            session, self.room_store, room_id, owner_id
+        )
         room_policy.require(
-            RoomCaller(principal, in_room=in_room, owner_rights=owner_rights),
+            RoomCaller(
+                principal,
+                in_room=in_room,
+                owner_rights=owner_rights,
+                room_admin=room_admin,
+            ),
             room,
             action,
             owns_target=owns_target,
@@ -4422,20 +4431,23 @@ class AgentCore:
         room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        # A room setting (`room_policy`), so the owner tier, and not for an
-        # agent others may address: a schedule carries its owner's authority.
+        # A room setting (`room_policy`), so the room admin tier, and not for
+        # an agent others may address: a schedule carries its owner's authority.
+        where = await room_admins.standing(session, self.room_store, room_id, owner_id)
         if not room_policy.allows(
             RoomCaller(
                 Principal(owner_id, owner_is_admin),
-                in_room=False,
+                in_room=where.in_room,
                 owner_rights=not await others_can_address(session, agent),
+                room_admin=where.room_admin,
             ),
             room,
             "configure",
         ):
             raise PermissionError(
                 "Changing a room's schedules takes the right to manage the room "
-                "(its owner or a workspace admin), and your owner does not have it here."
+                "(its owner, a room admin or a workspace admin), and your owner "
+                "does not have it here."
             )
         if agent_id not in set(await self.room_store.get_agent_ids(session, room_id)):
             raise PermissionError(

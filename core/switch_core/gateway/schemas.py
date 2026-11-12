@@ -91,6 +91,9 @@ class RoomSummary(BaseModel):
     # The caller owns the room, is in it (in Switch Console or through a
     # platform account they claimed), or owns an agent in it.
     viewer_is_member: bool = False
+    # The caller is one of the room's room admins: the room's owner, or a
+    # workspace admin, made them one, and they change it as its owner does.
+    viewer_is_room_admin: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
     # Its people (`connected_user_*`) are its Switch members rather than
@@ -100,17 +103,20 @@ class RoomSummary(BaseModel):
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. Each flag is the room policy's answer
     # (`room_policy`), asked the same way its route asks it.
-    # `can_write` (owner or tenant admin) covers its settings, instructions,
-    # roles, group and linked rooms; `can_manage` (the same tier) covers its
-    # access, archiving and deleting it and taking the platform channel's
-    # name. `can_attach` (anyone in the room) covers attaching a reference,
+    # `can_write` (owner, room admin or tenant admin) covers its settings,
+    # instructions, roles, group and linked rooms; `can_manage` (owner or
+    # tenant admin) covers its access and deleting it and taking the platform
+    # channel's name; `can_archive` (owner, room admin or tenant admin) covers
+    # archiving it, which older clients read from `can_manage`;
+    # `can_manage_admins` (owner or tenant admin) covers choosing its room
+    # admins. `can_attach` (anyone in the room) covers attaching a reference,
     # document or package; `can_invite_agents` and `can_add_people`
     # (anyone in the room) cover adding agents and people, though each agent's
     # own addressing policy can still refuse a particular one
-    # (`room_invites`); `can_remove_members` (owner or tenant admin)
-    # covers taking them out. No membership flag is ever set on a direct
+    # (`room_invites`); `can_remove_members` (owner, room admin or tenant
+    # admin) covers taking them out. No membership flag is ever set on a direct
     # or group conversation, whose platform fixes who is in it. `can_unlink`
-    # (owner or tenant admin) covers unlinking any resource; a resource's own
+    # (owner, room admin or tenant admin) covers unlinking any resource; a resource's own
     # owner may also unlink theirs, which its listing reports. `can_transfer`
     # is `can_manage` for anything but a chat, which stays with its people.
     # `can_change_members` is `can_remove_members`, for Switch Console
@@ -118,6 +124,8 @@ class RoomSummary(BaseModel):
     # both only where both are allowed.
     can_write: bool
     can_manage: bool
+    can_archive: bool
+    can_manage_admins: bool
     can_attach: bool
     can_invite_agents: bool
     can_add_people: bool
@@ -150,6 +158,16 @@ class RoomAutoRouteRequest(BaseModel):
     fallback_agent: str | None = None
 
 
+class RoomAdminEntry(BaseModel):
+    """One of a room's room admins (`RoomAdmin`)."""
+
+    user_id: str
+    name: str | None = None
+    # Who made them one; null once that person's account is gone.
+    granted_by: str | None = None
+    granted_at: str
+
+
 class RoomDetail(RoomSummary):
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility
@@ -157,6 +175,9 @@ class RoomDetail(RoomSummary):
     # clicks Update, so both names are carried until the shipped ones have
     # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
+    # The room's room admins, longest-standing first. Only people still in
+    # the room are listed.
+    room_admins: list[RoomAdminEntry] = []
     external_channel_id: str | None
     instructions: str | None
     protection_config: dict[str, Any] | None

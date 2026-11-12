@@ -255,3 +255,36 @@ async def test_being_handed_the_room_takes_them_off_the_list(
         )
 
         assert await list_admins(session, STORE, room.id) == []
+
+
+async def test_coming_back_another_way_does_not_bring_it_back(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Gone through a path nothing prunes (their agent deleted outright), the
+    grant counts for nothing, and is dropped before they rejoin."""
+    async with session_factory() as session:
+        olivia = await _person(session, "olivia")
+        max_ = await _person(session, "max")
+        room = await _room(session, olivia)
+        agent = await add_agent(session, name="maxs-agent", owner_id=max_.id)
+        await session.execute(
+            room_agents.insert().values(room_id=room.id, agent_id=agent.id)
+        )
+        await grant(session, STORE, room, caller=_caller(olivia), user_id=max_.id)
+        await session.execute(
+            room_agents.delete().where(room_agents.c.agent_id == agent.id)
+        )
+
+        assert not await is_room_admin(session, STORE, room.id, max_.id)
+        assert await list_admins(session, STORE, room.id) == []
+
+        console = Client(
+            transport_user_id="@max-member:test",
+            display_name="max",
+            type=MEMBER_CLIENT_TYPE,
+            user_id=max_.id,
+        )
+        session.add(console)
+        await session.flush()
+        assert await STORE.add_client(session, console.id, room.id)
+        assert not await is_room_admin(session, STORE, room.id, max_.id)

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from sqlalchemy import select
 
-from switch_core import room_policy
+from switch_core import room_admins, room_policy
 from switch_core.agent_display_name import (
     agent_label,
     agent_label_with_identifier,
@@ -68,6 +68,7 @@ from switch_core.decision.room import (
 from switch_core.delivery.addressing import (
     ADDRESSING_UNCLAIMED_MESSAGE,
     AddressingResolver,
+    SenderPrincipal,
 )
 from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
@@ -1428,6 +1429,147 @@ async def _cmd_remove_alias(
     await _reply(client, room, event, f"Removed the `{token}` alias.")
 
 
+# ── Room admins ───────────────────────────────────────────────────────────────
+
+
+async def _cmd_add_room_admin(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    """Make someone in the room a room admin: the room's owner or a workspace
+    admin (`room_admins`)."""
+    await _change_room_admins(client, room, event, add=True)
+
+
+async def _cmd_remove_room_admin(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    """Take someone off the room's room admins: the room's owner or a
+    workspace admin, or a room admin stepping down."""
+    await _change_room_admins(client, room, event, add=False)
+
+
+async def _change_room_admins(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, *, add: bool
+) -> None:
+    command = "add-room-admin" if add else "remove-room-admin"
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+    names = [token.lstrip("@") for token in _mention_tokens(event.args)]
+    if len(names) != 1:
+        await _reply(
+            client,
+            room,
+            event,
+            f"Usage: `!{command} @person` — one person in this room, by their "
+            "name here.",
+        )
+        return
+    name = names[0]
+    host = cast("CommandConsumer", client)
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
+        row = await session.get(Room, meta.room_id)
+        if row is None:
+            await _reply(client, room, event, "Room not found.")
+            return
+        try:
+            user_id = await room_admins.find_person(
+                session, host._room_store, row, name
+            )
+        except room_admins.RoomAdminRefused as refused:
+            await _reply(client, room, event, f"{refused} Nothing was changed.")
+            return
+        sender = await _command_resolver(host).resolve_sender(session, event.user_id)
+        acting = _acting_user_ids(sender)
+        # A room admin may always step down, unless an agent posts for them.
+        stepping_down = (
+            not add
+            and sender is not None
+            and sender.kind == "user"
+            and user_id in acting
+        )
+        if not stepping_down:
+            decision = await _room_decision(
+                host, session, meta.room_id, event, "manage_admins", command
+            )
+            if await _refused(client, room, event, decision):
+                return
+        by = user_id if stepping_down else (acting[0] if acting else None)
+        try:
+            if add:
+                changed = await room_admins.add(
+                    session, host._room_store, row, user_id, by=by
+                )
+            else:
+                changed = await room_admins.remove(
+                    session, host._room_store, row, user_id, by=by
+                )
+        except room_admins.RoomAdminRefused as refused:
+            await _reply(client, room, event, f"{refused} Nothing was changed.")
+            return
+        await session.commit()
+
+    if add:
+        text = (
+            f"**{name}** is now a room admin: they can change this room as its "
+            "owner does, apart from deleting it, changing who can see it, and "
+            "choosing room admins."
+            if changed
+            else f"**{name}** is a room admin already."
+        )
+    else:
+        text = (
+            f"**{name}** is no longer a room admin."
+            if changed
+            else f"**{name}** isn't a room admin."
+        )
+    await _reply(client, room, event, text)
+
+
+async def _cmd_list_room_admins(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    """Who owns the room, and who its room admins are."""
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+    host = cast("CommandConsumer", client)
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
+        row = await session.get(Room, meta.room_id)
+        if row is None:
+            await _reply(client, room, event, "Room not found.")
+            return
+        admins = await room_admins.list_admins(session, host._room_store, row.id)
+        names = await UserStore().names_by_id(
+            session, {a.user_id for a in admins} | {row.owner_id or ""}
+        )
+    owner = names.get(row.owner_id or "")
+    lines = [
+        f"**Owner:** {owner}"
+        if owner
+        else "**Owner:** nobody (only workspace admins can change this room)"
+    ]
+    if admins:
+        lines.append("**Room admins:**")
+        lines.extend(f"- {names.get(a.user_id, 'someone')}" for a in admins)
+    else:
+        lines.append(
+            "No room admins. The room's owner can add one with `!add-room-admin`."
+        )
+    await _reply(client, room, event, "\n".join(lines))
+
+
 async def _cmd_invite(
     client: AgentRecipient,
     room: RoomRef,
@@ -1674,13 +1816,7 @@ async def _room_decision(
     if row is None:
         return RoomDecision(False, "Room not found.")
     sender = await _command_resolver(host).resolve_sender(session, event.user_id)
-    user_ids: list[str] = []
-    if sender is not None and sender.kind == "user":
-        user_ids = list(sender.user_ids)
-    elif sender is not None and sender.kind == "agent":
-        user_ids = [sender.owner_user_id] if sender.owner_user_id else []
-    elif sender is not None and sender.on_behalf_of:
-        user_ids = [sender.on_behalf_of]
+    user_ids = _acting_user_ids(sender)
 
     # An agent that takes requests from people other than its owner doesn't
     # get its owner's room-owner or admin rights: whoever may address it
@@ -1717,10 +1853,21 @@ async def _room_decision(
             return owns_as_agent
         return principal.id == target.owner_id
 
+    administered = {
+        user_id
+        for user_id in user_ids
+        if await room_admins.is_room_admin(session, host._room_store, room_id, user_id)
+    }
+
     def decide(principal: Principal) -> RoomDecision:
         # Posted in the room's own conversation, so from inside it.
         return room_policy.decide(
-            RoomCaller(principal, in_room=True, owner_rights=owner_rights),
+            RoomCaller(
+                principal,
+                in_room=True,
+                owner_rights=owner_rights,
+                room_admin=principal.id in administered,
+            ),
             row,
             action,
             owns_target=owns(principal),
@@ -1747,6 +1894,19 @@ async def _room_decision(
     if decision.allowed or user_ids or (sender is not None and sender.kind != "user"):
         return decision
     return RoomDecision(False, f"{decision.reason} {_LINK_YOUR_ACCOUNT}")
+
+
+def _acting_user_ids(sender: SenderPrincipal | None) -> list[str]:
+    """The Switch users a command's sender acts as: the people who linked the
+    chat account, the Console user who wrote it, an agent's owner, or whoever
+    the platform posted it for."""
+    if sender is None:
+        return []
+    if sender.kind == "user":
+        return list(sender.user_ids)
+    if sender.kind == "agent":
+        return [sender.owner_user_id] if sender.owner_user_id else []
+    return [sender.on_behalf_of] if sender.on_behalf_of else []
 
 
 _LINK_YOUR_ACCOUNT = (
@@ -2587,6 +2747,33 @@ COMMANDS: list[Command] = [
         "Stop sending every message in this room to the assigned agent. "
         "Room owner or admin only. Usage: `!unassign-agent`.",
         _cmd_unassign_agent,
+        admin_owned=True,
+    ),
+    Command(
+        "add-room-admin",
+        "Make someone in this room a room admin, who can change it as its owner "
+        "does: the room's owner or a workspace admin. "
+        "Usage: `!add-room-admin @person`.",
+        _cmd_add_room_admin,
+        args_spec=(
+            CommandArg("person", "The person in this room to make one", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "remove-room-admin",
+        "Take someone off this room's room admins: the room's owner or a "
+        "workspace admin, or a room admin stepping down. "
+        "Usage: `!remove-room-admin @person`.",
+        _cmd_remove_room_admin,
+        args_spec=(CommandArg("person", "The room admin to take off", required=True),),
+        admin_owned=True,
+    ),
+    Command(
+        "list-room-admins",
+        "Show who owns this room and who its room admins are. "
+        "Usage: `!list-room-admins`.",
+        _cmd_list_room_admins,
         admin_owned=True,
     ),
     Command(

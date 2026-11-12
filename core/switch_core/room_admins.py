@@ -18,11 +18,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core import room_policy
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import Room, RoomAdmin, TenantMember, require_tenant_id
+from switch_core.db.models import (
+    Room,
+    RoomAdmin,
+    TenantMember,
+    User,
+    require_tenant_id,
+)
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_policy import RoomCaller
 
@@ -93,6 +101,20 @@ async def grant(
     they already were one. Raises `RoomAdminRefused` with the reason when
     `caller` may not, or `user_id` can't be one."""
     _require_manage(caller, room)
+    return await add(session, room_store, room, user_id, by=caller.principal.id)
+
+
+async def add(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room: Room,
+    user_id: str,
+    *,
+    by: str | None,
+) -> bool:
+    """`grant`, for a surface that has already asked the room policy whether
+    `by` may (`manage_admins`): the chat commands, which ask it for whoever
+    posted. Checks only that `user_id` can be a room admin."""
     tenant_id = require_tenant_id()
     if room.owner_id == user_id:
         raise RoomAdminRefused(
@@ -108,20 +130,28 @@ async def grant(
             400,
             "Only people in the room can be room admins. Add them to the room first.",
         )
-    added = await room_store.add_admin(
-        session, room.id, user_id, granted_by=caller.principal.id
-    )
+    added = await room_store.add_admin(session, room.id, user_id, granted_by=by)
     if added:
         await record_audit_event(
             session,
             tenant_id=tenant_id,
-            actor_user_id=caller.principal.id,
+            actor_user_id=by,
             action=AuditAction.ROOM_ADMIN_ADDED,
             target_type="room",
             target_id=room.id,
             details={"user_id": user_id},
         )
     return added
+
+
+def steps_down(caller: RoomCaller, user_id: str) -> bool:
+    """Whether `caller` is the room admin `user_id` taking themselves off,
+    which they may always do. Not through an agent others can address."""
+    return (
+        caller.owner_rights
+        and caller.principal.id is not None
+        and caller.principal.id == user_id
+    )
 
 
 async def revoke(
@@ -135,22 +165,79 @@ async def revoke(
     """Take `user_id` off `room`'s room admins, for `caller`. Returns False
     when they weren't one. A room admin may always step down themselves;
     otherwise it is the owner's or a workspace admin's to do."""
-    stepping_down = (
-        caller.owner_rights
-        and caller.principal.id is not None
-        and caller.principal.id == user_id
-    )
-    if not stepping_down:
+    if not steps_down(caller, user_id):
         _require_manage(caller, room)
+    return await remove(session, room_store, room, user_id, by=caller.principal.id)
+
+
+async def remove(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room: Room,
+    user_id: str,
+    *,
+    by: str | None,
+) -> bool:
+    """`revoke`, for a surface that has already decided `by` may."""
     removed = await room_store.remove_admin(session, room.id, user_id)
     if removed:
         await record_audit_event(
             session,
             tenant_id=require_tenant_id(),
-            actor_user_id=caller.principal.id,
+            actor_user_id=by,
             action=AuditAction.ROOM_ADMIN_REMOVED,
             target_type="room",
             target_id=room.id,
             details={"user_id": user_id},
         )
     return removed
+
+
+async def find_person(
+    session: AsyncSession, room_store: RoomStore, room: Room, name: str
+) -> str:
+    """The Switch user a chat command means by `name`: someone in the room
+    who goes by it on the room's platform and has linked that account to
+    Switch, or a Switch user in the room by that name (a Switch Console
+    chat). Raises `RoomAdminRefused` saying why when nobody fits, or the
+    account isn't linked to exactly one Switch user."""
+    wanted = name.strip().lstrip("@").lower()
+    if room.bridge_id:
+        members = [
+            m
+            for m in await ExternalUserStore().get_by_room(session, room.id)
+            if m.bridge_id == room.bridge_id
+            # By name, and by platform id, which is how a mention a platform
+            # escaped (Slack's `<@U123>`) arrives.
+            and wanted in (m.external_username.lower(), m.external_user_id.lower())
+        ]
+        if members:
+            claims = await ExternalUserStore().claims_for(
+                session, [m.id for m in members]
+            )
+            user_ids = {c.user_id for m in members for c in claims.get(m.id, [])}
+            if not user_ids:
+                raise RoomAdminRefused(
+                    400,
+                    f"{name} hasn't linked this chat account to a Switch "
+                    "account, so Switch can't tell who they are. They can link "
+                    "it in Switch Console.",
+                )
+            if len(user_ids) > 1:
+                raise RoomAdminRefused(
+                    400,
+                    f"{name}'s chat account is linked to more than one Switch "
+                    "account, so Switch can't tell which of them is meant.",
+                )
+            return user_ids.pop()
+    candidates = (
+        await session.scalars(select(User.id).where(func.lower(User.name) == wanted))
+    ).all()
+    involved = [
+        uid
+        for uid in candidates
+        if await room_store.involved_room_ids(session, uid, [room.id])
+    ]
+    if len(involved) == 1:
+        return involved[0]
+    raise RoomAdminRefused(400, f"Nobody in this room goes by `{wanted}`.")
