@@ -1410,7 +1410,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         trust_settings_changed=trust_signals.changed,
     )
 
-    register_platforms(collab_lifecycle)
+    register_platforms(collab_lifecycle, config.feature_flags)
 
     # Liveness, and cheap on purpose: the gateway Deployment and the setup Job
     # wait on it at boot, so anything it checked would become a boot-ordering
