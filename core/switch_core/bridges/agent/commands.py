@@ -1853,20 +1853,14 @@ async def _room_decision(
             return owns_as_agent
         return principal.id == target.owner_id
 
-    administered = {
-        user_id
-        for user_id in user_ids
-        if await room_admins.is_room_admin(session, host._room_store, room_id, user_id)
-    }
-
-    def decide(principal: Principal) -> RoomDecision:
+    def decide(principal: Principal, *, room_admin: bool = False) -> RoomDecision:
         # Posted in the room's own conversation, so from inside it.
         return room_policy.decide(
             RoomCaller(
                 principal,
                 in_room=True,
                 owner_rights=owner_rights,
-                room_admin=principal.id in administered,
+                room_admin=room_admin,
             ),
             row,
             action,
@@ -1878,6 +1872,12 @@ async def _room_decision(
         decision = decide(Principal(user_id, False))
         if decision.allowed:
             return decision
+        # Whether they are a room admin is asked only when it would let them.
+        as_admin = decide(Principal(user_id, False), room_admin=True)
+        if as_admin.allowed and await room_admins.is_room_admin(
+            session, host._room_store, room_id, user_id
+        ):
+            return as_admin
     for user_id in user_ids if owner_rights else []:
         user = await session.get(User, user_id)
         if user is not None and await administers_on_record(
