@@ -125,16 +125,30 @@ export interface AreaDefinition {
   access: Rule;
   /** Where the area opens when no remembered page may be used. */
   first: string;
+  /** A place of its own, reaching past the current workspace: no rail
+   * there, and the top bar leads back to the workspace. */
+  outsideWorkspace: boolean;
 }
 
 export const AREAS: Record<SettingsArea, AreaDefinition> = {
-  workspace: { title: "Workspace settings", access: everyone, first: "/settings/general" },
+  workspace: {
+    title: "Workspace settings",
+    access: everyone,
+    first: "/settings/general",
+    outsideWorkspace: false,
+  },
   organization: {
     title: "Organization settings",
     access: organizationAdmins,
     first: "/settings/org/general",
+    outsideWorkspace: true,
   },
-  platform: { title: "Platform", access: operators, first: "/platform/workspaces" },
+  platform: {
+    title: "Platform",
+    access: operators,
+    first: "/platform/workspaces",
+    outsideWorkspace: true,
+  },
 };
 
 function page(
@@ -357,6 +371,12 @@ export function areaOf(pathname: string, layout: Layout): SettingsArea | null {
     return route.area ?? null;
   }
   return null;
+}
+
+/** Whether `pathname` is in an area outside the workspace, in `layout`. */
+export function outsideWorkspace(pathname: string, layout: Layout): boolean {
+  const area = areaOf(pathname, layout);
+  return area !== null && AREAS[area].outsideWorkspace;
 }
 
 /** The pages of `area`'s menu that `caps` may open, in order. */
