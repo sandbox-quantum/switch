@@ -24,10 +24,10 @@ from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.archived_workspace import archived_since
+from switch_core.archived_workspace import WORKSPACE_ARCHIVED, archived_since
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -49,6 +49,7 @@ from switch_core.db.models import (
     Organization,
     OrganizationMember,
     Tenant,
+    TenantMember,
     User,
     require_tenant_id,
 )
@@ -92,8 +93,11 @@ from switch_core.gateway.schemas import (
     OrganizationCreateRequest,
     OrganizationCreateResponse,
     OrganizationIssueDetail,
+    OrganizationMemberAddRequest,
     OrganizationMemberDetail,
+    OrganizationMemberListEntry,
     OrganizationMemberUpdateRequest,
+    OrganizationMemberWorkspace,
     OrganizationSummary,
     OrganizationWorkspaceResponse,
     TenantMembershipResponse,
@@ -724,15 +728,19 @@ async def list_organization_issues(
 @router.get("/organizations/current/members")
 async def list_organization_members(
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     organization_directory: Annotated[
         OrganizationDirectory, Depends(get_organization_directory)
     ],
     user: Annotated[User, Depends(get_current_user)],
-) -> list[OrganizationMemberDetail]:
-    """Every member of the organization and their role in it. `org_admin` only:
-    the list spans every workspace of the organization, not only this one."""
+) -> list[OrganizationMemberListEntry]:
+    """Every member of the organization, their role in it and the workspaces
+    of it they hold a membership in. `org_admin` only: the list spans every
+    workspace of the organization, not only this one."""
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
@@ -741,7 +749,7 @@ async def list_organization_members(
         organization_directory, await _organization(session, organization_id)
     )
     members = await organization_store.list_members(session, organization_id)
-    return [
+    details = [
         _member_detail(
             member_user,
             member,
@@ -751,6 +759,137 @@ async def list_organization_members(
         )
         for member_user, member in members
     ]
+    # Let go of the request's connection while each workspace is read on a
+    # session of its own.
+    await session.commit()
+    held = await _memberships_in_organization(
+        session_factory, user_store, user, organization_id
+    )
+    return [
+        OrganizationMemberListEntry(
+            **detail.model_dump(), workspaces=held.get(detail.user_id, [])
+        )
+        for detail in details
+    ]
+
+
+async def _memberships_in_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user: User,
+    organization_id: str,
+) -> dict[str, list[OrganizationMemberWorkspace]]:
+    """Each person's memberships in the organization's workspaces, by user id,
+    the workspaces in name order: every workspace of it the caller reaches,
+    which for its `org_admin` and the operator is every one."""
+    held: dict[str, list[OrganizationMemberWorkspace]] = {}
+    workspaces = await organization_workspaces_bindable_by(
+        session_factory,
+        user_store,
+        user.id,
+        organization_id,
+        is_operator=user.role == "admin",
+    )
+    for workspace in sorted(workspaces, key=lambda w: (w.name.casefold(), w.id)):
+        async with tenant_session(session_factory, workspace.id) as bound:
+            rows = (
+                await bound.execute(
+                    select(TenantMember.user_id, TenantMember.role).where(
+                        TenantMember.tenant_id == workspace.id
+                    )
+                )
+            ).all()
+        for user_id, role in rows:
+            held.setdefault(user_id, []).append(
+                OrganizationMemberWorkspace(
+                    id=workspace.id,
+                    name=workspace.name,
+                    role=role,
+                    archived=workspace.archived_at is not None,
+                )
+            )
+    return held
+
+
+@router.post(
+    "/organizations/current/workspaces/{workspace_id}/members", status_code=201
+)
+async def add_organization_member_to_workspace(
+    workspace_id: str,
+    req: OrganizationMemberAddRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> OrganizationMemberWorkspace:
+    """Add someone already in the organization to one of its workspaces, as
+    `req.role`. Its `org_admin`s only. Refused for someone outside the
+    organization, who joins through an invitation, for someone already in
+    the workspace, and for an archived workspace. Recorded in the
+    workspace's audit log and the organization's."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    if (
+        await session.get(OrganizationMember, (access.organization_id, req.user_id))
+        is None
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Not a member of this organization: invite them to a workspace.",
+        )
+    made_here = made_from(access)
+    await session.commit()
+    async with tenant_session(session_factory, workspace_id) as bound:
+        tenant = await bound.get(Tenant, workspace_id, with_for_update=True)
+        if tenant is None or tenant.organization_id != access.organization_id:
+            raise HTTPException(
+                status_code=404, detail="That workspace isn't in this organization."
+            )
+        if tenant.archived_at is not None:
+            raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
+        if await user_store.tenant_role(bound, workspace_id, req.user_id) is not None:
+            raise HTTPException(
+                status_code=409, detail=f"They're already in {tenant.name}."
+            )
+        await user_store.add_membership(
+            bound,
+            tenant_id=workspace_id,
+            user_id=req.user_id,
+            role=req.role,
+            organization_role="member",
+        )
+        await record_audit_event(
+            bound,
+            tenant_id=workspace_id,
+            actor_user_id=user.id,
+            action=AuditAction.MEMBER_ADDED_BY_ORGANIZATION,
+            target_type="user",
+            target_id=req.user_id,
+            details={"role": req.role},
+        )
+        await record_organization_audit_event(
+            bound,
+            organization_id=access.organization_id,
+            actor_user_id=user.id,
+            action=OrganizationAuditAction.MEMBER_ADDED_TO_WORKSPACE,
+            target_type="user",
+            target_id=req.user_id,
+            details={
+                "workspace": workspace_id,
+                "workspace_name": tenant.name,
+                "role": req.role,
+                **made_here,
+            },
+        )
+        added = OrganizationMemberWorkspace(
+            id=tenant.id, name=tenant.name, role=req.role, archived=False
+        )
+        await bound.commit()
+    return added
 
 
 # Why a change the directory did not make still took something away.

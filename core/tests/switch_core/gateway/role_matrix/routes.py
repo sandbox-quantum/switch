@@ -356,6 +356,15 @@ ROUTES: dict[str, Case] = {
             "workspace asked is the one the request is bound to."
         ),
     ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/members": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members",
+        org_admin(ok=404),
+        json={"user_id": "nobody-in-the-organization", "role": "member"},
+        why=(
+            "The organization's admin; let through, then told the person is "
+            "not in the organization."
+        ),
+    ),
     "POST /gateway/organizations/current/workspaces/{workspace_id}/restore": post(
         f"{G}/organizations/current/workspaces/{{tenant}}/restore", org_admin()
     ),

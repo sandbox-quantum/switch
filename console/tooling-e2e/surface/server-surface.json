@@ -1394,6 +1394,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/restore",
       "auth": "session",
       "flags": []

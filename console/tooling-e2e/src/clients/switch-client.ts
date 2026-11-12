@@ -613,6 +613,19 @@ export class SwitchClient {
     );
   }
 
+  /** `POST /gateway/organizations/current/workspaces/{id}/members` — add someone already in the organization to one of its workspaces. */
+  async addToOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members`,
+      { user_id: userId, role },
+    );
+  }
+
   /** `POST /gateway/organizations/current/workspaces/{id}/restore` — open an archived workspace again. */
   async restoreOrganizationWorkspace(
     workspaceId: string,

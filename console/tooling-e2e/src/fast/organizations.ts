@@ -29,6 +29,7 @@ export const organizations: FastScenario = {
       'POST /gateway/organizations/current/workspaces',
       'POST /gateway/organizations/current/workspaces/{workspace_id}/archive',
       'POST /gateway/organizations/current/workspaces/{workspace_id}/restore',
+      'POST /gateway/organizations/current/workspaces/{workspace_id}/members',
       'GET /gateway/tenants/counts',
     ],
     lane: 'fast',
@@ -109,6 +110,13 @@ export const organizations: FastScenario = {
       (await founder.restoreOrganizationWorkspace(second.id)).archived_at,
       'restored'
     ).toBeNull();
+    try {
+      await founder.addToOrganizationWorkspace(second.id, await member.userId(), 'member');
+      throw new Error('someone outside the organization was added to a workspace of it');
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      expect(error.status, 'adding someone outside the organization').toBe(404);
+    }
     try {
       await founder.archiveOrganizationWorkspace(workspace.id);
       throw new Error('the workspace the session is in was archived');

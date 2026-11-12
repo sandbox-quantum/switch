@@ -1564,6 +1564,23 @@ class MemberUpdateRequest(BaseModel):
     role: str
 
 
+class OrganizationMemberWorkspace(BaseModel):
+    """One of the organization's workspaces someone holds a membership in, and
+    their role there."""
+
+    id: str
+    name: str
+    role: str
+    archived: bool
+
+
+class OrganizationMemberAddRequest(BaseModel):
+    """Someone already in the organization, added to one of its workspaces."""
+
+    user_id: str
+    role: Literal["admin", "member"]
+
+
 class OrganizationMemberDetail(BaseModel):
     user_id: str
     name: str
@@ -1583,6 +1600,14 @@ class OrganizationMemberDetail(BaseModel):
     can_change_role: bool
     can_grant_org_admin: bool
     can_remove: bool
+
+
+class OrganizationMemberListEntry(OrganizationMemberDetail):
+    """`OrganizationMemberDetail`, with the organization's workspaces the
+    person holds a membership in, as the Users page lists them. An
+    `org_admin` in none is in the organization as a whole."""
+
+    workspaces: list[OrganizationMemberWorkspace]
 
 
 class OrganizationMemberUpdateRequest(BaseModel):

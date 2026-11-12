@@ -37,6 +37,8 @@ class AuditAction(StrEnum):
     MEMBER_JOINED_BY_DOMAIN = "member.joined_by_domain"
     MEMBER_ROLE_CHANGED = "member.role_changed"
     MEMBER_REMOVED = "member.removed"
+    # One of the organization's admins added someone already in it.
+    MEMBER_ADDED_BY_ORGANIZATION = "member.added_by_organization"
     # Someone in the workspace only as their organization's `org_admin` stopped
     # being one, and their keys and connections here were removed.
     ORGANIZATION_ADMIN_ACCESS_ENDED = "organization_admin.access_ended"
@@ -89,6 +91,7 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_CREATED = "organization.workspace_created"
     WORKSPACE_ARCHIVED = "organization.workspace_archived"
     WORKSPACE_RESTORED = "organization.workspace_restored"
+    MEMBER_ADDED_TO_WORKSPACE = "organization.member_added_to_workspace"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
     CONNECTOR_APP_SAVED = "organization.connector_app_saved"
