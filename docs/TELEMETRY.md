@@ -95,7 +95,7 @@ id, no IP field, no Switch identity.
 | Field | Complete set of possible values |
 |---|---|
 | `outcome` | `success`, `failure` (on `session_ended`, always `normal`; on `update_install_started`, always `failure`; on `bridge_identity_claimed`, also `pending`) |
-| `agent_type` | the AI provider, one of those the app has registered — today `claude`, `codex`, `opencode`, `cursor`, `antigravity` — or `unknown` for any value that is not one of them (on `agent_cli_action` and `host_setup_step`, also a tool that is not an agent's CLI). **Never an agent's name.** |
+| `agent_type` | the AI provider, one of those the app has registered — today `claude`, `codex`, `opencode`, `cursor`, `antigravity`, `deepseek-harness`, `pi`, `copilot`, `kiro`, `mistral-vibe`, `goose`, `qwen`, `droid`, `cline`, `junie` — or `unknown` for any value that is not one of them (on `agent_cli_action` and `host_setup_step`, also a tool that is not an agent's CLI). **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name), `unknown` (a server added by address while this build's own Switch Cloud address cannot be read). **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
