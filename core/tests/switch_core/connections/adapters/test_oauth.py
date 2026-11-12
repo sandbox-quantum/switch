@@ -360,12 +360,36 @@ class TestIntrospection:
     async def test_without_an_advertised_endpoint_no_account_is_named(
         self, vendor
     ) -> None:
+        secret = await _sign_in(_adapter(vendor, INTROSPECTED)[0], vendor)
         del vendor.metadata["introspection_endpoint"]
         adapter, _ = _adapter(vendor, INTROSPECTED)
-        secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="offers no token introspection"):
             await adapter.identify(secret.access_token or "")
         assert vendor.introspections == []
+
+    async def test_a_sign_in_without_introspection_is_refused_before_consent(
+        self, vendor
+    ) -> None:
+        revocable = INTROSPECTED.replace(
+            "    client_settings: EXAMPLE\n",
+            "    client_settings: EXAMPLE\n    revocation_discovered: true\n",
+        )
+        secret = await _sign_in(_adapter(vendor, revocable)[0], vendor)
+        signed_in = len(vendor.authorizations)
+        del vendor.metadata["introspection_endpoint"]
+        adapter, _ = _adapter(vendor, revocable)
+        with pytest.raises(ServiceAdapterError, match="offers no token introspection"):
+            await adapter.authorization_url(
+                redirect_uri=REDIRECT,
+                state="state-1",
+                code_challenge=s256(secrets.token_urlsafe(48)),
+                scopes=["read:items", "write:items"],
+            )
+        assert len(vendor.authorizations) == signed_in
+        renewed = await adapter.refresh(secret)
+        assert renewed.access_token in vendor.live_access
+        await adapter.revoke_connection(renewed)
+        assert renewed.values["refresh_token"] not in vendor.live_refresh
 
     async def test_an_endpoint_that_is_not_https_is_refused(self, vendor) -> None:
         vendor.metadata["introspection_endpoint"] = "http://auth.example.test/x"

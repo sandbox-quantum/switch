@@ -733,6 +733,9 @@ class OAuthAdapter:
     ) -> str:
         """Where the person's browser goes to sign in and consent."""
         endpoints = await self.endpoints()
+        # Refuse before consent: after it, the sign-in could not name an account.
+        if self._identity.introspection and endpoints.introspection is None:
+            raise self._no_introspection()
         client = await self._client.credentials(endpoints)
         query: dict[str, str] = {
             "response_type": "code",
@@ -827,10 +830,7 @@ class OAuthAdapter:
         names an account."""
         endpoints = await self.endpoints()
         if endpoints.introspection is None:
-            raise ServiceAdapterError(
-                f"{self._name}'s authorization server offers no token "
-                "introspection, so Switch cannot tell whose sign-in this is."
-            )
+            raise self._no_introspection()
         client = await self._client.credentials(endpoints)
         identifying, headers = client_fields(endpoints, client)
         response = await self._send(
@@ -856,6 +856,12 @@ class OAuthAdapter:
                 f"{self._name} says the new sign-in is not active."
             )
         return body
+
+    def _no_introspection(self) -> ServiceAdapterError:
+        return ServiceAdapterError(
+            f"{self._name}'s authorization server offers no token "
+            "introspection, so Switch cannot tell whose sign-in this is."
+        )
 
     async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
         if self._mcp_url is None or self._identity.mcp_tool is None:
