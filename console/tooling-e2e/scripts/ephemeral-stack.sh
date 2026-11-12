@@ -161,7 +161,11 @@ echo "Starting switch-core from this checkout…"
 # JSON, so the harness can read back what the server logged during each
 # scenario (SWITCH_E2E_SERVER_LOG): one record per line, timed to the
 # millisecond. `jq -r '"\(.timestamp) \(.status) \(.message)"'` reads it.
-GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
+# The browser lanes serve the UI with `vite preview` on :4173, but the env
+# file's FRONTEND_BASE_URL names the dev server (:5173), so the preview's
+# origin is added for the origin check on cookie requests and sign-in.
+GATEWAY_EXTRA_ORIGINS='["http://127.0.0.1:4173"]' \
+  GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
   >"$OUT/switch-core.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 120); do curl -sf localhost:8000/health >/dev/null && break; sleep 1; done
