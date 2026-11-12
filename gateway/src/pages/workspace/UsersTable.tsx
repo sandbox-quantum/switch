@@ -1,7 +1,7 @@
 import { Alert, Box, Chip, Link, Stack, Typography } from "@mui/material";
 import { useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router";
-import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
+import DataTable, { type ColumnFilter, type TableColumn, TableEmptyState } from "../../components/DataTable";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { type Member, type TenantRole, removeMember, updateMemberRole } from "../../data/api";
@@ -13,6 +13,25 @@ import { type RoleTone, roleOf } from "./roles";
 type MemberRow = Member & { id: string };
 
 const ROLE_ORDER: readonly string[] = ["Org admin", "Workspace admin", "Member"];
+
+/** Strongest role first, as the role filter lists them. */
+export function compareRoles(a: string, b: string): number {
+  return ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b);
+}
+
+/** Filter by what someone acts as, offering only the roles someone here
+ * holds, strongest first, so no choice can come back empty. */
+export function roleFilter(members: readonly Member[]): ColumnFilter<Member> {
+  const present = new Set(members.map((m) => roleOf(m).label));
+  return {
+    value: (row) => roleOf(row).label,
+    options: ROLE_ORDER.filter((label) => present.has(label)).map((label) => ({ value: label, label })),
+  };
+}
+
+/** Search over the name and the email the row shows. Kept stable, as the
+ * table's other props are. */
+export const USER_SEARCH = { label: "Search users", text: (row: Member) => `${row.name} ${row.email}` };
 
 /** Kept stable: a fresh array on each render rebuilds the grid's columns. */
 const PINNED_ACTIONS = ["actions"];
@@ -76,7 +95,6 @@ export default function UsersTable({
   const [warning, setWarning] = useState<string | null>(null);
 
   const columns = useMemo<TableColumn<MemberRow>[]>(() => {
-    const present = new Set(members.map((m) => roleOf(m).label));
     const rowActions = (row: MemberRow): RowAction[] => {
       if (row.organization_role === "org_admin") {
         return [
@@ -137,14 +155,8 @@ export default function UsersTable({
         headerName: "Role",
         width: 280,
         valueGetter: (_value, row) => roleOf(row).label,
-        sortComparator: (a, b) => ROLE_ORDER.indexOf(a as string) - ROLE_ORDER.indexOf(b as string),
-        filter: {
-          value: (row) => roleOf(row).label,
-          options: ROLE_ORDER.filter((label) => present.has(label)).map((label) => ({
-            value: label,
-            label,
-          })),
-        },
+        sortComparator: (a, b) => compareRoles(a as string, b as string),
+        filter: roleFilter(members),
         renderCell: ({ row, tabIndex }) => {
           const role = roleOf(row);
           return (
@@ -230,7 +242,7 @@ export default function UsersTable({
         rows={members.map((m) => ({ ...m, id: m.user_id }))}
         columns={columns}
         noun={{ one: "user", other: "users" }}
-        search={{ label: "Search users", text: (row) => `${row.name} ${row.email}` }}
+        search={USER_SEARCH}
         pinnedRight={administers ? PINNED_ACTIONS : undefined}
         emptyState={<TableEmptyState title="No users in this workspace yet" />}
         height={640}

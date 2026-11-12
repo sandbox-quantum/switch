@@ -2,7 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Member } from "../../data/api";
-import UsersTable from "./UsersTable";
+import { applyFilters, filterOptions } from "../../components/tableFilters";
+import UsersTable, { USER_SEARCH, compareRoles, roleFilter } from "./UsersTable";
 
 vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
@@ -127,6 +128,68 @@ describe("UsersTable", () => {
     expect(screen.getByText("Service account")).toBeTruthy();
     const via = screen.getByRole("link", { name: "via organization" });
     expect(via.getAttribute("href")).toBe("/settings/org/users");
+  });
+
+  it("filters by what someone acts as, offering only roles someone holds", () => {
+    const members = [ME, BOB, ORG_ADMIN, ROBOT];
+    const column = { field: "role", headerName: "Role", filter: roleFilter(members) };
+
+    expect(filterOptions(column, members).map((o) => o.label)).toEqual([
+      "Org admin",
+      "Workspace admin",
+      "Member",
+    ]);
+    const onlyMembers = { ...column, filter: roleFilter([BOB, ROBOT]) };
+    expect(filterOptions(onlyMembers, [BOB, ROBOT]).map((o) => o.label)).toEqual(["Member"]);
+    const pick = (role: string) =>
+      applyFilters(members, [column], { role: [role] }, "", USER_SEARCH.text).map((m) => m.name);
+    expect(pick("Org admin")).toEqual(["Olga"]);
+    expect(pick("Member")).toEqual(["Bob", "Robot"]);
+    // An org admin with a membership of their own counts as one too.
+    const oscar = member({ user_id: "oam", name: "Oscar", organization_role: "org_admin" });
+    expect(applyFilters([oscar], [column], { role: ["Org admin"] }, "", USER_SEARCH.text)).toHaveLength(1);
+  });
+
+  it("searches names and emails", () => {
+    const members = [ME, BOB, ORG_ADMIN];
+    const search = (query: string) =>
+      applyFilters(members, [], {}, query, USER_SEARCH.text).map((m) => m.name);
+
+    expect(search("bob")).toEqual(["Bob"]);
+    expect(search("olga@example")).toEqual(["Olga"]);
+    expect(search("nobody")).toEqual([]);
+  });
+
+  it("sorts roles strongest first", () => {
+    expect(["Member", "Org admin", "Workspace admin"].sort(compareRoles)).toEqual([
+      "Org admin",
+      "Workspace admin",
+      "Member",
+    ]);
+  });
+
+  it("gives the platform operator, who has no row here, the admin's menus", () => {
+    render(
+      <MemoryRouter>
+        <UsersTable
+          tenantId="t1"
+          workspaceName="Acme"
+          members={[BOB]}
+          selfId="operator"
+          administers
+          canOpenOrganizationUsers
+          onChanged={vi.fn(async () => {})}
+          onSelfChanged={vi.fn(async () => {})}
+          onLeft={vi.fn(async () => {})}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("(you)")).toBeNull();
+    expect(menuItems("Bob")).toEqual([
+      { label: "Change role", reason: null },
+      { label: "Remove from workspace", reason: null },
+    ]);
   });
 
   it("calls an org admin with their own membership an Org admin too", () => {

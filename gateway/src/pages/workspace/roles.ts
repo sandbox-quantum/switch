@@ -14,7 +14,7 @@ export const WORKSPACE_ROLES: readonly WorkspaceRoleOption[] = [
     role: "admin",
     label: "Workspace admin",
     description:
-      "Runs the whole workspace: invites and removes users, and manages every agent, room and template, its messaging apps, API keys and budgets.",
+      "Runs the whole workspace: invites and removes users, and manages every agent, room and template, its messaging apps and its budgets.",
   },
   {
     role: "member",
