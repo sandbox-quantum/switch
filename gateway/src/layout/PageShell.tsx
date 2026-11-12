@@ -48,10 +48,23 @@ export default function PageShell({ layout }: { layout: Layout }) {
           }}
         >
           <StaleSessionBanner />
+          <LinkNoticeBanner />
           <Outlet />
         </Stack>
       </Stack>
     </Box>
+  );
+}
+
+/** Says so when a link named a workspace the page could not switch to, so
+ * nobody takes this workspace's page for the one the link was for. */
+function LinkNoticeBanner() {
+  const { linkNotice, dismissLinkNotice } = useAuth();
+  if (linkNotice === null) return null;
+  return (
+    <Alert severity="info" sx={{ mb: 2 }} onClose={dismissLinkNotice}>
+      {linkNotice}
+    </Alert>
   );
 }
 

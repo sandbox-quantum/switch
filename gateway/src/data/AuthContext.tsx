@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router";
 import {
   type CurrentTenant,
   type Session,
@@ -16,6 +17,7 @@ import { type Capabilities, capabilitiesOf } from "./capabilities";
 import { ALL_OFF, type FeatureFlags, GATEWAY_V2 } from "./featureFlags";
 import { landingAfterSwitch } from "./settingsLanding";
 import { clearPendingInvite } from "./sessionState";
+import { followWorkspaceLink, linkedWorkspace, withoutLinkedWorkspace } from "./workspaceLink";
 
 interface AuthState {
   session: Session | null;
@@ -30,6 +32,10 @@ interface AuthState {
   // Set when the session could not be read again on coming back to the tab:
   // what the page shows may be out of date, and it says so.
   staleError: string | null;
+  // Set when the page was opened from a link naming a workspace it could not
+  // switch to, so it says which workspace it shows instead.
+  linkNotice: string | null;
+  dismissLinkNotice: () => void;
   recheck: () => void;
   refresh: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
@@ -69,6 +75,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [staleError, setStaleError] = useState<string | null>(null);
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  // Read on arrival only: the address drops it straight away.
+  const [linked] = useState(() => linkedWorkspace(location.search));
+  const arrived = useRef(location);
 
   const refresh = useCallback(async () => {
     try {
@@ -80,9 +92,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Once per page load, a development build's second run included, so a
+  // link switches workspace at most once. A switch reloads the page in the
+  // new workspace before anything is read for the old one.
+  const started = useRef(false);
   useEffect(() => {
-    refresh().finally(() => setLoading(false));
-  }, [refresh]);
+    if (started.current) return;
+    started.current = true;
+    void (async () => {
+      if (linked !== null) {
+        const here = withoutLinkedWorkspace(arrived.current);
+        navigate(here, { replace: true });
+        try {
+          const outcome = await followWorkspaceLink(linked);
+          if (outcome.switched) {
+            window.location.replace(here);
+            return;
+          }
+          setLinkNotice(outcome.notice);
+        } catch (err) {
+          setLinkNotice(
+            `Couldn't switch to the workspace the link you followed is for: ${errorMessage(err)}`,
+          );
+        }
+      }
+      await refresh();
+      setLoading(false);
+    })();
+  }, [linked, navigate, refresh]);
+  const dismissLinkNotice = useCallback(() => setLinkNotice(null), []);
 
   // What this page holds can fall behind the server. Back or forward can
   // restore it from the browser's cache as it was left, and switching
@@ -187,6 +225,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     canAdminTenant: capabilities.administersWorkspace,
     capabilities,
     staleError,
+    linkNotice,
+    dismissLinkNotice,
     recheck,
     refresh,
     login,

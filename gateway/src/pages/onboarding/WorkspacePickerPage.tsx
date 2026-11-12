@@ -11,7 +11,7 @@ import CenteredCard from "./CenteredCard";
 
 /** Signed in to several workspaces, and this session has not picked one. */
 export default function WorkspacePickerPage() {
-  const { session, switchTo } = useAuth();
+  const { session, switchTo, linkNotice } = useAuth();
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,6 +28,11 @@ export default function WorkspacePickerPage() {
 
   return (
     <CenteredCard title="Choose a workspace" subtitle="You belong to more than one.">
+      {linkNotice && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {linkNotice}
+        </Alert>
+      )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
