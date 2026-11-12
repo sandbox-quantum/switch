@@ -6,13 +6,15 @@ write-private, and new rooms default to it, so "Public — read & write" and
 "Public — read only" stop being two values for the same behaviour. Who can
 see a room (`read_visibility`) is untouched.
 
-Not expand only: a process from before the room permission tiers still reads
-a room's write visibility, and would stop letting everyone change a room that
-was public read & write. Data only, and one way: the downgrade cannot tell
-which rooms were read & write.
+Marked `expand_only`: the schema is unchanged, and a process from before the
+room permission tiers keeps working against it. Reading every room as
+write-private, it stops letting everyone change a room that was public
+read & write, which is what the tiers decide anyway, so a rolling deploy only
+brings that forward. Data only, and one way: the downgrade cannot tell which
+rooms were read & write.
 
 Revision ID: b7e2c4a9d1f6
-Revises: 689d7d8ff913
+Revises: 7105e0bea527
 Create Date: 2026-11-10 00:00:00.000000
 
 """
@@ -22,9 +24,10 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "b7e2c4a9d1f6"
-down_revision: str | Sequence[str] | None = "689d7d8ff913"
+down_revision: str | Sequence[str] | None = "7105e0bea527"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+expand_only: bool = True
 
 
 def upgrade() -> None:

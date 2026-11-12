@@ -44,6 +44,14 @@ class _Adapter(_RecordingAdapter):
     async def require_bindable_channel(self, external_channel_id: str) -> None:
         return None
 
+    # What the adapter base declares, which main added after this fake.
+    private_channel_needs_owner = False
+    adds_creator_to_public_channel = True
+    platform_name = "Test"
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        return None
+
 
 class _Lifecycle(_FakeLifecycle):
     def rooms_changed(self, bridge_id: str) -> None:
@@ -57,6 +65,13 @@ async def world(rls_harness: RLSHarness) -> Any:
     core = _RecordingCollaborationCore(tenant)
     svc = _service(rls_harness.restricted, {bridge: core})
     svc._collab_lifecycle = _Lifecycle({bridge: core})  # type: ignore[assignment]
+
+    # Who a private channel is for is another test's subject
+    # (`test_room_service_channel_checks`); here only its visibility counts.
+    async def _no_creator(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    svc._private_channel_creator = _no_creator  # type: ignore[method-assign]
 
     async def make(existing_type: str = "channel_public", **config: Any) -> Any:
         core.adapter = _Adapter(core.calls, existing_type)
