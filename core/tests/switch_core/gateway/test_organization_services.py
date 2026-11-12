@@ -9,6 +9,7 @@ workspace, as a workspace admin's switch does.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import cast
 
@@ -37,6 +38,10 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
+)
+from switch_core.db.stores.organization_service_store import (
+    OrganizationServiceStore,
+    hold_setting,
 )
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.gateway import dependencies as gw_deps
@@ -693,6 +698,68 @@ class TestTheWorkspacesList:
         assert cleared.json()["detail"] == organization_locked("GitHub", enabled=False)
         # Kept for when the organization unlocks it.
         assert github["workspace_set"] is True
+
+    async def test_clearing_what_the_workspace_never_set_is_not_found_locked_or_not(
+        self, harness: Harness, session_factory
+    ) -> None:
+        admin = await _org_admin(session_factory)
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": False, "locked": True},
+        )
+        cleared = await _call(harness, workspace_admin, "DELETE", f"{WORKSPACE}/github")
+        assert cleared.status_code == 404, cleared.text
+        assert cleared.json()["detail"] == (
+            "This workspace has no switch of its own for GitHub."
+        )
+
+    @pytest.mark.parametrize(
+        ("method", "body"), [("PUT", {"enabled": False}), ("DELETE", None)]
+    )
+    async def test_a_lock_made_while_a_switch_is_under_way_is_the_one_it_meets(
+        self, harness: Harness, session_factory, method: str, body
+    ) -> None:
+        """The organization locking it waits for no read: the switch waits
+        for the organization, and then meets its lock."""
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        org_admin = await _person(session_factory, "org-admin", member_role=None)
+        await _call(
+            harness, workspace_admin, "PUT", f"{WORKSPACE}/github", {"enabled": True}
+        )
+        async with session_factory() as locking:
+            await hold_setting(locking, TENANT_ZERO_ID, "github")
+            switching = asyncio.create_task(
+                _call(harness, workspace_admin, method, f"{WORKSPACE}/github", body)
+            )
+            await asyncio.sleep(0.5)
+            assert not switching.done()
+            await OrganizationServiceStore().set(
+                locking,
+                TENANT_ZERO_ID,
+                "github",
+                enabled=True,
+                locked=True,
+                updated_by=org_admin.id,
+            )
+            await locking.commit()
+        answered = await asyncio.wait_for(switching, timeout=10)
+        github = _by_slug(await _call(harness, workspace_admin, "GET", WORKSPACE))[
+            "github"
+        ]
+
+        assert answered.status_code == 409, answered.text
+        assert (github["workspace_set"], github["decided_by"]) == (
+            True,
+            "organization_locked",
+        )
 
     async def test_a_service_off_on_the_server_says_so_whatever_its_switch(
         self, harness: Harness, session_factory

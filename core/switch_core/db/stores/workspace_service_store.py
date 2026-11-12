@@ -29,6 +29,7 @@ from switch_core.db.models import (
     WorkspaceServiceSetting,
     require_tenant_id,
 )
+from switch_core.db.stores.organization_service_store import hold_setting
 
 # Which setting decides whether a service is on in a workspace, in the order
 # `resolve` weighs them.
@@ -189,6 +190,18 @@ class WorkspaceServiceStore:
             ).items()
             if not switch.enabled
         }
+
+    async def hold_organization_setting(
+        self, session: AsyncSession, service: str
+    ) -> None:
+        """Hold the workspace's organization's say in `service` until this
+        transaction ends (`hold_setting`), so a lock read now is the lock in
+        force at commit; nothing for a workspace in no organization."""
+        organization_id = await session.scalar(
+            select(Tenant.organization_id).where(Tenant.id == require_tenant_id())
+        )
+        if organization_id is not None:
+            await hold_setting(session, organization_id, service)
 
     async def organization_settings(
         self, session: AsyncSession

@@ -251,6 +251,8 @@ version of their own to them without also giving them a release of their own.
 - **A workspace admin can no longer clear the workspace's own setting for a
   connector its organization has locked**, as they already couldn't switch
   it. The workspace's choice is kept for when the organization unlocks it.
+  A switch or clear made while an organization admin changes that connector
+  now waits for the change, so it never acts on a lock that is changing.
 - **Agents can maintain the documents a room template creates.** A
   template's `docs:` made documents no agent had written, and only the agent
   that wrote a document could update or delete it, so every agent got 403.

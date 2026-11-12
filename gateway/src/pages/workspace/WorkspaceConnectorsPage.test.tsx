@@ -3,7 +3,16 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceService, WorkspaceServices } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import WorkspaceConnectorsPage, { metaText } from "./WorkspaceConnectorsPage";
+import WorkspaceConnectorsPage, { UNAVAILABLE, metaText } from "./WorkspaceConnectorsPage";
+
+// Read through Vite rather than node:fs, which the gateway has no types for.
+const brokerSource = Object.values(
+  import.meta.glob<string>("../../../../core/switch_core/connections/broker.py", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }),
+)[0];
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
@@ -308,6 +317,20 @@ describe("metaText", () => {
 
   it("names no app for a connector connected with a key", () => {
     expect(meta({ auth_type: "api_key" })).toBe("Off by default");
+  });
+
+  it("has a few words for every reason the server gives", () => {
+    const declared = /UnavailableCode = Literal\[([\s\S]*?)\]/.exec(brokerSource ?? "")?.[1];
+    expect(declared).toBeTruthy();
+    const codes = [...(declared ?? "").matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
+    expect(codes.length).toBeGreaterThan(0);
+    expect(Object.keys(UNAVAILABLE).sort()).toEqual(codes.sort());
+  });
+
+  it("still says it can't be used for a reason it doesn't know and the server doesn't word", () => {
+    expect(meta({ unavailable_code: "something_newer", unavailable_reason: null })).toBe(
+      "Off by default · Unavailable",
+    );
   });
 
   it("says what stops anyone using it in place of the app", () => {

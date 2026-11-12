@@ -2872,6 +2872,20 @@ export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
     .connections;
 }
 
+/** Why nobody in a workspace can use a service: `UnavailableCode` in
+ * `core/switch_core/connections/broker.py`. A server newer than this
+ * dashboard may send one it doesn't know yet. */
+export type UnavailableCode =
+  | "coming_soon"
+  | "switched_off"
+  | "needs_https"
+  | "needs_public_url"
+  | "app_not_set_up"
+  | "not_set_up"
+  | "organization_app_unusable"
+  | "not_fully_set_up"
+  | "key_never_expires";
+
 /** Which setting decides whether a service is on in the workspace. */
 export type WorkspaceServiceDecider =
   | "organization_locked"

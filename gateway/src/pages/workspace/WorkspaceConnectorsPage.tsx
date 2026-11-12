@@ -8,6 +8,7 @@ import ConfirmDialog from "../../components/ConfirmDialog";
 import PageBanner from "../../components/PageBanner";
 import { useAuth } from "../../data/AuthContext";
 import {
+  type UnavailableCode,
   type WorkspaceService,
   type WorkspaceServices,
   clearWorkspaceService,
@@ -16,10 +17,12 @@ import {
 } from "../../data/api";
 import { useLoad } from "./useLoad";
 
-// What stops anyone here using a connector, in a few words for the card's one
-// line. The server's own sentence is longer; a code it adds later shows that
-// sentence rather than nothing.
-const UNAVAILABLE: Record<string, string> = {
+/** What stops anyone here using a connector, in a few words for the card's
+ * one line, for every reason the server gives. The server's own sentence is
+ * longer; a reason it adds later shows that sentence, or failing that a word
+ * that still says it can't be used. */
+export const UNAVAILABLE: Record<UnavailableCode, string> = {
+  coming_soon: "Coming soon",
   switched_off: "Turned off in Switch's configuration",
   needs_https: "Can't be set up here",
   needs_public_url: "Can't be set up here",
@@ -53,7 +56,8 @@ function deciderText(service: WorkspaceService, organization: string): string {
 export function metaText(service: WorkspaceService, organization: string): string {
   const parts = [deciderText(service, organization)];
   if (service.unavailable_code !== null) {
-    parts.push(UNAVAILABLE[service.unavailable_code] ?? service.unavailable_reason ?? "");
+    const code = service.unavailable_code;
+    parts.push((code in UNAVAILABLE ? UNAVAILABLE[code as UnavailableCode] : service.unavailable_reason) ?? "Unavailable");
   } else if (service.auth_type === "oauth") {
     parts.push(service.app_source === "organization" ? "Your organization's app" : "Switch's app");
   }

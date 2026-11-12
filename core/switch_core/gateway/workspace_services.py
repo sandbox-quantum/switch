@@ -180,7 +180,8 @@ async def list_workspace_services(
                 "app_source": standing.source,
                 # Why nobody here can use it whatever the switch says, such as
                 # its app not being set up or the server having it off; null
-                # when they can.
+                # when they can. The same every member reads for their own
+                # connections (`/service-connections`).
                 "unavailable_reason": None
                 if unavailable is None
                 else unavailable.reason,
@@ -229,6 +230,8 @@ async def set_workspace_service(
     entry = CATALOG.get(service)
     if entry is None or not entry.definition.enabled:
         raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    if organizations:
+        await STORE.hold_organization_setting(session, service)
     switch = (await STORE.switches(session, [service], organizations=organizations))[
         service
     ]
@@ -277,6 +280,14 @@ async def clear_workspace_service(
     entry = CATALOG.get(service)
     if entry is None or not entry.definition.enabled:
         raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    none_here = HTTPException(
+        status_code=404,
+        detail=f"This workspace has no switch of its own for {entry.definition.name}.",
+    )
+    if organizations:
+        await STORE.hold_organization_setting(session, service)
+    if service not in await STORE.list_settings(session):
+        raise none_here
     before = (await STORE.switches(session, [service], organizations=organizations))[
         service
     ]
@@ -286,10 +297,7 @@ async def clear_workspace_service(
             detail=organization_locked(entry.definition.name, before.enabled),
         )
     if not await STORE.clear(session, service):
-        raise HTTPException(
-            status_code=404,
-            detail=f"This workspace has no switch of its own for {entry.definition.name}.",
-        )
+        raise none_here
     switch = (await STORE.switches(session, [service], organizations=organizations))[
         service
     ]

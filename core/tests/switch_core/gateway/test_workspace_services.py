@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapterError
+from switch_core.connections.broker import ServiceBroker
 from switch_core.db.audit import AuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -356,6 +357,31 @@ class TestResults:
         assert github["can_change"] is False
         assert (github["connected_members"], github["granted_agents"]) == (None, None)
         assert github["decided_by"] == "workspace_default"
+
+    async def test_a_member_reads_why_a_service_cant_be_used_as_on_their_own_list(
+        self, harness: Harness
+    ) -> None:
+        """Every member already reads each service's reason, server setup
+        and the organization's app included, for their own connections:
+        this list tells them nothing that one doesn't."""
+        ada = await add_member(harness.session_factory, "ada")
+        broker: ServiceBroker = harness.gateway_app.state.service_broker
+        broker._disabled["github"] = "GitHub is switched off on this server."
+        listed = _by_slug(await _get(harness, ada))
+        async with harness.client() as client:
+            own = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+        assert own.status_code == 200, own.text
+        theirs = {
+            entry["slug"]: (entry["unavailable_reason"], entry["unavailable_code"])
+            for entry in own.json()["connections"]
+        }
+        assert {
+            slug: (service["unavailable_reason"], service["unavailable_code"])
+            for slug, service in listed.items()
+        } == {slug: theirs[slug] for slug in listed}
+        assert listed["github"]["unavailable_code"] == "switched_off"
 
     async def test_names_no_organization_where_it_has_no_say(
         self, harness: Harness
