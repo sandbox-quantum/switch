@@ -20,7 +20,7 @@ vi.hoisted(() => {
 const state = vi.hoisted(() => ({
   adminPages: null as 'served' | 'restart' | 'unavailable' | null,
   native: true,
-  newLayout: false,
+  newLayout: false as boolean | 'unreadable',
   orgAdmin: false,
   openPage: vi.fn(),
   start: vi.fn(),
@@ -76,9 +76,17 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     }),
   },
 }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
-  useAnyServerFeatureFlag: () => false,
-  useFeatureFlags: () => ({ gateway_v2: state.newLayout }),
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useAnyServerFeatureFlag: () => false }));
+vi.mock('@renderer/lib/ipc', () => ({
+  rpc: {
+    featureFlags: {
+      current: async () => {
+        if (state.newLayout === 'unreadable') throw new Error('No handler registered');
+        return { success: true, data: { flags: { gateway_v2: state.newLayout } } };
+      },
+    },
+  },
+  events: { on: () => () => {}, emit: () => {} },
 }));
 vi.mock('@renderer/features/settings/pages/account-page', () => ({
   AccountSettingsPage: () => null,
@@ -195,7 +203,15 @@ it("opens the organization's settings in whichever layout the server has on", as
   expect(state.openPage).toHaveBeenLastCalledWith('local', 'http://localhost:41001/organization');
 
   state.newLayout = true;
-  await act(async () => root!.render(<SettingsPage tab="account" onTabChange={() => {}} />));
   await act(async () => link('Organization settings')?.click());
   expect(state.openPage).toHaveBeenLastCalledWith('local', 'http://localhost:41001/settings/org');
+});
+
+it("opens today's settings where the server's flags cannot be read", async () => {
+  state.adminPages = 'served';
+  state.newLayout = 'unreadable';
+  await render();
+
+  await act(async () => link()?.click());
+  expect(state.openPage).toHaveBeenCalledWith('local', 'http://localhost:41001/workspace');
 });

@@ -12,10 +12,11 @@ import {
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarSections } from '@renderer/lib/components/page-layout';
-import { useAnyServerFeatureFlag, useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
+import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { dashboardOrigin } from '@shared/core/switch-servers/switch-servers';
+import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { administersOrganization } from '@shared/core/workspaces/workspaces';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
@@ -64,6 +65,25 @@ function PreferencesSettingsPage() {
   );
 }
 
+/**
+ * Open a workspace's or an organization's settings in the gateway, in the
+ * layout the server has on. Its flags are read first when they never have
+ * been, so a click made before they arrive still lands on the settings home.
+ */
+async function openGatewaySettings(
+  server: SwitchServer,
+  link: 'workspace-settings' | 'organization-settings'
+): Promise<void> {
+  // Flags that cannot be read open today's addresses, which every server
+  // serves and the new layout redirects.
+  const flags = await rpc.featureFlags.current(server.id).catch(() => null);
+  const newLayout = flags?.success === true && flags.data.flags.gateway_v2;
+  await openServerPage(
+    server.id,
+    `${dashboardOrigin(server)}/${gatewaySettingsPath(link, newLayout)}`
+  );
+}
+
 const TAB_CONTENT: Record<SettingsPageTab, () => React.ReactNode> = {
   preferences: () => <PreferencesSettingsPage />,
   'messaging-apps': () => <MessagingAppsSettingsPage />,
@@ -87,9 +107,6 @@ export const SettingsPage = observer(function SettingsPage({
   // nothing to move to managed and nothing managed to look after.
   const agentManagement = useAnyServerFeatureFlag('agent_management');
   const { server, user } = settingsServer();
-  // Off until the server's flags are read, so the link opens today's
-  // addresses, which the new layout redirects: it still lands in settings.
-  const { gateway_v2: newGatewayLayout } = useFeatureFlags(server?.id);
   const showConfirm = useShowModal('confirmActionModal');
   // Workspace settings are the gateway's, open to every member there. A
   // Switch this Console runs without Docker serves it once started with its
@@ -123,8 +140,7 @@ export const SettingsPage = observer(function SettingsPage({
           onSuccess: () => startManagedServer(server),
         });
       } else {
-        const page = gatewaySettingsPath(id, newGatewayLayout);
-        void openServerPage(server.id, `${dashboardOrigin(server)}/${page}`);
+        void openGatewaySettings(server, id);
       }
     } else {
       onTabChange(id);
