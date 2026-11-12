@@ -80,7 +80,11 @@ describe('the consent gate', () => {
   it('makes no request at all when consent is off', async () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValue(false);
 
-    await telemetryService.track('app_launched', { install_kind: 'same' });
+    await telemetryService.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -88,8 +92,16 @@ describe('the consent gate', () => {
   it('asks the gate again for every event, so revoking consent stops the next one', async () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
-    await telemetryService.track('app_launched', { install_kind: 'same' });
-    await telemetryService.track('app_launched', { install_kind: 'same' });
+    await telemetryService.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
+    await telemetryService.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     expect(isTelemetryAllowed).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -130,7 +142,11 @@ describe('a build that cannot send', () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
     const service = await freshService();
 
-    await service.track('app_launched', { install_kind: 'same' });
+    await service.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(isTelemetryAllowed).not.toHaveBeenCalled();
@@ -144,9 +160,21 @@ describe('a build that cannot send', () => {
     delete process.env.SWITCHDASH_TELEMETRY_DEV;
     const service = await freshService();
 
-    await service.track('app_launched', { install_kind: 'same' });
-    await service.track('app_launched', { install_kind: 'same' });
-    await service.track('app_launched', { install_kind: 'same' });
+    await service.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
+    await service.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
+    await service.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     expect(log.info).toHaveBeenCalledTimes(1);
   });
@@ -154,9 +182,9 @@ describe('a build that cannot send', () => {
 
 describe('asking in advance whether a send would arrive', () => {
   /**
-   * The once-per-install events spend a record that is never given back, so they
-   * ask before they claim. The answer has to be the same two refusals `track`
-   * applies, or the question is worse than not asking.
+   * A report that asks a server for what it describes asks this first, so it
+   * does not ask for nothing. The answer has to be the same two refusals
+   * `track` applies, or the question is worse than not asking.
    */
   it('is no when the build cannot send, without asking the user', async () => {
     delete process.env.SWITCHDASH_TELEMETRY_DEV;
@@ -217,7 +245,11 @@ describe('the payload', () => {
     const now = vi.spyOn(Date, 'now');
     now.mockReturnValueOnce(1_000).mockReturnValue(9_000);
 
-    await telemetryService.track('app_launched', { install_kind: 'same' });
+    await telemetryService.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     expect(sentRecord().timeUnixNano).toBe('1000000000');
     now.mockRestore();
@@ -247,6 +279,8 @@ describe('the payload', () => {
       // the far end can average it without parsing it back.
       duration_ms: durationMs(4200),
       build: 'dev',
+      'flint.insert_id': expect.any(String),
+      'flint.session_id': expect.any(Number),
     });
   });
 
@@ -255,7 +289,11 @@ describe('the payload', () => {
       process.platform as string
     ];
 
-    await telemetryService.track('app_launched', { install_kind: 'same' });
+    await telemetryService.track('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     expect(sentResource()['os.type']).toBe(expected ?? 'other');
     expect(sentResource()['os.version']).toBe(release());
@@ -268,7 +306,7 @@ describe('the payload', () => {
     await telemetryService.track('session_ended', {
       agent_type: 'codex',
       location: 'remote',
-      outcome: 'failed',
+      outcome: 'normal',
     });
 
     expect(Object.keys(sentResource()).sort()).toEqual([
@@ -284,9 +322,75 @@ describe('the payload', () => {
       'agent_type',
       'build',
       'event.name',
+      'flint.insert_id',
+      'flint.session_id',
       'location',
       'outcome',
     ]);
+  });
+});
+
+describe('the session an event is in', () => {
+  /**
+   * The service is one per process and keeps its session, so these run well
+   * after anything the other tests sent, where none of that can reach.
+   */
+  const far = Date.now() + 10 * 365 * 24 * 60 * 60_000;
+  const VIEW = { view_id: 'home' } as const;
+
+  function sentSessionIds(): unknown[] {
+    return fetchMock.mock.calls.map(([, init]) => {
+      const body = JSON.parse((init as { body: string }).body) as {
+        resourceLogs: [{ scopeLogs: [{ logRecords: [{ attributes: Attribute[] }] }] }];
+      };
+      const attribute = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.find(
+        (a) => a.key === 'flint.session_id'
+      );
+      return attribute ? attributeValue(attribute) : undefined;
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+  });
+
+  it('is named for when someone first did something, and holds what they do next', async () => {
+    await telemetryService.trackAt('view_opened', VIEW, far, false);
+    await telemetryService.trackAt('view_opened', VIEW, far + 60_000, false);
+
+    expect(sentSessionIds()).toEqual([far, far]);
+  });
+
+  it('is none for an event nobody caused', async () => {
+    await telemetryService.trackAt(
+      'session_reopened',
+      { agent_type: 'claude', location: 'local', outcome: 'success' },
+      far + 2 * 60_000,
+      false
+    );
+
+    expect(sentSessionIds()).toEqual([-1]);
+  });
+
+  it('is not started by an event consent kept from being sent', async () => {
+    const later = far + 365 * 24 * 60 * 60_000;
+    vi.mocked(isTelemetryAllowed).mockResolvedValueOnce(false);
+
+    await telemetryService.trackAt('view_opened', VIEW, later, false);
+    await telemetryService.trackAt('view_opened', VIEW, later + 1_000, false);
+
+    expect(sentSessionIds()).toEqual([later + 1_000]);
+  });
+
+  it('is none for an occurrence nobody caused, which leaves the session to lapse', async () => {
+    const start = far + 2 * 365 * 24 * 60 * 60_000;
+    const ended = { agent_type: 'claude', location: 'local', outcome: 'normal' } as const;
+
+    await telemetryService.trackAt('view_opened', VIEW, start, false);
+    await telemetryService.trackAt('session_ended', ended, start + 20 * 60_000, true);
+    await telemetryService.trackAt('session_ended', ended, start + 40 * 60_000, false);
+
+    expect(sentSessionIds()).toEqual([start, -1, start + 40 * 60_000]);
   });
 });
 
@@ -298,7 +402,13 @@ describe('failure', () => {
   it('never reaches the caller, and is logged with a code', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503 } as Response);
 
-    expect(() => trackEvent('app_launched', { install_kind: 'same' })).not.toThrow();
+    expect(() =>
+      trackEvent('app_launched', {
+        install_kind: 'same',
+        from_version: 'none',
+        update_trigger: 'none',
+      })
+    ).not.toThrow();
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(
         'telemetry: event not sent',
@@ -310,7 +420,11 @@ describe('failure', () => {
   it('reports a network failure as such rather than as a send', async () => {
     fetchMock.mockRejectedValue(new Error('getaddrinfo ENOTFOUND'));
 
-    trackEvent('app_launched', { install_kind: 'same' });
+    trackEvent('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(
@@ -323,7 +437,9 @@ describe('failure', () => {
   it('does not retry', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
 
-    await telemetryService.track('app_launched', { install_kind: 'same' }).catch(() => {});
+    await telemetryService
+      .track('app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' })
+      .catch(() => {});
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
@@ -29,7 +29,9 @@ from switch_core.gateway.dependencies import (
     get_template_store,
     get_user_store,
 )
-from switch_core.gateway.templates import router
+from switch_core.gateway.templates import readable_template, router
+from switch_core.tenant_context import tenant_scope
+from tests.switch_core.hosted_machine_helpers import add_tenant
 
 _AWKWARD_DOCUMENT = (
     "params:\r\n"
@@ -62,6 +64,9 @@ def _config() -> SwitchConfig:
         secret_keys="test:" + "x" * 40,
         gateway_admin_email="admin@test",
         gateway_admin_password="pw",
+        # The room templates that come with Switch are served only with it.
+        feature_flags_enabled="agent_management",
+        controller_token_secret="x" * 32,
     )
 
 
@@ -390,7 +395,7 @@ class TestOverTheWire:
         await _upload(client, name="unrelated", description="x")
 
         hits = await client.get("/templates", params={"q": "deploy"})
-        assert {t["name"] for t in hits.json()} == {"deploy-room", "other"}
+        assert {t["name"] for t in _stored(hits.json())} == {"deploy-room", "other"}
 
     async def test_deleting_someone_elses_template_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -581,15 +586,15 @@ async def test_an_official_template_is_listed_served_and_never_changed(
 ) -> None:
     client = _client(session_factory, users["alice"])
     listing = (await client.get("/templates")).json()
-    (official,) = [t for t in listing if t["official"]]
+    (official,) = [t for t in listing if t["official"] and t["kind"] == "agent"]
     assert (official["id"], official["owner_name"], official["can_edit"]) == (
         "official:switch-expert",
         "Switch",
         False,
     )
     detail = (await client.get("/templates/official:switch-expert")).json()
-    # The test config leaves agent management off: the Console-run document.
-    assert detail["content"].startswith("version: 1")
+    # The test config turns agent management on: the server-run document.
+    assert detail["content"].startswith("version: 2")
     content = await client.get("/templates/official:switch-expert/content")
     assert content.status_code == 200
     patched = await client.patch(
@@ -626,7 +631,9 @@ class TestRunCounts:
     ) -> None:
         client = _client(session_factory, users["bob"])
         (official,) = [
-            t for t in (await client.get("/templates")).json() if t["official"]
+            t
+            for t in (await client.get("/templates")).json()
+            if t["official"] and t["kind"] == "agent"
         ]
         assert (official["run_count"], official["run_blocked_reason"]) == (0, None)
 
@@ -634,7 +641,9 @@ class TestRunCounts:
         assert recorded.status_code == 201, recorded.text
 
         (official,) = [
-            t for t in (await client.get("/templates")).json() if t["official"]
+            t
+            for t in (await client.get("/templates")).json()
+            if t["official"] and t["kind"] == "agent"
         ]
         assert official["run_count"] == 1
 
@@ -668,3 +677,56 @@ class TestRunCounts:
         assert deleted.status_code == 200, deleted.text
         async with session_factory() as session:
             assert await TemplateStore().run_count(session, created["id"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_an_admin_removes_an_official_room_template_from_their_workspace_only(
+    session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+) -> None:
+    async with session_factory() as session:
+        admin = User(name="root", email="root@test", role="admin", password_hash="x")
+        session.add(admin)
+        await add_tenant(session, "other-workspace")
+        await session.commit()
+    template_id = "official:incident-war-room"
+    as_alice = _client(session_factory, users["alice"])
+    as_admin = _client(session_factory, admin)
+
+    listed = {t["id"]: t for t in (await as_alice.get("/templates")).json()}
+    assert listed[template_id]["can_manage"] is False
+    admin_view = {t["id"]: t for t in (await as_admin.get("/templates")).json()}
+    assert admin_view[template_id]["can_manage"] is True
+    assert admin_view["official:switch-expert"]["can_manage"] is False
+
+    refused = await as_alice.delete(f"/templates/{template_id}")
+    assert refused.status_code == 403
+    assert "workspace admin" in refused.json()["detail"]
+    assert (await as_alice.get(f"/templates/{template_id}")).status_code == 200
+
+    removed = await as_admin.delete(f"/templates/{template_id}")
+    assert removed.status_code == 200, removed.text
+    assert (await as_admin.delete(f"/templates/{template_id}")).status_code == 200
+
+    ids = {t["id"] for t in (await as_alice.get("/templates")).json()}
+    assert template_id not in ids and "official:deploy-watch-room" in ids
+    assert (await as_alice.get(f"/templates/{template_id}")).status_code == 404
+    content = await as_alice.get(f"/templates/{template_id}/content")
+    assert content.status_code == 404
+    # What a run by id loads it with.
+    async with session_factory() as session:
+        with pytest.raises(HTTPException) as gone:
+            await readable_template(
+                template_id, session, TemplateStore(), users["alice"], False, _config()
+            )
+    assert gone.value.status_code == 404
+
+    # The built-in assistant stays, even for an admin.
+    assert (
+        await as_admin.delete("/templates/official:switch-expert")
+    ).status_code == 403
+    assert (await as_admin.delete("/templates/official:nope")).status_code == 404
+
+    with tenant_scope("other-workspace"):
+        elsewhere = {t["id"] for t in (await as_admin.get("/templates")).json()}
+        assert template_id in elsewhere
+        assert (await as_admin.get(f"/templates/{template_id}")).status_code == 200

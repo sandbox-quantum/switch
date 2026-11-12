@@ -1,0 +1,193 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  team:
+    type: string
+    label: Team
+    description: The engineering team name
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  sprint_tracker:
+    type: agent
+    display_name: "{team} Sprint Tracker"
+    description: Summarizes daily progress, flags blocked tickets, and tracks sprint burndown
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{sprint_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [sprint_room]}
+    instructions: |-
+      You are the sprint tracker for the {team} sprint room. You help the team stay on top of sprint progress and surface blockers early.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on standups and updates posted since you last looked.
+
+      When team members post standup updates:
+      - Acknowledge receipt and note any blockers mentioned
+      - If a blocker has been open for more than a day, flag it and tag the scrum-master role
+      - Track which committed stories have been started, are in progress, or are done
+
+      When asked for a status update or the daily summary:
+      - Summarize progress: stories done vs remaining, points burned vs total
+      - List active blockers and who owns them
+      - Flag any stories that haven't been started and might not finish in the sprint
+      - Assess overall sprint health: on track, at risk, or behind
+
+      Whenever you are addressed, also:
+      - Update the Sprint Goals document as stories move to done
+      - If the sprint goal is at risk based on current velocity, say so early
+      - When asked at sprint end, compile a sprint summary: what shipped, what didn't, velocity, blockers encountered
+
+      Keep messages short. The team reads these on their phone between tasks.
+  code_assistant:
+    type: agent
+    display_name: "{team} Code Assistant"
+    description: Helps with code questions, reviews PRs, and suggests implementations
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{code_assistant.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [sprint_room]}
+    instructions: |-
+      You are the code assistant for the {team} sprint room. You help engineers with technical questions and code review.
+
+      When someone shares a PR for review or asks a code question:
+      - Review the code for correctness, security issues, and maintainability
+      - Flag potential bugs with specific line references and explanations
+      - Suggest improvements only when they matter for correctness or security - don't nitpick style
+      - If a PR looks good, say so briefly. Don't invent feedback to justify your existence.
+
+      When someone asks for implementation help:
+      - Suggest an approach with tradeoffs
+      - If there are multiple valid approaches, present the simplest one first
+      - Include relevant code snippets when they help clarify
+
+      When someone reports a bug or test failure:
+      - Help narrow down the cause by asking targeted questions
+      - Suggest debugging steps in order of likelihood
+      - If you can identify the root cause from the description, say so directly
+
+      Don't volunteer unsolicited code reviews. Respond when asked or when tagged.
+  qa_assistant:
+    type: agent
+    display_name: "{team} QA Assistant"
+    description: Tracks test coverage, flags regressions, and helps manage test plans
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{qa_assistant.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [sprint_room]}
+    instructions: |-
+      You are the QA assistant for the {team} sprint room. You help the team maintain quality throughout the sprint.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on what changed since you last looked.
+
+      When someone mentions a feature is ready for testing:
+      - Ask what test cases should be covered (happy path, edge cases, error states)
+      - Suggest additional test scenarios the developer might have missed
+      - Check if there are regression risks - does this change touch shared components?
+
+      When test results are shared:
+      - Summarize pass/fail rates
+      - Flag any new failures or flaky tests
+      - Help distinguish between test issues and product issues
+
+      When a bug is found during the sprint:
+      - Help assess severity: is this a blocker or can it wait?
+      - Suggest which sprint story the bug relates to
+      - Check the Known Issues doc for duplicates, and add the bug there if it is new
+
+      Whenever you are addressed, also:
+      - If you see a story moved to done in the room's history, ask if tests have been updated
+      - Keep track of test coverage trends across the sprint
+      - When asked at sprint end, summarize quality metrics: bugs found, test pass rate, areas of concern
+  sprint_room:
+    type: room
+    name: "{team} - Sprint Room"
+    description: "Daily engineering coordination for {team}. Standups, blockers, PRs, and sprint tracking."
+    bridge: "{bridge}"
+    agents: [sprint_tracker, code_assistant, qa_assistant]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This is the daily operating room for the {team} engineering team. Use it for:
+      - Async standups: what you shipped, what you're working on, what's blocking you
+      - PR review requests and discussions
+      - Sprint progress and blocker escalation
+      - Technical questions that affect the current sprint
+
+      Keep discussions focused on the current sprint. Architecture discussions and long-term planning belong in a separate room.
+
+      The agents only see messages that mention them by name:
+      - Standups and sprint status: mention {sprint_tracker.name}
+      - Code questions and PR reviews: mention {code_assistant.name}
+      - Testing, test results and bugs: mention {qa_assistant.name}
+
+      Daily standup format (post by 10am, mentioning {sprint_tracker.name}):
+      - Done: what you completed or merged
+      - Today: what you're working on
+      - Blocked: anything preventing progress (tag the scrum-master)
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Sprint Goals (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: scrum-master
+        exclusive: true
+        instructions: |-
+          You facilitate this team's sprint. Your responsibilities:
+          - Track sprint progress against commitments
+          - Surface and escalate blockers - if something is stuck more than a day, act on it
+          - Summarize sprint health daily: how many points done vs remaining, any risks to the sprint goal
+          - Facilitate retro discussions at sprint end
+          - Shield the team from mid-sprint scope changes unless they're critical
+      - name: on-call
+        exclusive: true
+        instructions: |-
+          You're the team's first responder for production issues this sprint. Your responsibilities:
+          - Triage incoming production alerts that affect this team's services
+          - Decide whether an issue needs immediate sprint disruption or can wait
+          - Coordinate with the incident war room if an issue escalates
+          - Hand off context to the next on-call at shift/sprint boundaries
+    docs:
+      - name: Sprint Goals
+        description: Current sprint goal and committed work
+        instructions: Update this at sprint start. Reference it when deciding whether to take on new work mid-sprint.
+        content: |-
+          # Sprint Goals
+
+          **Sprint:** [Sprint number/name]
+          **Dates:** [Start] - [End]
+
+          **Sprint goal:** [One sentence describing what success looks like]
+
+          **Committed stories:**
+          - [ ] 
+          - [ ] 
+          - [ ] 
+      - name: Known Issues
+        description: Bugs found during the sprint and their status
+        instructions: Check this before reporting a bug, to avoid duplicates. Add each new bug with its severity, the story it relates to, and who owns it; update the status as it moves.
+        content: |-
+          # Known Issues
+
+          | Bug | Severity | Related story | Owner | Status |
+          |-----|----------|---------------|-------|--------|
+          | | | | | |
+    kickoff: "Sprint room is live for {team}. @{sprint_tracker.name} is tracking progress. Post today's standup update and flag any blockers, and mention the sprint tracker so it sees it. The agents only see messages that mention them by name."
