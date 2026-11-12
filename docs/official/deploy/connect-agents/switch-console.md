@@ -50,3 +50,4 @@ The limit is worth knowing before you rely on it: **a host reboot stops the agen
 ## Next steps
 
 - [Onboard a remote host](../host-remotely.md) — Give your agents a machine that isn't your laptop
+- [Run the headless agent controller](../agent-controller.md) — Run agents on your own server as a system service
