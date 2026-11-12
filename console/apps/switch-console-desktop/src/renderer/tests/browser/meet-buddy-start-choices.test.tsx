@@ -59,7 +59,7 @@ describe('Meet switch-buddy start choices', () => {
     });
     expect(container!.textContent).toContain('How’d you like to power switch-buddy?');
     expect(container!.textContent).toContain('Already signed in:');
-    expect(buttons()).toEqual(['Claude Code', 'Codex', 'Use other AI providers']);
+    expect(buttons()).toEqual(['Claude Code', 'Codex', 'Use other agent providers']);
     expect(
       [...container!.querySelectorAll('[data-provider-icon]')].map((icon) =>
         icon.getAttribute('data-provider-icon')
@@ -72,7 +72,7 @@ describe('Meet switch-buddy start choices', () => {
   it('offers to set one up, or skip, when none is signed in', async () => {
     const on = handlers();
     await render({ checking: false, ready: [], starting: null, ...on });
-    expect(buttons()).toEqual(['Skip', 'Set up AI provider']);
+    expect(buttons()).toEqual(['Skip', 'Set up agent provider']);
     await act(async () => container!.querySelectorAll('button')[0]!.click());
     expect(on.onSkip).toHaveBeenCalled();
   });
@@ -80,6 +80,6 @@ describe('Meet switch-buddy start choices', () => {
   it('offers nothing while the providers are being checked', async () => {
     await render({ checking: true, ready: [], starting: null, ...handlers() });
     expect(buttons()).toEqual([]);
-    expect(container!.textContent).toContain('Checking AI providers…');
+    expect(container!.textContent).toContain('Checking agent providers…');
   });
 });

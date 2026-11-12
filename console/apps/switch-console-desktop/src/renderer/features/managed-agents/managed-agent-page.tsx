@@ -79,7 +79,7 @@ const NO_FIELDS: AdvancedConfigField[] = [];
 const DIRECTORY_PLACEHOLDER = 'Where the agent runs';
 
 const SESSIONS_START_WHEN_ADDRESSED =
-  'Sessions of an agent on a machine start when it is addressed in a room.';
+  'Sessions of an agent on a device start when it is addressed in a room.';
 
 type Edits = { values: Partial<Omit<Draft, 'form'>>; form: FormState };
 const NO_EDITS: Edits = { values: {}, form: {} };
@@ -380,12 +380,12 @@ function ManagedAgentPageContent({
                 info={{
                   label: 'More info about the directory',
                   content:
-                    'The working directory, a full path on its machine. Its sessions start there. ' +
+                    'The working directory, a full path on its device. Its sessions start there. ' +
                     'Changing it applies to new sessions only: a room where the agent already has a ' +
                     'session keeps the directory that session started in, through a reset too, until ' +
                     'the session is recreated.',
                 }}
-                description={`Where the agent runs on ${agent.machine?.name ?? 'its machine'}.`}
+                description={`Where the agent runs on ${agent.machine?.name ?? 'its device'}.`}
                 control={null}
               >
                 {machine?.local?.kind === 'this-computer' ? (
@@ -409,7 +409,7 @@ function ManagedAgentPageContent({
                 <SettingRow
                   title="Runs in its own process"
                   info={null}
-                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
+                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the device's controller."
                   control={null}
                 />
               ) : (
@@ -418,9 +418,9 @@ function ManagedAgentPageContent({
                   info={{
                     label: 'More info about running in its own process',
                     content:
-                      'Isolated from the other agents on its machine, instead of inside the machine’s controller.',
+                      'Isolated from the other agents on its device, instead of inside the device’s controller.',
                   }}
-                  description="Keep it apart from the other agents on its machine."
+                  description="Keep it apart from the other agents on its device."
                   control={
                     <Switch
                       aria-label="Run in its own process"
@@ -457,7 +457,7 @@ function ManagedAgentPageContent({
               <SettingRow
                 title="Delete agent"
                 info={null}
-                description="Its machine stops it and it is deleted from Switch, for every room it is in."
+                description="Its device stops it and it is deleted from Switch, for every room it is in."
                 control={
                   <Button variant="destructive" disabled={busy} onClick={remove}>
                     Delete agent…
@@ -539,10 +539,10 @@ function useHostCatalogue(
   });
   const unavailable = (reason: string): ModelCatalogueResult => ({ kind: 'unavailable', reason });
   if (machines.error)
-    return unavailable(failureText(machines.error, 'Your machines could not be listed.'));
+    return unavailable(failureText(machines.error, 'Your devices could not be listed.'));
   if (providerId === null)
     return unavailable(`Console does not know the provider “${agent.definition.provider}”.`);
-  if (!agent.machine) return unavailable('The agent is placed on no machine.');
+  if (!agent.machine) return unavailable('The agent is placed on no device.');
   if (machines.data === undefined) return undefined;
   if (!machine?.local)
     return unavailable(
@@ -550,10 +550,10 @@ function useHostCatalogue(
     );
   if (dir === null)
     return unavailable(
-      'The machine has not said which directory the agent runs in yet, so there is nowhere to ask. You can enter a model ID.'
+      'The device has not said which directory the agent runs in yet, so there is nowhere to ask. You can enter a model ID.'
     );
   if (query.error)
-    return unavailable(failureText(query.error, 'The machine’s models could not be read.'));
+    return unavailable(failureText(query.error, 'The device’s models could not be read.'));
   return catalogueAsReported(
     query.data,
     agent.machine.name,

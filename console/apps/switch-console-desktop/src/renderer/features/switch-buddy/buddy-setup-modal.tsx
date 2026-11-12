@@ -11,7 +11,7 @@ import { useThisComputer } from './use-this-computer';
 
 type Args = { serverId: string; workspaceId: string };
 
-/** Connect an AI provider to switch-buddy, from its chat, after skipping it in onboarding. */
+/** Connect an agent provider to switch-buddy, from its chat, after skipping it in onboarding. */
 export function BuddySetupModal({
   serverId,
   workspaceId,
@@ -22,7 +22,7 @@ export function BuddySetupModal({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Connect an AI provider to switch-buddy</DialogTitle>
+        <DialogTitle>Connect an agent provider to switch-buddy</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <ProviderSetup

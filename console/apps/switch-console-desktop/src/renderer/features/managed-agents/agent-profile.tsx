@@ -37,9 +37,9 @@ export function managedAgentMachineLine(
   if (!machine)
     return {
       icon: ServerOff,
-      text: 'No machine',
+      text: 'No device',
       status: null,
-      title: 'It has no machine to run on.',
+      title: 'It has no device to run on.',
     };
   const cloud = isCloudMachine(machine);
   const name = machine.name;

@@ -451,7 +451,7 @@ const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string
     void loadSwitchCloudOrigin().then(() => {
       if (serverId !== managedCloudServerId()) return;
       const reason = machineUnavailableReason(signedIn);
-      if (reason) toast({ title: 'Your cloud machine is not starting', description: reason });
+      if (reason) toast({ title: 'Your cloud device is not starting', description: reason });
     });
   };
 

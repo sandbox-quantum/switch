@@ -316,7 +316,7 @@ export default function MachinesPage() {
       },
       {
         field: "providers",
-        headerName: "Providers",
+        headerName: "Agent providers",
         flex: 1.5,
         minWidth: 240,
         sortable: false,
@@ -447,7 +447,7 @@ export default function MachinesPage() {
       { field: "name", headerName: "Agent", flex: 1, minWidth: 160 },
       {
         field: "provider",
-        headerName: "Provider",
+        headerName: "Agent provider",
         width: 130,
         valueGetter: (_value, row) => label(row.definition.provider),
       },

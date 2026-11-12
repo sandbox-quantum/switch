@@ -241,7 +241,7 @@ export function AgentHeaderLayout({
         </div>
         {machineName !== null && (
           <p className="text-sm text-foreground-muted">
-            Machine name: <span className="font-mono">{machineName}</span>
+            Device name: <span className="font-mono">{machineName}</span>
           </p>
         )}
         {description && <p className="text-sm text-foreground-muted">{description}</p>}

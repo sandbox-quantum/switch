@@ -47,7 +47,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 /**
  * switch-buddy before it exists, drawn as its agent page will be: its one
  * chat, Welcome, open beside the list, with its first message, and in place of
- * the message box a way to connect the AI provider it needs — Switch creates
+ * the message box a way to connect the agent provider it needs — Switch creates
  * no agent until one is ready. Once the person has a buddy this opens its real
  * page, on the same Welcome chat, which then works as any chat does.
  */
@@ -120,7 +120,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
             disabled={workspaceId === null}
             className="w-full rounded-full border border-border bg-background px-5 py-3 text-left text-sm text-foreground shadow-sm hover:bg-[var(--sel-soft)] disabled:opacity-60"
           >
-            Connect an AI provider to chat with {expectedBuddyName(person)}
+            Connect an agent provider to chat with {expectedBuddyName(person)}
           </button>
           {workspaceId === null && (
             <p className="mt-2 text-xs text-foreground-muted">

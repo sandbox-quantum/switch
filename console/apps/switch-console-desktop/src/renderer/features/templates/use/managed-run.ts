@@ -197,7 +197,7 @@ export function shownDirectory(directory: string, machine: OwnedMachine | null):
   if (!directory.includes(AGENTS_DIR)) return directory;
   return machine?.workspacesDir
     ? directory.split(AGENTS_DIR).join(machine.workspacesDir.replace(/[/\\]+$/, ''))
-    : directory.split(AGENTS_DIR).join(`${machine?.name ?? 'its machine'}'s agents folder`);
+    : directory.split(AGENTS_DIR).join(`${machine?.name ?? 'its device'}'s agents folder`);
 }
 
 function fillDeep(node: unknown, values: Values): unknown {

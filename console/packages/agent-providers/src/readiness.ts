@@ -51,7 +51,7 @@ export function loginCommandOf(
 }
 
 export function signInWith(loginCommand: string): string {
-  return `Sign in on the execution machine with ${loginCommand}.`;
+  return `Sign in on the device the agent runs on with ${loginCommand}.`;
 }
 
 /**

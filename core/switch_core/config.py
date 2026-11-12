@@ -1022,7 +1022,7 @@ class SwitchConfig(BaseSettings):
             if self.hosted_launch_capacity > 0:
                 raise ValueError(
                     "HOSTED_LAUNCH_CAPACITY needs the "
-                    f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
+                    f"{AGENT_MANAGEMENT!r} feature flag: cloud devices run the "
                     "agent controller."
                 )
             return self

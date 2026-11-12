@@ -255,7 +255,7 @@ function groupByController(agents: MigrationAgent[]): MigrationAgent[][] {
 function machineOf(lookup: TargetLookup, record: ManagedAgentRecord): ManagedMachine {
   const controller = lookup.controller;
   if (!controller || controller.controllerId !== record.controllerId) return { kind: 'removed' };
-  const reason = lookup.blocker ?? 'The machine’s controller is not running.';
+  const reason = lookup.blocker ?? 'The device’s controller is not running.';
   switch (controller.state) {
     case 'running':
       return { kind: 'running' };
@@ -619,7 +619,7 @@ export class AgentMigrationService {
     const target = lookup.target;
     if (!target) {
       const blocked = new MigrationBlockedError(
-        lookup.blocker ?? 'There is no machine to move it to.'
+        lookup.blocker ?? 'There is no device to move it to.'
       );
       for (const agent of agents) failures.set(agent.id, blocked);
       return;
@@ -631,7 +631,7 @@ export class AgentMigrationService {
       try {
         if (target.workspaceId !== agent.workspaceId)
           throw new MigrationBlockedError(
-            'The machine runs managed agents for another workspace on this server; an agent can only be placed on a machine of its own workspace.'
+            'The device runs managed agents for another workspace on this server; an agent can only be placed on a device of its own workspace.'
           );
         batch.push({
           agent,
@@ -687,7 +687,7 @@ export class AgentMigrationService {
     batch = await this.keep(batch, async (moving) => {
       const why = stopped.has(moving.agent.id)
         ? stopped.get(moving.agent.id)
-        : 'The machine did not report on its watcher.';
+        : 'The device did not report on its watcher.';
       if (why === null) return;
       this.deps.log.error('Could not stop Console’s watcher for an agent being moved; undoing', {
         agentId: moving.agent.id,
@@ -726,7 +726,7 @@ export class AgentMigrationService {
     batch = await this.keep(batch, async (moving) => {
       const outcome =
         stashed.get(moving.agent.id) ??
-        new Error('The machine did not report on its credentials file.');
+        new Error('The device did not report on its credentials file.');
       if (outcome instanceof Error) {
         await this.undoInBatch(moving, records.get(moving.agent.id)!, false, outcome, fail);
         return 'undone';
@@ -986,7 +986,7 @@ export class AgentMigrationService {
     let blocker = lookup.blocker ?? (await this.eligibilityBlocker(agent));
     if (!blocker && lookup.target && lookup.target.workspaceId !== agent.workspaceId)
       blocker =
-        'The machine runs managed agents for another workspace on this server; an agent can only be placed on a machine of its own workspace.';
+        'The device runs managed agents for another workspace on this server; an agent can only be placed on a device of its own workspace.';
     // Read only for an agent that can move: it is what the move's confirmation lists.
     let notCarried: string[] = [];
     if (!blocker)
@@ -1048,7 +1048,7 @@ export class AgentMigrationService {
         movedAt: record.movedAt,
         machine: lookup
           ? machineOf(lookup, record)
-          : { kind: 'unknown', reason: `Console could not look at the machine: ${lookupFailure}` },
+          : { kind: 'unknown', reason: `Console could not look at the device: ${lookupFailure}` },
         desiredState: view?.desiredState ?? null,
         actual: view?.actual ?? null,
         unreadable:
@@ -1056,7 +1056,7 @@ export class AgentMigrationService {
           (view === null
             ? 'Switch no longer manages this agent. Stop managing brings it back to this Console.'
             : view.controllerId !== record.controllerId
-              ? 'Switch has placed this agent on another machine since it moved.'
+              ? 'Switch has placed this agent on another device since it moved.'
               : null),
       },
     };
@@ -1077,9 +1077,9 @@ export class AgentMigrationService {
       if (eligibility.gone)
         return 'Its server no longer has this agent, so Console removes it on its next check.';
       if (!eligibility.management)
-        return 'This server does not have agent management turned on, so it cannot run agents on machines.';
+        return 'This server does not have agent management turned on, so it cannot run agents on devices.';
       if (!eligibility.ownedByMe)
-        return `Only its owner${eligibility.owner ? ` (${eligibility.owner})` : ''} can move it to a managed machine.`;
+        return `Only its owner${eligibility.owner ? ` (${eligibility.owner})` : ''} can move it to a managed device.`;
       return null;
     } catch (error) {
       return `Switch could not be asked whether this agent can move: ${message(error)}`;
@@ -1095,7 +1095,7 @@ export class AgentMigrationService {
     if (state.blocker) throw new MigrationBlockedError(state.blocker);
     const lookup = await this.deps.targets.resolve(agent);
     if (!lookup.target)
-      throw new MigrationBlockedError(lookup.blocker ?? 'There is no machine to move it to.');
+      throw new MigrationBlockedError(lookup.blocker ?? 'There is no device to move it to.');
     return {
       agent,
       target: lookup.target,
@@ -1294,7 +1294,7 @@ export class AgentMigrationService {
       }
       if (this.deps.now() >= deadline)
         throw new Error(
-          'The agent’s watcher on its managed machine has not stopped, so Console cannot take it back yet. Try Stop managing again in a moment.'
+          'The agent’s watcher on its managed device has not stopped, so Console cannot take it back yet. Try Stop managing again in a moment.'
         );
       await this.deps.sleep(this.deps.pollMs);
     }

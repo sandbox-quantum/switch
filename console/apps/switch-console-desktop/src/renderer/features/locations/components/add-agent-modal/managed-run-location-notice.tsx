@@ -93,7 +93,7 @@ export function ManagedRunLocationNotice({
     } catch (error) {
       const { headline, detail } = describeFailure(
         error,
-        sshHost ? `Could not make ${label} a machine.` : 'Could not turn on managed agents here.'
+        sshHost ? `Could not make ${label} a device.` : 'Could not turn on managed agents here.'
       );
       toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
     } finally {
@@ -168,7 +168,7 @@ export function ManagedAdvancedConfig({
         ? {
             kind: 'unavailable',
             reason:
-              'No directory is chosen yet, so there is nowhere to ask the machine for its models. You can enter a model alias or ID.',
+              'No directory is chosen yet, so there is nowhere to ask the device for its models. You can enter a model alias or ID.',
           }
         : catalogue;
 
@@ -227,11 +227,11 @@ export function CanManageAgentsField({
             Can manage agents
             <InfoTooltip
               label="More info about managing agents"
-              content="The agent can see your machines and managed agents, and create agents that run on your machines and belong to you. Agents it creates do not get this permission."
+              content="The agent can see your devices and managed agents, and create agents that run on your devices and belong to you. Agents it creates do not get this permission."
             />
           </span>
           <span className="text-xs text-foreground-muted">
-            Let this agent create agents on your machines.
+            Let this agent create agents on your devices.
           </span>
         </span>
         <Switch

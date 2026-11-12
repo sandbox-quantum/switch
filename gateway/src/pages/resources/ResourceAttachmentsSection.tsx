@@ -127,9 +127,9 @@ export default function ResourceAttachmentsSection({
                   size="small"
                   onClick={() => handleDetach(r.room_id)}
                   disabled={busy}
-                  aria-label={`Unlink from ${r.room_name}`}
+                  aria-label={`Detach from ${r.room_name}`}
                 >
-                  Unlink
+                  Detach
                 </Button>
               )}
             </Stack>

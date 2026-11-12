@@ -153,12 +153,15 @@ it('passes on why a session host failed, to a waiting request and to subscribers
   const refused = expect(request).rejects.toBeInstanceOf(SessionHostFailedError);
   await writeFile(
     join(sessionRoot, 'supervisor', 'failure.json'),
-    JSON.stringify({ message: 'Sign in on the execution machine with claude auth login.' })
+    JSON.stringify({ message: 'Sign in on the device the agent runs on with claude auth login.' })
   );
   child.emit('exit', 1, null);
   await refused;
   await vi.waitFor(() =>
-    expect(failures).toEqual([null, 'Sign in on the execution machine with claude auth login.'])
+    expect(failures).toEqual([
+      null,
+      'Sign in on the device the agent runs on with claude auth login.',
+    ])
   );
   unsubscribe();
 
@@ -169,13 +172,13 @@ it('passes on why a session host failed, to a waiting request and to subscribers
     () => {},
     (failure) => late.push(failure)
   );
-  expect(late).toEqual(['Sign in on the execution machine with claude auth login.']);
+  expect(late).toEqual(['Sign in on the device the agent runs on with claude auth login.']);
   // And hears it cleared once a host comes up again.
   const next = host();
   links.attach(sessionRoot, next as unknown as ChildProcess);
   next.emit('message', { kind: 'ready' });
   await vi.waitFor(() =>
-    expect(late).toEqual(['Sign in on the execution machine with claude auth login.', null])
+    expect(late).toEqual(['Sign in on the device the agent runs on with claude auth login.', null])
   );
   unsubscribeLate();
 

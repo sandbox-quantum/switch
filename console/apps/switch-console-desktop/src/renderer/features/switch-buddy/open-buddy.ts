@@ -101,7 +101,7 @@ export async function openBuddyChat(
 
 /**
  * Where the first run ends: the buddy's chat once it exists, else its page,
- * which waits for an AI provider. Skipping the buddy there also keeps its
+ * which waits for an agent provider. Skipping the buddy there also keeps its
  * pop-up away for the rest of this launch: it was just declined.
  */
 export async function openBuddyAfterOnboarding(

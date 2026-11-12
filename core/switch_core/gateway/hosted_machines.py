@@ -79,9 +79,9 @@ def _usage(heartbeat: dict | None, key: str) -> dict | None:
 
 
 WORKSPACE_CONNECT_TIMEOUT = (
-    "The cloud machine started, but its controller for this workspace did not "
+    "The cloud device started, but its controller for this workspace did not "
     "connect to Switch within 10 minutes. Retry it in Switch Console, or ask your "
-    "administrator to check the machine's startup logs."
+    "administrator to check the device's startup logs."
 )
 
 
@@ -224,7 +224,7 @@ async def _owned(
     machine = await CloudMachineStore().owned(session, machine_id, owner_id)
     workspace = None if machine is None else await workspace_on(session, machine.id)
     if machine is None or workspace is None:
-        raise HTTPException(404, "Cloud machine not found.")
+        raise HTTPException(404, "Cloud device not found.")
     return machine, workspace
 
 
@@ -311,7 +311,7 @@ async def lifecycle(
     if not retrying_retire and (
         machine.state in RETIRED_STATES or machine.desired_state in RETIRED_STATES
     ):
-        raise HTTPException(409, f"machine is {machine.desired_state}")
+        raise HTTPException(409, f"The cloud device is {machine.desired_state}.")
     now = datetime.now(UTC)
     if body.action == "stop":
         if machine.desired_state != "stopped":
@@ -333,7 +333,7 @@ async def lifecycle(
         machines.start(machine, now)
     else:
         if machine.state != "error":
-            raise HTTPException(409, "Only a machine in error can be retried.")
+            raise HTTPException(409, "Only a cloud device in error can be retried.")
         machines.retry(machine, now)
     await session.commit()
     return {"machine": await machine_summary(session, machine, workspace)}

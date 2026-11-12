@@ -156,7 +156,7 @@ export async function materializeHostedProvider(
     // session signed out, or signed in as whoever the machine already has.
     if (!isLegacyAntigravityRuntime(binaryPath))
       throw new Error(
-        `This agent's Antigravity sign-in was made for Antigravity ACP (antigravity-acp), which Google's agy CLI cannot use. Sign in on the execution machine with ${AGY_LOGIN}, or set GEMINI_API_KEY there, and disconnect the Antigravity login Switch holds for the agent.`
+        `This agent's Antigravity sign-in was made for Antigravity ACP (antigravity-acp), which Google's agy CLI cannot use. Sign in on the device the agent runs on with ${AGY_LOGIN}, or set GEMINI_API_KEY there, and disconnect the Antigravity login Switch holds for the agent.`
       );
     env.GEMINI_HOME = join(root, 'provider-home');
     await writeAuthentication(

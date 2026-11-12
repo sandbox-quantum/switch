@@ -526,7 +526,7 @@ describe('EmbeddedControllerService', () => {
       [WORKSPACE, 'controller-1', { description: null }],
     ]);
     await expect(svc.updateDetails(SERVER, { name: '  ' })).rejects.toThrow(
-      'A machine needs a name.'
+      'A device needs a name.'
     );
     expect(management.update).toHaveBeenCalledTimes(2);
   });

@@ -76,7 +76,7 @@ const PROVIDER = 'codex';
 const CLIENT_NAME = 'switch-console';
 const CLIENT_VERSION = '0.1.0';
 
-export const CODEX_SIGN_IN_REQUIRED = 'Sign in on the execution machine with codex login.';
+export const CODEX_SIGN_IN_REQUIRED = 'Sign in on the device the agent runs on with codex login.';
 
 /**
  * Signed out with no auth.json on the machine: Codex reads a keyring login as
@@ -837,7 +837,7 @@ export class CodexAdapter implements ProviderAdapter {
     const store = await readCodexCredentialStore(client, cwd);
     if (store !== 'ephemeral')
       throw new Error(
-        `Codex's configuration on the execution machine sets cli_auth_credentials_store to ${JSON.stringify(store ?? null)} for this session where Switch asked for "ephemeral" (an administrator's managed configuration or requirements can do this), so Switch did not hand the session the API key from the OS keyring: Codex would have saved another copy of it.`
+        `Codex's configuration on the device the agent runs on sets cli_auth_credentials_store to ${JSON.stringify(store ?? null)} for this session where Switch asked for "ephemeral" (an administrator's managed configuration or requirements can do this), so Switch did not hand the session the API key from the OS keyring: Codex would have saved another copy of it.`
       );
     const apiKey = await readCodexKeyringApiKey(
       this.binaryPath,

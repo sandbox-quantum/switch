@@ -87,7 +87,7 @@ describe.skipIf(process.platform === 'win32')('pinnedBinary', () => {
     const pinned = tool({ 'linux-x64': { url: URL_, sha256, path: 'bin/excli' } });
     const fetchImpl = serving(archive);
     await expect(resolver(fetchImpl, 'arm64')(pinned)).rejects.toThrow(
-      'no build for this machine (linux-arm64)'
+      'no build for this device (linux-arm64)'
     );
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(await readCliToolStatuses(base)).toEqual([{ tool: 'excli', state: 'unsupported' }]);

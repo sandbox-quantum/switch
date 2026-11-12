@@ -62,7 +62,7 @@ def _reject(reason: str) -> NoReturn:
 
 def _check_host(hostname: str) -> None:
     if hostname.lower() in _BLOCKED_HOSTNAMES:
-        _reject("must not point at the local machine")
+        _reject("must not point at localhost")
 
     try:
         address = ipaddress.ip_address(hostname)

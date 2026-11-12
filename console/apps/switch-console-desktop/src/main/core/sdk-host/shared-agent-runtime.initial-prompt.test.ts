@@ -581,17 +581,18 @@ it('keeps a background authentication failure visible without sending the first 
 
 it('fails as soon as the host stops on a recorded failure, without waiting to poll for it', async () => {
   mocks.snapshot.mockRejectedValue(
-    new SessionHostFailedError('Sign in on the execution machine with claude auth login.')
+    new SessionHostFailedError('Sign in on the device the agent runs on with claude auth login.')
   );
   const agent = runtime();
   const started = Date.now();
   await expect(agent.start(session, false, 'Say hello')).rejects.toThrow(
-    'Shared SDK host failed: Sign in on the execution machine with claude auth login.'
+    'Shared SDK host failed: Sign in on the device the agent runs on with claude auth login.'
   );
   expect(Date.now() - started).toBeLessThan(1000);
   expect(agent.startupStatus()).toEqual({
     status: 'error',
-    message: 'Shared SDK host failed: Sign in on the execution machine with claude auth login.',
+    message:
+      'Shared SDK host failed: Sign in on the device the agent runs on with claude auth login.',
   });
   expect(mocks.submit).not.toHaveBeenCalled();
 });

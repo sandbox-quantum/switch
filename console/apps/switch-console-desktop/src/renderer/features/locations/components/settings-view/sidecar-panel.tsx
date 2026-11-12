@@ -61,7 +61,7 @@ function ConsoleWatcher({ agentId }: { agentId: string }) {
   if (runner.data === 'managed')
     return (
       <p className="text-sm text-foreground-muted">
-        Switch runs this agent on a machine’s agent controller, so this Console does not watch its
+        Switch runs this agent on a device’s agent controller, so this Console does not watch its
         rooms.
       </p>
     );

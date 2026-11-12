@@ -78,7 +78,7 @@ const PROCESS_TONE: Record<string, MachineTone> = {
 /**
  * One device's page: what it is and whether it is connected, anything that
  * needs doing about it, then its details, connection, system and software,
- * the agents on it and its AI providers, each in a card.
+ * the agents on it and its agent providers, each in a card.
  */
 export function MachineDetails({
   serverId,
@@ -367,7 +367,7 @@ function CloudMachineSection({ serverId, machine }: { serverId: string; machine:
   if (cloud.error)
     return (
       <p role="alert" className="text-sm text-destructive">
-        {failureText(cloud.error, 'Could not read the cloud machine.')}
+        {failureText(cloud.error, 'Could not read the cloud device.')}
       </p>
     );
   if (!hosted) return null;

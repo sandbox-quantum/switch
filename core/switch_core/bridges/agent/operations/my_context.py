@@ -50,7 +50,7 @@ async def get_my_context() -> dict[str, Any]:
     something up or explain their setup, and again when what you need may have
     changed. It reads the server as it is now. Shows only what your owner may
     see: the workspace's messaging apps, and otherwise your owner's own
-    connections, agents and machines.
+    connections, agents and devices.
 
     Returns:
         {you, person, workspace, server, messaging_apps, services, agents,
@@ -110,14 +110,16 @@ async def get_my_context() -> dict[str, Any]:
         `agents`: your owner's agents, each {id, name, display_name,
         who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
         is "owner_only", "owner_and_owner_agents", "anyone" or "custom".
-        `managed` is null for an agent Switch does not run on a machine, else
-        {machine, desired_state, auto_mode, auto_approve, process}.
+        `managed` is null for an agent Switch does not run on a device, else
+        {machine, desired_state, auto_mode, auto_approve, process}, `machine`
+        being the device it runs on.
         `auto_mode` is whether the provider's automatic review decides which
         actions need approval; `auto_approve` is bypass, running every tool
         without asking anyone whatever `auto_mode` says.
 
-        `machines`: your owner's machines as `list_machines` reports them, or
-        null when this server does not run agent management.
+        `machines`: your owner's devices as `list_machines` reports them, or
+        null when this server does not run agent management. Say "device" to
+        people; `machines` is only the field's name.
     """
     protocol = get_protocol()
     tenant_id = require_tenant_id()

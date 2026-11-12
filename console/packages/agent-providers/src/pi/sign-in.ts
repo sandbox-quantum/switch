@@ -70,7 +70,7 @@ export const PI_INHERIT_ENV = [
 ] as const;
 
 export const PI_SIGN_IN_REQUIRED =
-  "Pi has no model it can use on the execution machine. Run pi there and sign in with /login, or set a model provider's API key in its environment.";
+  "Pi has no model it can use on the device the agent runs on. Run pi there and sign in with /login, or set a model provider's API key in its environment.";
 
 const NO_MODELS = /No models available/;
 

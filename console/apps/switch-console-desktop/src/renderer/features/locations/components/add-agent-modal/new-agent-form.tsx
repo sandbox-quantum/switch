@@ -216,7 +216,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     : isMachineRun
       ? serverMachine
         ? machineLabel(serverMachine)
-        : 'Machine'
+        : 'Device'
       : isRemoteRun
         ? (onboardedHosts.find((h) => h.sshHost === runHost)?.name ?? runHost)
         : 'This computer';
@@ -372,25 +372,25 @@ export const NewAgentForm = observer(function NewAgentForm({
   const managedRun = isMachineRun || machine?.management === true;
   const machineReason = isCloudRun
     ? cloudMachineQuery.error
-      ? failureText(cloudMachineQuery.error, 'Your cloud machine could not be started.')
+      ? failureText(cloudMachineQuery.error, 'Your cloud device could not be started.')
       : cloudMachineQuery.data
         ? cloudStartingText(cloudMachineQuery.data)
         : null
     : askForMachines && machinesQuery.isPending
       ? 'Checking whether this server runs managed agents…'
       : askForMachines && machinesQuery.error
-        ? failureText(machinesQuery.error, 'Your machines on this server could not be listed.')
+        ? failureText(machinesQuery.error, 'Your devices on this server could not be listed.')
         : isMachineRun
           ? serverMachine === null
-            ? 'Choose a machine.'
+            ? 'Choose a device.'
             : serverMachine.state !== 'online'
-              ? `${serverMachine.name} is offline. Start its controller, or choose another machine.`
+              ? `${serverMachine.name} is offline. Start its controller, or choose another device.`
               : null
           : (machineDisabledReason({
               checking: !!workspaceId && machineQuery.isPending,
               error: machineQuery.error,
               machine,
-            }) ?? (managedRun ? `${runLocationLabel} is not a machine on this server yet.` : null));
+            }) ?? (managedRun ? `${runLocationLabel} is not a device on this server yet.` : null));
   const { value: defaultAgent } = useAppSettingsKey('defaultAgent');
   const machineProviderReady =
     !isMachineRun ||
@@ -463,7 +463,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     submitState !== 'idle'
       ? null
       : isCloudRun && cloudMachineQuery.isPending
-        ? 'Starting your cloud machine…'
+        ? 'Starting your cloud device…'
         : !pickState.serverId
           ? 'Add a Switch server to register this agent on.'
           : form.agentName.trim().length === 0
@@ -593,7 +593,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         entryPoint,
       };
       if (managedRun) {
-        if (!serverMachine) throw new Error('No machine is chosen for the managed agent.');
+        if (!serverMachine) throw new Error('No device is chosen for the managed agent.');
         const created = await rpc.agentMigration.addManagedAgent({
           ...identity,
           machineId: serverMachine.id,
@@ -1036,10 +1036,10 @@ export const NewAgentForm = observer(function NewAgentForm({
 /** What the form says while the owner's cloud machine is not ready to take an agent yet. */
 function cloudStartingText(machine: CloudMachine): string {
   if (machine.state === 'error')
-    return machine.error ?? 'Your cloud machine needs attention. Retry it from Your Agents.';
+    return machine.error ?? 'Your cloud device needs attention. Retry it from Your Agents.';
   if (machine.desired_state === 'stopped')
-    return 'Your cloud machine is stopped. Start it from Your Agents, then add the agent.';
+    return 'Your cloud device is stopped. Start it from Your Agents, then add the agent.';
   return machine.controller_id === null
-    ? 'Starting your cloud machine for this workspace. If it already runs agents in another workspace, it restarts once to join this one. This takes a few minutes…'
-    : 'Waiting for your cloud machine to come online…';
+    ? 'Starting your cloud device for this workspace. If it already runs agents in another workspace, it restarts once to join this one. This takes a few minutes…'
+    : 'Waiting for your cloud device to come online…';
 }

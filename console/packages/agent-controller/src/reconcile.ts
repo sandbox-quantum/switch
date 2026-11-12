@@ -246,7 +246,7 @@ export async function startAgent(
       throw new ReasonedError(
         'provider_not_installed',
         providerUnsupportedReason(provider, process.platform) ??
-          `The ${provider} CLI was not found on this machine's PATH.`
+          `The ${provider} CLI was not found on this device's PATH.`
       );
     const template = buildWatcherTemplate({
       agentId,

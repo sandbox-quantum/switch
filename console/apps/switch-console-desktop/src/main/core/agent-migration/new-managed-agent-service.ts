@@ -117,7 +117,7 @@ export class NewManagedAgentService {
     let blocker = lookup.blocker;
     if (!blocker && lookup.target && lookup.target.workspaceId !== ref.workspaceId)
       blocker =
-        'The machine runs managed agents for another workspace on this server; an agent can only be placed on a machine of its own workspace.';
+        'The device runs managed agents for another workspace on this server; an agent can only be placed on a device of its own workspace.';
     return { management: true, target: lookup.display, blocker, canEnable: lookup.canEnable };
   }
 

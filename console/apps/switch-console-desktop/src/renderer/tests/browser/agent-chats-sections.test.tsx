@@ -225,7 +225,7 @@ it('calls the machine "This computer" when the agent runs here, keeping its name
 
 it('says so when the agent has no machine', async () => {
   await act(async () => root.render(<AgentChats agent={AGENT} />));
-  expect(container.textContent).toContain('No machine');
+  expect(container.textContent).toContain('No device');
 });
 
 it("leaves Connections out for an agent whose grants aren't yours, keeping service access in settings", async () => {

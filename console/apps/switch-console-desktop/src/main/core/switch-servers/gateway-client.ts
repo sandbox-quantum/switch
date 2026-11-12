@@ -4972,7 +4972,7 @@ export async function giveMachineLogin(
   // The login is sealed, but the key it was sealed to came from this server:
   // over plain HTTP anyone in between could have handed over their own.
   if (!isHttpsOrLoopback(new URL(server.url)))
-    throw new Error('Giving a machine a provider login requires HTTPS.');
+    throw new Error('Giving a device a provider login requires HTTPS.');
   const res = await managementFetch(
     server,
     `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}`,
@@ -5027,7 +5027,7 @@ export async function fetchMachineOperation(
   );
   const listed = (await res.json()) as unknown;
   if (!Array.isArray(listed))
-    throw new Error("The server's list of the machine's operations is not a list.");
+    throw new Error("The server's list of the device's operations is not a list.");
   const found = (
     listed as {
       id: string;

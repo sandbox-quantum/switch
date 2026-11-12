@@ -357,7 +357,7 @@ export class EmbeddedControllerService {
       );
     if (remote.controller && remote.controller.state !== 'revoked')
       throw new Error(
-        'Switch still lists this computer as a machine. Turn it off and on again instead.'
+        'Switch still lists this computer as a device. Turn it off and on again instead.'
       );
     await this.exclusive(serverId, async () => {
       const runner = this.runners.get(serverId);
@@ -382,7 +382,7 @@ export class EmbeddedControllerService {
     if (record?.kind !== 'enrolled')
       throw new Error('This computer is not enrolled to run managed agents for this server.');
     const name = changes.name?.trim();
-    if (changes.name !== undefined && !name) throw new Error('A machine needs a name.');
+    if (changes.name !== undefined && !name) throw new Error('A device needs a name.');
     const description =
       changes.description === undefined ? undefined : changes.description?.trim() || null;
     await this.deps.management.update(record.workspaceId, record.controllerId, {

@@ -156,6 +156,20 @@ version of their own to them without also giving them a release of their own.
   bridge start, and "trusting unverified OIDC email" is said once per process.
   Two bridges connecting the same workspace, which pilot does on purpose, is
   said once per pair at info rather than as a warning on every start.
+- **Switch Console and the operator dashboard use the same words.** Every
+  message a person reads calls a computer that runs agents a device, and a
+  Switch cloud host a cloud device: refusals an agent relays ("claude is not
+  installed on device 'laptop'"), errors shown for a cloud device, template
+  forms and refusals, and the chat replies of an agent whose device is
+  offline. The agent API keeps its names: the `list_machines` tool, the
+  `machine` parameter of `create_agent` and `update_agent_detail`, response
+  fields and reason codes are unchanged, and their descriptions now tell an
+  agent to say "device" to people. Taking a resource out of a room is Detach
+  in both apps. The
+  CLI an agent runs on is an agent provider everywhere, including switch-buddy's
+  setup, chat and instructions, which called it an AI provider, and the
+  dashboard's Devices page, which said only "Provider". switch-buddy and the
+  Switch skill use the same words.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is

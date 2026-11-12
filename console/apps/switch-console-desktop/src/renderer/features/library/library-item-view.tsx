@@ -10,7 +10,6 @@ import {
   Plus,
   Search,
   Trash2,
-  X,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
@@ -471,13 +470,13 @@ const RoomsSection = observer(function RoomsSection({
                   {mayDetach && (
                     <Button
                       variant="ghost"
-                      size="icon-xs"
+                      size="xs"
                       aria-label={`Detach from ${room.roomName}`}
                       title={`Detach from ${room.roomName}`}
                       disabled={busy === room.roomId}
                       onClick={() => void detach(room.roomId, room.roomName)}
                     >
-                      {busy === room.roomId ? <Loader2 className="animate-spin" /> : <X />}
+                      {busy === room.roomId ? <Loader2 className="animate-spin" /> : 'Detach'}
                     </Button>
                   )}
                 </div>
