@@ -543,6 +543,7 @@ describe('room creation', () => {
         channelIdsRefused: null,
         privateChannels: null,
         privateChannelNeedsLinkedAccount: false,
+        publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -566,6 +567,7 @@ describe('room creation', () => {
         channelIdsRefused: null,
         privateChannels: null,
         privateChannelNeedsLinkedAccount: false,
+        publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -631,6 +633,25 @@ describe('room creation', () => {
     expect(current.privateChannelNeedsLinkedAccount).toBe(true);
     expect(older.privateChannels).toBeNull();
     expect(older.privateChannelNeedsLinkedAccount).toBe(false);
+  });
+
+  it('carries whether a new public channel puts its creator in it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'slack',
+          display_name: 'Slack',
+          status: 'active',
+          public_channel_adds_creator: true,
+        },
+        { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Older', status: 'active' },
+      ]) as never
+    );
+
+    const [current, older] = await fetchBridges(SERVER);
+    expect(current.publicChannelAddsCreator).toBe(true);
+    expect(older.publicChannelAddsCreator).toBe(false);
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
@@ -1431,6 +1452,7 @@ describe('GitHub connection transport', () => {
               status: 'active',
               pass_through: true,
               token_lifetime: 7200,
+              agent_access_note: 'Agents have it for the hour after each sign-in.',
             },
           ],
         })
@@ -1451,6 +1473,7 @@ describe('GitHub connection transport', () => {
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: 'ada-gh',
@@ -1464,6 +1487,7 @@ describe('GitHub connection transport', () => {
         status: 'connected',
         pass_through: true,
         token_lifetime: 7200,
+        agent_access_note: 'Agents have it for the hour after each sign-in.',
       }),
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1525,6 +1549,7 @@ describe('GitHub connection transport', () => {
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: null,
@@ -2100,6 +2125,7 @@ describe('sign-up support', () => {
       state: 'provisioning',
       desired_state: 'running',
       stop_reason: null,
+      stopped_by_admin: false,
       sleeping: false,
       revision: 1,
       instance_type: null,
@@ -2127,6 +2153,7 @@ describe('sign-up support', () => {
         state: 'ready',
         desired_state: 'running',
         stop_reason: null,
+        stopped_by_admin: false,
         sleeping: false,
         revision: 2,
         instance_type: 'c7i.large',
@@ -2151,6 +2178,7 @@ describe('sign-up support', () => {
       state: 'ready',
       desired_state: 'running',
       stop_reason: null,
+      stopped_by_admin: false,
       sleeping: false,
       revision: 2,
       instance_type: null,

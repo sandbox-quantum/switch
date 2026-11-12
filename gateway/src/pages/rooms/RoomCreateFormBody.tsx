@@ -100,6 +100,8 @@ export default function RoomCreateFormBody() {
     selectedBridge?.private_channels_supported ?? true;
   const privateChannelNeedsLinkedAccount =
     selectedBridge?.private_channel_needs_linked_account ?? false;
+  const publicChannelAddsCreator =
+    selectedBridge?.public_channel_adds_creator ?? false;
   // A private choice the chosen connection cannot make is sent as public.
   const effectiveChannelType = privateChannelsSupported
     ? newChannelType
@@ -465,7 +467,10 @@ export default function RoomCreateFormBody() {
                   ? selectedBridge?.bridge_type === "teams"
                     ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
                     : `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
-                  : undefined
+                  : effectiveChannelType === "channel_public" &&
+                      publicChannelAddsCreator
+                    ? `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, if you have one.`
+                    : undefined
               }
             >
               <MenuItem value="channel_public">Public channel</MenuItem>

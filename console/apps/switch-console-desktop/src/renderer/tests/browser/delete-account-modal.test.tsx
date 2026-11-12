@@ -16,15 +16,28 @@ vi.hoisted(() => {
 });
 
 const deleteAccount = vi.hoisted(() => vi.fn());
+const resetTestAccount = vi.hoisted(() => vi.fn());
 const rehearse = vi.hoisted(() => vi.fn());
+const connected = vi.hoisted(() => vi.fn());
+const toastSuccess = vi.hoisted(() => vi.fn());
+const cloud = vi.hoisted(() => ({ is: false }));
+const server = { id: 'srv-1', url: 'https://switch.example.test' };
 const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { deleteAccount },
+  switchServersStore: {
+    deleteAccount,
+    resetTestAccount,
+    serverById: (id: string) => (id === server.id ? server : null),
+  },
+}));
+vi.mock('@renderer/features/switch-servers/switch-cloud-store', () => ({
+  isSwitchCloudServer: () => cloud.is,
 }));
 vi.mock('@renderer/features/onboarding/onboarding-store', () => ({
-  onboardingStore: { rehearse },
+  onboardingStore: { rehearse, connected },
 }));
+vi.mock('sonner', () => ({ toast: { success: toastSuccess } }));
 vi.mock('@renderer/lib/stores/app-state', () => ({
   appState: { navigation: { navigate } },
 }));
@@ -41,10 +54,11 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
+  cloud.is = false;
   vi.clearAllMocks();
 });
 
-async function render() {
+async function render(mode: 'delete' | 'reset' = 'delete') {
   const onClose = vi.fn();
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -57,6 +71,7 @@ async function render() {
             serverId="srv-1"
             serverName="Switch Cloud"
             email="ada@example.test"
+            mode={mode}
             onSuccess={() => {}}
             onClose={onClose}
           />
@@ -118,4 +133,39 @@ describe('DeleteAccountModal', () => {
     expect(rehearse).toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith('home');
   });
+});
+
+describe('DeleteAccountModal in reset mode', () => {
+  it("shows the server's reason verbatim when it refuses", async () => {
+    resetTestAccount.mockRejectedValueOnce(
+      new Error('Test-account reset is not enabled on this server.')
+    );
+    await render('reset');
+    await type('ada@example.test');
+    await act(async () => button('Reset test account').click());
+    expect(deleteAccount).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      'Test-account reset is not enabled on this server.'
+    );
+  });
+
+  it.each([
+    [false, 'external'],
+    [true, 'cloud'],
+  ])(
+    'resets, closes, and opens the sign-in page of the first-run flow (cloud: %s)',
+    async (isCloud, via) => {
+      cloud.is = isCloud;
+      resetTestAccount.mockResolvedValueOnce(undefined);
+      const onClose = await render('reset');
+      await type('ada@example.test');
+      await act(async () => button('Reset test account').click());
+      expect(resetTestAccount).toHaveBeenCalledWith('srv-1', 'ada@example.test');
+      expect(connected).toHaveBeenCalledWith(server, via, false);
+      expect(navigate).toHaveBeenCalledWith('home');
+      expect(onClose).toHaveBeenCalled();
+      expect(toastSuccess).toHaveBeenCalledWith('Test account reset');
+      expect(rehearse).not.toHaveBeenCalled();
+    }
+  );
 });

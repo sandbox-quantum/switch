@@ -13,7 +13,11 @@ import {
   SESSION_STARTED_KIND,
   type SessionStartedNotice,
 } from '@switch-console/agent-providers';
-import { withWindowsAgyBinDir, withWindowsGitBashDir } from '@switch-console/plugins/agents';
+import {
+  withWindowsAgyBinDir,
+  withWindowsCodexBinDir,
+  withWindowsGitBashDir,
+} from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -400,7 +404,10 @@ function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
     if (process.platform === 'win32') {
       process.env.PATH = withWindowsGitBashDir(
-        withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+        withWindowsCodexBinDir(
+          withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+          process.env.LOCALAPPDATA
+        ),
         {
           localAppData: process.env.LOCALAPPDATA,
           programFiles: process.env.ProgramFiles,

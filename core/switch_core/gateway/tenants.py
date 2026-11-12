@@ -168,7 +168,11 @@ from switch_core.gateway.workspace_creation import (
     create_organization_for,
     directory_failed,
 )
-from switch_core.organization_access import AccessRevocation, remove_membership
+from switch_core.organization_access import (
+    AccessRevocation,
+    removal_heir,
+    remove_membership,
+)
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -1872,6 +1876,37 @@ async def update_member_role(
     )
 
 
+async def _heir_detail(
+    session: AsyncSession, user_store: UserStore, heir_id: str | None
+) -> dict[str, str] | None:
+    """Who receives what a removed member owns, as the Gateway names them."""
+    if heir_id is None:
+        return None
+    heir = await user_store.get(session, heir_id)
+    if heir is None:
+        raise RuntimeError(f"The heir {heir_id} of a member removal has no user")
+    return {"user_id": heir.id, "name": heir.name, "email": heir.email}
+
+
+@router.get("/tenants/{tenant_id}/members/{user_id}/removal")
+async def preview_member_removal(
+    tenant_id: str,
+    user_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    admin: Annotated[User, Depends(require_tenant_admin)],
+) -> dict:
+    """Who would receive what `user_id` owns here if the caller removed them
+    now (`organization_access.removal_heir`), for the Gateway to say so before
+    the caller confirms: `handed_over_to` names them, or is None when the
+    workspace has no other admin and what they own would stay theirs."""
+    _require_bound_tenant(tenant_id)
+    if await session.get(TenantMember, (tenant_id, user_id)) is None:
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
+    heir = await removal_heir(session, tenant_id, user_id, admin.id, lock=False)
+    return {"handed_over_to": await _heir_detail(session, user_store, heir)}
+
+
 @router.delete("/tenants/{tenant_id}/members/{user_id}", response_model=None)
 async def remove_member(
     request: Request,
@@ -1910,7 +1945,10 @@ async def remove_member(
     workspace's longest-standing other admin when the remover is not a member
     of it (`organization_access.removal_heir`), so nothing is left owned by
     someone who can no longer reach it. Chats and a room's own documents stay
-    as they are, as a transfer refuses them.
+    as they are, as a transfer refuses them. The response names who received
+    them (`handed_over_to`, None when the workspace has no other admin) and
+    how many of each kind passed (`handed_over`); `GET …/removal` names the
+    recipient beforehand.
 
     It does **not** touch any agent the member owns — it refuses instead, 409,
     naming them. An agent is not that member's private property to lose along
@@ -1962,7 +2000,7 @@ async def remove_member(
         sign_in_flows=request.app.state.sign_in_flows,
     )
     try:
-        revoked = await remove_membership(
+        removal = await remove_membership(
             session,
             revocation,
             membership,
@@ -1974,9 +2012,15 @@ async def remove_member(
         return service_refusal(error)
     await session.commit()
 
-    warning = await revocation.finish(session, user_id, revoked)
+    warning = await revocation.finish(session, user_id, removal.revoked)
+    handed_over_to = await _heir_detail(session, user_store, removal.heir)
     if user_id == admin.id:
         await rebind_if_left(
             request, response, session_factory, user_store, admin, config
         )
-    return {"ok": True, "warning": warning}
+    return {
+        "ok": True,
+        "warning": warning,
+        "handed_over_to": handed_over_to,
+        "handed_over": removal.handed,
+    }

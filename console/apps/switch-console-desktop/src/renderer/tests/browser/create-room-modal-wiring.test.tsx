@@ -121,6 +121,7 @@ const bridge = (id: string, type: string, displayName: string) => ({
   channelIdsRefused: null,
   privateChannels: null,
   privateChannelNeedsLinkedAccount: false,
+  publicChannelAddsCreator: false,
 });
 
 let container: HTMLDivElement | null = null;
@@ -342,6 +343,55 @@ describe('New room dialog', () => {
     await act(async () => card(host, 'New private channel').click());
 
     expect(host.textContent).toContain('YouNo linked Acme Slack account');
+  });
+
+  it('shows the creator in a new public channel where the app puts them in it', async () => {
+    rpcMock.workspaces.listBridges.mockResolvedValue([
+      { ...bridge('b1', 'slack', 'Acme Slack'), publicChannelAddsCreator: true },
+    ]);
+    rpcMock.workspaces.listMyIdentities.mockResolvedValue([
+      {
+        id: 'x1',
+        bridgeId: 'b1',
+        externalUserId: 'ext-ada',
+        externalUsername: 'ada',
+        verified: true,
+      },
+    ]);
+    rpcMock.workspaces.listBridgePeople.mockResolvedValue([person('ada', ['u1'], 'Ada')]);
+    const host = await render();
+    await chooseApp(host, 'b1');
+
+    expect(host.textContent).toContain('You@ada');
+    await act(async () => participants(host).focus());
+    expect(options(host).some((each) => each.includes('@ada'))).toBe(false);
+  });
+
+  it('shows nobody fixed in a new public channel without a linked account', async () => {
+    rpcMock.workspaces.listBridges.mockResolvedValue([
+      { ...bridge('b1', 'slack', 'Acme Slack'), publicChannelAddsCreator: true },
+    ]);
+    const host = await render();
+    await chooseApp(host, 'b1');
+
+    expect(host.textContent).not.toContain('You');
+    expect(host.textContent).not.toContain('No linked');
+  });
+
+  it('shows nobody fixed in a new public channel where the app does not add them', async () => {
+    rpcMock.workspaces.listMyIdentities.mockResolvedValue([
+      {
+        id: 'x1',
+        bridgeId: 'b1',
+        externalUserId: 'ext-ada',
+        externalUsername: 'ada',
+        verified: true,
+      },
+    ]);
+    const host = await render();
+    await chooseApp(host, 'b1');
+
+    expect(host.textContent).not.toContain('You@ada');
   });
 
   it('carries a picked person to an app they are linked on, and names who is not', async () => {

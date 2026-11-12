@@ -64,6 +64,8 @@ class _FakeProvisioning:
 
 
 class _FakeAdapter:
+    adds_creator_to_public_channel = False
+
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
     ) -> CreatedChannel:

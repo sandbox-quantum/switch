@@ -67,6 +67,9 @@ class _Lifecycle:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         return False
 
