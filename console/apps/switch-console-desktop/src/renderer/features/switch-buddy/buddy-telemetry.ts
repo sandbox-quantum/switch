@@ -14,6 +14,12 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'antigravity',
   'deepseek-harness',
   'pi',
+  'copilot',
+  'kiro',
+  'mistral-vibe',
+  'goose',
+  'qwen',
+  'droid',
 ];
 
 /** A provider id as telemetry may carry it: one of these, else `none`. */

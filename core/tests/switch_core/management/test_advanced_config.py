@@ -17,7 +17,8 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
         DefinitionV1(provider="gemini")
     assert (
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
-        "deepseek-harness, pi" in str(raised.value)
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, amp"
+        in str(raised.value)
     )
 
 
@@ -32,12 +33,21 @@ def test_the_served_provider_list() -> None:
         ("cursor", "Cursor CLI"),
         ("deepseek-harness", "DeepSeek Harness"),
         ("pi", "Pi"),
+        ("copilot", "GitHub Copilot"),
+        ("kiro", "Kiro CLI"),
+        ("mistral-vibe", "Mistral Vibe"),
+        ("goose", "Goose"),
+        ("qwen", "Qwen Code"),
+        ("droid", "Factory Droid"),
+        ("amp", "Amp"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
     for provider_id, provider in by_id.items():
         assert provider["advanced_fields"] == served[provider_id]["fields"]
     assert by_id["cursor"]["advanced_fields"] == []
+    assert by_id["kiro"]["advanced_fields"] == []
+    assert by_id["droid"]["advanced_fields"] == []
 
 
 def test_the_served_schema() -> None:
@@ -51,6 +61,13 @@ def test_the_served_schema() -> None:
         "antigravity",
         "deepseek-harness",
         "pi",
+        "copilot",
+        "kiro",
+        "mistral-vibe",
+        "goose",
+        "qwen",
+        "droid",
+        "amp",
     }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
@@ -74,6 +91,11 @@ def test_the_served_schema() -> None:
     assert providers["cursor"] == {"fields": []}
     assert providers["deepseek-harness"] == {"fields": []}
     assert providers["antigravity"] == {"fields": []}
+    assert providers["copilot"] == {"fields": []}
+    assert providers["kiro"] == {"fields": []}
+    assert providers["goose"] == {"fields": []}
+    assert providers["qwen"] == {"fields": []}
+    assert providers["droid"] == {"fields": []}
     claude = {field["key"]: field for field in providers["claude"]["fields"]}
     assert claude["isolation"] == {
         "key": "isolation",
@@ -135,6 +157,8 @@ def test_the_served_schema() -> None:
             },
         ),
         ("cursor", {}),
+        ("kiro", {}),
+        ("droid", {}),
     ],
 )
 def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
@@ -146,6 +170,8 @@ def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
     [
         ("claude", {"verbosity": "low"}, "claude has no setting 'verbosity'"),
         ("cursor", {"effort": "high"}, "it has no advanced configuration"),
+        ("kiro", {"effort": "high"}, "it has no advanced configuration"),
+        ("droid", {"effort": "high"}, "it has no advanced configuration"),
         ("claude", {"effort": "huge"}, "claude setting 'effort' must be one of"),
         ("claude", {"effort": ""}, "leave the field out to leave it unset"),
         ("claude", {"effort": None}, "leave the field out to leave it unset"),

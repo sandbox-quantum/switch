@@ -129,7 +129,11 @@ interface State {
   mcpNames: Set<string>;
   /** The registered servers whose tools are allowed without asking: all but the connectors. */
   autoApprovedMcpNames: Set<string>;
-  toolServers: Map<string, string>;
+  /**
+   * The latest announcement or update of each tool call this turn that
+   * `mcpServerOf` placed on a server, by id.
+   */
+  mcpToolCalls: Map<string, AcpToolCall>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
@@ -213,7 +217,7 @@ export class AcpAdapter implements ProviderAdapter {
       autoApprovedMcpNames: new Set(
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
-      toolServers: new Map(),
+      mcpToolCalls: new Map(),
       prompt: {},
       configOptions: [],
       models: [],
@@ -235,7 +239,11 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      requireHttpMcp(
+        hooks.label,
+        input.mcpServers,
+        agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
+      );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -332,7 +340,7 @@ export class AcpAdapter implements ProviderAdapter {
     state.interrupted = false;
     state.messageId = randomUUID();
     state.items.clear();
-    state.toolServers.clear();
+    state.mcpToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
     void this.run(state, input).then(
@@ -543,7 +551,12 @@ export class AcpAdapter implements ProviderAdapter {
           ? 'edit'
           : undefined);
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    // The request's own call first, then the call as it was placed, asked
+    // again with the request: an agent may name the server only across the two.
+    const placed = state.mcpToolCalls.get(toolCall.toolCallId);
+    const server =
+      this.hooks.mcpServerOf?.(toolCall, state.mcpNames, toolCall) ??
+      (placed && this.hooks.mcpServerOf?.(placed, state.mcpNames, toolCall));
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
@@ -567,7 +580,7 @@ export class AcpAdapter implements ProviderAdapter {
       if (
         !decision ||
         options.some((offered) => offered.decision === decision) ||
-        /future|permanent/i.test(option.name)
+        /future|permanent/i.test(`${option.optionId} ${option.name}`)
       )
         continue;
       options.push({
@@ -647,8 +660,8 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
-    if (server !== undefined) state.toolServers.set(update.toolCallId, server);
+    const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
+    if (server !== undefined) state.mcpToolCalls.set(update.toolCallId, update);
     const text = (update.content ?? [])
       .map((part) =>
         part.type === 'diff' ? `${part.path}\n${part.newText ?? ''}` : (part.content?.text ?? '')
@@ -690,11 +703,15 @@ export class AcpAdapter implements ProviderAdapter {
       ...(toolText || old?.text ? { text: toolText || old?.text } : {}),
     };
     state.items.set(item.id, item);
+    // An item whose real type is learned only from a later update (Qwen names a
+    // deferred `tool_call` as `agent` one update after announcing it) starts
+    // again under that type, so a subagent is seen starting as a subagent.
+    // Consumers key items by id, so the second start replaces the first.
     this.emit(state, {
       type:
         item.status === 'completed' || item.status === 'failed'
           ? 'item.completed'
-          : old
+          : old && old.type === item.type
             ? 'item.updated'
             : 'item.started',
       turnId,

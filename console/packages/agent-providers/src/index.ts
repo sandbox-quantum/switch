@@ -59,6 +59,10 @@ export {
   createDeepseekHarnessAdapter,
   deepseekHarnessAcp,
 } from './deepseek-harness/deepseek-harness-acp';
+export { droidAcp, createDroidAdapter } from './droid/droid-adapter';
+export { gooseAcp, createGooseAdapter } from './goose/goose-adapter';
+export { kiroAcp, createKiroAdapter } from './kiro/kiro-acp';
+export { qwenAcp, createQwenAdapter } from './qwen/qwen-acp';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
@@ -137,7 +141,7 @@ export {
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
 export { controllerConnectionId } from './host/connection-id';
-export { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV } from './host/agent-env';
+export { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV, PROVIDER_ENV_VARS } from './host/agent-env';
 export { SHARED_GROUP_ENV } from './host/host-permissions';
 export {
   type HostedCredential,
