@@ -81,6 +81,7 @@ from switch_core.gateway.schemas import (
     RoomDeleteResponse,
     RoomDetail,
     RoomObserveRequest,
+    RoomPerson,
     RoomProtectionRequest,
     RoomRoleCreateRequest,
     RoomRoleDetail,
@@ -272,6 +273,17 @@ async def _build_room_detail(
     takes_part = where.in_room
     admins = await room_admins.list_admins(session, room_store, room.id)
     admin_names = await UserStore().names_by_id(session, {a.user_id for a in admins})
+    flags = _room_flags(
+        principal, room, in_room=takes_part, room_admin=where.room_admin
+    )
+    candidates: list[RoomPerson] = []
+    if flags["can_manage_admins"]:
+        taken = {a.user_id for a in admins} | {room.owner_id}
+        candidates = [
+            RoomPerson(user_id=uid, name=name)
+            for uid, name in await room_store.people_in_room(session, room.id)
+            if uid not in taken
+        ]
     auto_route = await auto_route_state(session, decisions, room)
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
@@ -330,7 +342,8 @@ async def _build_room_detail(
             if room.external_channel_id
             else None
         ),
-        **_room_flags(principal, room, in_room=takes_part, room_admin=where.room_admin),
+        room_admin_candidates=candidates,
+        **flags,
         auto_route=_auto_route_detail(auto_route),
     )
 

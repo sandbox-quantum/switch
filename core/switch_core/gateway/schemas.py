@@ -158,6 +158,13 @@ class RoomAutoRouteRequest(BaseModel):
     fallback_agent: str | None = None
 
 
+class RoomPerson(BaseModel):
+    """A Switch user who takes part in a room."""
+
+    user_id: str
+    name: str
+
+
 class RoomAdminEntry(BaseModel):
     """One of a room's room admins (`RoomAdmin`)."""
 
@@ -178,6 +185,10 @@ class RoomDetail(RoomSummary):
     # The room's room admins, longest-standing first. Only people still in
     # the room are listed.
     room_admins: list[RoomAdminEntry] = []
+    # Who the caller could make a room admin: the workspace members who take
+    # part in the room, other than its owner and its room admins. Filled
+    # only when the caller may choose room admins (`can_manage_admins`).
+    room_admin_candidates: list[RoomPerson] = []
     external_channel_id: str | None
     instructions: str | None
     protection_config: dict[str, Any] | None

@@ -151,3 +151,26 @@ async def test_the_room_list_reports_room_admin_flags(
     assert summary["viewer_is_room_admin"] is True
     assert summary["can_write"] is True
     assert summary["can_manage"] is False
+
+
+async def test_candidates_are_the_people_in_the_room_shown_to_the_owner_only(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    olivia = await _user(session_factory, f"olivia-{uuid.uuid4().hex[:4]}", "member")
+    max_ = await _user(session_factory, f"max-{uuid.uuid4().hex[:4]}", "member")
+    bea = await _user(session_factory, f"bea-{uuid.uuid4().hex[:4]}", "member")
+    await _user(session_factory, f"out-{uuid.uuid4().hex[:4]}", "member")
+    room_id = await _room(session_factory, olivia)
+    await _join(session_factory, room_id, max_)
+    await _join(session_factory, room_id, bea)
+    app = _app(session_factory)
+
+    async with _as(app, olivia) as client:
+        before = (await client.get(f"/rooms/{room_id}")).json()
+        after = (await client.put(f"/rooms/{room_id}/admins/{max_.id}")).json()
+    async with _as(app, max_) as client:
+        as_admin = (await client.get(f"/rooms/{room_id}")).json()
+
+    assert {p["user_id"] for p in before["room_admin_candidates"]} == {max_.id, bea.id}
+    assert [p["user_id"] for p in after["room_admin_candidates"]] == [bea.id]
+    assert as_admin["room_admin_candidates"] == []

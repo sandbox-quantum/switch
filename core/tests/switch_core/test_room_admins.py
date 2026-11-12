@@ -288,3 +288,27 @@ async def test_coming_back_another_way_does_not_bring_it_back(
         await session.flush()
         assert await STORE.add_client(session, console.id, room.id)
         assert not await is_room_admin(session, STORE, room.id, max_.id)
+
+
+async def test_one_leaving_does_not_take_the_others_role(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        olivia = await _person(session, "olivia")
+        max_ = await _person(session, "max")
+        bea = await _person(session, "bea")
+        outsider = await _person(session, "out")
+        room = await _room(session, olivia)
+        leaving = await _in_room(session, max_, room)
+        await _in_room(session, bea, room)
+        await grant(session, STORE, room, caller=_caller(olivia), user_id=max_.id)
+        await grant(session, STORE, room, caller=_caller(olivia), user_id=bea.id)
+
+        await STORE.remove_client(session, leaving.id, room.id)
+
+        assert [a.user_id for a in await list_admins(session, STORE, room.id)] == [
+            bea.id
+        ]
+        people = {uid for uid, _ in await STORE.people_in_room(session, room.id)}
+        assert people == {olivia.id, bea.id}
+        assert outsider.id not in people

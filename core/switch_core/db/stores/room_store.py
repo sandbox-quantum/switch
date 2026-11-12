@@ -34,6 +34,7 @@ from switch_core.db.models import (
     Room,
     RoomAdmin,
     RoomGroup,
+    TenantMember,
     User,
     require_tenant_id,
     room_agents,
@@ -472,6 +473,25 @@ class RoomStore:
             )
         )
         return set(result.scalars().all())
+
+    async def people_in_room(
+        self, session: AsyncSession, room_id: str
+    ) -> list[tuple[str, str]]:
+        """(user id, name) of every workspace member who takes part in the
+        room (`involves`), by name: who could be made a room admin."""
+        result = await session.execute(
+            select(User.id, User.name)
+            .join(
+                TenantMember,
+                (TenantMember.user_id == User.id)
+                & (TenantMember.tenant_id == require_tenant_id()),
+            )
+            .where(
+                select(Room.id).where(Room.id == room_id, involves(User.id)).exists()
+            )
+            .order_by(User.name, User.id)
+        )
+        return [(uid, name) for uid, name in result.tuples()]
 
     async def list_admins(self, session: AsyncSession, room_id: str) -> list[RoomAdmin]:
         """The room's room admins who still take part in it, longest-standing
@@ -1318,24 +1338,34 @@ def involves(
     Console member client or a platform account they have claimed is in it,
     or an agent they own is. It grants reading and listing, and unlinking
     resources (`authz.can_unlink_from_room`); no write or configuration
-    access."""
+    access.
+
+    `user_id` may be a column of an enclosing query (`RoomAdmin.user_id`,
+    `User.id`): each test correlates everything but its own tables, so it
+    reads that row rather than taking the column's table in as its own."""
     return or_(
         Room.owner_id == user_id,
-        exists().where(
+        exists()
+        .where(
             ClientRoom.room_id == Room.id,
             ClientRoom.client_id == Client.id,
             Client.user_id == user_id,
             Client.type == MEMBER_CLIENT_TYPE,
-        ),
-        exists().where(
+        )
+        .correlate_except(ClientRoom, Client),
+        exists()
+        .where(
             ClientRoom.room_id == Room.id,
             ClientRoom.client_id == ExternalUser.client_id,
             ExternalUser.id == ExternalUserClaim.external_user_id,
             ExternalUserClaim.user_id == user_id,
-        ),
-        exists().where(
+        )
+        .correlate_except(ClientRoom, ExternalUser, ExternalUserClaim),
+        exists()
+        .where(
             room_agents.c.room_id == Room.id,
             room_agents.c.agent_id == Agent.id,
             Agent.owner_id == user_id,
-        ),
+        )
+        .correlate_except(room_agents, Agent),
     )
