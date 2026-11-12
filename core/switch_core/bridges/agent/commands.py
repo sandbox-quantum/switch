@@ -2315,6 +2315,88 @@ async def _cmd_list_all_agents(
     await _reply(client, room, event, "\n".join(lines))
 
 
+async def _cmd_briefing(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    async with client.session_factory() as session:
+        room_row = await client._room_store.get(session, meta.room_id)
+        if room_row is None:
+            await _reply(client, room, event, "Room not found.")
+            return
+
+        lines: list[str] = [f"**Room briefing for {room_row.name}:**\n"]
+
+        # 1. Instructions
+        lines.append("### Instructions")
+        if room_row.instructions and room_row.instructions.strip():
+            lines.append(room_row.instructions.strip())
+        else:
+            lines.append("_(none configured)_")
+        lines.append("")
+
+        # 2. Attached documents
+        direct_docs = await client._document_store.list_for_room(session, meta.room_id)
+        doc_sources = await _package_sources(client, session, meta.room_id, "document")
+        direct_doc_ids = {d.id for d in direct_docs}
+        fetched_docs = await client._document_store.get_many(
+            session, [i for i in doc_sources if i not in direct_doc_ids]
+        )
+        doc_by_id = {d.id: d for d in fetched_docs}
+        docs = [*direct_docs, *(doc_by_id[i] for i in doc_sources if i in doc_by_id)]
+
+        lines.append("### Attached Documents")
+        if docs:
+            for d in docs:
+                desc = f" — {d.description}" if getattr(d, "description", None) else ""
+                inst = (
+                    f"\n  - *Instructions:* {d.instructions}"
+                    if getattr(d, "instructions", None)
+                    else ""
+                )
+                lines.append(f"- **{d.name}**{desc}{inst}")
+        else:
+            lines.append("_(none)_")
+        lines.append("")
+
+        # 3. Attached references
+        direct_refs = await client._reference_store.list_for_room(session, meta.room_id)
+        ref_sources = await _package_sources(client, session, meta.room_id, "reference")
+        direct_ref_ids = {r.id for r in direct_refs}
+        from_packages = []
+        for ref_id in ref_sources:
+            if ref_id in direct_ref_ids:
+                continue
+            ref = await client._reference_store.get(session, ref_id)
+            if ref is not None:
+                from_packages.append(ref)
+        refs = [*direct_refs, *from_packages]
+
+        lines.append("### Attached References")
+        if refs:
+            for r in refs:
+                type_info = f" _({r.type})_" if getattr(r, "type", None) else ""
+                val = f" (`{r.value}`)" if getattr(r, "value", None) else ""
+                desc = f" — {r.description}" if getattr(r, "description", None) else ""
+                inst = (
+                    f"\n  - *Instructions:* {r.instructions}"
+                    if getattr(r, "instructions", None)
+                    else ""
+                )
+                lines.append(f"- **{r.name}**{type_info}{val}{desc}{inst}")
+        else:
+            lines.append("_(none)_")
+
+    await _reply(client, room, event, "\n".join(lines))
+
+
 async def _cmd_agents_greet(
     client: AgentRecipient,
     room: RoomRef,
@@ -2459,6 +2541,18 @@ COMMANDS: list[Command] = [
         "list-references",
         "List the room's references.",
         _cmd_list_references,
+        admin_owned=True,
+    ),
+    Command(
+        "briefing",
+        "Show this room's briefing: instructions, attached documents, and references.",
+        _cmd_briefing,
+        admin_owned=True,
+    ),
+    Command(
+        "room-briefing",
+        "Show this room's briefing: instructions, attached documents, and references.",
+        _cmd_briefing,
         admin_owned=True,
     ),
     Command(
