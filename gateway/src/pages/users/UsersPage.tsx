@@ -1,6 +1,7 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -20,7 +21,7 @@ import CreateUserDialog from "./CreateUserDialog";
 import DeleteUserDialog from "./DeleteUserDialog";
 
 export default function UsersPage() {
-  const { data: users, loading, refetch } = useUsers();
+  const { data: users, loading, error, refetch } = useUsers();
   const [createOpen, setCreateOpen] = useState(false);
   const [deleting, setDeleting] = useState<ListedUser | null>(null);
 
@@ -84,14 +85,19 @@ export default function UsersPage() {
         </Button>
       </Stack>
 
-      {loading ? (
+      {error !== null && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
+      {loading && users === null ? (
         <CircularProgress />
-      ) : (
+      ) : users === null ? null : (
         <DataTable
-          rows={users ?? []}
+          rows={users}
           columns={columns}
           emptyState={<TableEmptyState title="No users yet" />}
-          height={Math.min(600, 108 + (users?.length ?? 0) * 52)}
+          height={Math.min(600, 108 + users.length * 52)}
           pageSize={25}
         />
       )}

@@ -1882,8 +1882,8 @@ export async function changePassword(
   });
 }
 
-export async function fetchUsers(): Promise<ListedUser[] | null> {
-  return fetchJson<ListedUser[]>("/users");
+export async function fetchUsers(): Promise<ListedUser[]> {
+  return jsonRequest<ListedUser[]>("/users", "GET");
 }
 
 // The roles `POST /users` accepts; `admin` makes a deployment operator.

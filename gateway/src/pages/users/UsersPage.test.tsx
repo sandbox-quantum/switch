@@ -35,4 +35,18 @@ describe("UsersPage", () => {
     expect(await screen.findByRole("button", { name: "Delete ada@example.com" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Delete op@example.com" })).toBeNull();
   });
+
+  it("shows why the list failed to load, not an empty list", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ detail: "Admin access required" }), { status: 403 }),
+      ),
+    );
+    render(<UsersPage />);
+
+    expect(await screen.findByText("Admin access required")).toBeTruthy();
+    expect(screen.queryByText("No users yet")).toBeNull();
+  });
 });
