@@ -65,18 +65,6 @@ endpoints are discovered from the first MCP server: the metadata its 401 names
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
 
-For a vendor whose MCP tokens reach no account endpoint, `identity` names
-`introspection: true` in place of `url`. The token then goes to the
-`introspection_endpoint` the discovered metadata advertises (RFC 7662), sent
-the way the client authenticates at the token endpoint, and only an answer
-with `active: true` names an account. Without that endpoint the sign-in
-fails. Either way `account_id` may list several paths, such as
-`[workspace_id, user_id]` for a user who is one of several in a workspace:
-each must name one string or number, and they are escaped and joined with
-`:`. The same person in two workspaces then has two account ids. A person
-still has one connection for each service, so connecting the second
-workspace replaces the first.
-
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
 MCP servers (`mcp`), or the vendor's command-line tool (`cli`), which the
@@ -462,8 +450,9 @@ Then:
 ## Shared OAuth catalog opt-ins
 
 `auth.identity.mcp_tool` names an MCP tool that identifies the account. An
-entry names this tool or a `url` for an authenticated JSON GET, never both.
-Entries without `mcp_tool` keep their REST identity.
+entry names exactly one of `url`, `mcp_tool` or `introspection: true`. A
+`url` is for an authenticated JSON GET. Entries with a `url` keep their REST
+identity.
 
 Before Core calls the tool, it checks these things:
 
@@ -530,6 +519,20 @@ Every message is fixed text and never holds vendor text.
 
 Core drops the vendor's log notifications. While the call runs, Core replaces
 each log record from the MCP SDK with a fixed line.
+
+`auth.identity.introspection: true` is for a vendor whose MCP tokens reach no
+account endpoint. Core sends the token to the `introspection_endpoint` in the
+discovered metadata (RFC 7662). Core authenticates there as it does at the
+token endpoint. Only an answer with `active: true` names an account. If the
+metadata has no introspection endpoint, Core refuses the sign-in before the
+person consents.
+
+Core never reads the ids in the token response, because nothing checks that
+response against the token later. The introspection answer is the vendor's
+live answer for the token. With a list `account_id` such as
+`[workspace_id, user_id]`, the same person in two workspaces has two account
+ids. A person still has one connection for each service, so connecting the
+second workspace replaces the first.
 
 For a server whose OAuth endpoints Core discovers, Core reads `resource` from
 the protected-resource metadata. If the metadata names none, Core uses the
