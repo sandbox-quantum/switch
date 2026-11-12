@@ -195,11 +195,15 @@ async def test_a_removal_through_switch_takes_them_out_of_the_channel_too(
     assert departure["removed_by"] == "Rita"
 
 
-async def test_a_platform_refusal_still_takes_them_out_of_the_room(
+async def test_someone_the_platform_keeps_stays_in_the_room(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """The room follows its channel: someone the platform would not remove
+    (Telegram, Slack's #general, a standard Teams channel) stays, rather than
+    a room that disagrees with its channel until the next sync puts them back.
+    """
     adapter = _Adapter(refuses={"U-BOB"})
-    service, _ = _service(session_factory, adapter)
+    service, left = _service(session_factory, adapter)
     seeded = await _seed(session_factory)
     await _put_bob_in(service, seeded)
 
@@ -208,7 +212,42 @@ async def test_a_platform_refusal_still_takes_them_out_of_the_room(
     )
 
     assert refused == ["U-BOB"]
+    assert await _is_member(session_factory, seeded)
+    assert await _departures(session_factory, seeded["room_id"]) == []
+    assert left == []
+
+
+async def test_removing_by_name_reports_who_did_not_go(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    adapter = _Adapter(refuses=set())
+    service, _ = _service(session_factory, adapter)
+    seeded = await _seed(session_factory)
+    await _put_bob_in(service, seeded)
+
+    misses = await service.remove_users_from_room(
+        seeded["room_id"], ["@Bob", "ghost"], removed_by="Rita"
+    )
+
+    assert [(m.name, m.reason) for m in misses] == [("ghost", "not_in_room")]
+    assert adapter.removed == [("C1", ["U-BOB"])]
     assert not await _is_member(session_factory, seeded)
+
+
+async def test_removing_by_name_reports_a_refusal(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    adapter = _Adapter(refuses={"U-BOB"})
+    service, _ = _service(session_factory, adapter)
+    seeded = await _seed(session_factory)
+    await _put_bob_in(service, seeded)
+
+    misses = await service.remove_users_from_room(
+        seeded["room_id"], ["bob"], removed_by="Rita"
+    )
+
+    assert [(m.name, m.reason) for m in misses] == [("bob", "platform_refused")]
+    assert await _is_member(session_factory, seeded)
 
 
 async def test_someone_never_in_the_room_is_nothing_to_remove(

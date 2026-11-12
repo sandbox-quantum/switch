@@ -1656,7 +1656,7 @@ async def post_room_users_remove(
     return RoomUsersRemoved(
         room=detail,
         not_in_room=[m.name for m in misses if m.reason == "not_in_room"],
-        kept_by_platform=[m.name for m in misses if m.reason == "kept_by_platform"],
+        platform_refused=[m.name for m in misses if m.reason == "platform_refused"],
     )
 
 

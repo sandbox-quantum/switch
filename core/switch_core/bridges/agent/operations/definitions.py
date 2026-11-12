@@ -1708,12 +1708,18 @@ async def remove_users_from_room(room_id: str, user_names: list[str]) -> dict[st
     """Take one or more people out of a bridged room by name — the opposite of
     `add_users_to_room`.
 
-    Each person is taken out of the Switch room, which stops what reaches
-    them and ends what being in the room let them do, and out of the room's
-    platform channel, so the two agree. The room's history records that you
-    removed them. Only the room's owner or a workspace admin may (an agent
-    acts with its owner's rights). A direct or group conversation is refused:
-    its platform fixes who is in it. Confirm with the person asking first.
+    Each person is taken out of the room's platform channel and then the
+    Switch room, which stops what reaches them and ends what being in the
+    room let them do. The room's history records that you removed them. Only
+    the room's owner or a workspace admin may (an agent acts with its owner's
+    rights). A direct or group conversation is refused: its platform fixes who
+    is in it. Confirm with the person asking first.
+
+    The room follows its channel, so someone the platform will not remove
+    stays in the room too: everyone on Telegram, whose bots cannot remove
+    people; anyone in Slack's #general; anyone in a standard Teams channel,
+    whose members are its team's. Tell the person asking to remove them on
+    the platform; Switch notices and takes them out of the room itself.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1723,25 +1729,20 @@ async def remove_users_from_room(room_id: str, user_names: list[str]) -> dict[st
 
     Returns:
         `{"ok": bool, "removed": [...], "not_in_room": [...],
-        "kept_by_platform": [...]}`. `not_in_room` lists names nobody in the
-        room goes by; nothing was done for them. `kept_by_platform` lists
-        people taken out of the Switch room whom the platform would not remove
-        from its channel (Telegram never can; Slack keeps everyone in
-        #general; Teams keeps a standard channel's members, who are its
-        team's): tell the person asking, as they are still in the channel
-        there. `ok` is true only when everyone named was removed from both.
+        "platform_refused": [...]}`. `not_in_room` lists names nobody in the
+        room goes by. `platform_refused` lists people the platform would not
+        remove, who are still in the room. `ok` is true only when everyone
+        named was removed.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
     misses = await protocol.remove_users_from_room(agent_id, room_id, user_names)
-    not_in_room = [m.name for m in misses if m.reason == "not_in_room"]
-    kept = [m.name for m in misses if m.reason == "kept_by_platform"]
-    removed = [name for name in user_names if name not in not_in_room]
+    missed = {m.name for m in misses}
     return {
         "ok": not misses,
-        "removed": removed,
-        "not_in_room": not_in_room,
-        "kept_by_platform": kept,
+        "removed": [name for name in user_names if name not in missed],
+        "not_in_room": [m.name for m in misses if m.reason == "not_in_room"],
+        "platform_refused": [m.name for m in misses if m.reason == "platform_refused"],
     }
 
 

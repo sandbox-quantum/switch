@@ -87,12 +87,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RemovalMiss:
-    """Someone a removal did not take out as asked: `not_in_room`, nobody in
-    the room goes by that name; `kept_by_platform`, out of the Switch room but
-    the platform would not remove them from its channel."""
+    """Someone a removal did not take out: `not_in_room`, nobody in the room
+    goes by that name; `platform_refused`, the platform would not remove them
+    from its channel, so they stay in the room too, until someone removes
+    them there."""
 
     name: str
-    reason: Literal["not_in_room", "kept_by_platform"]
+    reason: Literal["not_in_room", "platform_refused"]
 
 
 SYSTEM_CLIENT_TYPES = ("observe", "admin")
@@ -1813,10 +1814,11 @@ class RoomService:
         self, room_id: str, user_names: list[str], *, removed_by: str
     ) -> list[RemovalMiss]:
         """Take people out of a bridged room by their names on its platform,
-        at someone's request: out of the platform channel as well, so the
-        channel and the room agree. Returns who did not go as asked: a name
-        nobody in the room goes by, or someone the platform would not remove
-        from its channel (who is out of the Switch room all the same).
+        at someone's request: out of the platform channel first, and then
+        the room, so the two agree. Returns who did not go: a name nobody in
+        the room goes by, or someone the platform would not remove from its
+        channel (who stays in the room until they are removed there, when
+        Switch hears of it and follows).
 
         Names are matched among the room's own members, so a removal never
         has to ask the platform who someone is.
@@ -1851,7 +1853,7 @@ class RoomService:
             room_id, list(ids), removed_by=removed_by, from_channel=True
         )
         misses.extend(
-            RemovalMiss(name=ids.get(i, i), reason="kept_by_platform") for i in refused
+            RemovalMiss(name=ids.get(i, i), reason="platform_refused") for i in refused
         )
         return misses
 
@@ -1866,16 +1868,18 @@ class RoomService:
         """Take people out of a bridged room, by their account on its bridge.
 
         `removed_by` is who asked, written into the room's history with each
-        departure; None when they left on their own. `from_channel` also takes
-        them out of the platform channel, so the next look at the channel's
-        members does not put them straight back: for a removal asked for in
-        Switch, not for one the platform reported, where they are gone
-        already.
+        departure; None when they left on their own. `from_channel` takes
+        them out of the platform channel first, for a removal asked for in
+        Switch rather than one the platform reported (where they are gone
+        already). Then the room follows the channel: someone the platform
+        would not remove (every one on Telegram; anyone in Slack's #general
+        or a standard Teams channel, whose members are its team's) stays in
+        the room too, since the channel is where membership lives and a room
+        that disagreed with it would be put back by the next sync.
 
-        Returns the ids the platform would not remove from its channel (every
-        one on a platform that cannot, such as Telegram). They are still taken
-        out of the Switch room. Someone Switch never saw in the room is
-        nothing to remove, and is not an error.
+        Returns the ids the platform would not remove, who are therefore
+        still in the room. Someone Switch never saw in the room is nothing to
+        remove, and is not an error.
         """
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
@@ -1886,16 +1890,15 @@ class RoomService:
         if not external_user_ids:
             return []
 
-        not_on_platform: list[str] = []
+        refused: list[str] = []
         if from_channel:
             collaboration_core = self._collab_lifecycle.get(room.bridge_id)
             if collaboration_core is None:
                 raise ValueError(f"Bridge not running: {room.bridge_id}")
-            not_on_platform = (
-                await collaboration_core.adapter.remove_users_from_channel(
-                    room.external_channel_id, external_user_ids
-                )
+            refused = await collaboration_core.adapter.remove_users_from_channel(
+                room.external_channel_id, external_user_ids
             )
+            external_user_ids = [i for i in external_user_ids if i not in refused]
 
         removed: list[str] = []
         with tenant_scope(room.tenant_id):
@@ -1934,7 +1937,7 @@ class RoomService:
                     "removed_by_kind": "platform" if removed_by is None else "user",
                 },
             )
-        return not_on_platform
+        return refused
 
     async def link_bridge_to_room(
         self,

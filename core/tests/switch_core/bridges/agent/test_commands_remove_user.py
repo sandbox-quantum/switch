@@ -110,7 +110,7 @@ async def test_says_who_did_not_go_as_asked(
         monkeypatch,
         _CAROL,
         misses=[
-            RemovalMiss(name="dave", reason="kept_by_platform"),
+            RemovalMiss(name="dave", reason="platform_refused"),
             RemovalMiss(name="ghost", reason="not_in_room"),
         ],
     )
@@ -118,8 +118,9 @@ async def test_says_who_did_not_go_as_asked(
     await _run(h, "@bob @dave @ghost")
 
     [reply] = h.posted
-    assert "Removed **bob**, **dave**." in reply
-    assert "would not let Switch remove **dave**" in reply
+    assert "Removed **bob**." in reply
+    assert "Could not remove **dave**" in reply
+    assert "Remove them from the channel itself" in reply
     assert "Nobody in this room goes by `ghost`." in reply
 
 

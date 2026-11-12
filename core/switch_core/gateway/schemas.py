@@ -240,14 +240,14 @@ class RoomUsersRequest(BaseModel):
 
 
 class RoomUsersRemoved(BaseModel):
-    """The room after people were taken out of it, and who did not go as
-    asked: `not_in_room`, names nobody in the room goes by (nothing was done);
-    `kept_by_platform`, people out of the Switch room whom the platform would
-    not remove from its channel."""
+    """The room after people were taken out of it, and who did not go:
+    `not_in_room`, names nobody in the room goes by; `platform_refused`,
+    people the platform would not remove from its channel, who stay in the
+    room until someone removes them there."""
 
     room: RoomDetail
     not_in_room: list[str] = []
-    kept_by_platform: list[str] = []
+    platform_refused: list[str] = []
 
 
 class RoomProtectionRequest(BaseModel):

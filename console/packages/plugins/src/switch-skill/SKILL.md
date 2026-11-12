@@ -665,16 +665,18 @@ carrying a display name addresses no one.
   inviting an agent is.
 - **`remove_users_from_room`** — take people out of a bridged room by their
   username on its messaging app, the opposite of `add_users_to_room`. They
-  leave the Switch room and its platform channel, and the room's history
-  records that you removed them. Only when your owner is the room's owner or a
-  workspace admin; refused in a direct or group conversation. Confirm with the
-  person asking first. The result lists `not_in_room` (nobody in the room goes
-  by that name) and `kept_by_platform` (out of the Switch room, but the
-  platform would not remove them from its channel: Telegram never can, Slack
-  keeps everyone in #general, and Teams keeps a standard channel's members,
-  who are its team's) — tell the person asking about either. People do the
-  same in a room with `!remove-user @username`. Someone who leaves the
-  channel on the platform is taken out of the room by Switch on its own.
+  leave the platform channel and then the Switch room, and the room's history
+  records that you removed them. Only when your owner is the room's owner or
+  a workspace admin; refused in a direct or group conversation. Confirm with
+  the person asking first. The room follows its channel, so someone the
+  platform will not remove stays in the room: everyone on Telegram, anyone in
+  Slack's #general, anyone in a standard Teams channel (its members are its
+  team's). Those come back in `platform_refused`, and `not_in_room` lists
+  names nobody in the room goes by; tell the person asking about either, and
+  for a refusal that they can remove the person on the platform, which Switch
+  then follows. People do the same in a room with `!remove-user @username`.
+  Someone who leaves the channel on the platform is taken out of the room by
+  Switch on its own.
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.

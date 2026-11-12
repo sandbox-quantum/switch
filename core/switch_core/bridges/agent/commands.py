@@ -1613,16 +1613,19 @@ async def _cmd_remove_user(
         await _reply(client, room, event, f"Could not remove anyone: {e}")
         return
     not_in_room = [m.name for m in misses if m.reason == "not_in_room"]
-    kept = [m.name for m in misses if m.reason == "kept_by_platform"]
-    removed = [name for name in names if name not in not_in_room]
+    refused = [m.name for m in misses if m.reason == "platform_refused"]
+    missed = {m.name for m in misses}
+    removed = [name for name in names if name not in missed]
     lines: list[str] = []
     if removed:
         lines.append("Removed " + ", ".join(f"**{n}**" for n in removed) + ".")
-    if kept:
+    if refused:
         lines.append(
-            "Still in the channel here, which would not let Switch remove "
-            + ", ".join(f"**{n}**" for n in kept)
-            + "; they are out of the Switch room."
+            "Could not remove "
+            + ", ".join(f"**{n}**" for n in refused)
+            + ": this channel would not let Switch take them out, so they stay "
+            "in the room. Remove them from the channel itself, and Switch will "
+            "follow."
         )
     if not_in_room:
         lines.append(
