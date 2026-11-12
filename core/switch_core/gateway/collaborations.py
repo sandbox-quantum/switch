@@ -790,7 +790,7 @@ def _known_as_directory_users(
     find yourself there is the end of the road. No email: an account is
     recorded from a message, which carries no address.
     """
-    needle = query.strip().casefold()
+    needle = query.strip().removeprefix("@").casefold()
     if not needle:
         return []
     return sorted(
