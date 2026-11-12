@@ -1,10 +1,34 @@
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable, { TableEmptyState } from "../../components/DataTable";
+import DataTable, {
+  type SelectFilter,
+  type TableColumn,
+  TableEmptyState,
+} from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import { type OperatorWorkspace, fetchOperatorWorkspaces } from "../../data/api";
 import { useLoad } from "../workspace/useLoad";
+
+/** What the Organization column reads for a workspace in none. */
+const NO_ORGANIZATION = "None";
+
+function organizationOf(workspace: OperatorWorkspace): string {
+  return workspace.organization_name ?? workspace.organization_id ?? NO_ORGANIZATION;
+}
+
+const SELECT_FILTERS: SelectFilter[] = [
+  { field: "organization_name", label: "Organization", allLabel: "All organizations" },
+];
+
+const SEARCH = {
+  label: "Search workspaces",
+  text: (workspace: OperatorWorkspace) =>
+    `${workspace.name} ${workspace.slug} ${organizationOf(workspace)}`,
+};
+
+const TABLE_CHROME = 108;
+const ROW = 52;
+const PAGE_SIZE = 25;
 
 /** Every workspace on the server, for the platform operator. Listing records
  * nothing; entering one you hold no role in is recorded in its audit log, as
@@ -16,7 +40,7 @@ export default function OperatorWorkspacesPage() {
   const [switchError, setSwitchError] = useState<string | null>(null);
   const currentId = session?.tenant?.id;
 
-  const columns = useMemo<GridColDef<OperatorWorkspace>[]>(
+  const columns = useMemo<TableColumn<OperatorWorkspace>[]>(
     () => [
       {
         field: "name",
@@ -31,7 +55,8 @@ export default function OperatorWorkspacesPage() {
         headerName: "Organization",
         flex: 1,
         minWidth: 160,
-        valueGetter: (value, row) => value ?? row.organization_id ?? "None",
+        valueGetter: (_value, row) => organizationOf(row),
+        filter: { value: organizationOf },
       },
       {
         field: "actions",
@@ -73,13 +98,17 @@ export default function OperatorWorkspacesPage() {
       )}
       {loading ? (
         <CircularProgress />
-      ) : (
+      ) : workspaces === null ? null : (
         <DataTable
-          rows={workspaces ?? []}
+          rows={workspaces}
           columns={columns}
           emptyState={<TableEmptyState title="No workspaces yet" />}
-          height={Math.min(600, 108 + (workspaces?.length ?? 0) * 52)}
-          pageSize={25}
+          height={TABLE_CHROME + ROW * Math.min(workspaces.length, PAGE_SIZE)}
+          pageSize={PAGE_SIZE}
+          noun={{ one: "workspace", other: "workspaces" }}
+          search={SEARCH}
+          selectFilters={SELECT_FILTERS}
+          initialSort={{ field: "name", sort: "asc" }}
         />
       )}
     </Box>

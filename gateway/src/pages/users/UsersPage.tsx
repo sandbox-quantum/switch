@@ -11,21 +11,40 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid";
 import { useMemo, useState } from "react";
-import DataTable, { TableEmptyState } from "../../components/DataTable";
+import DataTable, {
+  type SelectFilter,
+  type TableColumn,
+  TableEmptyState,
+} from "../../components/DataTable";
 import type { ListedUser } from "../../data/api";
 import { useUsers } from "../../data/hooks";
 import { formatDate } from "../../theme/format";
 import CreateUserDialog from "./CreateUserDialog";
 import DeleteUserDialog from "./DeleteUserDialog";
 
+const ROLE_OPTIONS = [
+  { value: "admin", label: "Platform operator" },
+  { value: "user", label: "User" },
+];
+
+const SELECT_FILTERS: SelectFilter[] = [{ field: "role", label: "Role", allLabel: "All roles" }];
+
+const SEARCH = {
+  label: "Search users",
+  text: (user: ListedUser) => `${user.name} ${user.email}`,
+};
+
+const TABLE_CHROME = 108;
+const ROW = 52;
+const PAGE_SIZE = 25;
+
 export default function UsersPage() {
   const { data: users, loading, error, refetch } = useUsers();
   const [createOpen, setCreateOpen] = useState(false);
   const [deleting, setDeleting] = useState<ListedUser | null>(null);
 
-  const columns = useMemo<GridColDef<ListedUser>[]>(
+  const columns = useMemo<TableColumn<ListedUser>[]>(
     () => [
       { field: "name", headerName: "Name", flex: 1, minWidth: 140 },
       { field: "email", headerName: "Email", flex: 1.5, minWidth: 200 },
@@ -33,6 +52,7 @@ export default function UsersPage() {
         field: "role",
         headerName: "Role",
         width: 160,
+        filter: { value: (user) => user.role, options: ROLE_OPTIONS },
         renderCell: ({ value }) => (
           <Chip
             label={value === "admin" ? "Platform operator" : "User"}
@@ -45,7 +65,9 @@ export default function UsersPage() {
         field: "created_at",
         headerName: "Created",
         width: 140,
-        valueFormatter: (value) => formatDate(value as string),
+        type: "date",
+        valueGetter: (value) => new Date(value as string),
+        valueFormatter: (value) => formatDate(value as Date),
       },
       {
         field: "actions",
@@ -97,8 +119,12 @@ export default function UsersPage() {
           rows={users}
           columns={columns}
           emptyState={<TableEmptyState title="No users yet" />}
-          height={Math.min(600, 108 + users.length * 52)}
-          pageSize={25}
+          height={TABLE_CHROME + ROW * Math.min(users.length, PAGE_SIZE)}
+          pageSize={PAGE_SIZE}
+          noun={{ one: "user", other: "users" }}
+          search={SEARCH}
+          selectFilters={SELECT_FILTERS}
+          initialSort={{ field: "name", sort: "asc" }}
         />
       )}
 
