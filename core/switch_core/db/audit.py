@@ -130,6 +130,10 @@ class ServerAuditAction(StrEnum):
     # the mirror started again from now, with a full check of every linked
     # organization.
     DIRECTORY_EVENTS_RESTARTED = "directory.events_restarted"
+    # An operator held a cloud machine stopped, so its owner cannot start it,
+    # or released it again (`switch-cloud-machine`).
+    CLOUD_MACHINE_ADMIN_STOPPED = "cloud_machine.admin_stopped"
+    CLOUD_MACHINE_ADMIN_RELEASED = "cloud_machine.admin_released"
 
 
 async def record_audit_event(

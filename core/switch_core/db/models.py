@@ -543,7 +543,7 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'admin')",
             name="ck_cloud_machine_stop_reason",
         ),
         Index(
