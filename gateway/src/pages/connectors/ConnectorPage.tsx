@@ -242,6 +242,10 @@ export default function ConnectorPage() {
   const [connection, setConnection] = useState<ServiceConnection | null>(null);
   const [own, setOwn] = useState<ServiceAgent[]>([]);
   const [inWorkspace, setInWorkspace] = useState<ServiceInWorkspace | null>(null);
+  // Whether the agents and the people connected were read: until they are,
+  // or when reading them failed, neither list is drawn, so a failure never
+  // reads as "nobody uses it".
+  const [listsLoaded, setListsLoaded] = useState(false);
   const [github, setGitHub] = useState<GitHubConnection | null>(null);
   const [githubError, setGitHubError] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
@@ -267,6 +271,7 @@ export default function ConnectorPage() {
       ]);
       setOwn(agents);
       setInWorkspace(workspace);
+      setListsLoaded(true);
       if (connectorId === "github" && found.status === "active")
         fetchGitHubConnection().then(setGitHub, (err: unknown) =>
           setGitHubError(err instanceof Error ? err.message : String(err)),
@@ -274,6 +279,7 @@ export default function ConnectorPage() {
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setListsLoaded(false);
     }
   }, [connectorId, admin]);
 
@@ -405,7 +411,7 @@ export default function ConnectorPage() {
         <Keys connection={connection} onReplace={() => setKeyDialog("replace")} />
       )}
 
-      {connection.enabled && (
+      {connection.enabled && listsLoaded && (
         <ConnectorAgents
           connection={connection}
           own={own}
@@ -418,7 +424,7 @@ export default function ConnectorPage() {
         />
       )}
 
-      {inWorkspace && (
+      {listsLoaded && inWorkspace && (
         <ConnectedPeople
           connection={connection}
           people={inWorkspace.people}

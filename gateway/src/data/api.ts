@@ -3158,6 +3158,8 @@ export interface GrantedAgent {
   owner_id: string;
   owner_name: string;
   grant: ServiceGrant;
+  /** Others than its owner can address it, and so have it act as its owner. */
+  addressing_open: boolean;
 }
 
 export interface ServiceInWorkspace {

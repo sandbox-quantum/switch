@@ -317,6 +317,9 @@ async def service_in_workspace(
                 "owner_id": owner.id,
                 "owner_name": owner.name,
                 "grant": await _grant_view(session, broker, agent, grant),
+                # Whether others than its owner can address it, and so have
+                # it act as its owner on this connector.
+                "addressing_open": await _others_can_address(session, agent, owner),
             }
         )
     return {"people": people, "agents": agents}

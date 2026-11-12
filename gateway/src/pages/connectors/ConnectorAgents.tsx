@@ -25,7 +25,7 @@ import {
   setServiceGrant,
 } from "../../data/api";
 import { GitHubGrantForm, REMOVED_NOTE, repositoryNames } from "../agents/ServiceAccessSection";
-import { OPEN_AGENT_NOTE, grantLabel } from "./connectorProfile";
+import { grantLabel, openAgentNote } from "./connectorProfile";
 
 function repositoryCount(grant: ServiceGrant): number {
   const ids = grant.resources.repository_ids;
@@ -63,14 +63,13 @@ function entriesOf(
   workspace: GrantedAgent[] | null,
   meId: string,
 ): Entry[] {
-  const open = new Set(own.filter((agent) => agent.addressing_open).map((agent) => agent.agent_id));
   if (workspace !== null)
     return workspace.map((agent) => ({
       agentId: agent.agent_id,
       name: agent.name,
       ownerName: agent.owner_id === meId ? null : agent.owner_name,
       grant: agent.grant,
-      addressingOpen: open.has(agent.agent_id),
+      addressingOpen: agent.addressing_open,
     }));
   return own
     .filter((agent) => agent.grant !== null)
@@ -151,7 +150,7 @@ function AgentCard({
         </Typography>
         {entry.addressingOpen && (
           <Typography variant="caption" color="text.secondary">
-            {OPEN_AGENT_NOTE}
+            {openAgentNote(entry.ownerName)}
           </Typography>
         )}
       </Box>
@@ -284,7 +283,7 @@ export default function ConnectorAgents({
               onChange={(_, agent) => setChosen(agent)}
               renderInput={(params) => <TextField {...params} label="Your agent" />}
             />
-            {chosen?.addressing_open && <Alert severity="warning">{OPEN_AGENT_NOTE}</Alert>}
+            {chosen?.addressing_open && <Alert severity="warning">{openAgentNote(null)}</Alert>}
             {!isGitHub && (
               <Typography variant="body2" color="text.secondary">
                 It acts as you at {connection.name}, with what you allowed when you connected it.

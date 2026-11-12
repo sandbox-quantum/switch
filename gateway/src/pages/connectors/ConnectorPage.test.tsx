@@ -317,7 +317,7 @@ describe("a connector's page", () => {
           { user_id: "u2", name: "Bob", status: "active", connected_at: "2026-11-03T09:00:00Z", agents: 2, can_revoke: true },
         ],
         agents: [
-          { agent_id: "b1", name: "bobs-agent", owner_id: "u2", owner_name: "Bob", grant: grant() },
+          { agent_id: "b1", name: "bobs-agent", owner_id: "u2", owner_name: "Bob", grant: grant(), addressing_open: true },
         ],
       },
       { "DELETE /service-connections/example/people/u2": { warning: null } },
@@ -326,6 +326,8 @@ describe("a connector's page", () => {
 
     const card = await screen.findByTestId("connector-agent-b1");
     expect(within(card).getByText("Bob")).toBeTruthy();
+    // Others can have Bob's agent act as Bob: the admin is told, in Bob's name.
+    expect(within(card).getByText("Others can address it; it would act as Bob.")).toBeTruthy();
     // Nobody grants on someone else's connector, admins included.
     expect(within(card).queryByRole("button", { name: "Remove" })).toBeNull();
     const people = screen.getByRole("region", { name: "Connected in Acme" });
@@ -358,6 +360,7 @@ describe("a connector's page", () => {
             owner_id: "u2",
             owner_name: "Bob",
             grant: grant({ service: "github", resources: { installation_id: 9, repository_ids: [90, 91] } }),
+            addressing_open: false,
           },
         ],
       },
@@ -367,6 +370,20 @@ describe("a connector's page", () => {
     const card = await screen.findByTestId("connector-agent-b1");
     expect(within(card).getByText("Bob · 2 repositories")).toBeTruthy();
     expect(within(card).queryByText(/repository 90/)).toBeNull();
+  });
+
+  it("says the lists failed to load rather than that nobody uses it", async () => {
+    signedIn({ admin: true });
+    answer({
+      "GET /service-connections": { connections: [serviceConnection({ status: "active", consent: "write" })] },
+      "GET /service-connections/example/agents": [],
+    });
+    renderPage();
+
+    expect(await screen.findByText("unmocked GET /service-connections/example/workspace")).toBeTruthy();
+    expect(screen.queryByText(/uses Example yet/)).toBeNull();
+    expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Connected in Acme" })).toBeNull();
   });
 
   it("disconnects after asking", async () => {

@@ -116,5 +116,8 @@ export function revokeConfirmation(
   };
 }
 
-/** Said of an agent others can address: whoever addresses it would have it act as its owner. */
-export const OPEN_AGENT_NOTE = "Others can address it; it would act as you.";
+/** Said of an agent others can address: whoever addresses it would have it
+ * act as its owner, the viewer (null) or someone else, by name. */
+export function openAgentNote(ownerName: string | null): string {
+  return `Others can address it; it would act as ${ownerName ?? "you"}.`;
+}

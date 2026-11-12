@@ -732,9 +732,12 @@ class TestTheWorkspacesView:
         ada = await add_member(harness.session_factory, "ada")
         bob = await add_member(harness.session_factory, "bob")
         builder, _ = await agent_with_key(harness.session_factory, ada, "builder")
+        closed, _ = await agent_with_key(harness.session_factory, bob, "closed")
         await connect(harness.session_factory, ada.id)
         await connect(harness.session_factory, bob.id, account_id="1002")
         await grant_directly(harness.session_factory, builder, ada.id)
+        await grant_directly(harness.session_factory, closed, bob.id)
+        await _set_policy(harness, closed, owner_only_policy([]))
 
         response = await _in_workspace(harness, admin)
 
@@ -742,13 +745,19 @@ class TestTheWorkspacesView:
         body = response.json()
         assert [
             (p["user_id"], p["name"], p["status"], p["agents"]) for p in body["people"]
-        ] == [(ada.id, "ada", "active", 1), (bob.id, "bob", "active", 0)]
+        ] == [(ada.id, "ada", "active", 1), (bob.id, "bob", "active", 1)]
         assert all(p["connected_at"] for p in body["people"])
         assert all(p["can_revoke"] for p in body["people"])
-        [agent] = body["agents"]
+        agent, closed_agent = body["agents"]
         assert (agent["agent_id"], agent["name"]) == (builder, "builder")
         assert (agent["owner_id"], agent["owner_name"]) == (ada.id, "ada")
         assert agent["grant"]["access"] == "write"
+        # Whether others than its owner could have it act as its owner.
+        assert agent["addressing_open"] is True
+        assert (closed_agent["agent_id"], closed_agent["addressing_open"]) == (
+            closed,
+            False,
+        )
 
     async def test_a_member_sees_and_ends_only_their_own(
         self, harness: Harness
