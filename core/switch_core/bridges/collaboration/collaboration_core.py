@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.adapter import (
     agent_identity,
 )
 from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
     ChannelInUse,
     ChannelType,
     InboundAgentJoin,
@@ -1221,6 +1222,10 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            if getattr(self._adapter, "confirms_webhook_delivery", False):
+                raise BridgeOperationError(
+                    "The sender could not join the room; retry delivery."
+                )
             return None
 
         content = self._adapter.translate_inbound(msg.content)
@@ -1307,6 +1312,10 @@ class CollaborationCore:
                     extra_content=_inbound_extra_content(msg, check),
                 )
             if event_id is None:
+                if getattr(self._adapter, "confirms_webhook_delivery", False):
+                    raise BridgeOperationError(
+                        "The room did not accept the message; retry delivery."
+                    )
                 logger.error(
                     "[BRIDGE-IN] failed to relay message from %s into room %s — "
                     "it will not reach the room",
@@ -1454,6 +1463,10 @@ class CollaborationCore:
                     extra_content=_inbound_extra_content(msg, caption_check),
                 )
             if event_id is None:
+                if getattr(self._adapter, "confirms_webhook_delivery", False):
+                    raise BridgeOperationError(
+                        "The room did not accept the attachment; retry delivery."
+                    )
                 logger.error(
                     "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
                     attachment.filename,
@@ -1610,6 +1623,10 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            if getattr(self._adapter, "confirms_webhook_delivery", False):
+                raise BridgeOperationError(
+                    "The sender could not join the room; retry delivery."
+                )
             return
 
         # Where the command's result should thread. A command typed inside an
@@ -1655,6 +1672,8 @@ class CollaborationCore:
                     transport_room_id, "com.switch.command", content
                 )
         except TransportError as exc:
+            if getattr(self._adapter, "confirms_webhook_delivery", False):
+                raise
             logger.error(
                 "Failed to bridge command %s into %s: %s",
                 cmd.command,

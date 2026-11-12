@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Cisco Webex">
+  <title>Cisco Webex</title>
+  <path d="M13 13C2 26 6 48 24 51c12 2 22-11 28-24" fill="none" stroke="#00bceb" stroke-width="10" stroke-linecap="round"/>
+  <path d="M51 13c11 13 7 35-11 38-12 2-22-11-28-24" fill="none" stroke="#00cf8b" stroke-width="10" stroke-linecap="round"/>
+</svg>

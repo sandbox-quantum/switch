@@ -515,6 +515,9 @@ class PlatformAdapter(ABC):
     #: connection they opened; they leave this False.
     receives_webhooks: ClassVar[bool] = False
 
+    #: Acknowledge after routing, returning 503 on failure so the sender can retry.
+    confirms_webhook_delivery: ClassVar[bool] = False
+
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
     draws_session_activity: ClassVar[bool] = False

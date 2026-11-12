@@ -44,6 +44,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.webex.adapter import (
+    WebexAdapter,
+    WebexConnectionConfig,
+)
 from switch_core.bridges.collaboration.whatsapp.adapter import (
     WhatsAppAdapter,
     WhatsAppConnectionConfig,
@@ -68,6 +72,7 @@ class PlatformRegistration(NamedTuple):
 
 
 PLATFORMS: tuple[PlatformRegistration, ...] = (
+    PlatformRegistration("webex", WebexAdapter, WebexConnectionConfig),
     PlatformRegistration("mattermost", MattermostAdapter, MattermostConnectionConfig),
     PlatformRegistration("slack", SlackAdapter, SlackConnectionConfig),
     PlatformRegistration("teams", TeamsAdapter, TeamsConnectionConfig),
