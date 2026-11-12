@@ -55,8 +55,14 @@ class TurnView:
         return max(0.0, elapsed)
 
 
-def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
-    """The turn its rows describe, or None until its own row has been reported."""
+def turn_view(
+    rows: list[AgentSessionActivityItem], *, show_tool_detail: bool
+) -> TurnView | None:
+    """The turn its rows describe, or None until its own row has been reported.
+
+    `show_tool_detail` is whether the turn's room shows tool detail now: a
+    detail stored while it did is left out once it does not.
+    """
     row = next((r for r in rows if r.item_id == TURN_ITEM_ID), None)
     if row is None:
         return None
@@ -73,6 +79,7 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             text=step.text,
             attachments=[],
             origin=None,
+            detail=step.detail if show_tool_detail else None,
         )
         for step in steps
     ]

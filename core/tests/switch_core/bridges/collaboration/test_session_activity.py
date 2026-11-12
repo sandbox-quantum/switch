@@ -269,6 +269,21 @@ async def test_more_than_one_unfinished_step_is_counted_as_more_than_one() -> No
     assert _state(items, _turn("interrupted")).endswith("3 steps left unfinished.")
 
 
+async def test_a_calls_detail_is_the_detail_of_its_card() -> None:
+    cards = _cards(
+        [
+            _item(
+                itemId="call",
+                title="Ran pytest",
+                text="",
+                detail="Input: pytest\nOutput:\n12 passed",
+            )
+        ]
+    )
+
+    assert _detail(cards["Ran pytest"]) == "Input: pytest\nOutput:\n12 passed"
+
+
 async def test_the_fallback_carries_the_turn_state_too() -> None:
     """It is the whole message on a client that will not render blocks."""
     text = render_activity_text(await _items(), _turn("completed"))

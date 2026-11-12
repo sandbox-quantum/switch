@@ -56,6 +56,8 @@ from switch_core.sessions.errors import SessionError
 MAX_TITLE_CHARS = 500
 MAX_TEXT_CHARS = 8000
 MAX_DETAIL_CHARS = 4000
+# A tool call's preview: the host cuts it to 1,500 characters and a note.
+MAX_TOOL_DETAIL_CHARS = 2000
 MAX_OPTIONS = 10
 MAX_QUESTIONS = 50
 MAX_QUESTION_OPTIONS = 50
@@ -200,12 +202,15 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        detail: str | None,
         subagent: bool = False,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
         `usage` is what the turn spent, and only a turn's own row, reported as
-        ended, carries it.
+        ended, carries it. `detail` is a tool call's redacted preview, kept only
+        while the row's room shows tool detail: the room's switch is the policy,
+        and it is applied here rather than trusted to the host.
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
@@ -236,6 +241,15 @@ class AgentSessionActivityService:
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
             )
+        if detail is not None and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only a tool call's row carries its detail."
+            )
+        if detail is not None and len(detail) > MAX_TOOL_DETAIL_CHARS:
+            raise SessionError(
+                "INVALID_EVENT",
+                f"A tool call's detail is at most {MAX_TOOL_DETAIL_CHARS} characters.",
+            )
         if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
             raise SessionError(
                 "INVALID_EVENT",
@@ -246,6 +260,13 @@ class AgentSessionActivityService:
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             if room_id is not None:
                 await self._require_member(db, agent_id, room_id)
+            kept_detail = (
+                detail
+                if detail is not None
+                and room_id is not None
+                and await self._rooms.shows_tool_detail(db, room_id)
+                else None
+            )
             prior_status = (
                 await self._activity.status_for_update(
                     db, agent_id, session_id, turn_id, item_id
@@ -271,6 +292,7 @@ class AgentSessionActivityService:
                     room_id=room_id,
                     thread_id=thread_id,
                     message_id=message_id,
+                    detail=kept_detail,
                     occurred_at=occurred_at,
                 ),
             )

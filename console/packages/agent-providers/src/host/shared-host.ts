@@ -524,8 +524,8 @@ export async function runSharedHost(
           null
         );
     };
-    // Retry new optional fields independently: a server may predate either
-    // usage or child progress. Preserve the tool row and its terminal status.
+    // Retry new optional fields independently: a server may predate usage,
+    // tool detail or child progress. Preserve the tool row and its terminal status.
     const sendCompatible = async (item: Report): Promise<void> => {
       let report = item;
       for (;;) {
@@ -543,6 +543,12 @@ export async function runSharedHost(
             const { usage: _usage, ...row } = report.row;
             console.warn(
               `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.detail) {
+            const { detail: _detail, ...row } = report.row;
+            console.warn(
+              `Switch refused the detail of ${row.item_id}, so it is drawn without: ${error.message}`
             );
             report = { kind: 'activity', row };
           } else if (report.row.subagent) {
@@ -566,7 +572,8 @@ export async function runSharedHost(
         const reports = reporter.reports(
           event,
           (turnId) => host!.originOf(turnId),
-          (turnId) => host!.usageOf(turnId)
+          (turnId) => host!.usageOf(turnId),
+          (turnId, itemId) => host!.detailOf(turnId, itemId)
         );
         for (const item of reports) {
           try {

@@ -1208,6 +1208,13 @@ class Room(TenantScoped, Base):
     admin_mode: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    # Whether this room's chat shows what its agents' tool calls were given and
+    # gave back. Off until the room's owner or a workspace admin turns it on:
+    # the detail is redacted by heuristics, and a room can hold people outside
+    # the team.
+    show_tool_detail: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     protection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     observe_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -4011,6 +4018,8 @@ class AgentSessionActivityItem(TenantScoped, Base):
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message that asked, where a platform puts its work marker.
     message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A tool call's redacted preview, kept only while its room shows tool detail.
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

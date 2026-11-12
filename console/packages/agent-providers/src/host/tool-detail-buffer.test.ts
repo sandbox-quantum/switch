@@ -155,3 +155,36 @@ it('keeps an answer bounded, newest turns first, listing what is left over bare'
   expect(turns.at(-1)!.tools[0]!.output).toBe(big);
   expect(turns.flatMap((turn) => turn.tools).some((tool) => tool.output === null)).toBe(true);
 });
+
+it('gives a call’s output head and tail apart, saying whether the middle was dropped', () => {
+  const buffer = new ToolDetailBuffer();
+  buffer.ingest(
+    itemEvent('item.started', 'turn', {
+      id: 'tu1',
+      type: 'command_execution',
+      payload: { command: 'cat big.log' },
+    }),
+    'epoch'
+  );
+  buffer.ingest(
+    {
+      ...base,
+      type: 'item.delta',
+      turnId: 'turn',
+      itemId: 'tu1',
+      delta: 'h'.repeat(TOOL_OUTPUT_HEAD) + 't'.repeat(TOOL_OUTPUT_TAIL + 5),
+    },
+    'epoch'
+  );
+  const id = JSON.stringify(['turn', 'tu1']);
+
+  expect(buffer.partsOf('epoch', 'turn', id)).toEqual({
+    input: { command: 'cat big.log' },
+    head: 'h'.repeat(TOOL_OUTPUT_HEAD),
+    tail: 't'.repeat(TOOL_OUTPUT_TAIL),
+    outputClipped: true,
+    hasOutput: true,
+  });
+  expect(buffer.partsOf('epoch', 'turn', JSON.stringify(['turn', 'unknown']))).toBeNull();
+  expect(buffer.partsOf('another', 'turn', id)).toBeNull();
+});
