@@ -75,7 +75,7 @@ describe('setSecret on Linux', () => {
 
   it('refuses the unencrypted basic_text fallback and says how to get a keyring', async () => {
     await expect(linuxStore(true, 'basic_text').setSecret('k', 'v')).rejects.toThrow(
-      /no system keyring was found.*gnome-keyring.*"login" keyring/
+      /no system keyring was found.*gnome-keyring.*"login" keyring.*--password-store=gnome-libsecret/
     );
   });
 

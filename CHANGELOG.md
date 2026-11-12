@@ -18,19 +18,27 @@ leaves its contracts alone.
 - **switch-core** — the backend service (`core/`). Released by tagging
   `switch-v<version>`; the version lives in `core/pyproject.toml`. See
   [RELEASING.md](RELEASING.md).
-- **switch-console** — the desktop app (`dash/`). Released by tagging
+- **switch-console** — the desktop app (`console/`). Released by tagging
   `switch-console-v<version>`; the version lives in
-  `dash/apps/switch-console-desktop/package.json`.
-- **agent-runtime** — the Switch protocol client and MCP runtime
-  (`dash/packages/switch-agent-runtime/`), published to a package registry.
-- **sidecar** — the remote runtime Switch Console deploys to an agent host
-  (`dash/apps/switch-console-desktop/src/sidecar/`). Versioned in
-  `sidecar-version.ts` and deployed by Switch Console, not published separately.
-- **switch-connector** / **switch-connector-codex** / **switch-connector-opencode**
-  — the three connectors (`connectors/`), versioned in their respective
-  manifests. The first two are installed from the plugin marketplace; the
-  OpenCode one is written by Switch Console, which has no marketplace to install
-  from, so its version identifies the source rather than an install.
+  `console/apps/switch-console-desktop/package.json`.
+- **agent-controller** — the headless agents controller
+  (`console/packages/agent-controller/`), released on
+  `switch-agent-controller-v*` tags.
+- **agent-runtime** — the Switch protocol client and MCP tool surface
+  (`console/packages/switch-agent-runtime/`). Bundled into Switch Console and
+  its sidecar, not published.
+- **sidecar** — the remote runtime Switch Console deploys to an agent host,
+  built from `console/packages/agent-providers/` and
+  `console/packages/agent-controller/`. Versioned in
+  [`artifacts.yaml`](artifacts.yaml) and deployed by Switch Console, not
+  published separately.
+
+The **switch-connector** / **switch-connector-codex** /
+**switch-connector-opencode** plugins are retired and no longer ship. Agent
+sessions get the Switch tools from Switch Console, so nothing needs to be
+installed from a plugin marketplace; any listing that still offers these
+plugins is out of date. Their sections at the end of this file are kept as
+history.
 
 Three things are **not** separately versioned, and ship under the switch-core
 release so a single tag pins the whole stack: the **operator dashboard**
@@ -220,6 +228,11 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Agents can maintain the documents a room template creates.** A
+  template's `docs:` made documents no agent had written, and only the agent
+  that wrote a document could update or delete it, so every agent got 403.
+  A room document no agent wrote can now be updated or deleted by any agent
+  in the room; one an agent wrote is still that agent's alone.
 - **Removing someone from a workspace, or leaving it, says who receives what
   they owned.** Their rooms, packages, references, reference types, library
   documents and templates pass to another admin, and until now nothing said
@@ -3204,6 +3217,22 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A Bash pattern in Disallowed tools no longer removes Bash.** For a
+  Claude agent, an entry such as `Bash(curl:*)` took away the whole Bash tool.
+  It now denies only the commands it matches, as on the command line. A plain
+  tool name still removes that tool.
+- **"Web search: Off" stops a Codex agent searching and fetching the web.**
+  Switch Console wrote a setting current Codex ignores, so search stayed on.
+  Off now writes `web_search = "disabled"`; On writes `"live"`.
+- **Switch Console sets up a local server on Hyprland, Sway, i3 and similar
+  window managers.** It said secure secret storage was unavailable although a
+  Secret Service keyring was running. It now uses that keyring on any desktop
+  the system's own keyring choice doesn't cover, and the error names the
+  `--password-store=gnome-libsecret` workaround.
+- **Direct chats no longer appear under Rooms.** A direct chat with an agent
+  could be listed as a room, and opening it there said it had been "created
+  as an agent-only room". Rooms leaves out every chat the server marks as
+  direct, and a Console chat opened as a room says what it is.
 - **A room hears about a turn that finished without a reply.** When an agent
   addressed in a room ended its turn without doing anything in the room — it
   wrote its answer only as its final text, or its provider stopped it at a
@@ -5793,8 +5822,10 @@ compatibility signal. History for those is in the git log.
 
 ## switch-connector (Claude Code)
 
-`connectors/claude-code-plugin/`. Version lives in
+Was `connectors/claude-code-plugin/`. Version lived in
 `.claude-plugin/plugin.json`.
+
+Retired: this plugin no longer ships and nothing installs it. Kept as history.
 
 ### [Unreleased]
 
@@ -6048,7 +6079,9 @@ manifest history.
 
 ## switch-connector-codex
 
-`connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
+Was `connectors/codex-plugin/`. Version lived in `.codex-plugin/plugin.json`.
+
+Retired: this plugin no longer ships and nothing installs it. Kept as history.
 
 ### [Unreleased]
 
@@ -6252,7 +6285,9 @@ manifest history.
 
 ## switch-connector-opencode
 
-`connectors/opencode-plugin/`. Version lives in `package.json`.
+Was `connectors/opencode-plugin/`. Version lived in `package.json`.
+
+Retired: this plugin no longer ships and nothing installs it. Kept as history.
 
 Unlike the other two connectors, nothing installs this one from a marketplace —
 OpenCode has none. Switch Console writes its files directly, so the version is

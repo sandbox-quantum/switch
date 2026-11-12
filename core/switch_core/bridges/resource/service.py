@@ -53,6 +53,20 @@ def _reference_type(type_: str) -> str:
     return type_ if is_builtin_type(type_) else "other"
 
 
+def _require_room_document_writer(doc: Document, agent_id: str) -> None:
+    """Refuse an agent changing a room-scoped document another agent wrote.
+
+    A document no agent wrote (one a room template or a person made) is the
+    room's to maintain, so any agent in the room may change or delete it; the
+    caller checks that the agent is in the room.
+    """
+    if doc.created_by_agent_id is not None and doc.created_by_agent_id != agent_id:
+        raise PermissionError(
+            f"Document {doc.id} was created by another agent; only that agent "
+            "can change or delete it"
+        )
+
+
 def _visibility(value: str) -> str:
     return value if value in ("private", "public") else "private"
 
@@ -1150,10 +1164,7 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        if doc.created_by_agent_id != agent_id:
-            raise PermissionError(
-                f"Agent {agent_id} did not create document {document_id}"
-            )
+        _require_room_document_writer(doc, agent_id)
         if name is not None:
             if not name.strip():
                 raise ValueError("name must not be empty")
@@ -1190,10 +1201,7 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        if doc.created_by_agent_id != agent_id:
-            raise PermissionError(
-                f"Agent {agent_id} did not create document {document_id}"
-            )
+        _require_room_document_writer(doc, agent_id)
         age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
         emit_safely(

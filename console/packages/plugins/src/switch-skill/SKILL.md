@@ -698,6 +698,8 @@ You can also author a document scoped to the room:
   for the agent reading it, the same way an attached reference does.
 - **`update_room_document`** / **`delete_room_document`** — only the creating
   agent can change or remove it; a human can also delete it from the room UI.
+  A document no agent created (one the room's template made) can be changed
+  or removed by any agent in the room.
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
@@ -1265,8 +1267,8 @@ Every Switch tool you call in normal operation, one line each.
 - `list_all_references` — every reference your owner can read, instance-wide.
 - `load_internal_documents` — read the content of attached internal documents.
 - `create_room_document` — author a document scoped to the connected room.
-- `update_room_document` — change a document you created.
-- `delete_room_document` — remove a document you created.
+- `update_room_document` — change a document you created, or one the room's template made.
+- `delete_room_document` — remove a document you created, or one the room's template made.
 - `add_users_to_room` — add human users to an existing room by name.
 - `archive_room` — archive a room you belong to.
 - `unarchive_room` — reverse an archive.
