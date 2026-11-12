@@ -9,7 +9,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { log } from '@renderer/utils/logger';
 import type { LinkCode, LinkedIdentity } from '@shared/core/switch-servers/switch-servers';
-import { accountHandle, linkRequestFailureText } from './link-accounts-prose';
+import { accountHandle, commandToPost, linkRequestFailureText } from './link-accounts-prose';
 import { useMyIdentities, useMyPendingIdentities } from './use-my-identities';
 
 /** How often to look for the link having been confirmed. Nothing tells the app
@@ -248,10 +248,10 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
   const copy = async () => {
     if (code === null) return;
     try {
-      await navigator.clipboard.writeText(code.code);
+      await navigator.clipboard.writeText(commandToPost(code));
       setCopied(true);
     } catch {
-      setError('Could not copy the code. Select it and copy it by hand.');
+      setError('Could not copy the command. Select it and copy it by hand.');
     }
   };
 

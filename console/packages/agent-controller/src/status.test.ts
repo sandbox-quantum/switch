@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
   generateSealingKeyPair,
+  providerRuntimeIds,
   providerUnsupportedReason,
   sealProviderLogin,
 } from '@switch-console/agent-providers';
@@ -294,6 +295,9 @@ describe('providerStatusFrom', () => {
   });
 });
 
+// Every provider the controller runs is checked, whatever their number.
+const PROVIDERS = providerRuntimeIds().length;
+
 describe('ProviderStatuses', () => {
   it('checks each provider at most once per TTL, and reports changes', async () => {
     let clock = NOW;
@@ -312,19 +316,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
+    expect(changes).toBe(PROVIDERS);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (PROVIDERS - 1));
+    expect(changes).toBe(PROVIDERS);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(PROVIDERS + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -429,7 +433,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDERS - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 

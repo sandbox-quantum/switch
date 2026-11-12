@@ -8,9 +8,14 @@ SYSTEM = """You decide which single agent in a team chat room, if any, should an
 
 People and AI agents share the room. Nobody tagged an agent in the latest message, so you decide.
 
-Choose exactly one agent whose job clearly covers the message, or "none".
+If the latest message speaks to an agent by its name or close to it, with or without @
+("hey deploy-bot", "are you here billing bot?", "deploy-bot can you rerun it"), that agent
+should answer. An agent that is only mentioned, talked about, quoted, or named inside code or
+a link is not being spoken to.
+Otherwise choose exactly one agent whose job clearly covers the message, or "none".
 Choose "none" when:
-- people are talking to each other, or the message is meant for a named person
+- people are talking to each other, or the message is meant for a named person who is not an agent
+- an agent is only mentioned or talked about
 - it is small talk, thanks, an acknowledgement or social chatter
 - no agent's description covers it
 Prefer an agent already helping in this conversation when the message continues that topic.
@@ -83,16 +88,21 @@ def build_messages(req: DecideRequest, history_limit: int) -> list[dict[str, str
 SPEAKER_QUESTION = "speaker"
 
 SPEAKER_INSTRUCTIONS = (
-    "Which single agent in this room should answer the latest message? Nobody tagged "
-    "an agent. Pick the agent whose job clearly covers the message; prefer an agent "
-    "already helping in this conversation when the message continues that topic. "
-    "Pick none when people are talking to each other, the message is for a named "
-    "person, it is small talk or thanks, or no agent's job covers it."
+    "Which single agent in this room should answer the latest message? If the "
+    "latest message speaks to an agent by its name or close to it, with or without "
+    '@ ("hey deploy-bot", "are you here billing bot?", "deploy-bot can you rerun '
+    'it"), that agent should answer. An agent that is only mentioned, talked about, '
+    "quoted, or named inside code or a link is not being spoken to. Otherwise pick "
+    "the agent whose job clearly covers the message; prefer an agent already "
+    "helping in this conversation when the message continues that topic. Pick none "
+    "when people are talking to each other, the message is for a named person who "
+    "is not an agent, it is small talk or thanks, or no agent's job covers it."
 )
 
 NONE_CRITERION = (
     "No agent should answer: people talking to each other, a message meant for a "
-    "named person, small talk, thanks or acknowledgement, or nothing any agent covers."
+    "named person who is not an agent, an agent only mentioned or talked about, "
+    "small talk, thanks or acknowledgement, or nothing any agent covers."
 )
 
 

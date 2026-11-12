@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
+import { serverCompatibility } from '@renderer/features/switch-servers/gateway-compatibility-banner';
 import { ManagedServerPage } from '@renderer/features/switch-servers/managed-server-view';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
@@ -44,6 +45,7 @@ const ServiceStatus = observer(function ServiceStatus({ server }: { server: Swit
   const status = store.statusFor(server.id);
   const unreachable = store.isUnreachable(server.id);
   const version = status?.user?.server?.version ?? null;
+  const compatibility = serverCompatibility(server);
   const state = unreachable
     ? { tone: 'bg-red-500', label: 'Cannot reach the server' }
     : status?.connected
@@ -60,6 +62,11 @@ const ServiceStatus = observer(function ServiceStatus({ server }: { server: Swit
         <p className="text-sm text-foreground">{server.name}</p>
         <p className="font-mono text-xs text-foreground-muted">{server.url}</p>
         {version && <p className="text-sm text-foreground-muted">Version {version}</p>}
+        {compatibility && compatibility.kind !== 'compatible' && (
+          <p role="alert" className="text-sm text-foreground">
+            {compatibility.message}
+          </p>
+        )}
       </div>
     </section>
   );

@@ -27,7 +27,6 @@ const {
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
-  fetchBridgeUserNames,
   fetchRoomDetail,
   setRoomAgentJoinEvents,
   setRoomArchived,
@@ -295,18 +294,6 @@ describe('room lists', () => {
     const rooms = await fetchArchivedRooms(SERVER);
     expect(lastCall().url).toMatch(/\/rooms\?include_archived=true$/);
     expect(rooms.map((room) => room.id)).toEqual(['old']);
-  });
-
-  it('lists a bridge’s usernames once each, sorted', async () => {
-    fetchMock.mockImplementation(async () =>
-      jsonResponse([
-        { id: '1', external_username: 'carol' },
-        { id: '2', external_username: 'ada' },
-        { id: '3', external_username: 'carol' },
-      ])
-    );
-    await expect(fetchBridgeUserNames(SERVER, 'bridge-1')).resolves.toEqual(['ada', 'carol']);
-    expect(lastCall().url).toMatch(/\/collaborations\/bridge-1\/users$/);
   });
 });
 

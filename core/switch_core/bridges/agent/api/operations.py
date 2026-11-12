@@ -38,6 +38,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     UnknownConnectionError,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
 from switch_core.observability.catalogue import (
@@ -85,6 +86,10 @@ def refusal_status(exc: Exception) -> int | None:
         # Operations raise ValueError for "you asked for something that is not
         # there or not allowed yet" - surfaced rather than swallowed.
         return 400
+    if isinstance(exc, BridgeOperationError):
+        # A messaging platform refused what the operation asked of it, and
+        # its reason names what to change.
+        return 502
     return None
 
 

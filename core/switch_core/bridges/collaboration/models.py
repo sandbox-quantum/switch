@@ -192,6 +192,8 @@ class InboundMessage(BaseModel):
     # delivers another bot's posts, and Teams does not mark them, so both leave
     # this False and their cards accept the answer.
     sender_is_app: bool = False
+    # Content keys for the room message, beside its body.
+    extra_content: dict[str, object] = {}
 
 
 class InboundCommand(BaseModel):
@@ -255,7 +257,10 @@ class InboundInteraction(BaseModel):
 
     channel_id: str
     sender_id: str
+    # The handle Switch files the person under, and the name the platform
+    # shows them by, which is what a card says answered it.
     sender_name: str
+    sender_display_name: str
     action_id: str
     value: str
     # The platform's id for the message the control sits on, in the same form

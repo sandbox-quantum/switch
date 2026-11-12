@@ -82,12 +82,14 @@ from switch_core.bridges.collaboration.slack.avatar import (
     slack_icon_argument,
 )
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
 from switch_core.chat_account_links import ACCOUNT_COMMANDS
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
 )
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import UI_ACTION_PREFIX, UISpec
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +459,14 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     field, and reporting it as `platform_error` would send an operator to
     Slack's status page instead of their own token.
     """
+    if _slack_response_field(exc, "error") in _SLACK_AUTH_ERROR_CODES:
+        return "auth_failed"
+    return "platform_error"
+
+
+def _slack_response_field(exc: SlackApiError, key: str) -> Any:
+    """`key` from the body of Slack's refusal, or None when it has no such
+    field or no readable body."""
     # `.response` is not always a mapping. On the async client slack_sdk
     # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
     # whenever the body it was handed is not the JSON the content type claimed
@@ -469,12 +479,57 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     response = getattr(exc, "response", None)
     reader = getattr(response, "get", None)
     try:
-        code = reader("error") if callable(reader) else None
+        return reader(key) if callable(reader) else None
     except Exception:
-        code = None
+        return None
+
+
+def _channel_creation_refused(
+    exc: SlackApiError, channel_name: str, *, named_by_caller: bool
+) -> BridgeOperationError | ValueError:
+    """What to raise for a `conversations.create` that Slack refused and a
+    fresh name will not fix: Slack's error code, and what would fix it.
+
+    A name Slack rejects is the caller's to fix only when `named_by_caller`
+    (a room's own name); a name Switch derived is reported as Slack's refusal.
+    """
+    code = _slack_response_field(exc, "error") or str(exc)
+    prefix = f"Slack would not create channel #{channel_name} ({code})"
+    if named_by_caller and isinstance(code, str) and code.startswith("invalid_name"):
+        return ValueError(
+            f"{prefix}: Slack does not accept that as a channel name. Use a room "
+            "name with lowercase letters, digits, hyphens or underscores."
+        )
+    if code == "missing_scope":
+        needed = _slack_response_field(exc, "needed")
+        scope = f"the {needed} scope" if needed else "a scope it needs"
+        return BridgeOperationError(
+            f"{prefix}: the Switch Slack app lacks {scope}. Add it to the app's "
+            "bot token scopes and reinstall the app in the workspace."
+        )
     if code in _SLACK_AUTH_ERROR_CODES:
-        return "auth_failed"
-    return "platform_error"
+        return BridgeOperationError(
+            f"{prefix}: Slack no longer accepts the bridge's token. Reconnect "
+            "the Slack bridge (reinstall the app, or update its bot token)."
+        )
+    if code == "restricted_action":
+        return BridgeOperationError(
+            f"{prefix}: this workspace does not let the Switch app create "
+            "channels. A Slack admin can allow it under the workspace's "
+            "channel management settings, or bind the room to an existing "
+            "channel instead."
+        )
+    if code == "not_allowed_token_type":
+        return BridgeOperationError(
+            f"{prefix}: the bridge is configured with a token Slack does not "
+            "accept for this. Configure it with the app's bot token (xoxb-)."
+        )
+    if code == "ratelimited":
+        return BridgeOperationError(
+            f"{prefix}: Slack is rate limiting channel creation. Try again in "
+            f"{_retry_after_seconds(exc)} seconds."
+        )
+    return BridgeOperationError(f"{prefix}.")
 
 
 # Where Slack sends a slash command's answers, on its commercial and its
@@ -517,6 +572,9 @@ class SlackAdapter(PlatformAdapter):
 
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
+    #: `reply_broadcast`: the same message in the thread and in the channel,
+    #: so a card threaded under a channel-root message is still seen there.
+    broadcasts_thread_replies: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
     #: `chat.postEphemeral`: in the channel, to one member alone.
     private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
@@ -601,6 +659,9 @@ class SlackAdapter(PlatformAdapter):
         self._seen_ts_max = 1000
         self._channel_type_cache: dict[str, str] = {}
         self._last_user_message_ts: dict[str, str] = {}
+        # The message a card button was pressed on, by message ref, as each
+        # press in flight carried it, held while the press is handled.
+        self._pressed_cards: dict[str, list[dict[str, Any]]] = {}
         # Thread root (thread_ts, else message ts) of the last inbound user
         # message per channel — used to thread the "thinking" indicator into the
         # conversation the agent is responding to.
@@ -774,23 +835,6 @@ class SlackAdapter(PlatformAdapter):
             logger.error("Cannot send message: Slack client not connected")
             return None
 
-        # An explicit thread root (a bridged reply) wins; otherwise DM "lobby"
-        # channels keep their auto-threading under the last user message.
-        thread_ts: str | None = None
-        if thread_root_id:
-            thread_ts = (
-                self._parse_message_ref(thread_root_id)[1]
-                if ":" in thread_root_id
-                else thread_root_id
-            )
-        elif (
-            self._channel_type_cache.get(channel_id) in ("im", "mpim")
-            and not room_wide_mention
-        ):
-            # Not for a room-wide mention: Slack sends no channel-wide alert
-            # from a thread.
-            thread_ts = self._last_user_message_ts.get(channel_id)
-
         agent = await self.agent_rendering(sender_name)
         try:
             result = await self._web_client.chat_postMessage(
@@ -798,7 +842,9 @@ class SlackAdapter(PlatformAdapter):
                 text=content,
                 username=agent.field_label,
                 icon_url=slack_icon_argument(agent.icon_url, sender_name),
-                thread_ts=thread_ts,
+                thread_ts=self._reply_thread_ts(
+                    channel_id, thread_root_id, room_wide_mention
+                ),
                 unfurl_links=False,
                 unfurl_media=False,
             )
@@ -809,6 +855,99 @@ class SlackAdapter(PlatformAdapter):
                 "Failed to send message to Slack channel %s: %s", channel_id, e
             )
             return None
+
+    def _reply_thread_ts(
+        self, channel_id: str, thread_root_id: str | None, room_wide_mention: bool
+    ) -> str | None:
+        # An explicit thread root (a bridged reply) wins; otherwise DM "lobby"
+        # channels keep their auto-threading under the last user message.
+        if thread_root_id:
+            return (
+                self._parse_message_ref(thread_root_id)[1]
+                if ":" in thread_root_id
+                else thread_root_id
+            )
+        if (
+            self._channel_type_cache.get(channel_id) in ("im", "mpim")
+            and not room_wide_mention
+        ):
+            # Not for a room-wide mention: Slack sends no channel-wide alert
+            # from a thread.
+            return self._last_user_message_ts.get(channel_id)
+        return None
+
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as Block Kit, with `fallback_text` as the message text a
+        notification and a client that cannot draw blocks show. A card Slack
+        rejects as malformed is posted as that text (`post_blocks`)."""
+        return await self.post_blocks(
+            channel_id,
+            sender_name,
+            fallback_text,
+            ui_spec_to_blocks(spec, self._card_mrkdwn),
+            self._reply_thread_ts(channel_id, thread_root_id, room_wide_mention),
+            reply_broadcast=False,
+        )
+
+    def _card_mrkdwn(self, text: str) -> str:
+        """Card text as mrkdwn: Slack's own markup in it is escaped first, so
+        only what the Markdown translation writes can mention or link."""
+        return self.translate_outbound(escape_mrkdwn(text))
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Take every answering button off the card and say under it who chose
+        what; a card takes one answer, so only link buttons stay. Edits the
+        message as the press saw it (`_pressed_cards`), leaving the rest of the
+        card as it was."""
+        ref = interaction.message_ref
+        pressed = self._pressed_cards.get(ref) if ref is not None else None
+        message = pressed[-1] if pressed else None
+        if ref is None or message is None:
+            logger.warning(
+                "Cannot mark the card press in %s as done: Slack sent no message "
+                "with it, so its buttons stay pressable",
+                interaction.channel_id,
+            )
+            return
+        chosen = {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"✅ {escape_mrkdwn(interaction.sender_display_name)} chose "
+                    f"{escape_mrkdwn(label)}",
+                }
+            ],
+        }
+        blocks: list[dict[str, Any]] = []
+        for block in message.get("blocks") or []:
+            if block.get("type") == "actions":
+                links = [e for e in block.get("elements") or [] if e.get("url")]
+                if not links:
+                    continue
+                block = {**block, "elements": links}
+            blocks.append(block)
+        blocks.append(chosen)
+        await self._write_blocks(
+            interaction.channel_id, ref, message.get("text") or "", blocks, {}
+        )
 
     async def post_blocks(
         self,
@@ -1401,7 +1540,7 @@ class SlackAdapter(PlatformAdapter):
         )
         if missing is None:
             return True
-        logger.warning(
+        logger.info(
             "Not streaming the activity for turn %s (%s); drawing it as an "
             "ordinary message, which collapses an expanded plan on each redraw.",
             content.turn.turn_id,
@@ -1692,7 +1831,7 @@ class SlackAdapter(PlatformAdapter):
         code = error.response.get("error")
         if code in _STREAM_CLOSED_ERRORS:
             self._streams.pop(message_ref, None)
-            logger.warning(
+            logger.info(
                 "The activity stream %s is no longer accepting appends (%s); "
                 "the turn is drawn as an ordinary message from here.",
                 message_ref,
@@ -2537,31 +2676,52 @@ class SlackAdapter(PlatformAdapter):
             )
 
         is_private = channel_type == "channel_private"
-        channel_name = self.channel_name_for(name)
-
-        try:
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=is_private
-            )
-        except SlackApiError:
-            channel_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=is_private
-            )
-        channel_id: str = result["channel"]["id"]
-        created_name: str = result["channel"].get("name") or channel_name
-        self._channel_name_cache[channel_id] = created_name
+        created = await self._create_conversation(
+            self.channel_name_for(name), is_private=is_private, named_by_caller=True
+        )
+        self._channel_name_cache[created.id] = created.name
 
         try:
             await self._web_client.conversations_setTopic(
-                channel=channel_id, topic=topic
+                channel=created.id, topic=topic
             )
         except SlackApiError as e:
             logger.warning(
-                "Failed to set topic for Slack channel %s: %s", channel_name, e
+                "Failed to set topic for Slack channel %s: %s", created.name, e
             )
 
-        return CreatedChannel(id=channel_id, name=created_name)
+        return created
+
+    async def _create_conversation(
+        self, channel_name: str, *, is_private: bool, named_by_caller: bool
+    ) -> CreatedChannel:
+        """Create a channel named `channel_name`, or that name with a random
+        suffix if Slack says it is taken. Any other refusal raises what
+        `_channel_creation_refused` makes of it."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            result = await self._web_client.conversations_create(
+                name=channel_name, is_private=is_private
+            )
+        except SlackApiError as error:
+            if _slack_response_field(error, "error") != "name_taken":
+                raise _channel_creation_refused(
+                    error, channel_name, named_by_caller=named_by_caller
+                ) from error
+            channel_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
+            try:
+                result = await self._web_client.conversations_create(
+                    name=channel_name, is_private=is_private
+                )
+            except SlackApiError as retry_error:
+                raise _channel_creation_refused(
+                    retry_error, channel_name, named_by_caller=named_by_caller
+                ) from retry_error
+        return CreatedChannel(
+            id=result["channel"]["id"],
+            name=result["channel"].get("name") or channel_name,
+        )
 
     @classmethod
     def channel_name_for(cls, room_name: str) -> str:
@@ -2597,18 +2757,14 @@ class SlackAdapter(PlatformAdapter):
             raise RuntimeError("Slack client not connected")
 
         raw_name = f"{agent_name}-{user_name}"
-        channel_name = re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80]
-        try:
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=True
+        channel_name = (
+            re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80] or "dm"
+        )
+        channel_id = (
+            await self._create_conversation(
+                channel_name, is_private=True, named_by_caller=False
             )
-            channel_id: str = result["channel"]["id"]
-        except SlackApiError:
-            unique_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=unique_name, is_private=True
-            )
-            channel_id = result["channel"]["id"]
+        ).id
 
         try:
             await self._web_client.conversations_invite(
@@ -2866,7 +3022,7 @@ class SlackAdapter(PlatformAdapter):
             label, handle = group.name, group.handle
             try:
                 await self._retire_agent_group(group.group_id, label)
-                logger.warning(
+                logger.info(
                     "Retired Slack user group @%s (%s): its agent no longer exists",
                     handle,
                     group.group_id,
@@ -2880,11 +3036,16 @@ class SlackAdapter(PlatformAdapter):
             if group.ours and not group.disabled and group.agent_id is None
         ]
         if unclaimed:
-            logger.warning(
+            # Said on every bridge start, and the list grows with every agent
+            # ever deleted elsewhere: the count at info, the handles at debug.
+            logger.info(
                 "%d Slack user group(s) marked as Switch agents belong to no agent "
                 "here and were left alone, as they may belong to another Switch "
-                "installation: %s. Disable them in Slack if they are not needed.",
+                "installation. Disable them in Slack if they are not needed.",
                 len(unclaimed),
+            )
+            logger.debug(
+                "Slack user groups belonging to no agent here: %s",
                 ", ".join(f"@{group.handle}" for group in unclaimed),
             )
         return failures
@@ -3689,22 +3850,35 @@ class SlackAdapter(PlatformAdapter):
             return
 
         user = await self._resolve_user_name(user_id)
+        message_ref = f"{channel_id}:{message_ts}" if message_ts else None
         for action in payload.get("actions") or []:
             action_id = str(action.get("action_id", ""))
             value = str(action.get("value") or "")
             if not action_id or not value:
                 continue
-            await self._on_interaction(
-                InboundInteraction(
-                    channel_id=channel_id,
-                    sender_id=user_id,
-                    sender_name=user.name,
-                    action_id=action_id,
-                    value=value,
-                    message_ref=f"{channel_id}:{message_ts}" if message_ts else None,
-                    thread_ref=f"{channel_id}:{thread_ts}" if thread_ts else None,
+            card_ref = message_ref if action_id.startswith(UI_ACTION_PREFIX) else None
+            message = payload.get("message") or {}
+            if card_ref is not None:
+                self._pressed_cards.setdefault(card_ref, []).append(message)
+            try:
+                await self._on_interaction(
+                    InboundInteraction(
+                        channel_id=channel_id,
+                        sender_id=user_id,
+                        sender_name=user.name,
+                        sender_display_name=user.display_name,
+                        action_id=action_id,
+                        value=value,
+                        message_ref=message_ref,
+                        thread_ref=f"{channel_id}:{thread_ts}" if thread_ts else None,
+                    )
                 )
-            )
+            finally:
+                if card_ref is not None:
+                    in_flight = self._pressed_cards[card_ref]
+                    in_flight.remove(message)
+                    if not in_flight:
+                        del self._pressed_cards[card_ref]
 
     async def _handle_member_joined_channel(self, event: dict[str, object]) -> None:
         user_id = str(event.get("user", ""))
@@ -4032,7 +4206,7 @@ class SlackAdapter(PlatformAdapter):
                 continue
             size = file.get("size")
             if isinstance(size, int) and size > self._max_attachment_bytes:
-                logger.warning(
+                logger.info(
                     "Slack attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,

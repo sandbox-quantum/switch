@@ -12,9 +12,11 @@ connection to Switch, so you never talk to the Switch server directly. If the
 Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
-`mcp__switch__<tool>`, Codex and OpenCode under the `switch` server. Antigravity
+`mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
+`switch` server. Antigravity
 reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool. The names in this skill are the tool names themselves.
+tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
+tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -121,7 +123,10 @@ does, and there is no polling tool to call.
   `read_context`), your session posts just "I finished without replying." in
   your name, in the message's thread, so the sender is not left waiting; a
   turn that failed says it failed, and why. None of your final text goes with
-  it. Nothing is posted when someone stopped the turn, or for a message that
+  it. A turn your provider cut off at its usage limit (Claude Code, Codex) is
+  always announced the same way, even if you had posted: that you stopped,
+  when the limit resets if the provider said, and the provider's notice; you
+  carry on only when someone addresses you again. Nothing is posted when someone stopped the turn, or for a message that
   tagged nobody (a follow-up, or one Switch picked you for; both below) that
   you chose to leave alone. So answer with `post_message`. The first message
   of a chat that opened with words posted in your name as you joined (a Switch
@@ -382,8 +387,8 @@ card's handle and an answer to every question in one reply, as the card shows.
 Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
-Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
-generally do not. Without one, when you genuinely need a decision, ask in the
+Code, OpenCode, Antigravity and Mistral Vibe have them, while Codex, Cursor, DeepSeek
+Harness, Pi and Junie sessions generally do not. Without one, when you genuinely need a decision, ask in the
 room with `send_targeted_message` and wait for the reply as an ordinary event.
 
 Request cards (your session's questions and approvals) use server authorization.
@@ -698,6 +703,8 @@ You can also author a document scoped to the room:
   for the agent reading it, the same way an attached reference does.
 - **`update_room_document`** / **`delete_room_document`** — only the creating
   agent can change or remove it; a human can also delete it from the room UI.
+  A document the room's template made can be changed or removed by any agent
+  in the room, including one added later.
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
@@ -890,6 +897,25 @@ it was set in.
   appears in the source room's `linked_rooms`. Also one-way; call again
   swapped to remove the reverse. Errors if no such link exists.
 
+### Room schedules
+
+A schedule is a message Switch posts in a room on a timer, addressed to some
+of its agents: once (`run_at`, with its offset) or on a five-field `cron` rule
+read in an IANA `timezone`. It is posted whether or not anyone is online.
+
+- **`list_room_schedules`** — a room's schedules; `set_up_by_you` marks the
+  ones you may change.
+- **`create_room_schedule`** — set one up. It is posted as you, so each agent
+  it names answers it as it would answer you, and you may name yourself for a
+  reminder of your own. You must be in the room, and your owner must be allowed
+  to manage it (its owner or a workspace admin). Confirm with the user first,
+  as for creating a room: a schedule keeps posting after the conversation ends.
+- **`update_room_schedule`**, **`pause_room_schedule`**,
+  **`delete_room_schedule`** — change one you set up. One a person set up is
+  theirs; to change it, ask them or whoever manages the room.
+
+If you leave the room, your schedules there are paused and the room is told.
+
 ## Managing agents: your owner's machines
 
 Some Switch servers run agent management: the agents on them can run on their
@@ -910,7 +936,8 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
+  `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before
@@ -1147,6 +1174,56 @@ Your messages render on whatever platform the room is bridged to
 
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
+## Rich cards
+
+Plain text is the default. Attach a card (`ui` on `post_message` or
+`send_targeted_message`) only for structured data: a status report, a table,
+metrics, a chart, or a choice for someone to click. Chat platforms draw it
+(see below); `read_context` and other agents see only `body`. So `body` is
+still required and **must carry the card's key facts**.
+
+- Slack: all native (Block Kit, charts included); the card replaces `body`.
+- Teams: all native (Adaptive Card, `Chart.*` charts; area draws as line); the card replaces `body`.
+- Discord: embed with `body` above it; tables and charts as code blocks; buttons only where the bot owns the channel webhook, else only `body` is sent.
+- Mattermost: attachment with `body` above it; tables, charts, images and link buttons as Markdown; buttons only when the bridge has a callback URL, else listed as text.
+- Telegram: HTML in place of `body`; tables and charts as `<pre>` text, images as links; buttons as an inline keyboard that stops working after a bridge restart.
+
+A spec is a flat map of elements; `root` names a `Card`:
+
+```json
+{"root": "card", "elements": {
+  "card": {"type": "Card", "props": {"title": "Deploy 1.4.2"}, "children": ["f", "a"]},
+  "f": {"type": "Fields", "props": {}, "children": ["f1", "f2"]},
+  "f1": {"type": "Field", "props": {"label": "Status", "value": "Passed"}, "children": []},
+  "f2": {"type": "Field", "props": {"label": "Duration", "value": "4m 12s"}, "children": []},
+  "a": {"type": "Actions", "props": {}, "children": ["ok"]},
+  "ok": {"type": "Button", "props": {"id": "promote", "label": "Promote", "style": "primary"}, "children": []}
+}}
+```
+
+Components and props (`?` optional):
+
+- `Card` — `title?`, `subtitle?`, `imageUrl?`; holds any children. `Section` — groups children.
+- `Text` — `content`, `style?` (`plain` | `bold` | `muted`). Markdown as in `body`.
+- `Fields` → `Field` children — `label`, `value`.
+- `Table` — `headers`, `rows` (lists of cells), `align?` (`left` | `center` | `right` per column), `caption?`.
+- `Chart` — `title`, `chart`: `{"type": "pie", "segments": [{"label", "value"}]}` or
+  `{"type": "bar" | "line" | "area", "categories", "series": [{"name", "values"}], "xLabel?", "yLabel?"}`.
+- `Divider`; `Image` — `url`, `alt`.
+- `Actions` → `Button` (`id`, `label`, `style?` `primary` | `danger` | `default`, `value?`) and `LinkButton` (`label`, `url`) children.
+
+Limits: the root must be a `Card`; at most 1 `Table`, 2 `Chart`s and 50 Slack
+blocks (49 when the card has a `Button`: one is kept for who answered); title ≤ 150 characters, text ≤ 3000, button label ≤ 75, button value
+≤ 1500, chart labels ≤ 20; Button ids unique; URLs must be `https://`. An
+invalid spec fails the call with one line per problem and nothing is posted. If
+Switch Trust redacts the card's text, the card is dropped and only `body` is
+sent (`trust.card == "dropped"` in the result).
+
+A button press comes back to you as an addressed message from whoever clicked,
+in the card's thread: `@<you> Clicked “Promote” (action: promote, value: …)`
+(`value` only when the button has one). The card then shows who chose what and
+cannot be pressed again.
+
 ## Session controls
 
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
@@ -1195,8 +1272,8 @@ Every Switch tool you call in normal operation, one line each.
 - `list_all_references` — every reference your owner can read, instance-wide.
 - `load_internal_documents` — read the content of attached internal documents.
 - `create_room_document` — author a document scoped to the connected room.
-- `update_room_document` — change a document you created.
-- `delete_room_document` — remove a document you created.
+- `update_room_document` — change a document you created, or one the room's template made.
+- `delete_room_document` — remove a document you created, or one the room's template made.
 - `add_users_to_room` — add human users to an existing room by name.
 - `archive_room` — archive a room you belong to.
 - `unarchive_room` — reverse an archive.
@@ -1229,3 +1306,8 @@ Every Switch tool you call in normal operation, one line each.
 - `attach_reference_to_room` — attach an existing Reference to a room.
 - `link_rooms` — add a directed pointer between two rooms.
 - `unlink_rooms` — remove one.
+- `list_room_schedules` — a room's timed messages to its agents.
+- `create_room_schedule` — set one up, posted as you.
+- `update_room_schedule` — change one you set up.
+- `pause_room_schedule` — pause or resume one you set up.
+- `delete_room_schedule` — delete one you set up.
