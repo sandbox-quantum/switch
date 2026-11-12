@@ -8,15 +8,16 @@ import {
   TextField,
 } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
-import {
-  type AuthConfig,
-  type OidcLoginOption,
-  fetchAuthConfig,
-  oidcLoginUrl,
-} from "../../data/api";
+import { type AuthConfig, fetchAuthConfig, oidcLoginUrl } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { readPendingInvite } from "../../data/sessionState";
-import AuthLayout from "./AuthLayout";
+import {
+  handedOffRecently,
+  noteHandOff,
+  readPendingInvite,
+  signedOutOnPurpose,
+} from "../../data/sessionState";
+import AuthLayout, { AuthLoading } from "./AuthLayout";
+import { leaveFor, onlyWayIn, ssoButtons } from "./handOff";
 import signInProviderLogo from "./SignInProviderLogo";
 
 type ConfigState =
@@ -24,21 +25,17 @@ type ConfigState =
   | { status: "loaded"; config: AuthConfig }
   | { status: "failed"; message: string };
 
-/** The identity provider's buttons: one per configured login option, each
- * going straight to that way of signing in, or a single one (no id) that
- * leaves the choice to the provider. */
-function ssoButtons(config: AuthConfig): { id: string | null; label: string }[] {
-  if (config.oidc_login_options.length === 0) {
-    return [{ id: null, label: config.oidc_provider_label ?? "SSO" }];
-  }
-  return config.oidc_login_options.map((option: OidcLoginOption) => ({
-    id: option.id,
-    label: option.label,
-  }));
+/** What this tab knew on arriving at sign-in: whether its person signed out
+ * on purpose, and whether it is back from the identity provider too soon for
+ * the sign-in to have finished. Either one keeps the page from handing off. */
+interface Arrival {
+  signedOut: boolean;
+  didNotFinish: boolean;
 }
 
-function subtitleFor(config: AuthConfig | null): string {
+function subtitleFor(config: AuthConfig | null, arrival: Arrival): string {
   if (readPendingInvite()) return "You've been invited to a workspace. Sign in to accept.";
+  if (arrival.signedOut) return "You're signed out.";
   if (config?.oidc_enabled && config.signup_mode === "open") {
     const via =
       config.oidc_login_options.length === 0
@@ -56,6 +53,10 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [configState, setConfigState] = useState<ConfigState>({ status: "loading" });
+  const [arrival] = useState<Arrival>(() => ({
+    signedOut: signedOutOnPurpose(),
+    didNotFinish: handedOffRecently(Date.now()),
+  }));
 
   useEffect(() => {
     let cancelled = false;
@@ -97,10 +98,21 @@ export default function LoginPage() {
   // Without the configuration the password form is offered, so password
   // sign-in stays reachable, and the warning above it says why.
   const passwordLoginEnabled = config?.password_login_enabled ?? true;
-  const sso = config?.oidc_enabled ? ssoButtons(config) : [];
+  const sso = config ? ssoButtons(config) : [];
+  const only = config ? onlyWayIn(config) : null;
+  const handOffTo =
+    only !== null && !arrival.signedOut && !arrival.didNotFinish ? oidcLoginUrl(only.id) : null;
+
+  useEffect(() => {
+    if (handOffTo === null) return;
+    noteHandOff(Date.now());
+    leaveFor(handOffTo);
+  }, [handOffTo]);
+
+  if (handOffTo !== null) return <AuthLoading />;
 
   return (
-    <AuthLayout title="Sign in to Switch" subtitle={subtitleFor(config)} footer={null}>
+    <AuthLayout title="Sign in to Switch" subtitle={subtitleFor(config, arrival)} footer={null}>
       {configState.status === "loading" ? (
         <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
           <CircularProgress size={24} aria-label="Loading the ways to sign in" />
@@ -111,6 +123,12 @@ export default function LoginPage() {
             <Alert severity="warning">
               Could not load the ways to sign in, so only email and password are offered:{" "}
               {configState.message}
+            </Alert>
+          )}
+          {arrival.didNotFinish && (
+            <Alert severity="warning">
+              Signing in didn't finish, so you're back here. Try again, and if this keeps
+              happening, check that this browser allows cookies for this site.
             </Alert>
           )}
           {error && <Alert severity="error">{error}</Alert>}
@@ -158,6 +176,7 @@ export default function LoginPage() {
               fullWidth
               startIcon={signInProviderLogo(option.id, option.label)}
               onClick={() => {
+                noteHandOff(Date.now());
                 window.location.href = oidcLoginUrl(option.id);
               }}
             >

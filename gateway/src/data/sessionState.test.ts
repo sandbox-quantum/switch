@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Session, TenantMembership } from "./api";
 import {
+  HAND_OFF_WINDOW_MS,
   appView,
   clearPendingInvite,
+  clearSignInMarks,
+  handedOffRecently,
+  markSignedOut,
+  noteHandOff,
+  signedOutOnPurpose,
   deliveryNotice,
   inviteTokenFrom,
   inviteUrl,
@@ -107,5 +113,29 @@ describe("deliveryNotice", () => {
     const notice = deliveryNotice("not_requested", null);
     expect(notice.severity).toBe("success");
     expect(notice.text).not.toContain("null");
+  });
+});
+
+describe("sign-in marks", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  it("counts a hand-off as recent only within the window", () => {
+    expect(handedOffRecently(1_000_000)).toBe(false);
+    noteHandOff(1_000_000);
+    expect(handedOffRecently(1_000_000 + HAND_OFF_WINDOW_MS - 1)).toBe(true);
+    expect(handedOffRecently(1_000_000 + HAND_OFF_WINDOW_MS)).toBe(false);
+  });
+
+  it("keeps a sign-out across tabs until someone signs in", () => {
+    markSignedOut();
+    expect(window.localStorage.getItem("switch.signedOut")).not.toBeNull();
+    expect(signedOutOnPurpose()).toBe(true);
+    noteHandOff(1);
+    clearSignInMarks();
+    expect(signedOutOnPurpose()).toBe(false);
+    expect(handedOffRecently(1)).toBe(false);
   });
 });

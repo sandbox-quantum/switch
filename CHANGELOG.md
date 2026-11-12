@@ -258,6 +258,13 @@ version of their own to them without also giving them a release of their own.
 - **The workspace picker lists workspaces by organization.** Someone in
   workspaces of more than one organization sees them under each organization's
   name, in the same order as the top bar's workspace switcher.
+- **Sign-in goes straight to the identity provider when it is the only way
+  in.** With password login off and a single sign-in button, the dashboard
+  hands off to the provider's own sign-in page without showing its own first.
+  After someone signs out on purpose it waits for them to ask instead, since the
+  provider's session outlives Switch's and would sign them straight back in;
+  and if they come back from the provider still signed out, it stops and says
+  signing in didn't finish rather than sending them round again.
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
   `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
   password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.

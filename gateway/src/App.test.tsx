@@ -5,7 +5,20 @@ import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import type { FeatureFlagKey } from "./data/featureFlags";
-import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
+import {
+  clearPendingInvite,
+  markSignedOut,
+  noteHandOff,
+  signedOutOnPurpose,
+  storePendingInvite,
+} from "./data/sessionState";
+import { leaveFor } from "./pages/auth/handOff";
+
+// jsdom navigates nowhere; the tests watch where sign-in would have gone.
+vi.mock("./pages/auth/handOff", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pages/auth/handOff")>()),
+  leaveFor: vi.fn(),
+}));
 
 const acme: TenantMembership = {
   id: "t1",
@@ -172,6 +185,7 @@ afterEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   vi.unstubAllGlobals();
+  vi.mocked(leaveFor).mockClear();
 });
 
 describe("AppRoutes", () => {
@@ -215,16 +229,102 @@ describe("AppRoutes", () => {
     ).toBeTruthy();
   });
 
-  it("leaves out the password form where only single sign-on is on", async () => {
+  it("goes straight to the identity provider when it is the only way in", async () => {
     mockFetch({
       ...signedOut,
       "/auth/config": [200, { ...authConfig, password_login_enabled: false, signup_mode: "invite_only" }],
     });
+    renderAt("/rooms");
+    await waitFor(() => expect(leaveFor).toHaveBeenCalledWith("/gateway/auth/oidc/login"));
+    expect(leaveFor).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
+    expect(screen.getByLabelText("Loading")).toBeTruthy();
+  });
+
+  it("goes straight to the single configured login option", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [
+        200,
+        {
+          ...authConfig,
+          password_login_enabled: false,
+          oidc_login_options: [{ id: "google", label: "Google" }],
+        },
+      ],
+    });
     renderAt("/");
-    expect(await screen.findByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    await waitFor(() =>
+      expect(leaveFor).toHaveBeenCalledWith("/gateway/auth/oidc/login?provider=google"),
+    );
+  });
+
+  it("offers a choice instead of going anywhere when there is one to make", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [
+        200,
+        {
+          ...authConfig,
+          password_login_enabled: false,
+          oidc_login_options: [
+            { id: "google", label: "Google" },
+            { id: "microsoft", label: "Microsoft" },
+          ],
+        },
+      ],
+    });
+    renderAt("/");
+    expect(await screen.findByRole("button", { name: "Continue with Google" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
     expect(screen.queryByText("or")).toBeNull();
-    expect(screen.getByText("Manage your agents, rooms and resources.")).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("does not hand someone who signed out back to the identity provider", async () => {
+    markSignedOut();
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/");
+    expect(await screen.findByText("You're signed out.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("remembers a sign-out, so the sign-in page that follows waits to be asked", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/logout": [200, { ok: true }],
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByText("You're signed out.")).toBeTruthy();
+    expect(signedOutOnPurpose()).toBe(true);
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("forgets the sign-out once someone is signed in again", async () => {
+    markSignedOut();
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    expect(signedOutOnPurpose()).toBe(false);
+  });
+
+  it("stops handing off, and says so, when the last sign-in did not finish", async () => {
+    noteHandOff(Date.now());
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/");
+    expect(await screen.findByText(/Signing in didn't finish, so you're back here/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
   });
 
   it("offers the password form, and says why, when the ways to sign in cannot be read", async () => {
