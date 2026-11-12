@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 
 import pytest
@@ -400,8 +401,7 @@ def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
 
 # The endpoint and scope values come from GitLab's published MCP
 # documentation and authorization-server metadata; the registration shape
-# was measured live on 2026-10-31 (two POSTs to /oauth/register, see the
-# shipped entry's comment). Live-connect QA is still pending.
+# was measured (see the shipped entry's comment).
 def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     definition = CATALOG["gitlab"].definition
     oauth = definition.auth.oauth
@@ -423,6 +423,12 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     assert oauth.revocation_url == "https://gitlab.com/oauth/revoke"
     assert oauth.prompt is None
     assert oauth.revocation_discovered is False
+    # A check with a made-up code shows neither the redirect URI nor the
+    # application's scopes, so the operator is told what to confirm.
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    assert {"mcp", "read_api", "read_user", "api"} <= set(
+        re.findall(r"[a-z_]+", oauth.unchecked)
+    )
     assert definition.auth.refresh == "rotating"
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == (
@@ -434,10 +440,9 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
         ("gitlab", "https://gitlab.com/api/v4/mcp")
     ]
     # The operator's application carries the REST scopes beside `mcp`:
-    # read_api is what keeps a read grant from writing, api is what lets
-    # a write grant change anything, and read_user covers the identity
-    # read below — the scopes a dynamically registered client is never
-    # given, which is why the entry is static.
+    # read_api at the read level, api at the write level, and read_user
+    # for the identity read below at both — the scopes a dynamically
+    # registered client is never given, which is why the entry is static.
     assert definition.access is not None and definition.access.write is not None
     assert definition.access.read.scopes == ["mcp", "read_api", "read_user"]
     assert definition.access.write.scopes == ["mcp", "api", "read_user"]
