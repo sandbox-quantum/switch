@@ -9,10 +9,10 @@ auth:
   refresh: rotating
   oauth:
     # GitLab offers dynamic client registration, but not enough of it.
-    # Measured on 2026-10-29: POST https://gitlab.com/oauth/register
-    # answers scope "mcp" and grant_types ["authorization_code"] whatever
-    # the request asks for — asking for read_api, read_user and the
-    # refresh_token grant changes neither. A client registered that way
+    # POST https://gitlab.com/oauth/register answers scope "mcp" and
+    # grant_types ["authorization_code"] whatever the request asks for —
+    # asking for read_api, read_user and the refresh_token grant changes
+    # neither. A client registered that way
     # can never call the identity endpoint below, and with no refresh
     # grant its sign-ins could not be renewed. So each server's operator
     # registers a GitLab application instead, with the scopes mcp,
@@ -61,9 +61,9 @@ access:
   # person can delete. read_user covers the identity read at both levels.
   # Every connection is granted the write level: a sign-in asks for it, and
   # GitLab's consent page cannot be partly declined. The read level would
-  # not stop writes either: measured on 2026-11-12, a token with mcp,
-  # read_api and read_user wrote a comment through the MCP server's
-  # save_note, while the REST API refused it (403 insufficient_scope).
+  # not stop writes either: GitLab's MCP server lets a token with mcp,
+  # read_api and read_user write (a comment through save_note), and only
+  # the REST API refuses it.
   # The tools themselves pass through unclassified.
   read:
     scopes: [mcp, read_api, read_user]

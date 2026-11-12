@@ -400,8 +400,8 @@ def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
 
 
 # The endpoint and scope values come from GitLab's published MCP
-# documentation and authorization-server metadata; the registration shape
-# was measured (see the shipped entry's comment).
+# documentation and authorization-server metadata; the shipped entry's
+# comment explains the registration shape.
 def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     definition = CATALOG["gitlab"].definition
     oauth = definition.auth.oauth
