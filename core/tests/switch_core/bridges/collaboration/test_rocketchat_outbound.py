@@ -11,9 +11,13 @@ import pytest
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AgentPresentation,
+    RichContentFailed,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.models import BridgeOperationError
+from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
+    CreatedChannel,
+)
 from switch_core.bridges.collaboration.rocketchat.adapter import RocketChatAdapter
 from switch_core.bridges.collaboration.rocketchat.markup import (
     from_rocketchat,
@@ -148,6 +152,37 @@ async def test_once_names_go_in_the_text_redraws_keep_them_there(
     [update] = fake.called("chat.update")
     label = adapter.escape_label_for_body("Coder [bot]")
     assert update.body["text"].startswith(f"**{label}**: ")
+
+
+async def test_a_refusal_not_about_the_permission_costs_only_that_message_its_name(
+    adapter: RocketChatAdapter, fake: FakeRocketChat, caplog: pytest.LogCaptureFixture
+) -> None:
+    def post(call: Call) -> Any:
+        if call.body.get("avatar"):
+            return refused(400, "Invalid avatar URL", "error-invalid-avatar")
+        return {"message": {"_id": "plain"}}
+
+    fake.on("chat.postMessage", post)
+    assert await adapter.send_message(ROOM, "coder", "first") == "plain"
+    await adapter.send_message(ROOM, "coder", "second")
+
+    # Both messages are offered under the agent's name and icon first.
+    assert len([b for b in _posts(fake) if "alias" in b]) == 2
+    assert "message-impersonate" not in caplog.text
+    assert "Invalid avatar URL" in caplog.text
+
+
+async def test_a_refused_redraw_is_raised_for_the_caller_to_fall_back(
+    adapter: RocketChatAdapter, fake: FakeRocketChat
+) -> None:
+    fake.on("chat.update", lambda _: refused(400, "[error-message-not-found]"))
+    turn = TurnUpsert(
+        type="turn.upsert", turn_id="turn-1", status="running", command_id=None
+    )
+    with pytest.raises(RichContentFailed, match="error-message-not-found"):
+        await adapter.update_rich(
+            ROOM, "coder", "gone", TurnActivity(items=[], turn=turn), None
+        )
 
 
 async def test_a_message_refused_for_another_reason_is_reported_not_posted(
@@ -338,7 +373,7 @@ async def test_a_room_is_created_with_a_name_rocket_chat_accepts(
     room = await adapter.create_channel(
         "Q3 Planning: Ops/Infra!", "quarterly", channel_type=channel_type
     )
-    assert room == "new-room"
+    assert room == CreatedChannel(id="new-room", name="q3-planning-ops-infra")
     assert fake.called(method)[0].body == {
         "name": "q3-planning-ops-infra",
         "extraData": {"topic": "quarterly"},
@@ -397,6 +432,16 @@ async def test_people_who_cannot_be_added_are_handed_back(
         {"roomId": ROOM, "userId": "ada-id"},
         {"roomId": ROOM, "userId": "eve-id"},
     ]
+
+
+async def test_nobody_is_invited_into_a_direct_message(
+    adapter: RocketChatAdapter, fake: FakeRocketChat, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake.on("rooms.info", lambda _: {"room": {"_id": "dm", "t": "d"}})
+    left_out = await adapter.add_users_to_channel("dm", ["ada"], ["ada-id"])
+    assert left_out == ["ada-id"]
+    assert fake.called("groups.invite") == fake.called("channels.invite") == []
+    assert "of type 'd'" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -480,6 +525,11 @@ async def test_the_directory_is_searched_without_the_bot(
         ("a *b* c *d*", "a _b_ c _d_"),
         ("[see](https://h.example/*a*/b) *x*", "[see](https://h.example/*a*/b) _x_"),
         ("https://h.example/*a* *x*", "https://h.example/*a* _x_"),
+        ("*.py and *.js", "*.py and *.js"),
+        ("src/*/lib/*", "src/*/lib/*"),
+        ("files: *.md*", "files: *.md*"),
+        ("see *this*.", "see _this_."),
+        ('a *"quoted"* word', 'a _"quoted"_ word'),
     ],
 )
 def test_switch_markdown_is_rendered_for_rocket_chat(
@@ -494,6 +544,7 @@ def test_switch_markdown_is_rendered_for_rocket_chat(
         ("*bold* and _italic_", "**bold** and _italic_"),
         ("**bold**", "**bold**"),
         ("`*code*`", "`*code*`"),
+        ("rm src/*/build/*", "rm src/*/build/*"),
     ],
 )
 def test_rocket_chat_markdown_is_read_into_switch(

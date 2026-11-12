@@ -7,6 +7,8 @@ them over. The REST calls a message leads to go to a fake server.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -80,14 +82,15 @@ def fake() -> FakeRocketChat:
 @pytest.fixture
 async def wired(
     fake: FakeRocketChat, monkeypatch: pytest.MonkeyPatch
-) -> tuple[RocketChatAdapter, Received]:
+) -> AsyncIterator[tuple[RocketChatAdapter, Received]]:
     adapter = await started_adapter(fake, monkeypatch)
     received = Received()
     adapter._on_message = received.message
     adapter._on_command = received.command
     adapter._on_user_joined = received.user_joined
     adapter._on_app_joined = received.app_joined
-    return adapter, received
+    yield adapter, received
+    await adapter.stop()
 
 
 async def _deliver(
@@ -578,6 +581,33 @@ async def test_a_failed_message_keeps_its_room_unread_until_read_back(
     # Read back, the room is marked read as messages arrive again.
     await _deliver(adapter, _message(_id="next"))
     assert len(fake.called("subscriptions.read")) == 2
+
+
+async def test_a_failed_message_is_read_back_without_waiting_for_a_reconnect(
+    wired: tuple[RocketChatAdapter, Received],
+    fake: FakeRocketChat,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, received = wired
+    monkeypatch.setattr(adapter_module, "_UNRELAYED_RETRY_SECONDS", (0.0,))
+    lost = {**_message(_id="lost"), "ts": _ago(minutes=1)}
+    fake.on(
+        "subscriptions.getOne",
+        lambda call: {
+            "subscription": _subscription(rid=call.params["roomId"], ls=_ago(minutes=5))
+        },
+    )
+    fake.on(
+        "chat.syncMessages", lambda _: {"result": {"updated": [lost], "deleted": []}}
+    )
+    received.fail_next = True
+    with pytest.raises(RuntimeError):
+        await _deliver(adapter, _message(_id="lost"))
+
+    await asyncio.gather(*adapter._retries.values())
+    assert [m.message_ref for m in received.messages] == ["lost"]
+    assert [c.body for c in fake.called("subscriptions.read")] == [{"rid": ROOM}]
+    assert adapter._unrelayed == set()
 
 
 async def test_reading_back_stops_a_room_at_its_first_failure(

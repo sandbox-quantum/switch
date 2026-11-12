@@ -10,12 +10,14 @@ import pytest
 from pydantic import ValidationError
 
 from switch_core.bridges.collaboration.models import BridgeCredentialError
+from switch_core.bridges.collaboration.rocketchat import adapter as adapter_module
 from switch_core.bridges.collaboration.rocketchat.adapter import (
     RocketChatAdapter,
     RocketChatConnectionConfig,
 )
 from switch_core.bridges.collaboration.rocketchat.realtime import RealtimeLoginRefused
 from switch_core.bridges.collaboration.rocketchat.rest import RocketChatApiError
+from switch_core.outbound import OutboundPolicy
 from tests.switch_core.bridges.collaboration.rocketchat_fakes import (
     BOT_ID,
     SERVER,
@@ -177,3 +179,39 @@ async def test_an_unreachable_server_is_named(monkeypatch: pytest.MonkeyPatch) -
     )
     with pytest.raises(BridgeCredentialError, match="Could not reach Rocket.Chat"):
         await RocketChatAdapter.verify_credentials(_raw())
+
+
+async def test_start_refuses_an_account_that_lost_the_bot_role_and_closes_its_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = FakeRocketChat()
+    server.on("me", lambda _: {"_id": BOT_ID, "username": "ada", "roles": ["user"]})
+    closed: list[httpx.AsyncClient] = []
+
+    def client(policy: OutboundPolicy, **kwargs: Any) -> httpx.AsyncClient:
+        made = server.client(**kwargs)
+        real_close = made.aclose
+
+        async def aclose() -> None:
+            closed.append(made)
+            await real_close()
+
+        made.aclose = aclose  # type: ignore[method-assign]
+        return made
+
+    monkeypatch.setattr(adapter_module, "guarded_async_client", client)
+    adapter = RocketChatAdapter(
+        config=RocketChatConnectionConfig.model_validate(_raw())
+    )
+    adapter.set_outbound_policy(OutboundPolicy.parse(""))
+    with pytest.raises(BridgeCredentialError, match="ada is not a bot user"):
+        await adapter.start(_ignore, _ignore, _ignore, _ignore, _ignore)
+    assert len(closed) == 1
+    assert adapter._rest is None
+    assert (
+        RocketChatAdapter.classify_failure(BridgeCredentialError("x")) == "auth_failed"
+    )
+
+
+async def _ignore(_: object) -> None:
+    return None

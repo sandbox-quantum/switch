@@ -22,9 +22,12 @@ _VERBATIM = re.compile(
     r"|https?://\S+)"  # a bare URL
 )
 
-# One asterisk around a run that neither starts nor ends with a space, and is
-# not half of a `**`. The space rule keeps a `* item` bullet and `2 * 3` out.
-_SINGLE_STAR = re.compile(r"(?<![*\w])\*(?![\s*])([^*\n]*?[^\s*])\*(?![*\w])")
+# One asterisk around a run that starts and ends with a word character (or
+# quote or bracket), and is not half of a `**`. That keeps a `* item` bullet,
+# `2 * 3` and wildcards (`*.md*`, `src/*/lib/*`) out.
+_SINGLE_STAR = re.compile(
+    r"(?<![*\w/.])\*(?=[\w\"'(\[])([^*\n]*?[\w\"')\].!?])\*(?![*\w/])"
+)
 
 
 def to_rocketchat(markdown: str) -> str:

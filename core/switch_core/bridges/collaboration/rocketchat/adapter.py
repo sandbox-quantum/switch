@@ -20,8 +20,9 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     PlatformAdapter,
     RichContent,
+    RichContentFailed,
 )
-from switch_core.bridges.collaboration.discord.chunking import chunk_message
+from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -29,6 +30,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -69,8 +71,9 @@ _CONNECT_WAIT_SECONDS = 15.0
 
 # Messages read back after a reconnect start this far before the room was last
 # marked read. A message that reached the server between being relayed and the
-# room being marked read is then read back too; one relayed twice is dropped by
-# Switch, which keys every inbound post on its id.
+# room being marked read is then read back too. One relayed twice is written
+# once: Switch keys every inbound post and command on its id, and adding someone
+# already in a room to it again changes nothing.
 _REPLAY_OVERLAP = timedelta(minutes=2)
 
 # How far back a reconnect reads at most. A room's last-read mark can be far
@@ -100,6 +103,14 @@ _ADDED = "au"
 # Rocket.Chat room names allow letters, digits, `-`, `_` and `.` by default
 # (`UTF8_Channel_Names_Validation`).
 _ROOM_NAME_INVALID = re.compile(r"[^a-z0-9_.-]+")
+
+# How Rocket.Chat refuses an `alias` or `avatar` from a user without
+# `message-impersonate`: "Not enough permission".
+_IMPERSONATE_REFUSED = re.compile(r"permission|not-allowed", re.IGNORECASE)
+
+# How long a room whose message Switch could not take waits before it is read
+# back, moving to the next delay each time it fails again and staying at the last.
+_UNRELAYED_RETRY_SECONDS = (5.0, 30.0, 120.0, 300.0)
 
 
 def _split_server_url(value: str) -> tuple[str, str, int | None, str]:
@@ -169,6 +180,20 @@ def _timestamp(value: object) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _check_bot_account(me: dict[str, Any], bot_user_id: str) -> None:
+    """Refuse an account that cannot speak for agents: one without the bot
+    role, or one that has been deactivated."""
+    username = me.get("username", bot_user_id)
+    if "bot" not in me.get("roles", []):
+        raise BridgeCredentialError(
+            f"{username} is not a bot user. Give the account the bot role "
+            "in Administration → Users: only a bot may post under each "
+            "agent's name."
+        )
+    if me.get("active") is False:
+        raise BridgeCredentialError(f"The Rocket.Chat user {username} is deactivated.")
 
 
 def _room_name(name: str) -> str:
@@ -250,21 +275,11 @@ class RocketChatAdapter(PlatformAdapter):
                     f"Could not reach Rocket.Chat at {config.server_url} to check "
                     f"the credentials: {exc}"
                 ) from exc
-        username = me.get("username", config.bot_user_id)
-        if "bot" not in me.get("roles", []):
-            raise BridgeCredentialError(
-                f"{username} is not a bot user. Give the account the bot role "
-                "in Administration → Users: only a bot may post under each "
-                "agent's name."
-            )
-        if me.get("active") is False:
-            raise BridgeCredentialError(
-                f"The Rocket.Chat user {username} is deactivated."
-            )
+        _check_bot_account(me, config.bot_user_id)
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
-        if isinstance(exc, RealtimeLoginRefused):
+        if isinstance(exc, RealtimeLoginRefused | BridgeCredentialError):
             return "auth_failed"
         if isinstance(exc, RocketChatApiError):
             return "auth_failed" if exc.status == 401 else "platform_error"
@@ -303,9 +318,11 @@ class RocketChatAdapter(PlatformAdapter):
         # room id -> what kind of room it is, which never changes.
         self._channel_types: dict[str, ChannelType] = {}
         # Rooms with a message Switch could not take. Their read mark stays
-        # where it is until a reconnect has read that message back, since
-        # marking the room read for a later message would skip it.
+        # where it is until that message has been read back, by a retry in
+        # `_retries` or a reconnect, since marking the room read for a later
+        # message would skip it.
         self._unrelayed: set[str] = set()
+        self._retries: dict[str, asyncio.Task[None]] = {}
         # Set once Rocket.Chat refuses a message under an agent's name and
         # takes it with the name in the text: the bot lacks
         # `message-impersonate`, and every message from then on is sent the
@@ -335,12 +352,18 @@ class RocketChatAdapter(PlatformAdapter):
             base_url=self._config.server_url,
             timeout=_REQUEST_TIMEOUT_SECONDS,
         )
-        self._rest = RocketChatRest(
+        rest = RocketChatRest(
             client,
             user_id=self._config.bot_user_id,
             token=self._config.personal_access_token,
         )
-        me = await self._rest.get("me")
+        try:
+            me = await rest.get("me")
+            _check_bot_account(me, self._config.bot_user_id)
+        except BaseException:
+            await rest.aclose()
+            raise
+        self._rest = rest
         self._bot_username = str(me.get("username", ""))
         self._connected.set()
 
@@ -369,6 +392,10 @@ class RocketChatAdapter(PlatformAdapter):
 
     async def stop(self) -> None:
         self._connected.clear()
+        retries = list(self._retries.values())
+        for task in retries:
+            task.cancel()
+        await asyncio.gather(*retries, return_exceptions=True)
         if self._session is not None:
             await self._session.stop()
             self._session = None
@@ -414,6 +441,7 @@ class RocketChatAdapter(PlatformAdapter):
                 )
             except Exception:
                 self._unrelayed.add(room_id)
+                self._schedule_read_back(room_id)
                 raise
             if relayed and room_id not in self._unrelayed:
                 await self._mark_read(room_id)
@@ -465,6 +493,44 @@ class RocketChatAdapter(PlatformAdapter):
                     "next reconnect",
                     room_id,
                 )
+
+    def _schedule_read_back(self, room_id: str) -> None:
+        """Read the room back soon, so a message whose relay failed while the
+        socket stayed up is not left waiting for the next reconnect."""
+        if room_id not in self._retries:
+            self._retries[room_id] = asyncio.create_task(self._retry_read_back(room_id))
+
+    async def _retry_read_back(self, room_id: str) -> None:
+        attempt = 0
+        try:
+            while room_id in self._unrelayed:
+                delay = _UNRELAYED_RETRY_SECONDS[
+                    min(attempt, len(_UNRELAYED_RETRY_SECONDS) - 1)
+                ]
+                attempt += 1
+                await asyncio.sleep(delay)
+                if room_id not in self._unrelayed:
+                    return
+                try:
+                    found = await self._api.get("subscriptions.getOne", roomId=room_id)
+                    await self._read_back(room_id, found["subscription"])
+                except Exception:
+                    logger.exception(
+                        "Could not read back Rocket.Chat room %s after a message "
+                        "in it failed to reach Switch; trying again",
+                        room_id,
+                    )
+                    continue
+                if room_id in self._unrelayed:
+                    # The room has no read mark to read back from.
+                    self._unrelayed.discard(room_id)
+                    logger.error(
+                        "A message in Rocket.Chat room %s did not reach Switch "
+                        "and cannot be read back: the bot has never read the room",
+                        room_id,
+                    )
+        finally:
+            self._retries.pop(room_id, None)
 
     async def _read_back(self, room_id: str, subscription: dict[str, Any]) -> None:
         last_read = _timestamp(subscription.get("ls"))
@@ -791,9 +857,10 @@ class RocketChatAdapter(PlatformAdapter):
         Setting a message's name and icon takes the `message-impersonate`
         permission, which the bot role has unless an admin took it away. A
         post refused while carrying them is tried again with the agent named
-        in the text instead. If that one is taken, the permission is what was
-        missing, and from then on agents are named in the text; if it is
-        refused too, the refusal was about something else.
+        in the text instead. Only a refusal that names the missing permission,
+        followed by the retry being taken, switches every later message to
+        the second way; any other refusal (a bad icon URL on one agent, say)
+        costs only that message its name and icon.
         """
         agent = await self.agent_rendering(sender_name)
         if not self._names_in_text:
@@ -819,12 +886,22 @@ class RocketChatAdapter(PlatformAdapter):
             )
         except (RocketChatApiError, httpx.HTTPError) as error:
             return self._not_posted(channel_id, error)
-        if not self._names_in_text:
+        if self._names_in_text:
+            return ref
+        if _IMPERSONATE_REFUSED.search(str(refused)):
             self._names_in_text = True
             logger.warning(
                 "Rocket.Chat refused a message under %s's name (%s), so agents "
                 "are named in their messages' text instead. Grant the bot role "
                 "the message-impersonate permission to show them as senders.",
+                sender_name,
+                refused,
+            )
+        else:
+            logger.warning(
+                "Rocket.Chat refused a message in room %s under %s's name and "
+                "icon (%s); it was posted with the name in its text instead",
+                channel_id,
                 sender_name,
                 refused,
             )
@@ -839,18 +916,19 @@ class RocketChatAdapter(PlatformAdapter):
         thread_root_id: str | None,
     ) -> None:
         """Redraw in place, keeping the agent's name in the text where
-        `send_message` had to put it there."""
-        if not self._names_in_text:
-            await super().update_rich(
-                channel_id, agent_name, message_ref, content, thread_root_id
-            )
-            return
-        label = await self.agent_label_for_body(agent_name)
-        await self.update_message(
-            channel_id,
-            message_ref,
-            self._named(label, self.rich_fallback_text(content)),
-        )
+        `send_message` had to put it there. A refused edit is raised as
+        `RichContentFailed`, so the caller can fall back."""
+        text = self.rich_fallback_text(content)
+        if self._names_in_text:
+            text = self._named(await self.agent_label_for_body(agent_name), text)
+        try:
+            await self._update(channel_id, message_ref, text)
+        except (RocketChatApiError, httpx.HTTPError) as error:
+            raise RichContentFailed(
+                f"Rocket.Chat could not update message {message_ref} in room "
+                f"{channel_id}: {error}",
+                text=text,
+            ) from error
 
     @staticmethod
     def _named(label: str, body: str) -> str:
@@ -891,7 +969,7 @@ class RocketChatAdapter(PlatformAdapter):
         later part refused is logged, and the parts already posted stand.
         """
         first: str | None = None
-        for part in chunk_message(text, _MAX_MESSAGE):
+        for part in split_markdown(text, _MAX_MESSAGE):
             body: dict[str, Any] = {"roomId": channel_id, "text": part, **identity}
             if thread_root_id:
                 body["tmid"] = thread_root_id
@@ -965,17 +1043,20 @@ class RocketChatAdapter(PlatformAdapter):
             )
         return str(posted["message"]["_id"])
 
+    async def _update(self, channel_id: str, message_ref: str, text: str) -> None:
+        # An edit is one message, so text too long for one is cut, not split.
+        if len(text) > _MAX_MESSAGE:
+            text = text[: _MAX_MESSAGE - 1] + "…"
+        await self._api.post(
+            "chat.update",
+            {"roomId": channel_id, "msgId": message_ref, "text": text},
+        )
+
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
-        text = new_content
-        if len(text) > _MAX_MESSAGE:
-            text = text[: _MAX_MESSAGE - 1] + "…"
         try:
-            await self._api.post(
-                "chat.update",
-                {"roomId": channel_id, "msgId": message_ref, "text": text},
-            )
+            await self._update(channel_id, message_ref, new_content)
         except (RocketChatApiError, httpx.HTTPError) as error:
             logger.error(
                 "Rocket.Chat did not update message %s in room %s: %s",
@@ -1064,7 +1145,8 @@ class RocketChatAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         method, key = (
             ("channels.create", "channel")
             if channel_type == "channel_public"
@@ -1079,11 +1161,12 @@ class RocketChatAdapter(PlatformAdapter):
             raise BridgeOperationError(
                 f"Rocket.Chat would not create the room {body['name']!r}: {error}"
             ) from error
-        room_id = str(created[key]["_id"])
+        room = created[key]
+        room_id = str(room["_id"])
         self._channel_types[room_id] = (
             "channel_public" if key == "channel" else "channel_private"
         )
-        return room_id
+        return CreatedChannel(id=room_id, name=str(room.get("name") or body["name"]))
 
     async def create_dm_channel(
         self,
@@ -1142,6 +1225,15 @@ class RocketChatAdapter(PlatformAdapter):
             room_type = str((await self._room(channel_id)).get("t", ""))
         except (RocketChatApiError, httpx.HTTPError) as error:
             logger.warning("Could not read Rocket.Chat room %s: %s", channel_id, error)
+            return list(user_external_ids)
+        if room_type not in ("c", "p"):
+            logger.warning(
+                "Cannot add %s to Rocket.Chat room %s: it is a room of type %r, "
+                "and only a channel takes new members",
+                ", ".join(user_names),
+                channel_id,
+                room_type,
+            )
             return list(user_external_ids)
         method = "channels.invite" if room_type == "c" else "groups.invite"
         left_out: list[str] = []
