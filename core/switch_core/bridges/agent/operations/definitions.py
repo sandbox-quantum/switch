@@ -2458,7 +2458,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         {id, name, description, icon_url, display_name, connector_type,
         connection_model, tool_count, model_count, owner_id, owner_name,
         oauth_client_id, created_at, parent_agent_id, known_agent_type,
-        known_agent_options, agent_type, can_manage_agents,
+        known_agent_options, agent_type, instructions, can_manage_agents,
         integration_profile, tools, models, rooms, sessions, children,
         addressing}.
         `icon_url` is null when the agent has no icon set. `display_name` is
@@ -2466,6 +2466,9 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         Address agents by `name`; `display_name` routes nothing.
         `can_manage_agents` is whether the agent's owner lets it list their
         machines and create agents on them, where agent management runs.
+        `instructions` is the saved managed-agent instruction text, not the
+        prompt loaded in a running session. Null means no managed definition;
+        an empty string means a managed agent with no instructions set.
         `addressing` is who may address the agent, and so who may answer
         its questions and approvals in a room (outside one, only its owner):
         {policy} for another agent, {policy, rules} when you look yourself

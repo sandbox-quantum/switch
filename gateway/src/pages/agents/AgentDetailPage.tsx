@@ -188,6 +188,40 @@ export default function AgentDetailPage() {
           canEdit={canManage}
           onUpdated={refetch}
         />
+        {agent.instructions != null && (
+          <>
+            <Divider />
+            <Box>
+              <Typography variant="h6" sx={{ mb: 1, fontSize: "1rem", fontWeight: 600 }}>
+                Managed Instructions
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                The saved instructions that define this managed agent across sessions.
+              </Typography>
+              {agent.instructions.trim() ? (
+                <Box
+                  component="pre"
+                  sx={{
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: "var(--hoot-background-subtle, rgba(0, 0, 0, 0.04))",
+                    fontSize: "0.85rem",
+                    overflowX: "auto",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    ...MONO_SX,
+                  }}
+                >
+                  {agent.instructions}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic" }}>
+                  No custom instructions set (using provider defaults).
+                </Typography>
+              )}
+            </Box>
+          </>
+        )}
         <AgentManagementSection
           agent={agent}
           canEdit={agent.can_change_manage_agents}

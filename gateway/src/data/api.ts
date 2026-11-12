@@ -124,6 +124,11 @@ export interface AgentSessionDetail {
 
 export interface AgentDetail extends AgentSummary {
   agent_type: string;
+  /**
+   * Saved managed-agent instructions, not a running session's prompt.
+   * null means no managed definition; "" means no instructions set.
+   */
+  instructions?: string | null;
   integration_profile: Record<string, unknown>;
   tools: AgentToolSummary[];
   models: AgentModelSummary[];

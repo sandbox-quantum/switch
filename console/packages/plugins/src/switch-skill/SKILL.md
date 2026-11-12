@@ -513,6 +513,8 @@ none of it is needed to take part in a conversation.
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent; a
   room your owner cannot read is not named in it.
+  `instructions` returns the managed agent's saved instructions (`""` if empty,
+  null if unmanaged), not the prompt currently loaded in a running session.
   `addressing` says who may address it: on yourself, the policy and its rules
   with the people, agents and rooms they name; on another agent, the policy
   alone.
@@ -1282,8 +1284,8 @@ Every Switch tool you call in normal operation, one line each.
 - `update_template`: change a template you saved.
 - `delete_template`: delete a template you saved.
 - `list_agents` — every agent on the instance, with optional filters.
-- `get_agent_detail`: one agent's config, capabilities, sessions and who may
-  address it.
+- `get_agent_detail`: one agent's config, saved managed instructions,
+  capabilities, sessions and who may address it.
 - `update_agent_detail` — change an agent you own.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
