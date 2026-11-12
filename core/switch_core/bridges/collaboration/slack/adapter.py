@@ -3834,6 +3834,21 @@ class SlackAdapter(PlatformAdapter):
             # App posts (e.g. Datadog) often carry no top-level text — the body
             # lives in Block Kit blocks or legacy attachments.
             text = self._extract_rich_text(event)
+
+        # Forwarded messages deliver the shared original in an attachment
+        # (marked with is_share, or carrying text and author_name). Append
+        # their body additively to whatever commentary was typed.
+        attachments = event.get("attachments")
+        if isinstance(attachments, list):
+            share_bodies: list[str] = []
+            for att in attachments:
+                if isinstance(att, dict) and self._is_share_attachment(att):
+                    body = self._extract_attachment_text(att)
+                    if body and body not in text:
+                        share_bodies.append(body)
+            if share_bodies:
+                joined_shares = "\n\n".join(share_bodies)
+                text = f"{text}\n\n{joined_shares}" if text.strip() else joined_shares
         slack_channel_type = str(event.get("channel_type", ""))
         channel_type = self._to_channel_type(slack_channel_type)
 
@@ -4085,6 +4100,33 @@ class SlackAdapter(PlatformAdapter):
 
     # ── User resolution ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_share_attachment(att: dict[str, object]) -> bool:
+        """Check if a Slack attachment represents a shared or forwarded message."""
+        return bool(
+            att.get("is_share") is True
+            or att.get("is_msg_unfurl") is True
+            or (att.get("text") and att.get("author_name"))
+        )
+
+    @staticmethod
+    def _extract_attachment_text(att: dict[str, object]) -> str:
+        """Extract human-readable text from a Slack attachment dict."""
+        parts: list[str] = []
+        pretext = att.get("pretext")
+        if pretext:
+            parts.append(str(pretext))
+        title = att.get("title")
+        if title:
+            link = att.get("title_link")
+            # Emit Slack link syntax so translate_inbound renders it
+            # as a markdown link (the title is clickable in Slack).
+            parts.append(f"<{link}|{title}>" if link else str(title))
+        body = att.get("text") or att.get("fallback")
+        if body:
+            parts.append(str(body))
+        return "\n".join(p.strip() for p in parts if str(p).strip())
+
     def _extract_rich_text(self, event: dict[str, object]) -> str:
         """Recover the readable body of an app post that has no top-level text.
 
@@ -4133,18 +4175,9 @@ class SlackAdapter(PlatformAdapter):
                 for att in attachments:
                     if not isinstance(att, dict):
                         continue
-                    pretext = att.get("pretext")
-                    if pretext:
-                        parts.append(str(pretext))
-                    title = att.get("title")
-                    if title:
-                        link = att.get("title_link")
-                        # Emit Slack link syntax so translate_inbound renders it
-                        # as a markdown link (the title is clickable in Slack).
-                        parts.append(f"<{link}|{title}>" if link else str(title))
-                    body = att.get("text") or att.get("fallback")
+                    body = self._extract_attachment_text(att)
                     if body:
-                        parts.append(str(body))
+                        parts.append(body)
 
         return "\n".join(p.strip() for p in parts if str(p).strip())
 
