@@ -201,6 +201,12 @@ class TestUnavailableReplyRouting:
             "opencode": "opencode auth login",
             "antigravity": "agy acp --login",
             "cursor": "agent login",
+            "deepseek-harness": "dsh web",
+            "pi": "pi",
+            "copilot": "copilot login",
+            "kiro": "kiro-cli login",
+            "mistral-vibe": "vibe-acp --setup",
+            "junie": "junie",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(

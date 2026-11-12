@@ -179,11 +179,13 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Read account identity from an authenticated GET or an MCP tool result."""
+    """Read account identity from an authenticated GET, an MCP tool result,
+    or the vendor's RFC 7662 introspection answer for the token."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
+    introspection: bool = False
     account_id: (
         Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
         | Annotated[
@@ -195,8 +197,15 @@ class ConnectionIdentity(BaseModel):
 
     @model_validator(mode="after")
     def _one_source(self) -> "ConnectionIdentity":
-        if (self.url is None) == (self.mcp_tool is None):
-            raise ValueError("identity needs exactly one of url or mcp_tool")
+        sources = (self.url is not None, self.mcp_tool is not None, self.introspection)
+        if sum(sources) != 1:
+            raise ValueError(
+                "identity needs exactly one of url, mcp_tool or introspection"
+            )
+        if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
+            self.account_id
+        ):
+            raise ValueError("account_id lists a path twice")
         return self
 
 
@@ -352,11 +361,18 @@ class TokenPolicy(BaseModel):
     null for a credential that never expires (a pasted key): Switch could
     neither take such a credential back nor wait for it to lapse, so it is
     never handed to an agent.
+
+    `note` is shown to people beside how long agent access lasts, for a
+    vendor that limits it further (Sentry's renewed tokens outlive the cap,
+    so agents have Sentry for up to an hour after each sign-in).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     kind: Literal["minted", "pass_through"]
     max_lifetime: Annotated[int, Field(ge=300, le=7 * 24 * 3600)] | None
+    note: str | None = Field(
+        default=None, min_length=1, max_length=400, pattern=r"^[^\n]+$"
+    )
 
     @property
     def issued_to_agents(self) -> bool:
@@ -758,6 +774,20 @@ class ConnectionDefinition(BaseModel):
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
         oauth = self.auth.oauth
+        # The introspection endpoint is the one the authorization server's
+        # metadata advertises, so it is found where the others are.
+        if (
+            self.auth.identity is not None
+            and self.auth.identity.introspection
+            and (
+                self.mcp is None
+                or (oauth is not None and oauth.authorization_url is not None)
+            )
+        ):
+            raise ValueError(
+                "introspection asks the authorization server an MCP server names, "
+                "so the endpoints are discovered"
+            )
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.
         if self.mcp is None and oauth is not None:

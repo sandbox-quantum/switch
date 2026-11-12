@@ -3,6 +3,7 @@
   "state": "stopped",
   "desired_state": "stopped",
   "stop_reason": "idle",
+  "stopped_by_admin": false,
   "sleeping": true,
   "revision": 2,
   "instance_type": "c7i.2xlarge",

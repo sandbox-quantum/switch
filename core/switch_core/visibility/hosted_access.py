@@ -54,6 +54,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
+    admin_stopped,
     bump_revision,
     owner_paused,
     workspace_on,
@@ -395,7 +396,9 @@ class HostedAccess:
                 machine = await store.live_for_owner(session, user_id)
                 if machine is not None:
                     machine = await store.locked(session, machine.id)
-                if machine is not None:
+                # An administrator's stop stays: it already holds the box
+                # stopped, and the mark on the user outlasts its release.
+                if machine is not None and not admin_stopped(machine):
                     if machine.stop_reason != "paused":
                         machine.desired_state = "stopped"
                         machine.stop_reason = "paused"

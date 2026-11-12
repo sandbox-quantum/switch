@@ -79,7 +79,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.standing import organization_admin_of
-from switch_core.db.stores.hosted_machine_store import owner_stopped
+from switch_core.db.stores.hosted_machine_store import admin_stopped, owner_stopped
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
@@ -475,6 +475,7 @@ class CloudMachineState:
     state: str
     revision: int
     owner_stopped: bool
+    admin_stopped: bool
     #: Whether the machine is meant to run now: woken by this message, or already up.
     starting: bool = False
     #: A v2 box (`backend` "box"), not a v1 machine.
@@ -488,6 +489,7 @@ class CloudMachineState:
             owner_stopped=owner_stopped(machine),
             starting=machine.desired_state == "running",
             box=machine.backend == "box",
+            admin_stopped=admin_stopped(machine),
         )
 
 
@@ -557,6 +559,15 @@ def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> st
     return (
         f"My device, **{machine}**, is stopped, so I can't answer. "
         f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
+    )
+
+
+def _cloud_machine_admin_stopped_message(machine: str) -> str:
+    """A managed agent whose Switch cloud machine a server administrator
+    stopped: neither a message nor its owner can start it again."""
+    return (
+        f"My device, **{machine}**, was stopped by a server administrator, so "
+        "I can't answer until they release it."
     )
 
 
@@ -1650,6 +1661,8 @@ class AgentRecipient:
             # (`wake_lifted_machine`, security): anything else revoked stays
             # gone, and a block still in force refuses the wake.
             machine = await self._wake_lifted_box(binding.controller_id)
+            if machine is not None and machine.admin_stopped:
+                return _cloud_machine_admin_stopped_message(binding.controller_name)
             if (
                 machine is None
                 or not machine.starting
@@ -1662,6 +1675,8 @@ class AgentRecipient:
             )
         if not controllers.is_live(self.agent.id):
             machine = await self._wake_cloud_machine(binding.controller_id)
+            if machine is not None and machine.admin_stopped:
+                return _cloud_machine_admin_stopped_message(binding.controller_name)
             if not process_hosted_v2() and (
                 machine is None or machine.state == "error" or machine.box
             ):

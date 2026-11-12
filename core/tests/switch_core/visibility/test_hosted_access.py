@@ -1267,3 +1267,32 @@ async def test_a_partial_turn_off_on_a_shared_box_is_a_one_off_stop_not_a_mark(
         await block_reason(rls_harness.restricted, user_id, x)
         is StopReason.TURNED_OFF_BY_ADMIN
     )
+
+
+async def test_a_pause_and_resume_leave_an_administrator_s_stop_in_place(
+    rls_harness: RLSHarness,
+) -> None:
+    """An administrator's stop holds the box: the pause is marked on the user,
+    and neither it nor the resume takes the box's label, so nothing wakes it
+    until the administrator releases it."""
+    user_id, operator_id, tenants = await _world(rls_harness)
+    machine_id, _ = await _box(rls_harness, user_id, tenants)
+    async with rls_harness.owner() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        CloudMachineStore().admin_stop(machine, datetime.now(UTC))
+        await session.commit()
+    access = _access(rls_harness, FakeRevoker())
+
+    await access.pause(actor_id=operator_id, user_id=user_id, reason="Misuse")
+    machine = await _machine(rls_harness, machine_id)
+    assert (machine.desired_state, machine.stop_reason) == ("stopped", "admin")
+    assert (
+        await block_reason(rls_harness.restricted, user_id, None)
+        is StopReason.PAUSED_BY_SWITCH
+    )
+
+    await access.resume(actor_id=operator_id, user_id=user_id, reason="Cleared")
+    machine = await _machine(rls_harness, machine_id)
+    assert (machine.desired_state, machine.stop_reason) == ("stopped", "admin")
+    for task in list(access.pending):
+        await task

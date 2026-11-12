@@ -554,7 +554,7 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off', 'admin')",
             name="ck_cloud_machine_stop_reason",
         ),
         CheckConstraint(
@@ -799,7 +799,7 @@ class AuditEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
-class OrganizationAuditEvent(OrganizationScoped, Base):
+class OrganizationAuditEvent(Base):
     """One change to an organization as a whole: its members, their roles,
     its workspaces. The organization's counterpart of `AuditEvent`, with the
     same rules: written in the transaction of the change it records,
@@ -809,6 +809,10 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
     A change inside one workspace stays in that workspace's `audit_events`;
     this holds what no single workspace owns, so an organization's admins
     read it in one place whichever workspace the change was made from.
+
+    `organization_id` carries no foreign key, as `AuditEvent.tenant_id`
+    does not: deleting an organization leaves its history behind. It is still
+    scoped by the policy (`rls_ddl.ORGANIZATION_HISTORY_TABLES`).
     """
 
     __tablename__ = "organization_audit_events"
@@ -820,6 +824,9 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
         ),
     )
 
+    organization_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default=require_organization_id
+    )
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
@@ -1358,6 +1365,77 @@ class RoomLink(TenantScoped, Base):
     )
 
 
+class RoomSchedule(TenantScoped, Base):
+    """A message Switch posts in a room on a timer, addressed to some of its agents.
+
+    The timing is either a recurring `cron` rule read in `timezone`, or a
+    one-off `run_at`; exactly one is set. `next_run_at` is when it fires next,
+    and None once a one-off has fired. A run is claimed by moving
+    `next_run_at` on (`RoomScheduleStore.claim`), so one process posts it
+    however many are running.
+
+    The message is posted on behalf of `author_id`, whoever last set what the
+    schedule says or to whom, so each agent applies its policy to that person,
+    as for a template's kickoff. When an agent set it through its Switch tools,
+    `author_agent_id` names that agent and `author_id` is its owner: the
+    message then speaks as the agent, and the schedule goes with it.
+    """
+
+    __tablename__ = "room_schedules"
+    __table_args__ = (
+        Index("ix_room_schedules_tenant_id", "tenant_id"),
+        Index("ix_room_schedules_room_id", "room_id"),
+        Index("ix_room_schedules_next_run_at", "next_run_at"),
+        CheckConstraint(
+            "(cron IS NULL) <> (run_at IS NULL)", name="room_schedules_one_timing"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_schedules_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "author_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_room_schedules_author_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    author_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", name="fk_room_schedules_author", ondelete="CASCADE"),
+        nullable=False,
+    )
+    author_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    cron: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Tasks ──────────────────────────────────────────────────────────────────────
 
 
@@ -1544,6 +1622,12 @@ class Document(TenantScoped, Base):
     )
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Made by a room template's `docs:`: any agent in the room may change or
+    # delete it. A NULL `created_by_agent_id` alone does not say this, since
+    # deleting the agent that wrote a document NULLs it too.
+    from_template: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     write_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2546,6 +2630,9 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The press that answered the card this message carries, `{"by", "label"}`;
+    # null until a press is delivered. A card takes one answer.
+    card_answer: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -3945,6 +4032,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     turn_id: Mapped[str] = mapped_column(Text, nullable=False)
     item_id: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+    subagent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)

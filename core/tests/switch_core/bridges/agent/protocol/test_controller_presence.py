@@ -544,7 +544,9 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="stopped", revision=4, owner_stopped=False),
+            CloudMachineState(
+                state="stopped", revision=4, owner_stopped=False, admin_stopped=False
+            ),
         )
 
         first = await client._reply_when_unavailable_here(object(), agent, meta, "u")
@@ -565,7 +567,9 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="stopped", revision=4, owner_stopped=True),
+            CloudMachineState(
+                state="stopped", revision=4, owner_stopped=True, admin_stopped=False
+            ),
         )
         reply = await client._reply_when_unavailable_here(
             object(), _agent("auto", "auto_session"), meta, "u"
@@ -589,7 +593,13 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="error", revision=4, owner_stopped=False, box=True),
+            CloudMachineState(
+                state="error",
+                revision=4,
+                owner_stopped=False,
+                admin_stopped=False,
+                box=True,
+            ),
         )
         reply = await client._reply_when_unavailable_here(
             object(), _agent("auto", "auto_session"), meta, "u"
@@ -610,13 +620,36 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="error", revision=4, owner_stopped=False),
+            CloudMachineState(
+                state="error", revision=4, owner_stopped=False, admin_stopped=False
+            ),
         )
         reply = await client._reply_when_unavailable_here(
             object(), _agent("auto", "auto_session"), meta, "u"
         )
         assert reply is not None
         assert reply.startswith("My device, **machine**, is offline or reconnecting")
+
+    async def test_a_cloud_machine_an_administrator_stopped_names_them(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        client = _client(
+            registry,
+            "auto",
+            CloudMachineState(
+                state="error", revision=4, owner_stopped=False, admin_stopped=True
+            ),
+        )
+        reply = await client._reply_when_unavailable_here(
+            object(), _agent("auto", "auto_session"), meta, "u"
+        )
+        assert reply == (
+            "My device, **machine**, was stopped by a server administrator, so "
+            "I can't answer until they release it."
+        )
 
     async def test_an_offline_or_removed_machine_is_named_not_console(
         self,
@@ -664,7 +697,11 @@ class TestTheAgentClientsReplies:
             registry,
             "auto",
             lifted=CloudMachineState(
-                state="stopped", revision=5, owner_stopped=False, starting=True
+                state="stopped",
+                revision=5,
+                owner_stopped=False,
+                admin_stopped=False,
+                starting=True,
             ),
         )
 
@@ -687,13 +724,25 @@ class TestTheAgentClientsReplies:
         [
             # A paused or turned-off owner: `wake_controller_machine` refuses, the box stays asleep.
             CloudMachineState(
-                state="stopped", revision=5, owner_stopped=False, starting=False
+                state="stopped",
+                revision=5,
+                owner_stopped=False,
+                admin_stopped=False,
+                starting=False,
             ),
             CloudMachineState(
-                state="error", revision=5, owner_stopped=False, starting=True
+                state="error",
+                revision=5,
+                owner_stopped=False,
+                admin_stopped=False,
+                starting=True,
             ),
             CloudMachineState(
-                state="stopped", revision=5, owner_stopped=True, starting=False
+                state="stopped",
+                revision=5,
+                owner_stopped=True,
+                admin_stopped=False,
+                starting=False,
             ),
             # Any other revoke (the owner's removal, a replaced or revived controller), an own
             # machine or a removed box: `wake_lifted_machine` gives nothing.
@@ -717,6 +766,38 @@ class TestTheAgentClientsReplies:
             "@owner — my device, **machine**, has been removed from Switch"
         )
         assert client._cloud_waking_notices == set()
+
+    @pytest.mark.usefixtures("hosted_v2_on")
+    async def test_a_revoked_controllers_box_an_administrator_stopped_names_them(
+        self,
+    ) -> None:
+        """A pause revoked the box's controller and was lifted, but an
+        administrator holds the box stopped: the room hears that, not that the
+        device was removed."""
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        registry.controllers.revoke_controller(CONTROLLER)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        client = _client(
+            registry,
+            "auto",
+            lifted=CloudMachineState(
+                state="stopped",
+                revision=5,
+                owner_stopped=False,
+                admin_stopped=True,
+                box=True,
+            ),
+        )
+        reply = await client._reply_when_unavailable_here(
+            object(), _agent("auto", "auto_session"), meta, "u"
+        )
+        assert reply == (
+            "My device, **machine**, was stopped by a server administrator, so "
+            "I can't answer until they release it."
+        )
 
     @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_follow_up_wakes_a_revoked_controllers_box_too(self) -> None:
@@ -1084,7 +1165,11 @@ class TestWithHostedAgentsV2Off:
             registry,
             "auto",
             lifted=CloudMachineState(
-                state="stopped", revision=5, owner_stopped=False, starting=True
+                state="stopped",
+                revision=5,
+                owner_stopped=False,
+                admin_stopped=False,
+                starting=True,
             ),
         )
         reply = await client._reply_when_unavailable_here(
@@ -1102,7 +1187,9 @@ class TestWithHostedAgentsV2Off:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="error", revision=4, owner_stopped=False),
+            CloudMachineState(
+                state="error", revision=4, owner_stopped=False, admin_stopped=False
+            ),
         )
         reply = await client._reply_when_unavailable_here(
             object(), _agent("auto", "auto_session"), self._meta(), "u"
@@ -1117,7 +1204,11 @@ class TestWithHostedAgentsV2Off:
             registry,
             "auto",
             CloudMachineState(
-                state="stopped", revision=4, owner_stopped=False, box=True
+                state="stopped",
+                revision=4,
+                owner_stopped=False,
+                admin_stopped=False,
+                box=True,
             ),
         )
         reply = await client._reply_when_unavailable_here(
@@ -1133,7 +1224,9 @@ class TestWithHostedAgentsV2Off:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="stopped", revision=4, owner_stopped=False),
+            CloudMachineState(
+                state="stopped", revision=4, owner_stopped=False, admin_stopped=False
+            ),
         )
         reply = await client._reply_when_unavailable_here(
             object(), _agent("auto", "auto_session"), self._meta(), "u"

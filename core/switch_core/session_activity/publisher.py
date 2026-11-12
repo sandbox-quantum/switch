@@ -743,6 +743,16 @@ class AgentSessionActivityPublisher:
                 return
             decided_by, responder = await answerer_of(db, row, self._bridge_id)
             turn_row = await self._turn_row(db, agent_id, session_id, row.turn_id)
+            if (
+                post is None
+                and _known_root_turn(turn_row)
+                and not self._adapter.broadcasts_thread_replies
+            ):
+                # Asked in the channel, and this platform cannot show a
+                # threaded card there as well: the card belongs where the
+                # question was, not in a thread whose answers are the only
+                # ones it would hear.
+                target = replace(target, thread_ref=None)
             online = self._agent_online(agent_id)
             asking = post is None and row.state == "open"
             recipient = (

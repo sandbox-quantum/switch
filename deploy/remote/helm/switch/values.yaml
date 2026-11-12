@@ -547,7 +547,9 @@ switchCore:
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy, buddy_slack_handoff, decision_routing, gateway_v2
+  # switch_buddy, buddy_slack_handoff, decision_routing,
+  # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
+  # Matrix, Rocket.Chat, Webex), gateway_v2
   # (development and staging only until the new dashboard layout is finished),
   # hosted_awake_budgets and hosted_cloud_files (hosted agents v2).
   featureFlags:

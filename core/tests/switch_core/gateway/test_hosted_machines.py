@@ -12,7 +12,10 @@ import pytest
 from sqlalchemy import select
 
 from switch_core.db.models import TENANT_ZERO_ID, AgentController, CloudMachine
-from switch_core.db.stores.hosted_machine_store import MACHINES_FULL
+from switch_core.db.stores.hosted_machine_store import (
+    MACHINE_STOPPED_BY_ADMIN,
+    MACHINES_FULL,
+)
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.hosted_machines import WORKSPACE_CONNECT_TIMEOUT
@@ -453,6 +456,58 @@ async def test_ensure_wakes_a_sleeping_machine_but_not_one_its_owner_stopped(
         "owner",
         3,
     )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"state": "stopped"},
+        {"state": "error", "error_code": "machine_needs_attention"},
+    ],
+)
+@pytest.mark.parametrize("action", ["stop", "start", "retry"])
+async def test_the_owner_cannot_undo_an_administrator_s_stop(
+    controller_app,  # noqa: F811
+    values,
+    action,
+):
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        desired_state="stopped",
+        stop_reason="admin",
+        **values,
+    )
+    refused = await _lifecycle(app, action, 1)
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": MACHINE_STOPPED_BY_ADMIN}
+    ensured = await _ensure(app)
+    assert ensured.status_code == 200, ensured.text
+    assert (
+        ensured.json()["desired_state"],
+        ensured.json()["stop_reason"],
+        ensured.json()["stopped_by_admin"],
+        ensured.json()["revision"],
+    ) == ("stopped", "owner", True, 1)
+
+
+async def test_an_owner_with_a_stale_view_is_told_of_the_administrator_s_stop(
+    controller_app,  # noqa: F811
+):
+    """The administrator's stop moved the revision past the owner's view."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=2,
+    )
+    refused = await _lifecycle(app, "start", 1)
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": MACHINE_STOPPED_BY_ADMIN}
 
 
 async def test_ensure_returns_a_machine_in_error_as_it_is(controller_app):  # noqa: F811

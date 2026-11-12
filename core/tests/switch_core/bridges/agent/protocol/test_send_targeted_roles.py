@@ -12,6 +12,7 @@ from switch_core.bridges.agent.protocol.types import (
     RoomWideMentionStatus,
     SentMessage,
 )
+from switch_core.ui_spec import UISpec
 
 
 class _FakeSession:
@@ -107,6 +108,7 @@ def _build_service(
         *,
         extra_content: dict[str, object] | None = None,
         client_txn_id: str | None = None,
+        ui: UISpec | None = None,
     ) -> SentMessage:
         sent_bodies.append(body)
         return SentMessage(event_id="evt-1", trust=None)

@@ -7,6 +7,7 @@ import pytest
 from switch_core import hosted_v2
 from switch_core.bridges.agent.api.operations import refusal_status
 from switch_core.bridges.agent.protocol.agent_core import AgentClientNotRunning
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.room_service import MembershipFixed
 
 
@@ -27,3 +28,7 @@ def test_an_agent_host_not_yet_running_is_503_only_with_v2_on(
     """With v2 off, upstream's 400, as for any ValueError."""
     monkeypatch.setattr(hosted_v2, "_process_on", on)
     assert refusal_status(AgentClientNotRunning("starting")) == status
+
+
+def test_a_platform_refusal_is_a_bad_gateway_with_its_reason() -> None:
+    assert refusal_status(BridgeOperationError("Slack said no")) == 502

@@ -16,9 +16,11 @@ from switch_core.db.models import (
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
     MACHINE_PAUSED,
+    MACHINE_STOPPED_BY_ADMIN,
     MACHINE_TURNED_OFF,
     CloudMachineConflict,
     CloudMachineStore,
+    admin_stopped,
     claim_conflict,
     idle_sleeping,
     lock_claims,
@@ -196,14 +198,8 @@ async def machine_summary(
         "machine_id": machine.id,
         "state": state,
         "desired_state": machine.desired_state,
-        # Console's machine schema takes only `idle` or `owner`, so pause and
-        # turn-off read as the owner's stop here: stopped, and a start is refused with
-        # the block's own words. Why it's blocked comes from the stop reason codes.
-        "stop_reason": (
-            "owner"
-            if v2 and machine.stop_reason in ("paused", "turned_off")
-            else machine.stop_reason
-        ),
+        "stop_reason": _wire_stop_reason(machine, v2),
+        "stopped_by_admin": admin_stopped(machine),
         "sleeping": idle_sleeping(machine),
         "revision": machine.revision,
         "instance_type": machine.instance_type,
@@ -229,6 +225,19 @@ async def machine_summary(
             else {}
         ),
     }
+
+
+def _wire_stop_reason(machine: CloudMachine, v2: bool) -> str | None:
+    """`stop_reason` as Console reads it, which takes only `idle` or `owner`:
+    an administrator's stop shows there as the owner's, for builds that predate
+    `stopped_by_admin`, and so do a pause and a turn-off: stopped, and a start
+    is refused with the block's own words. Why it's blocked comes from the stop
+    reason codes."""
+    if admin_stopped(machine):
+        return "owner" if machine.desired_state == "stopped" else None
+    if v2 and machine.stop_reason in ("paused", "turned_off"):
+        return "owner"
+    return machine.stop_reason
 
 
 class MachineUnavailable(Exception):
@@ -410,6 +419,8 @@ async def lifecycle(
     _machine, workspace = await _owned(session, machine_id, user.id)
     machine = await machines.locked(session, machine_id)
     assert machine is not None
+    if admin_stopped(machine):
+        raise HTTPException(409, MACHINE_STOPPED_BY_ADMIN)
     if machine.revision != body.revision and not (
         idle_sleeping(machine) and machine.revision == body.revision + 1
     ):

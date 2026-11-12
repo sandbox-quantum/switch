@@ -4,6 +4,12 @@ import { homedir } from 'node:os';
 import { extname, resolve, sep } from 'node:path';
 import type { IDisposable, IInitializable } from '@switch-console/shared';
 import { app, dialog, shell } from 'electron';
+import {
+  freshReplayDirName,
+  readsUserDataDirEnv,
+  USER_DATA_DIR_ENV,
+  userDataDirName,
+} from '@main/app/user-data-dir';
 import { getMainWindow } from '@main/app/window';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -178,6 +184,18 @@ class AppService implements IInitializable, IDisposable {
   }
 
   quit(): void {
+    app.quit();
+  }
+
+  /** Restart on a brand-new, empty data folder; the next normal launch is back on the real one. */
+  relaunchAsFreshInstall(): void {
+    if (!readsUserDataDirEnv()) {
+      throw new Error('Replay as a fresh install is only available in dev and Canary builds.');
+    }
+    process.env[USER_DATA_DIR_ENV] = freshReplayDirName(userDataDirName(), Date.now());
+    log.info('Relaunching as a fresh install', { userDataDir: process.env[USER_DATA_DIR_ENV] });
+    // before-quit ends in app.exit(0), which honours the relaunch scheduled here.
+    app.relaunch();
     app.quit();
   }
 

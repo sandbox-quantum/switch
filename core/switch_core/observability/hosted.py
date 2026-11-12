@@ -161,7 +161,8 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
         }
     ),
     "woken": frozenset({"message", "agent_placed", "owner"}),
-    "stopped": frozenset({"idle", "owner", "retained"}),
+    # `admin`: an operator holds it stopped (`switch-cloud-machine stop`).
+    "stopped": frozenset({"idle", "owner", "retained", "admin"}),
 }
 
 # A report older than this counts as gone, so a silent machine's agents drop

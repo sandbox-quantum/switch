@@ -43,7 +43,12 @@ logger = logging.getLogger("alembic.runtime.migration")
 
 _OVERRIDE = "SWITCH_ALLOW_DROP_HOSTED_MARKS"
 _OLD = "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')"
-_NEW = "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off')"
+# `admin` too: main's `e3b8d1f6a2c4` allows it, and a database that ran that
+# first may already hold a machine an administrator stopped.
+_NEW = (
+    "stop_reason IS NULL OR stop_reason IN "
+    "('idle', 'owner', 'paused', 'turned_off', 'admin')"
+)
 
 
 def upgrade() -> None:

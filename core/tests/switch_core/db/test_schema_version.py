@@ -6,8 +6,10 @@ under test is the comparison against this build's heads, not the migrations.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import AsyncIterator
 from pathlib import Path
+from shutil import copyfile
 from typing import Any
 
 import pytest
@@ -171,14 +173,21 @@ class TestAheadByExpandOnlyRevisions:
         assert not await schema_ahead_through_expand_only(scratch_engine, alembic_cfg)
 
 
-def _run(connection: Connection, alembic_cfg: AlembicConfig, target: str) -> None:
+def _run(
+    connection: Connection,
+    alembic_cfg: AlembicConfig,
+    target: str,
+    *,
+    upgrade: bool = False,
+) -> None:
     """Upgrade or downgrade on an explicit connection, with the recorder the
-    repository's env.py installs, without loading env.py itself."""
+    repository's env.py installs, without loading env.py itself. `head`, or
+    any target with `upgrade`, upgrades; any other target downgrades."""
     script = ScriptDirectory.from_config(alembic_cfg)
 
     def migrate(revision: Any, context: Any) -> Any:
-        if target == "head":
-            return script._upgrade_revs("head", revision)
+        if target == "head" or upgrade:
+            return script._upgrade_revs(target, revision)
         return script._downgrade_revs(target, revision)
 
     with EnvironmentContext(alembic_cfg, script, fn=migrate) as environment:
@@ -231,3 +240,68 @@ async def test_applying_the_chain_records_the_expand_only_revisions(
             text("SELECT to_regclass('schema_expand_only_revisions')")
         )
     assert table is None
+
+
+# Main's head before it was merged with the hosted-agents v2 chain.
+_MAIN_HEAD = "c8e2f4a6b1d3"
+
+
+async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
+    scratch_engine: AsyncEngine, alembic_cfg: AlembicConfig, tmp_path: Path
+) -> None:
+    script = ScriptDirectory.from_config(alembic_cfg)
+    revision = script.get_revision("ab802e19c401")
+    assert isinstance(revision.down_revision, str)
+    # On main's line: the previous build has every revision up to this one's
+    # parent and nothing after, and the newer build stops at main's head. The
+    # merge with the hosted-agents v2 chain joins two lines, which no previous
+    # build of either can serve on, so it is not part of this upgrade.
+    newer = list(script.iterate_revisions(_MAIN_HEAD, revision.down_revision))
+    assert all(r.module.expand_only is True for r in newer)
+    older_files = {
+        Path(r.path).name
+        for r in script.iterate_revisions(revision.down_revision, "base")
+    }
+
+    old_scripts = tmp_path / "previous-build"
+    old_versions = old_scripts / "versions"
+    old_versions.mkdir(parents=True)
+    for source in (Path(script.dir) / "versions").glob("*.py"):
+        if source.name in older_files:
+            copyfile(source, old_versions / source.name)
+    old_config = AlembicConfig()
+    old_config.set_main_option("script_location", str(old_scripts))
+    assert ScriptDirectory.from_config(old_config).get_heads() == [
+        revision.down_revision
+    ]
+
+    async with scratch_engine.begin() as connection:
+        await connection.run_sync(
+            functools.partial(_run, upgrade=True), alembic_cfg, _MAIN_HEAD
+        )
+    async with scratch_engine.connect() as connection:
+        parent = await connection.scalar(
+            text(
+                "SELECT down_revision FROM schema_expand_only_revisions "
+                "WHERE revision = :revision"
+            ),
+            {"revision": revision.revision},
+        )
+    assert parent == revision.down_revision
+    assert await schema_ahead_through_expand_only(scratch_engine, old_config)
+    await require_schema_at_head(scratch_engine, old_config)
+
+    async with scratch_engine.begin() as connection:
+        await connection.run_sync(_run, alembic_cfg, revision.down_revision)
+    await require_schema_at_head(scratch_engine, old_config)
+    async with scratch_engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM schema_expand_only_revisions "
+                    "WHERE revision = :revision"
+                ),
+                {"revision": revision.revision},
+            )
+            == 0
+        )

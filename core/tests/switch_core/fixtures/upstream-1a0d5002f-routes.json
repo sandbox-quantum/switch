@@ -1,5 +1,5 @@
 {
- "source": "upstream main 233649fff: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
+ "source": "upstream main 1a0d5002f: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
  "gateway": [
   [
    "DELETE",
@@ -132,6 +132,10 @@
   [
    "DELETE",
    "/rooms/{room_id}/roles/{name}"
+  ],
+  [
+   "DELETE",
+   "/rooms/{room_id}/schedules/{schedule_id}"
   ],
   [
    "DELETE",
@@ -531,6 +535,10 @@
   ],
   [
    "GET",
+   "/rooms/{room_id}/schedules"
+  ],
+  [
+   "GET",
    "/rooms/{room_id}/yaml"
   ],
   [
@@ -584,6 +592,10 @@
   [
    "GET",
    "/tenants/{tenant_id}/members"
+  ],
+  [
+   "GET",
+   "/tenants/{tenant_id}/members/{user_id}/removal"
   ],
   [
    "GET",
@@ -720,6 +732,10 @@
   [
    "POST",
    "/auth/logout"
+  ],
+  [
+   "POST",
+   "/auth/me/reset-test-account"
   ],
   [
    "POST",
@@ -963,6 +979,10 @@
   ],
   [
    "POST",
+   "/rooms/{room_id}/schedules"
+  ],
+  [
+   "POST",
    "/rooms/{room_id}/sync-name"
   ],
   [
@@ -1088,6 +1108,14 @@
   [
    "PUT",
    "/rooms/{room_id}/protection"
+  ],
+  [
+   "PUT",
+   "/rooms/{room_id}/schedules/{schedule_id}"
+  ],
+  [
+   "PUT",
+   "/rooms/{room_id}/schedules/{schedule_id}/paused"
   ],
   [
    "PUT",

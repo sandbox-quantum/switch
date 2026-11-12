@@ -53,6 +53,22 @@ def _reference_type(type_: str) -> str:
     return type_ if is_builtin_type(type_) else "other"
 
 
+def _require_room_document_writer(doc: Document, agent_id: str) -> None:
+    """Refuse an agent changing a room-scoped document it may not maintain.
+
+    The agent that wrote a document may change it, and any agent in the room
+    may change one a room template made; the caller checks that the agent is
+    in the room. Anything else is refused, including a document whose writer
+    has since been deleted.
+    """
+    if doc.created_by_agent_id == agent_id or doc.from_template:
+        return
+    raise PermissionError(
+        f"Document {doc.id} was not created by this agent or by the room's "
+        "template; only its creating agent can change or delete it"
+    )
+
+
 def _visibility(value: str) -> str:
     return value if value in ("private", "public") else "private"
 
@@ -1085,7 +1101,7 @@ class ResourceService:
         )
         return created
 
-    async def create_room_document_for_user(
+    async def create_template_room_document(
         self,
         session: AsyncSession,
         *,
@@ -1096,10 +1112,9 @@ class ResourceService:
         instructions: str,
         content: str,
     ) -> Document:
-        """Create a room-scoped document on behalf of a user (no creating
-        agent). Mirrors ``create_room_document`` but sets
-        ``created_by_agent_id=None``; used by user-facing flows like
-        YAML provisioning where there is no acting agent."""
+        """Create a room-scoped document from a room template's ``docs:``,
+        on behalf of the user running the template. No agent created it, and
+        any agent in the room may change or delete it (``from_template``)."""
         if not name.strip():
             raise ValueError("name must not be empty")
         if len(content.encode("utf-8")) > ROOM_DOCUMENT_MAX_CONTENT_BYTES:
@@ -1112,6 +1127,7 @@ class ResourceService:
             owner_id=owner_id,
             room_id=room_id,
             created_by_agent_id=None,
+            from_template=True,
             read_visibility="private",
             write_visibility="private",
             name=name,
@@ -1150,10 +1166,7 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        if doc.created_by_agent_id != agent_id:
-            raise PermissionError(
-                f"Agent {agent_id} did not create document {document_id}"
-            )
+        _require_room_document_writer(doc, agent_id)
         if name is not None:
             if not name.strip():
                 raise ValueError("name must not be empty")
@@ -1190,10 +1203,7 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        if doc.created_by_agent_id != agent_id:
-            raise PermissionError(
-                f"Agent {agent_id} did not create document {document_id}"
-            )
+        _require_room_document_writer(doc, agent_id)
         age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
         emit_safely(
