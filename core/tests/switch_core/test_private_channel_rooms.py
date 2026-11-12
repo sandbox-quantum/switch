@@ -1,17 +1,19 @@
 """The clean-up that makes Public rooms on private channels Private.
 
-The preview lists every unarchived Public room bound to a private channel, a
-group or a DM, or to a channel of unrecorded type the platform says is private
-or cannot place, and changes nothing. A room whose channel cannot list its
-members, or whose type is unknown, is listed unticked rather than left out.
-Applying changes only the confirmed rooms still eligible, audits each change,
-and posts a history line.
+The count and the preview list every unarchived Public room bound to a
+private channel, a group, a DM or a channel of unrecorded type, from Switch's
+records alone: no platform is called. A room whose channel cannot list its
+members, or whose type is not recorded, is listed unticked rather than left
+out. Asking the platform about unrecorded types goes a paced batch at a time,
+records each answer, and stops at a rate limit. Applying changes only the
+confirmed rooms still eligible, audits each change, and posts a history line.
 
 Real Postgres behind row-level security; the running bridges are faked.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -19,6 +21,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from switch_core import private_channel_rooms
 from switch_core.db.models import (
     AuditEvent,
     Client,
@@ -30,6 +33,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.private_channel_rooms import (
+    APPLY_MAX,
     MADE_PRIVATE_NOTICE,
     PrivateChannelRooms,
 )
@@ -45,19 +49,25 @@ class _Adapter:
         lists_members: bool = True,
         types: dict[str, str] | None = None,
         type_fails: bool = False,
+        fail_with: dict[str, BaseException] | None = None,
     ) -> None:
         self.lists_members = lists_members
         self.types = types or {}
         self.type_fails = type_fails
+        self.fail_with = fail_with or {}
         self.asked_types: list[str] = []
 
     async def get_channel_type(self, channel_id: str) -> str:
         self.asked_types.append(channel_id)
+        if channel_id in self.fail_with:
+            raise self.fail_with[channel_id]
         if self.type_fails:
             raise RuntimeError("platform unavailable")
         return self.types[channel_id]
 
-    async def can_list_channel_members(self, channel_id: str) -> bool:
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
         return self.lists_members
 
 
@@ -107,6 +117,8 @@ class World:
             collab_lifecycle=_Lifecycle(self.cores),
             room_changes=self.changes,
             post_notice=self.notices,
+            ask_pause=0,
+            notice_pause=0,
         )
 
     async def bridge(
@@ -215,6 +227,10 @@ async def world(rls_harness: RLSHarness) -> World:
     return World(rls_harness, await _tenant(rls_harness))
 
 
+async def _notices_sent() -> None:
+    await asyncio.gather(*private_channel_rooms._notice_tasks)
+
+
 async def _ids(world: World) -> list[str]:
     return [c.room_id for c in await world.service().preview(world.tenant)]
 
@@ -269,7 +285,22 @@ async def test_a_platform_that_cannot_list_members_is_listed_unticked(
     assert not candidate.recommended
 
 
-async def test_a_channel_of_unrecorded_type_is_asked_about(world: World) -> None:
+async def test_the_count_and_preview_call_no_platform(world: World) -> None:
+    adapter = _Adapter()
+    slack = await world.bridge(adapter=adapter)
+    await world.room("typed", slack, "channel_private")
+    untyped = await world.room("untyped", slack, None)
+
+    assert await world.service().count(world.tenant) == 2
+    rooms = await world.service().preview(world.tenant)
+
+    assert adapter.asked_types == []
+    listed = next(c for c in rooms if c.room_id == untyped)
+    assert listed.channel_type is None
+    assert listed.cautions == ("channel_type_not_recorded",)
+
+
+async def test_asking_records_the_platforms_answer(world: World) -> None:
     adapter = _Adapter()
     slack = await world.bridge(adapter=adapter)
     private = await world.room("old private", slack, None)
@@ -279,28 +310,111 @@ async def test_a_channel_of_unrecorded_type_is_asked_about(world: World) -> None
         await world.channel_of(public): "channel_public",
     }
 
-    (candidate,) = await world.service().preview(world.tenant)
+    result = await world.service().ask_platform(world.tenant)
 
+    assert sorted(result.answered) == sorted(
+        [(private, "channel_private"), (public, "channel_public")]
+    )
+    assert (result.stopped, result.remaining) == (None, 0)
+    # Recorded: the public one drops off the list, the private one is ready.
+    (candidate,) = await world.service().preview(world.tenant)
     assert candidate.room_id == private
     assert candidate.channel_type == "channel_private"
     assert candidate.recommended
-    # Asked, not recorded: the preview writes nothing.
-    async with tenant_session(world.harness.owner, world.tenant) as session:
-        room = await session.get(Room, private)
-        assert room is not None and room.channel_type is None
+    # Asked once: the next ask finds nothing to ask about.
+    adapter.asked_types.clear()
+    await world.service().ask_platform(world.tenant)
+    assert adapter.asked_types == []
 
 
-async def test_a_type_the_platform_cannot_say_is_listed_as_unknown(
+async def test_asking_goes_a_batch_at_a_time(world: World) -> None:
+    adapter = _Adapter()
+    slack = await world.bridge(adapter=adapter)
+    for i in range(5):
+        room_id = await world.room(f"old {i}", slack, None)
+        adapter.types[await world.channel_of(room_id)] = "channel_private"
+
+    result = await world.service().ask_platform(world.tenant, limit=2)
+
+    assert len(result.answered) == 2
+    assert result.remaining == 3
+    assert len(adapter.asked_types) == 2
+
+
+async def test_asking_only_the_rooms_named(world: World) -> None:
+    adapter = _Adapter()
+    slack = await world.bridge(adapter=adapter)
+    named = await world.room("a", slack, None)
+    other = await world.room("b", slack, None)
+    adapter.types = {
+        await world.channel_of(named): "channel_private",
+        await world.channel_of(other): "channel_private",
+    }
+
+    result = await world.service().ask_platform(world.tenant, [named])
+
+    assert result.answered == [(named, "channel_private")]
+    assert adapter.asked_types == [await world.channel_of(named)]
+
+
+class _RateLimited(Exception):
+    def __init__(self) -> None:
+        super().__init__("ratelimited")
+        self.response = {"ok": False, "error": "ratelimited"}
+
+
+async def test_a_rate_limit_stops_the_batch(world: World) -> None:
+    adapter = _Adapter()
+    slack = await world.bridge(adapter=adapter)
+    first = await world.room("a", slack, None)
+    second = await world.room("b", slack, None)
+    third = await world.room("c", slack, None)
+    adapter.types = {await world.channel_of(first): "channel_private"}
+    adapter.fail_with = {await world.channel_of(second): _RateLimited()}
+
+    result = await world.service().ask_platform(world.tenant)
+
+    assert result.answered == [(first, "channel_private")]
+    assert result.stopped == "rate_limited"
+    assert result.remaining == 2
+    # The third was never asked.
+    assert await world.channel_of(third) not in adapter.asked_types
+
+
+async def test_a_slow_answer_stops_the_batch(world: World) -> None:
+    class _Slow(_Adapter):
+        async def get_channel_type(self, channel_id: str) -> str:
+            self.asked_types.append(channel_id)
+            await asyncio.sleep(5)
+            return "channel_private"
+
+    adapter = _Slow()
+    slack = await world.bridge(adapter=adapter)
+    await world.room("a", slack, None)
+    await world.room("b", slack, None)
+    service = world.service()
+    service._platform_timeout = 0.05
+
+    result = await service.ask_platform(world.tenant)
+
+    assert result.stopped == "timed_out"
+    assert len(adapter.asked_types) == 1
+
+
+async def test_a_channel_the_platform_cannot_place_stays_unrecorded(
     world: World,
 ) -> None:
     slack = await world.bridge(adapter=_Adapter(type_fails=True))
-    room_id = await world.room("old", slack, None)
+    unknown = await world.room("gone", slack, None)
+    offline = await world.room("offline", await world.bridge(running=False), None)
 
-    (candidate,) = await world.service().preview(world.tenant)
+    result = await world.service().ask_platform(world.tenant)
 
-    assert candidate.room_id == room_id
-    assert candidate.channel_type is None
-    assert candidate.cautions == ("channel_type_unknown",)
+    assert sorted(result.unanswered) == sorted(
+        [(unknown, "could_not_tell"), (offline, "bridge_not_connected")]
+    )
+    assert result.stopped is None
+    assert result.remaining == 2
 
 
 async def test_a_bridge_not_running_here_is_listed_unticked(world: World) -> None:
@@ -312,6 +426,15 @@ async def test_a_bridge_not_running_here_is_listed_unticked(world: World) -> Non
     assert candidate.room_id == room_id
     assert candidate.members_listed is None
     assert candidate.cautions == ("bridge_not_connected",)
+
+
+async def test_apply_refuses_too_many_rooms_at_once(world: World) -> None:
+    with pytest.raises(ValueError, match="At most"):
+        await world.service().apply(
+            world.tenant,
+            [f"r{i}" for i in range(APPLY_MAX + 1)],
+            actor_user_id="a",
+        )
 
 
 async def test_rooms_needing_a_second_look_come_first(world: World) -> None:
@@ -341,6 +464,7 @@ async def test_apply_makes_only_the_confirmed_rooms_private(world: World) -> Non
     assert audit.details is not None
     assert audit.details["channel_type"] == "channel_private"
     assert world.changes.changed == [(world.tenant, confirmed)]
+    await _notices_sent()
     assert [body for _, _, body in world.notices.posted] == [MADE_PRIVATE_NOTICE]
 
 
@@ -391,6 +515,7 @@ async def test_a_notice_that_cannot_be_posted_does_not_undo_the_change(
     world.notices = _Notices(fails=True)
 
     result = await world.service().apply(world.tenant, [room_id], actor_user_id="a")
+    await _notices_sent()
 
     assert result.changed == [room_id]
     assert await world.visibility(room_id) == "private"

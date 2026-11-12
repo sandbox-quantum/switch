@@ -231,6 +231,12 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
         f"{W}/private-channel-rooms", admins()
     ),
+    "GET /gateway/tenants/{tenant_id}/private-channel-rooms/count": get(
+        f"{W}/private-channel-rooms/count", admins()
+    ),
+    "POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform": post(
+        f"{W}/private-channel-rooms/ask-platform", admins(), json={}
+    ),
     "POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private": post(
         f"{W}/private-channel-rooms/make-private",
         admins(),

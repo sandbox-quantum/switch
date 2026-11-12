@@ -346,9 +346,9 @@ async def test_whether_members_can_be_listed_follows_the_same_conditions() -> No
     no_intent, _ = _adapter(small, {"10"}, members_intent=False)
     too_big, _ = _adapter(big, {"10"})
 
-    assert await listed.can_list_channel_members("10") is True
-    assert await no_intent.can_list_channel_members("10") is False
-    assert await too_big.can_list_channel_members("10") is False
+    assert listed.can_list_channel_members("10", "channel_private") is True
+    assert no_intent.can_list_channel_members("10", "channel_private") is False
+    assert too_big.can_list_channel_members("10", "channel_private") is False
     # Asking reads no members.
     assert small.chunks == 0 and big.chunks == 0
 

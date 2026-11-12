@@ -2980,16 +2980,13 @@ class TeamsAdapter(PlatformAdapter):
                 failed.append(user_id)
         return failed
 
-    async def can_list_channel_members(self, channel_id: str) -> bool:
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
         """A channel of a team Switch knows, as `list_channel_members` reads
-        one; not a chat, whose members Graph is not asked for. A channel
-        whose type cannot be read is not counted as listable."""
+        one; not a chat, whose members Graph is not asked for. Decided by the
+        recorded type, so one of unrecorded type is not counted as listable."""
         if not (self._team_of_channel.get(channel_id) or self._config.team_id):
-            return False
-        try:
-            channel_type = await self.get_channel_type(channel_id)
-        except Exception:
-            logger.warning("Could not read Teams channel %s's type", channel_id)
             return False
         return channel_type in ("channel_public", "channel_private")
 

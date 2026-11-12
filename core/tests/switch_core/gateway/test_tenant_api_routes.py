@@ -3267,7 +3267,9 @@ class TestPrivateChannelRoomsRoutes:
         async def get_channel_type(self, channel_id: str) -> str:
             return "channel_private"
 
-        async def can_list_channel_members(self, channel_id: str) -> bool:
+        def can_list_channel_members(
+            self, channel_id: str, channel_type: str | None
+        ) -> bool:
             return channel_id != "C-TELEGRAM"
 
     async def _seed(
@@ -3330,6 +3332,7 @@ class TestPrivateChannelRoomsRoutes:
         bridge_id, ops, telegram = await self._seed(session_factory)
 
         async with _client(self._app(session_factory, bridge_id), token) as client:
+            count = await client.get(f"/tenants/{TENANT_A}/private-channel-rooms/count")
             preview = await client.get(f"/tenants/{TENANT_A}/private-channel-rooms")
             applied = await client.post(
                 f"/tenants/{TENANT_A}/private-channel-rooms/make-private",
@@ -3337,6 +3340,7 @@ class TestPrivateChannelRoomsRoutes:
             )
             after = await client.get(f"/tenants/{TENANT_A}/private-channel-rooms")
 
+        assert count.json() == {"count": 2}
         assert preview.status_code == 200
         rooms = {room["room_id"]: room for room in preview.json()["rooms"]}
         assert rooms[ops] == {
@@ -3359,6 +3363,34 @@ class TestPrivateChannelRoomsRoutes:
             "skipped": [{"room_id": "gone", "reason": "not_found"}],
         }
         assert [room["room_id"] for room in after.json()["rooms"]] == [telegram]
+
+    async def test_asking_the_platform_records_an_unrecorded_type(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin = await _make_member(
+            session_factory, name="pcr-ask", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin, "pcr-ask@example.invalid", TENANT_A)
+        bridge_id, ops, _ = await self._seed(session_factory)
+        async with tenant_session(session_factory, TENANT_A) as session:
+            room = await session.get(Room, ops)
+            assert room is not None
+            room.channel_type = None
+            await session.commit()
+
+        async with _client(self._app(session_factory, bridge_id), token) as client:
+            asked = await client.post(
+                f"/tenants/{TENANT_A}/private-channel-rooms/ask-platform", json={}
+            )
+
+        assert asked.status_code == 200
+        assert asked.json() == {
+            "answered": [{"room_id": ops, "channel_type": "channel_private"}],
+            "unanswered": [],
+            "stopped": None,
+            "remaining": 0,
+        }
 
     async def test_a_member_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -3393,6 +3425,24 @@ class TestPrivateChannelRoomsRoutes:
             response = await client.post(
                 f"/tenants/{TENANT_A}/private-channel-rooms/make-private",
                 json={"room_ids": []},
+            )
+
+        assert response.status_code == 422
+
+    async def test_more_than_200_rooms_at_once_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin = await _make_member(
+            session_factory, name="pcr-many", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin, "pcr-many@example.invalid", TENANT_A)
+        bridge_id, _, _ = await self._seed(session_factory)
+
+        async with _client(self._app(session_factory, bridge_id), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/private-channel-rooms/make-private",
+                json={"room_ids": [f"r{i}" for i in range(201)]},
             )
 
         assert response.status_code == 422

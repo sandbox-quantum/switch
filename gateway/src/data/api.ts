@@ -1786,7 +1786,7 @@ export async function clearRetentionPolicy(tenantId: string): Promise<RetentionP
 /** Why a listed room starts unticked. */
 export type PrivateChannelRoomCaution =
   | "members_not_listed"
-  | "channel_type_unknown"
+  | "channel_type_not_recorded"
   | "bridge_not_connected";
 
 export interface PrivateChannelRoom {
@@ -1795,10 +1795,10 @@ export interface PrivateChannelRoom {
   bridge_id: string;
   bridge_name: string | null;
   bridge_type: string | null;
-  // The recorded type, or the platform's answer when none was recorded.
+  // The recorded type; null when none was recorded.
   channel_type: string | null;
   people: number;
-  // Null when the platform could not be asked.
+  // Null when the room's messaging app is not running.
   members_listed: boolean | null;
   cautions: PrivateChannelRoomCaution[];
   recommended: boolean;
@@ -1809,8 +1809,39 @@ export interface MakeRoomsPrivateResult {
   skipped: { room_id: string; reason: string }[];
 }
 
-/** The Public rooms bound to a private channel, a group or a DM. A dry run:
- * changes nothing. */
+export interface AskPlatformResult {
+  answered: { room_id: string; channel_type: string }[];
+  unanswered: { room_id: string; reason: "bridge_not_connected" | "could_not_tell" }[];
+  // Set when the batch stopped early.
+  stopped: "rate_limited" | "timed_out" | null;
+  // Listed rooms still without a recorded type.
+  remaining: number;
+}
+
+/** The most rooms one apply changes. */
+export const MAKE_PRIVATE_MAX = 200;
+
+/** How many rooms the review page would list. One query; no platform. */
+export async function countPrivateChannelRooms(tenantId: string): Promise<number> {
+  const result = await jsonRequest<{ count: number }>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/count`,
+    "GET",
+  );
+  return result.count;
+}
+
+/** Ask the messaging apps about a batch of rooms of unrecorded type; the
+ * answers are saved on the rooms. */
+export async function askPlatformAboutRooms(tenantId: string): Promise<AskPlatformResult> {
+  return jsonRequest<AskPlatformResult>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/ask-platform`,
+    "POST",
+    {},
+  );
+}
+
+/** The Public rooms bound to a private channel, a group, a DM or a channel
+ * of unrecorded type. A dry run: changes nothing, calls no platform. */
 export async function previewPrivateChannelRooms(
   tenantId: string,
 ): Promise<PrivateChannelRoom[]> {

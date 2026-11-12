@@ -137,6 +137,9 @@ from switch_core.gateway.invite_mail import (
 from switch_core.gateway.schemas import (
     AddressedInvitation,
     AddressedInvitationAcceptRequest,
+    AnsweredRoom,
+    AskPlatformRequest,
+    AskPlatformResponse,
     AuditEventDetail,
     BudgetCreateRequest,
     BudgetResponse,
@@ -160,6 +163,7 @@ from switch_core.gateway.schemas import (
     OperatorWorkspaceResponse,
     PersonDetail,
     PrivateChannelRoom,
+    PrivateChannelRoomsCount,
     PrivateChannelRoomsPreview,
     RetentionPolicyRequest,
     RetentionPolicyResponse,
@@ -169,6 +173,7 @@ from switch_core.gateway.schemas import (
     TenantCreateRequest,
     TenantDeleteRequest,
     TenantMembershipResponse,
+    UnansweredRoom,
     UsageTotalResponse,
     WorkspaceCountsResponse,
 )
@@ -1047,12 +1052,10 @@ async def preview_private_channel_rooms(
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     _user: Annotated[User, Depends(require_tenant_admin)],
 ) -> PrivateChannelRoomsPreview:
-    """The Public rooms bound to a private channel, a group or a DM, which
-    `POST .../private-channel-rooms/make-private` would make Private. A dry
-    run: changes nothing. Admins only.
-
-    Asks each room's messaging app whether it can list the channel's members,
-    and what a channel of unrecorded type is."""
+    """The Public rooms bound to a private channel, a group or a DM, or to a
+    channel of unrecorded type, which `POST .../make-private` would make
+    Private. A dry run: changes nothing, and reads only Switch's records, so
+    no messaging app is called however many rooms there are. Admins only."""
     _require_bound_tenant(tenant_id)
     rooms = await _private_channel_rooms(
         session_factory, collab_lifecycle, room_service, client_lifecycle
@@ -1073,6 +1076,63 @@ async def preview_private_channel_rooms(
             )
             for room in rooms
         ]
+    )
+
+
+@router.get("/tenants/{tenant_id}/private-channel-rooms/count")
+async def count_private_channel_rooms(
+    tenant_id: str,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> PrivateChannelRoomsCount:
+    """How many rooms the preview would list, for the workspace page's
+    summary. One query. Admins only."""
+    _require_bound_tenant(tenant_id)
+    count = await _private_channel_rooms(
+        session_factory, collab_lifecycle, room_service, client_lifecycle
+    ).count(tenant_id)
+    return PrivateChannelRoomsCount(count=count)
+
+
+@router.post("/tenants/{tenant_id}/private-channel-rooms/ask-platform")
+async def ask_platform_about_private_channel_rooms(
+    tenant_id: str,
+    body: AskPlatformRequest,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> AskPlatformResponse:
+    """Ask each room's messaging app what kind of channel a listed room of
+    unrecorded type is on, a small batch at a time and paced, and record the
+    answers on the rooms. Stops at a rate limit. Admins only."""
+    _require_bound_tenant(tenant_id)
+    result = await _private_channel_rooms(
+        session_factory, collab_lifecycle, room_service, client_lifecycle
+    ).ask_platform(tenant_id, body.room_ids)
+    return AskPlatformResponse(
+        answered=[
+            AnsweredRoom(room_id=room_id, channel_type=channel_type)
+            for room_id, channel_type in result.answered
+        ],
+        unanswered=[
+            UnansweredRoom(room_id=room_id, reason=reason)
+            for room_id, reason in result.unanswered
+        ],
+        stopped=result.stopped,
+        remaining=result.remaining,
     )
 
 

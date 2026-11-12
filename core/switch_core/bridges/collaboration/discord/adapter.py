@@ -1183,7 +1183,9 @@ class DiscordAdapter(PlatformAdapter):
         )
         self._resync_members(targets)
 
-    async def can_list_channel_members(self, channel_id: str) -> bool:
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
         """With the members intent, for a server small enough to read whole:
         the same conditions `list_channel_members` lists under."""
         connection = self._connection

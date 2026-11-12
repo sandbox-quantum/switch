@@ -2479,14 +2479,14 @@ class PrivateChannelRoom(BaseModel):
     bridge_id: str
     bridge_name: str | None
     bridge_type: str | None
-    # The recorded type, or the platform's answer when none was recorded.
+    # The recorded type; None when none was recorded.
     channel_type: str | None
     people: int
-    # Whether the platform can list the channel's members; None when it
-    # could not be asked.
+    # Whether the platform can list the channel's members; None when its
+    # messaging app is not running.
     members_listed: bool | None
     # Why the room starts unticked: "members_not_listed",
-    # "channel_type_unknown" or "bridge_not_connected". Empty when none.
+    # "channel_type_not_recorded" or "bridge_not_connected". Empty when none.
     cautions: list[str]
     recommended: bool
 
@@ -2498,7 +2498,38 @@ class PrivateChannelRoomsPreview(BaseModel):
 class MakeRoomsPrivateRequest(BaseModel):
     """The rooms from the preview the admin confirmed."""
 
-    room_ids: list[str] = Field(min_length=1, max_length=1000)
+    room_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class PrivateChannelRoomsCount(BaseModel):
+    count: int
+
+
+class AskPlatformRequest(BaseModel):
+    """Which listed rooms of unrecorded type to ask about; all of them, a
+    batch at a time, when absent."""
+
+    room_ids: list[str] | None = Field(default=None, max_length=200)
+
+
+class AnsweredRoom(BaseModel):
+    room_id: str
+    channel_type: str
+
+
+class UnansweredRoom(BaseModel):
+    room_id: str
+    # "bridge_not_connected" or "could_not_tell".
+    reason: str
+
+
+class AskPlatformResponse(BaseModel):
+    answered: list[AnsweredRoom]
+    unanswered: list[UnansweredRoom]
+    # "rate_limited" or "timed_out" when the batch stopped early.
+    stopped: str | None
+    # Listed rooms still without a recorded type.
+    remaining: int
 
 
 class SkippedRoom(BaseModel):

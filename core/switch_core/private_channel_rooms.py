@@ -3,19 +3,26 @@ one-off clean-up after rooms began taking their visibility from their channel.
 
 A room made before that kept the visibility it was created with, so a room
 bound to a private channel, a group or a DM can still be Public, showing that
-channel's messages to the whole workspace in Switch. `preview` lists those
-rooms and changes nothing; `apply` makes the ones an admin confirmed Private.
+channel's messages to the whole workspace in Switch. `count` and `preview`
+say which rooms those are; `apply` makes the ones an admin confirmed Private.
 
-Two things make a room worth a second look before it is changed, and the
-preview says which rather than leaving the room out (a hidden room is one the
-admin forgets):
+Both read only Switch's own records. A workspace can have hundreds of such
+rooms, and a platform call per room per page load would spend the bot's rate
+limit, which its everyday work shares, once per pod and per admin. The one
+platform call is `ask_platform`, for rooms whose channel type was never
+recorded: it is asked for explicitly, a small batch at a time and paced, and
+saves each answer on the room, so a channel is asked about once whichever pod
+serves the request.
+
+Rooms worth a second look are listed with the reason rather than left out (a
+hidden room is one the admin forgets):
 
 - Its channel's members cannot be listed (Telegram; Discord without the
   members intent). A Private room is seen by the people in it, and on such a
   platform the room only knows the people who have posted. The others would
   lose sight of their own room.
-- Its channel's type is not recorded (rooms from before it was). The
-  platform is asked; when it cannot say, the room is listed as unknown.
+- Its channel's type is not recorded (rooms from before it was).
+- Its messaging app is not running here.
 
 Nothing here runs on its own: it is an admin action, dry run first.
 """
@@ -28,7 +35,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -52,32 +59,48 @@ MADE_PRIVATE_NOTICE = (
     "A workspace admin made this room Private in Switch; the channel is unchanged."
 )
 
-#: Seconds to wait for a platform to answer about one channel, so one slow
-#: messaging app does not hold up the whole preview.
+#: The most rooms one `ask_platform` asks about. Slack allows about 50
+#: channel lookups a minute per workspace, shared with the bot's own work.
+ASK_BATCH = 20
+#: Seconds between two asks in one batch.
+ASK_PAUSE = 0.5
+#: Seconds to wait for one answer before stopping the batch.
 PLATFORM_TIMEOUT = 10.0
+#: The most rooms one `apply` changes.
+APPLY_MAX = 200
+#: Seconds between two history notices after an apply, so a large batch does
+#: not post to every channel at once.
+NOTICE_PAUSE = 0.5
+
+#: Channel types worth saving when a platform reports one.
+_RECORDABLE = ("channel_public", "channel_private", "group", "direct")
 
 #: Why a listed room starts unticked.
 Caution = Literal[
     # The platform cannot list the channel's members.
     "members_not_listed",
-    # The channel's type is not recorded and the platform could not say it.
-    "channel_type_unknown",
-    # The room's messaging app is not connected here, so neither could be asked.
+    # The channel's type is not recorded: ask the platform, or check by hand.
+    "channel_type_not_recorded",
+    # The room's messaging app is not running here.
     "bridge_not_connected",
 ]
 
 #: Why a confirmed room was not changed.
 SkipReason = Literal["not_found", "already_private", "archived", "not_eligible"]
 
+#: Why a room asked about got no recorded type.
+UnansweredReason = Literal["bridge_not_connected", "could_not_tell"]
+
+#: Why a batch of asks stopped before the end.
+StopReason = Literal["rate_limited", "timed_out"]
+
 
 class _Adapter(Protocol):
     async def get_channel_type(self, channel_id: str) -> str: ...
 
-    async def can_list_channel_members(self, channel_id: str) -> bool: ...
-
-
-class _Core(Protocol):
-    adapter: _Adapter
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool: ...
 
 
 class _Lifecycle(Protocol):
@@ -101,14 +124,13 @@ class Candidate:
     bridge_id: str
     bridge_name: str | None
     bridge_type: str | None
-    # The recorded type, or the platform's answer when none was recorded;
-    # None when neither is known.
+    # The recorded type; None when none was recorded.
     channel_type: str | None
     # People Switch counts as in the room: those it found in the channel or
     # who have posted, and Switch Console members.
     people: int
-    # Whether the platform can list the channel's members; None when it
-    # could not be asked.
+    # Whether the platform can list the channel's members; None when its
+    # messaging app is not running here.
     members_listed: bool | None
     cautions: tuple[Caution, ...] = ()
 
@@ -124,18 +146,46 @@ class ApplyResult:
     skipped: list[tuple[str, SkipReason]] = field(default_factory=list)
 
 
-def _bridged_public_rooms() -> Any:
+@dataclass
+class AskResult:
+    # Rooms whose type the platform gave and is now recorded.
+    answered: list[tuple[str, str]] = field(default_factory=list)
+    unanswered: list[tuple[str, UnansweredReason]] = field(default_factory=list)
+    # Set when the batch stopped early; the rest were not asked.
+    stopped: StopReason | None = None
+    # Rooms still without a recorded type after this batch.
+    remaining: int = 0
+
+
+def _candidates() -> Any:
+    """Public, unarchived, bridged rooms on a private channel, a group, a DM,
+    or a channel of unrecorded type."""
     return select(Room).where(
         Room.read_visibility == "public",
         Room.archived_at.is_(None),
         Room.bridge_id.is_not(None),
         Room.external_channel_id.is_not(None),
+        or_(Room.channel_type.is_(None), Room.channel_type.in_(PRIVATE_CHANNELS)),
     )
 
 
 def _could_be_private(channel_type: str | None) -> bool:
     """A recorded type that is private, or none recorded at all."""
     return channel_type is None or channel_type in PRIVATE_CHANNELS
+
+
+def _rate_limited(exc: BaseException) -> bool:
+    """A platform's refusal for asking too often: Slack's `ratelimited`, or
+    an HTTP 429 from any of them."""
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) == 429:
+        return True
+    if getattr(exc, "status", None) == 429:
+        return True
+    try:
+        return bool(response is not None and response.get("error") == "ratelimited")
+    except Exception:
+        return False
 
 
 async def _people_by_room(
@@ -176,8 +226,13 @@ async def _bridges(
     return {bridge.id: bridge for bridge in result.scalars().all()}
 
 
+#: Notice tasks still running, so they are not collected mid-way.
+_notice_tasks: set[asyncio.Task[None]] = set()
+
+
 class PrivateChannelRooms:
-    """The preview and the change; see the module docstring."""
+    """The count, the preview, asking the platform, and the change; see the
+    module docstring."""
 
     def __init__(
         self,
@@ -187,40 +242,30 @@ class PrivateChannelRooms:
         room_changes: _RoomChanges,
         post_notice: _NoticePoster | None,
         platform_timeout: float = PLATFORM_TIMEOUT,
+        ask_pause: float = ASK_PAUSE,
+        notice_pause: float = NOTICE_PAUSE,
     ) -> None:
         self._session_factory = session_factory
         self._collab_lifecycle = collab_lifecycle
         self._room_changes = room_changes
         self._post_notice = post_notice
         self._platform_timeout = platform_timeout
+        self._ask_pause = ask_pause
+        self._notice_pause = notice_pause
 
-    async def _ask(self, call: Any, what: str, room_id: str) -> Any:
-        """The platform's answer, or None when it failed or took too long."""
-        try:
-            return await asyncio.wait_for(call, self._platform_timeout)
-        except Exception:
-            logger.warning(
-                "Could not ask the platform %s for room %s",
-                what,
-                room_id,
-                exc_info=True,
+    async def count(self, tenant_id: str) -> int:
+        """How many rooms `preview` would list. One query; no platform."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            result = await session.execute(
+                select(func.count()).select_from(_candidates().subquery())
             )
-            return None
+            return int(result.scalar_one())
 
     async def preview(self, tenant_id: str) -> list[Candidate]:
-        """Every unarchived Public room in the workspace bound to a private
-        channel, a group or a DM, or to a channel whose type is not recorded
-        but which the platform says is private or cannot say. Changes
-        nothing, and records nothing, not even a type the platform reported.
-        """
+        """Every room `count` counts, with what an admin needs to decide.
+        Reads only Switch's records; changes nothing."""
         async with tenant_session(self._session_factory, tenant_id) as session:
-            rooms = [
-                room
-                for room in (await session.execute(_bridged_public_rooms()))
-                .scalars()
-                .all()
-                if _could_be_private(room.channel_type)
-            ]
+            rooms = list((await session.execute(_candidates())).scalars().all())
             people = await _people_by_room(session, [room.id for room in rooms])
             bridges = await _bridges(
                 session, (room.bridge_id for room in rooms if room.bridge_id)
@@ -229,30 +274,16 @@ class PrivateChannelRooms:
         candidates: list[Candidate] = []
         for room in rooms:
             bridge_id = room.bridge_id or ""
-            channel_id = room.external_channel_id or ""
             core = self._collab_lifecycle.get(bridge_id)
-            channel_type = room.channel_type
             members_listed: bool | None = None
             cautions: list[Caution] = []
+            if room.channel_type is None:
+                cautions.append("channel_type_not_recorded")
             if core is None:
                 cautions.append("bridge_not_connected")
             else:
-                if channel_type is None:
-                    channel_type = await self._ask(
-                        core.adapter.get_channel_type(channel_id),
-                        "for its channel's type",
-                        room.id,
-                    )
-                    if channel_type is not None and not _could_be_private(channel_type):
-                        # The platform says the channel is public: the room's
-                        # visibility already matches it.
-                        continue
-                    if channel_type is None:
-                        cautions.append("channel_type_unknown")
-                members_listed = await self._ask(
-                    core.adapter.can_list_channel_members(channel_id),
-                    "whether it lists its channel's members",
-                    room.id,
+                members_listed = core.adapter.can_list_channel_members(
+                    room.external_channel_id or "", room.channel_type
                 )
                 if not members_listed:
                     cautions.append("members_not_listed")
@@ -264,7 +295,7 @@ class PrivateChannelRooms:
                     bridge_id=bridge_id,
                     bridge_name=bridge.display_name if bridge else None,
                     bridge_type=bridge.type if bridge else None,
-                    channel_type=channel_type,
+                    channel_type=room.channel_type,
                     people=people.get(room.id, 0),
                     members_listed=members_listed,
                     cautions=tuple(cautions),
@@ -273,10 +304,89 @@ class PrivateChannelRooms:
         candidates.sort(key=lambda c: (c.recommended, c.name.casefold(), c.room_id))
         return candidates
 
+    async def ask_platform(
+        self,
+        tenant_id: str,
+        room_ids: Collection[str] | None = None,
+        *,
+        limit: int = ASK_BATCH,
+    ) -> AskResult:
+        """Ask the platform what kind of channel each of up to `limit` listed
+        rooms of unrecorded type is (of `room_ids` when given), and record the
+        answer on the room.
+
+        One room at a time, `ask_pause` apart. A rate limit or an answer that
+        takes too long stops the batch there: the admin asks again later. A
+        room the platform cannot place (a channel it no longer has) stays
+        unrecorded and is said so. A type is written only where none is yet,
+        so two admins asking at once never overwrite each other.
+        """
+        result = AskResult()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            query = _candidates().where(Room.channel_type.is_(None))
+            if room_ids is not None:
+                query = query.where(Room.id.in_(list(room_ids)))
+            rooms = list(
+                (await session.execute(query.order_by(Room.name, Room.id).limit(limit)))
+                .scalars()
+                .all()
+            )
+
+        asked = 0
+        for room in rooms:
+            core = self._collab_lifecycle.get(room.bridge_id or "")
+            if core is None:
+                result.unanswered.append((room.id, "bridge_not_connected"))
+                continue
+            if asked:
+                await asyncio.sleep(self._ask_pause)
+            asked += 1
+            try:
+                channel_type = await asyncio.wait_for(
+                    core.adapter.get_channel_type(room.external_channel_id or ""),
+                    self._platform_timeout,
+                )
+            except TimeoutError:
+                result.stopped = "timed_out"
+                break
+            except Exception as exc:
+                if _rate_limited(exc):
+                    result.stopped = "rate_limited"
+                    break
+                logger.info(
+                    "The platform could not say what channel room %s is on: %s",
+                    room.id,
+                    exc,
+                )
+                result.unanswered.append((room.id, "could_not_tell"))
+                continue
+            if channel_type not in _RECORDABLE:
+                result.unanswered.append((room.id, "could_not_tell"))
+                continue
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                await session.execute(
+                    update(Room)
+                    .where(Room.id == room.id, Room.channel_type.is_(None))
+                    .values(channel_type=channel_type)
+                )
+                await session.commit()
+            self._room_changes.room_changed(tenant_id, room.id)
+            result.answered.append((room.id, channel_type))
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            remaining = await session.execute(
+                select(func.count()).select_from(
+                    _candidates().where(Room.channel_type.is_(None)).subquery()
+                )
+            )
+            result.remaining = int(remaining.scalar_one())
+        return result
+
     async def apply(
         self, tenant_id: str, room_ids: Collection[str], *, actor_user_id: str
     ) -> ApplyResult:
-        """Make the confirmed rooms Private, and only them.
+        """Make the confirmed rooms Private, and only them; at most
+        `APPLY_MAX` at once.
 
         Each is checked again first, under a row lock, so a room changed since
         the preview is skipped rather than changed twice or against what the
@@ -284,13 +394,15 @@ class PrivateChannelRooms:
         as a public channel. A room whose type is not recorded is changed: the
         admin saw it listed and confirmed it.
 
-        Every change and its audit event land in one transaction. Then each
-        room is announced to whoever is watching it, and gets its history
-        line; a notice that cannot be posted is logged, since the change and
-        its audit event stand without it.
+        Every change and its audit event land in one transaction, and each
+        room is announced to whoever is watching it. The history lines follow
+        in the background, `notice_pause` apart; one that cannot be posted is
+        logged, since the change and its audit event stand without it.
         """
-        result = ApplyResult()
         wanted = list(dict.fromkeys(room_ids))
+        if len(wanted) > APPLY_MAX:
+            raise ValueError(f"At most {APPLY_MAX} rooms can be changed at once.")
+        result = ApplyResult()
         changed: list[Room] = []
         async with tenant_session(self._session_factory, tenant_id) as session:
             found = {
@@ -346,24 +458,35 @@ class PrivateChannelRooms:
                 room.channel_type or "of an unrecorded type",
             )
             self._room_changes.room_changed(tenant_id, room.id)
-            await self._notify(tenant_id, room)
+        if changed:
+            task = asyncio.create_task(
+                self._notify_all(
+                    tenant_id, [room.transport_room_id for room in changed]
+                )
+            )
+            _notice_tasks.add(task)
+            task.add_done_callback(_notice_tasks.discard)
         return result
 
-    async def _notify(self, tenant_id: str, room: Room) -> None:
+    async def _notify_all(self, tenant_id: str, transport_room_ids: list[str]) -> None:
+        for index, transport_room_id in enumerate(transport_room_ids):
+            if index:
+                await asyncio.sleep(self._notice_pause)
+            await self._notify(tenant_id, transport_room_id)
+
+    async def _notify(self, tenant_id: str, transport_room_id: str) -> None:
         if self._post_notice is None:
             logger.warning(
                 "No notice for room %s, made private: nothing here can post one",
-                room.id,
+                transport_room_id,
             )
             return
         try:
-            await self._post_notice(
-                tenant_id, room.transport_room_id, MADE_PRIVATE_NOTICE
-            )
+            await self._post_notice(tenant_id, transport_room_id, MADE_PRIVATE_NOTICE)
         except Exception:
             logger.warning(
                 "Could not post the made-private notice in room %s",
-                room.id,
+                transport_room_id,
                 exc_info=True,
             )
 
