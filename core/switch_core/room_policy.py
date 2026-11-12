@@ -4,11 +4,16 @@ Every surface that changes or reads a room (the gateway routes and the flags
 they report, the agent tools, the in-room chat commands) asks `decide` here,
 so the rule lives in one table instead of at each call site.
 
-Three tiers, from narrowest to widest:
+Four tiers, from narrowest to widest:
 
 - **owner** — the room's owner, or a workspace or organization admin
   (`Principal.is_admin`). A room nobody owns is admins only.
-- **in the room** — the owner tier, plus whoever takes part in the room: added
+- **room admin** — the owner tier, plus the people the owner or a workspace
+  admin made room admins (`RoomAdmin`). They change the room as its owner
+  does; what stays with the owner tier is deleting the room, changing who can
+  see it, and choosing room admins. Handing the room to someone else is the
+  owner's too (`accounts/transfer.py`, through `is_room_owner`).
+- **in the room** — the room admin tier, plus whoever takes part in the room: added
   to it through Switch, seen in its channel, or owning an agent in it. A chat
   poster with no linked Switch account counts as in the room, with no
   identity of their own.
@@ -16,9 +21,10 @@ Three tiers, from narrowest to widest:
   the room's read visibility is public.
 
 An agent acts with its owner's rights: the surface builds the `RoomCaller`
-from the owner, never from the agent. An agent that takes requests from people
-other than its owner gets the "in the room" tier at most: whoever may address
-it could otherwise change the room with its owner's rights.
+from the owner, never from the agent, so an agent of a room admin acts as a
+room admin. An agent that takes requests from people other than its owner gets
+the "in the room" tier at most: whoever may address it could otherwise change
+the room with its owner's rights.
 
 Two cross-cutting exceptions sit on top of the table:
 
@@ -31,10 +37,11 @@ Two cross-cutting exceptions sit on top of the table:
   command posted in the conversation is from inside it.
 
 A room's write visibility no longer grants anything here: changing a room is
-the owner tier's, and adding to it is the "in the room" tier's.
+the room admin tier's, and adding to it is the "in the room" tier's.
 
 The module is pure (no database, no I/O). Working out whether a caller is in
-the room, and whether they own the thing acted on, is each surface's job.
+the room, is one of its room admins, and owns the thing acted on, is each
+surface's job.
 """
 
 from __future__ import annotations
@@ -64,6 +71,7 @@ def visibility_for_channel(channel_type: str) -> Literal["public", "private"]:
 
 class Tier(StrEnum):
     OWNER = "owner"
+    ROOM_ADMIN = "room_admin"
     IN_ROOM = "in_room"
     CAN_SEE = "can_see"
 
@@ -74,6 +82,7 @@ RoomAction = Literal[
     "archive",
     "change_access",
     "delete",
+    "manage_admins",
     "add_agent",
     "add_person",
     "attach",
@@ -93,19 +102,21 @@ RoomAction = Literal[
 # follow-ups, auto-route).
 RULES: dict[RoomAction, Tier] = {
     "read": Tier.CAN_SEE,
-    "configure": Tier.OWNER,
-    "archive": Tier.OWNER,
+    "configure": Tier.ROOM_ADMIN,
+    "archive": Tier.ROOM_ADMIN,
     "change_access": Tier.OWNER,
     "delete": Tier.OWNER,
+    # Making people room admins, or taking it away.
+    "manage_admins": Tier.OWNER,
     "add_agent": Tier.IN_ROOM,
     "add_person": Tier.IN_ROOM,
     "attach": Tier.IN_ROOM,
-    "remove_member": Tier.OWNER,
-    "unlink": Tier.OWNER,
-    "delete_document": Tier.OWNER,
-    "set_alias": Tier.OWNER,
+    "remove_member": Tier.ROOM_ADMIN,
+    "unlink": Tier.ROOM_ADMIN,
+    "delete_document": Tier.ROOM_ADMIN,
+    "set_alias": Tier.ROOM_ADMIN,
     # An agent's settings in this room, such as whether it hears joins.
-    "agent_settings": Tier.OWNER,
+    "agent_settings": Tier.ROOM_ADMIN,
 }
 
 # Actions where owning the thing acted on is enough on its own.
@@ -127,6 +138,7 @@ _VERBS: dict[RoomAction, str] = {
     "archive": "archive or unarchive this room",
     "change_access": "change who can see this room",
     "delete": "delete this room",
+    "manage_admins": "choose this room's room admins",
     "add_agent": "add agents to this room",
     "add_person": "add people to this room",
     "attach": "attach resources to this room",
@@ -169,14 +181,18 @@ class RoomCaller:
     store's `involves`), or for a chat poster, that they posted in its
     channel.
 
+    `room_admin` is whether that person is one of the room's room admins
+    (`RoomAdmin`), which only counts while they are in the room.
+
     `owner_rights` is False for an agent that takes requests from people
     other than its owner: it then gets the "in the room" tier at most, even
-    when its owner owns the room or is an admin.
+    when its owner owns the room, is a room admin, or is an admin.
     """
 
     principal: Principal
     in_room: bool
     owner_rights: bool = True
+    room_admin: bool = False
 
 
 @dataclass(frozen=True)
@@ -197,10 +213,18 @@ def is_room_owner(principal: Principal, room: RoomFacts) -> bool:
     )
 
 
+def _is_room_admin(caller: RoomCaller) -> bool:
+    return caller.room_admin and caller.in_room and caller.principal.id is not None
+
+
 def _meets(caller: RoomCaller, room: RoomFacts, tier: Tier) -> bool:
     if caller.owner_rights and is_room_owner(caller.principal, room):
         return True
     if tier is Tier.OWNER:
+        return False
+    if caller.owner_rights and _is_room_admin(caller):
+        return True
+    if tier is Tier.ROOM_ADMIN:
         return False
     if caller.in_room:
         return True
@@ -255,7 +279,10 @@ def decide(
         return _ALLOWED
     if owns_target and action in _OWN_THING_IN_ROOM_SUFFICES and caller.in_room:
         return _ALLOWED
-    if not caller.owner_rights and is_room_owner(caller.principal, room):
+    if not caller.owner_rights and (
+        is_room_owner(caller.principal, room)
+        or (tier is not Tier.OWNER and _is_room_admin(caller))
+    ):
         return RoomDecision(False, _OPEN_AGENT_REFUSAL)
     return RoomDecision(False, _refusal(tier, action))
 
@@ -266,10 +293,15 @@ def _refusal(tier: Tier, action: RoomAction) -> str:
         return "This room is private: only the people in it and admins can see it."
     if tier is Tier.IN_ROOM:
         return f"Only people in the room can {verb}."
+    who = (
+        "the room's owner or a workspace admin"
+        if tier is Tier.OWNER
+        else "the room's owner, a room admin or a workspace admin"
+    )
     hint = _OWN_THING_HINT.get(action)
     if hint is None:
-        return f"Only the room's owner or a workspace admin can {verb}."
-    return f"Only the room's owner or a workspace admin{hint}, can {verb}."
+        return f"Only {who} can {verb}."
+    return f"Only {who}{hint}, can {verb}."
 
 
 def allows(

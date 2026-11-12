@@ -20,6 +20,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import tuple_ as sa_tuple
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from switch_core.authz import require_group_filing
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -31,6 +32,7 @@ from switch_core.db.models import (
     ExternalUser,
     ExternalUserClaim,
     Room,
+    RoomAdmin,
     RoomGroup,
     User,
     require_tenant_id,
@@ -452,6 +454,93 @@ class RoomStore:
         )
         return set(result.scalars().all())
 
+    async def admin_room_ids(
+        self, session: AsyncSession, user_id: str, room_ids: Collection[str]
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `user_id` is a room admin of. Only while
+        they take part in it: a grant left behind by someone who has gone
+        counts for nothing."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(Room.id).where(
+                Room.id.in_(room_ids),
+                involves(user_id),
+                exists().where(
+                    RoomAdmin.room_id == Room.id, RoomAdmin.user_id == user_id
+                ),
+            )
+        )
+        return set(result.scalars().all())
+
+    async def list_admins(self, session: AsyncSession, room_id: str) -> list[RoomAdmin]:
+        """The room's room admins who still take part in it, longest-standing
+        first."""
+        result = await session.execute(
+            select(RoomAdmin)
+            .join(Room, Room.id == RoomAdmin.room_id)
+            .where(RoomAdmin.room_id == room_id, involves(RoomAdmin.user_id))
+            .order_by(RoomAdmin.granted_at, RoomAdmin.user_id)
+        )
+        return list(result.scalars().all())
+
+    async def add_admin(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        user_id: str,
+        *,
+        granted_by: str | None,
+    ) -> bool:
+        """Make `user_id` a room admin of `room_id`, and say whether this call
+        did (False when they already were). Whether they may be one is the
+        caller's to check (`room_admins.grant`)."""
+        added = await session.scalar(
+            pg_insert(RoomAdmin)
+            .values(
+                tenant_id=require_tenant_id(),
+                room_id=room_id,
+                user_id=user_id,
+                granted_by=granted_by,
+            )
+            .on_conflict_do_nothing()
+            .returning(RoomAdmin.user_id)
+        )
+        await session.flush()
+        return added is not None
+
+    async def remove_admin(
+        self, session: AsyncSession, room_id: str, user_id: str
+    ) -> bool:
+        """Take `user_id` off `room_id`'s room admins, and say whether they
+        were on it."""
+        removed = await session.scalar(
+            delete(RoomAdmin)
+            .where(RoomAdmin.room_id == room_id, RoomAdmin.user_id == user_id)
+            .returning(RoomAdmin.user_id)
+        )
+        await session.flush()
+        return removed is not None
+
+    async def prune_admins(self, session: AsyncSession, room_id: str) -> list[str]:
+        """Drop the room admins of `room_id` who no longer take part in it,
+        and return their user ids. Called wherever someone can leave a room,
+        so leaving takes the role with it rather than keeping it for a
+        return."""
+        gone = (
+            select(Room.id)
+            .where(Room.id == room_id, involves(RoomAdmin.user_id))
+            .exists()
+        )
+        result = await session.execute(
+            delete(RoomAdmin)
+            .where(RoomAdmin.room_id == room_id, ~gone)
+            .returning(RoomAdmin.user_id)
+        )
+        removed = list(result.scalars().all())
+        await session.flush()
+        return removed
+
     async def delete(self, session: AsyncSession, room_id: str) -> None:
         await session.execute(delete(ClientRoom).where(ClientRoom.room_id == room_id))
         room = await session.get(Room, room_id)
@@ -602,6 +691,8 @@ class RoomStore:
         if room is not None and main_agent_in(room.metadata_) in agent_ids:
             await self.set_main_agent(session, room_id, None)
         await session.flush()
+        # Someone who took part only through an agent has left with it.
+        await self.prune_admins(session, room_id)
         return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def get_rooms_for_agent(
@@ -782,6 +873,8 @@ class RoomStore:
             .returning(ClientRoom.client_id)
         )
         await session.flush()
+        if removed is not None:
+            await self.prune_admins(session, room_id)
         return removed is not None
 
     async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
@@ -1211,7 +1304,9 @@ def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[boo
     return or_(*visible)
 
 
-def involves(user_id: str) -> ColumnElement[bool]:
+def involves(
+    user_id: "str | ColumnElement[str] | InstrumentedAttribute[str]",
+) -> ColumnElement[bool]:
     """True for a `Room` row the user takes part in: they own it, their Switch
     Console member client or a platform account they have claimed is in it,
     or an agent they own is. It grants reading and listing, and unlinking
