@@ -1220,6 +1220,14 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **An agent's page no longer asks for your GitHub connection where GitHub
+  is not set up.** On a server with connectors on and no GitHub App, opening
+  an agent you own asked for it and was refused. The page already says GitHub
+  is not set up, and now asks nothing until it is.
+- **The operator is told why an organization's users are not theirs to
+  manage, without asking for them.** On an organization that has an admin,
+  its Users page asked for the members only to be refused, then explained;
+  it now explains from what the server has already said.
 - **A room's detail says whether the caller takes part in it, and whether
   it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
   room it returns from a create or change, always answered

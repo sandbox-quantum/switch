@@ -335,10 +335,10 @@ describe("ServiceAccessSection", () => {
     expect(screen.getByRole("switch", { name: /for helper/ })).toHaveProperty("disabled", true);
   });
 
-  it("says GitHub is not set up, rather than an error, when its App is not", async () => {
+  it("says GitHub is not set up, rather than an error, when its App is not, and asks for no connection", async () => {
     const reason =
       "GitHub is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
-    mockServer(NONE, [
+    const calls = mockServer(NONE, [
       onOff("not_connected", {
         slug: "github",
         name: "GitHub",
@@ -349,5 +349,53 @@ describe("ServiceAccessSection", () => {
     ]);
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(reason)).toBeTruthy();
+    expect(calls.map((call) => call.path)).not.toContain("/gateway/provider-connections/github");
+  });
+
+  /** Answer `path` with `answer` instead of what `mockServer` would. */
+  function answerInstead(path: string, answer: () => Response) {
+    const server = vi.mocked(fetch);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input) === path ? answer() : server(input, init),
+      ),
+    );
+  }
+
+  it("still asks for GitHub when the services cannot be read", async () => {
+    const calls = mockServer(NONE);
+    answerInstead(
+      "/gateway/service-connections",
+      () => new Response(JSON.stringify({ detail: "The database is unavailable" }), { status: 500 }),
+    );
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByLabelText("GitHub account")).toBeTruthy();
+    expect(calls.map((call) => call.path)).toContain("/gateway/provider-connections/github");
+  });
+
+  it("says why GitHub cannot be used where the organization's own App is broken", async () => {
+    const problem = "The organization's GitHub App no longer works. An organization admin can set it up again.";
+    mockServer(NONE, [
+      onOff("not_connected", {
+        slug: "github",
+        name: "GitHub",
+        pass_through: false,
+        unavailable_reason: problem,
+        server_setup_needed: false,
+        app_source: "organization",
+      }),
+    ]);
+    answerInstead(
+      "/gateway/provider-connections/github",
+      () => new Response(JSON.stringify({ detail: problem }), { status: 503 }),
+    );
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("alert").some((alert) => alert.textContent?.includes(problem)),
+      ).toBe(true),
+    );
+    expect(screen.queryByRole("progressbar")).toBeNull();
   });
 });

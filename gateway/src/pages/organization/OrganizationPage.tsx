@@ -58,6 +58,7 @@ function MembersSection({
       selfId={session.user.id}
       organizationId={organizationId}
       asOperator={!isAdmin}
+      canManage={organization?.can_manage_members === true}
       fromDirectory={organization?.members_from_directory === true}
       directoryTakesChanges={organization?.directory_takes_changes === true}
       onChanged={onChanged}
@@ -79,12 +80,16 @@ function useOrganizationConnectorsEnabled(): boolean {
  * ones the server answers. */
 export default function OrganizationPage() {
   const { session, capabilities } = useAuth();
-  const { data: organization, error } = useOrganization();
+  const { data: organization, error, refetch: refetchOrganization } = useOrganization();
   const connectorsEnabled = useOrganizationConnectorsEnabled();
-  // A change to the members can make an issue or settle one; the notice is
-  // read again, from scratch, after each.
+  // A change to the members can make an issue or settle one, and change what
+  // the server says the viewer may do (the operator who makes an admin can
+  // manage the members no more): both are read again after each.
   const [membersChanged, setMembersChanged] = useState(0);
-  const onMembersChanged = useCallback(() => setMembersChanged((n) => n + 1), []);
+  const onMembersChanged = useCallback(() => {
+    setMembersChanged((n) => n + 1);
+    void refetchOrganization();
+  }, [refetchOrganization]);
   const tenant = session?.tenant;
   if (!session || !tenant) return <CircularProgress />;
   if (tenant.organization_id === null) {
@@ -141,11 +146,14 @@ export function OrganizationWorkspacesPage() {
 
 export function OrganizationUsersPage() {
   const { session } = useAuth();
-  const { data: organization, error } = useOrganization();
-  // As on the organization page: a change to the members can make an issue
-  // or settle one.
+  const { data: organization, error, refetch: refetchOrganization } = useOrganization();
+  // As on the organization page: after a change to the members, the issues
+  // and the organization's own answers are read again.
   const [membersChanged, setMembersChanged] = useState(0);
-  const onMembersChanged = useCallback(() => setMembersChanged((n) => n + 1), []);
+  const onMembersChanged = useCallback(() => {
+    setMembersChanged((n) => n + 1);
+    void refetchOrganization();
+  }, [refetchOrganization]);
   const tenant = session?.tenant;
   if (error) return <Alert severity="error">{error}</Alert>;
   if (!session || !tenant?.organization_id || organization === null) return <CircularProgress />;
