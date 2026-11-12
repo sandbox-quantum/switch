@@ -666,7 +666,10 @@ resources naming each other by key, and `if:` as the one conditional.
   `agents: {slot name: agent name}`. Everything is checked first and nothing
   is created on a refusal; agents made before a later failure are deleted
   again. Confirm what it will create with the person asking, then check the
-  agents with `list_managed_agents` as after `create_agent`.
+  agents with `list_managed_agents` as after `create_agent`. A `bridge`
+  param also takes `"Switch Console"`: the room is then on no messaging app,
+  with your owner in it as one of their Switch Console chats. That needs the
+  server's group chats, and suits a person with no chat app connected.
 - **`save_template`**: save a template for your owner, `private` or
   `shared`. Only you can change or delete it afterwards.
 - **`update_template`** / **`delete_template`**: only for templates you saved.
