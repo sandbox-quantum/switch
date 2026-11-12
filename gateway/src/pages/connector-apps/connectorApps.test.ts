@@ -210,7 +210,7 @@ describe("wording", () => {
   it("warns before switching apps, GitHub's repositories included", () => {
     expect(switchWarning(app(), { connected_members: 12, workspaces: 3 })).toEqual([
       "Everyone connected through the current app (12 people in 3 workspaces) will need to reconnect, and their agents lose Google Workspace until they do.",
-      "If the old app's secret leaked, also delete it at Google: tokens already handed to agents stay valid for up to an hour.",
+      "If the old app's secret leaked, also delete it at Google: tokens already handed to agents stay valid until they expire.",
     ]);
     expect(switchWarning(GITHUB, { connected_members: 2, workspaces: 1 })).toContain(
       "They will also need to choose their repositories again.",

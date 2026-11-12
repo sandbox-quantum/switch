@@ -411,7 +411,7 @@ export function switchWarning(app: ConnectorApp, impact: ConnectorAppImpact): st
   if (app.kind === "github_app")
     lines.push("They will also need to choose their repositories again.");
   lines.push(
-    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid for up to an hour.`,
+    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid until they expire.`,
   );
   return lines;
 }
