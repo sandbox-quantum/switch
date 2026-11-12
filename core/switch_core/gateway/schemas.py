@@ -1151,6 +1151,13 @@ class DeleteAccountRequest(BaseModel):
     email: str
 
 
+class AccountDeletionCheck(BaseModel):
+    """Whether `DELETE /auth/me` would go ahead now. `refusal` is the sentence
+    it would refuse with, saying what to do first, or None."""
+
+    refusal: str | None
+
+
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: Email

@@ -81,6 +81,7 @@ from switch_core.gateway.hosted_machines import (
     hosted_settings,
 )
 from switch_core.gateway.schemas import (
+    AccountDeletionCheck,
     AuthConfigResponse,
     ChangePasswordRequest,
     CreateUserRequest,
@@ -516,6 +517,56 @@ async def my_pending_identities(
             )
         )
     return pending
+
+
+@router.get("/auth/me/deletion")
+async def check_my_account_deletion(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AccountDeletionCheck:
+    """What `DELETE /auth/me` would refuse with now, for the Gateway to say so
+    before the caller types their email rather than after. Changes nothing,
+    and the deletion checks again when it runs: someone else can be made an
+    admin, or stop being one, in between."""
+    user = await user_store.get(session, caller.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        client_lifecycle,
+        config,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, user.id
+    )
+    return AccountDeletionCheck(
+        refusal=await deletion.refusal(session, user, workspaces)
+    )
 
 
 @router.delete("/auth/me")
