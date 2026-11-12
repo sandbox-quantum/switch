@@ -93,6 +93,7 @@ class SignalAdapter(PlatformAdapter):
 
     receives_webhooks: ClassVar[bool] = False
     keeps_quiet_unless_listening: ClassVar[bool] = True
+    channel_on_delete: ClassVar[str] = "kept"
 
     supports_channel_creation: ClassVar[bool] = False
     supports_directory_search: ClassVar[bool] = False
