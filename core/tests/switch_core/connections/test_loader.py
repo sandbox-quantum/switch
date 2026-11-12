@@ -843,6 +843,12 @@ def test_a_get_identity_stays_as_it_was(catalog_copy):
         ),
         (
             INTROSPECTION_IDENTITY.replace(
+                "  identity:\n", "  identity:\n    mcp_tool: whoami\n"
+            ),
+            "exactly one of url, mcp_tool or introspection",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
                 "introspection: true", "introspection: false"
             ),
             "exactly one of url, mcp_tool or introspection",

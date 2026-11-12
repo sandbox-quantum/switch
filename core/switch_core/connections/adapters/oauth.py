@@ -153,8 +153,8 @@ class AuthorizationEndpoints:
 def client_fields(
     endpoints: AuthorizationEndpoints, client: OAuthClientCredentials
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """The form fields and headers a request to the token or revocation
-    endpoint identifies the client with."""
+    """The form fields and headers a request to the token, revocation or
+    introspection endpoint identifies the client with."""
     form = {"client_id": client.client_id}
     if client.client_secret is None:
         return form, {}

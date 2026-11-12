@@ -285,6 +285,51 @@ class TestIntrospection:
         with pytest.raises(ReauthorizationRequiredError, match="not active"):
             await adapter.identify(secret.access_token or "")
 
+    @pytest.mark.parametrize("active", ["missing", "true", 1, None])
+    async def test_only_active_true_names_an_account(self, vendor, active) -> None:
+        if active == "missing":
+            vendor.introspect_without_active = True
+        else:
+            vendor.introspected["active"] = active
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ReauthorizationRequiredError, match="not active"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_the_ids_in_the_token_response_are_never_read(self, vendor) -> None:
+        vendor.token_extras = {"workspace_id": "from-token", "user_id": "from-token"}
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "ws-1:user-1"
+
+    async def test_asks_with_basic_where_the_vendor_takes_only_that(
+        self, vendor
+    ) -> None:
+        vendor.metadata["token_endpoint_auth_methods_supported"] = [
+            "client_secret_basic"
+        ]
+        sent: list[httpx.Request] = []
+
+        def record(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return vendor.handle(request)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(record))
+        client = StaticClient(
+            OAuthClientCredentials(
+                STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+            )
+        )
+        adapter = OAuthAdapter(_definition(INTROSPECTED), client, http)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "ws-1:user-1"
+        [asked] = [r for r in sent if r.url.path == "/introspect"]
+        assert asked.headers["authorization"].startswith("Basic ")
+        [form] = vendor.introspections
+        assert "client_secret" not in form
+
     @pytest.mark.parametrize("missing", ["workspace_id", "user_id"])
     async def test_an_answer_without_both_ids_is_refused(self, vendor, missing) -> None:
         del vendor.introspected[missing]
@@ -293,7 +338,7 @@ class TestIntrospection:
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
 
-    @pytest.mark.parametrize("value", ["", True, None, ["ws-1"], {"id": "ws-1"}])
+    @pytest.mark.parametrize("value", ["", "   ", True, None, ["ws-1"], {"id": "ws-1"}])
     async def test_an_id_that_is_not_one_value_is_refused(self, vendor, value) -> None:
         vendor.introspected["workspace_id"] = value
         adapter, _ = _adapter(vendor, INTROSPECTED)

@@ -377,6 +377,10 @@ class FakeOAuthServer:
             "user_id": "user-1",
             "sub": "user-1",
         }
+        # Leaves `active` out of the introspection answer.
+        self.introspect_without_active = False
+        # Fields every token response carries beside the tokens.
+        self.token_extras: dict[str, Any] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -417,6 +421,7 @@ class FakeOAuthServer:
             "expires_in": self.lifetime,
             "refresh_token": refresh,
             "scope": " ".join(scopes),
+            **self.token_extras,
         }
 
     # ── HTTP ─────────────────────────────────────────────────────────────────
@@ -536,15 +541,15 @@ class FakeOAuthServer:
         scopes = self.live_access.get(form.get("token", ""))
         if scopes is None:
             return _json(200, {"active": False})
-        return _json(
-            200,
-            {
-                "active": True,
-                "scope": " ".join(scopes),
-                "token_type": "bearer",
-                **self.introspected,
-            },
-        )
+        answer = {
+            "active": True,
+            "scope": " ".join(scopes),
+            "token_type": "bearer",
+            **self.introspected,
+        }
+        if self.introspect_without_active:
+            del answer["active"]
+        return _json(200, answer)
 
     def _register(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
