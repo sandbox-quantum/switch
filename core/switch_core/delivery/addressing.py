@@ -85,7 +85,8 @@ def named_agents(
 # the sender's only feedback that the attempt was rejected.
 ADDRESSING_DENIED_MESSAGE = (
     "You're not permitted to direct messages to me in this room — my operator "
-    "has restricted who can address me here."
+    "has restricted who can address me here. If you work with them, ask them "
+    "to add you under Who can talk to your agent in Switch Console."
 )
 
 
@@ -97,7 +98,9 @@ ADDRESSING_UNCLAIMED_MESSAGE = (
     "I only take instructions from my owner, and this chat account isn't "
     "linked to a Switch user yet — so I can't tell whether that's you. If it "
     "is, link this account to your Switch user in Switch Console, post the "
-    "code it shows you from this account, and try again."
+    "code it shows you from this account, and try again. If you're a teammate "
+    "of my owner, ask them to add you under Who can talk to your agent in "
+    "Switch Console."
 )
 
 
