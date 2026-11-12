@@ -16,7 +16,7 @@ import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { dashboardPageUrl, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { administersOrganization } from '@shared/core/workspaces/workspaces';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
@@ -66,13 +66,15 @@ function PreferencesSettingsPage() {
 }
 
 /**
- * Open a workspace's or an organization's settings in the gateway, in the
- * layout the server has on. Its flags are read first when they never have
- * been, so a click made before they arrive still lands on the settings home.
+ * Open a workspace's or an organization's settings in the gateway, for the
+ * workspace `tenantId` names and in the layout the server has on. Its flags
+ * are read first when they never have been, so a click made before they
+ * arrive still lands on the settings home.
  */
 async function openGatewaySettings(
   server: SwitchServer,
-  link: 'workspace-settings' | 'organization-settings'
+  link: 'workspace-settings' | 'organization-settings',
+  tenantId: string | null
 ): Promise<void> {
   // Flags that cannot be read open today's addresses, which every server
   // serves and the new layout redirects.
@@ -80,7 +82,7 @@ async function openGatewaySettings(
   const newLayout = flags?.success === true && flags.data.flags.gateway_v2;
   await openServerPage(
     server.id,
-    `${dashboardOrigin(server)}/${gatewaySettingsPath(link, newLayout)}`
+    dashboardPageUrl(server, gatewaySettingsPath(link, newLayout), tenantId)
   );
 }
 
@@ -140,7 +142,7 @@ export const SettingsPage = observer(function SettingsPage({
           onSuccess: () => startManagedServer(server),
         });
       } else {
-        void openGatewaySettings(server, id);
+        void openGatewaySettings(server, id, workspace?.tenantId ?? null);
       }
     } else {
       onTabChange(id);

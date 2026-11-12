@@ -61,6 +61,22 @@ export function dashboardOrigin(server: Pick<SwitchServer, 'url' | 'dashboardUrl
   return server.dashboardUrl ?? server.url;
 }
 
+/**
+ * The address of one of a server's dashboard pages, in the workspace
+ * `tenantId` names when it names one. The dashboard switches to it on arrival
+ * (`?workspace=`), so the page is that workspace's rather than whichever one
+ * the browser, or the session Console last used, had selected. A dashboard
+ * from before ignores it.
+ */
+export function dashboardPageUrl(
+  server: Pick<SwitchServer, 'url' | 'dashboardUrl'>,
+  path: string,
+  tenantId: string | null
+): string {
+  const page = `${dashboardOrigin(server).replace(/\/+$/, '')}/${path}`;
+  return tenantId === null ? page : `${page}?workspace=${encodeURIComponent(tenantId)}`;
+}
+
 /** A registered Switch server. Non-secret connection metadata only. */
 export type SwitchServer = {
   id: string;

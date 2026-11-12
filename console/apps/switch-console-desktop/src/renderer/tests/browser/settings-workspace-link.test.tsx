@@ -3,7 +3,8 @@
  * a Switch this Console runs without Docker serves. A server an older Console
  * started without the gateway's pages is offered the restart that turns them
  * on; one that cannot serve them shows no link. Both links open the settings
- * of whichever layout the server's gateway has on.
+ * of whichever layout the server's gateway has on, for the workspace Console
+ * is in.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -154,7 +155,10 @@ it('opens the gateway a native local server serves', async () => {
   await render();
 
   await act(async () => link()?.click());
-  expect(state.openPage).toHaveBeenCalledWith('local', 'http://localhost:41001/workspace');
+  expect(state.openPage).toHaveBeenCalledWith(
+    'local',
+    'http://localhost:41001/workspace?workspace=t'
+  );
   expect(state.confirms).toHaveLength(0);
 });
 
@@ -182,7 +186,10 @@ it('opens the gateway of a server run with Docker', async () => {
   await render();
 
   await act(async () => link()?.click());
-  expect(state.openPage).toHaveBeenCalledWith('local', 'http://localhost:41001/workspace');
+  expect(state.openPage).toHaveBeenCalledWith(
+    'local',
+    'http://localhost:41001/workspace?workspace=t'
+  );
 });
 
 it("opens the new layout's settings where the server has it on", async () => {
@@ -191,7 +198,10 @@ it("opens the new layout's settings where the server has it on", async () => {
   await render();
 
   await act(async () => link()?.click());
-  expect(state.openPage).toHaveBeenCalledWith('local', 'http://localhost:41001/settings');
+  expect(state.openPage).toHaveBeenCalledWith(
+    'local',
+    'http://localhost:41001/settings?workspace=t'
+  );
 });
 
 it("opens the organization's settings in whichever layout the server has on", async () => {
@@ -200,11 +210,17 @@ it("opens the organization's settings in whichever layout the server has on", as
   await render();
 
   await act(async () => link('Organization settings')?.click());
-  expect(state.openPage).toHaveBeenLastCalledWith('local', 'http://localhost:41001/organization');
+  expect(state.openPage).toHaveBeenLastCalledWith(
+    'local',
+    'http://localhost:41001/organization?workspace=t'
+  );
 
   state.newLayout = true;
   await act(async () => link('Organization settings')?.click());
-  expect(state.openPage).toHaveBeenLastCalledWith('local', 'http://localhost:41001/settings/org');
+  expect(state.openPage).toHaveBeenLastCalledWith(
+    'local',
+    'http://localhost:41001/settings/org?workspace=t'
+  );
 });
 
 it("opens today's settings where the server's flags cannot be read", async () => {
@@ -213,5 +229,8 @@ it("opens today's settings where the server's flags cannot be read", async () =>
   await render();
 
   await act(async () => link()?.click());
-  expect(state.openPage).toHaveBeenCalledWith('local', 'http://localhost:41001/workspace');
+  expect(state.openPage).toHaveBeenCalledWith(
+    'local',
+    'http://localhost:41001/workspace?workspace=t'
+  );
 });

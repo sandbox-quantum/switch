@@ -198,7 +198,9 @@ const AgentCard = observer(function AgentCard({
   const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
 
   const gatewayUrl =
-    agent.switchAgentId && switchRoomsStore.gatewayAgentUrl(serverId, agent.switchAgentId);
+    agent.workspaceId &&
+    agent.switchAgentId &&
+    switchRoomsStore.gatewayAgentUrl(agent.workspaceId, agent.switchAgentId);
 
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">

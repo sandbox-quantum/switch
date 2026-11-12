@@ -53,6 +53,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A link into the web dashboard can name its workspace.** A page opened
+  with `?workspace=<id>` switches to that workspace first, then opens the
+  same page there, rather than showing whichever workspace the browser had
+  selected last. It switches only to a workspace you're in, or one your
+  organization admin role covers, so a link can't take the platform operator
+  into someone else's. For any other workspace the page stays where it was
+  and says so. The address drops the parameter once it has been followed.
+  Switch Console's links into the dashboard use it.
 - **Templates have a page of their own in the new dashboard layout, and say
   how often each one is run.** Behind `gateway_v2`, Templates leaves the
   Resources tabs: the workspace's own templates and the ones that come with
@@ -3394,6 +3402,13 @@ version of their own to them without also giving them a release of their own.
   last had open there or else General, and Organization settings opens the
   organization's. Servers without the new layout open the same pages as
   before.
+- **Links into the web dashboard open the workspace they're for.** Workspace
+  settings, Organization settings, an agent's page and a room's page could
+  open in another workspace on the same server: the one the browser had
+  selected last or, for the server Switch Console runs, the one Switch Console
+  had last used. An agent or room page then said the agent or room wasn't
+  found. The links now name their workspace, and the dashboard switches to it.
+  A dashboard from before this release ignores it.
 - **A Bash pattern in Disallowed tools no longer removes Bash.** For a
   Claude agent, an entry such as `Bash(curl:*)` took away the whole Bash tool.
   It now denies only the commands it matches, as on the command line. A plain
