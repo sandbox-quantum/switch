@@ -1,0 +1,9 @@
+slug: servicenow
+name: ServiceNow
+category: IT Service Management
+description: Access authorized ServiceNow incident records, knowledge articles, and service-management workflows.
+enabled: false
+# Keep this as a placeholder until instance-aware MCP endpoint routing and
+# strict hostname validation are supported and approved by maintainers.
+auth:
+  type: oauth
