@@ -492,6 +492,70 @@ class TestHandingOver:
         assert renewed is not None and renewed.token == fence.token + 1
 
 
+async def _now(session_factory: async_sessionmaker[AsyncSession]) -> Any:
+    """The database's clock, which every lease is written on."""
+    async with session_factory() as session:
+        return (await session.execute(select(func.now()))).scalar_one()
+
+
+class TestUnheldSince:
+    """Each claim says since when the work ran nowhere, for work that
+    listens to something outside Switch to read back what it missed."""
+
+    async def test_work_never_held_before_says_nothing(
+        self, two: tuple[_Process, _Process]
+    ) -> None:
+        a, _b = two
+        await a.ownership.balance()
+        assert a.started
+        assert {fence.unheld_since for fence in a.started} == {None}
+
+    async def test_work_let_go_of_says_when(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two: tuple[_Process, _Process],
+    ) -> None:
+        a, b = two
+        await a.ownership.balance()
+        await b.ownership.balance()
+        a_had = a.runs()
+
+        before = await _now(session_factory)
+        await a.ownership.stop()
+        await a.lease.stop()
+        after = await _now(session_factory)
+        await b.ownership.balance()
+
+        taken = [fence for fence in b.started if fence.key in a_had]
+        assert {fence.key for fence in taken} == a_had
+        for fence in taken:
+            assert fence.unheld_since is not None
+            assert before <= fence.unheld_since <= after
+
+    async def test_work_of_a_holder_that_died_says_its_last_renewal(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two: tuple[_Process, _Process],
+    ) -> None:
+        a, b = two
+        await a.ownership.balance()
+        await b.ownership.balance()
+        a_had = a.runs()
+
+        await _lapse(session_factory, a)
+        async with session_factory() as session:
+            last_beat = await session.scalar(
+                select(SwitchCoreProcess.beat_at).where(
+                    SwitchCoreProcess.id == a.process_id
+                )
+            )
+        await b.ownership.balance()
+
+        taken = [fence for fence in b.started if fence.key in a_had]
+        assert {fence.key for fence in taken} == a_had
+        assert {fence.unheld_since for fence in taken} == {last_beat}
+
+
 async def _booting(session_factory: async_sessionmaker[AsyncSession]) -> set[str]:
     """The processes whose lease reads booting."""
     async with session_factory() as session:

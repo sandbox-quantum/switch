@@ -73,7 +73,7 @@ async def _hold(session: AsyncSession, key: str, process_id: str) -> int:
     claimed = await OwnershipLeaseStore().claim(
         session, kind=KIND, keys=[key], process_id=process_id, lease_ttl=LEASE_TTL
     )
-    return claimed[key]
+    return claimed[key].token
 
 
 def _advance(client_id: str, room_id: str, seq: int, token: int) -> CursorAdvance:

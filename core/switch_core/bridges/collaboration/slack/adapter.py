@@ -126,6 +126,11 @@ _AGENT_GROUP_MARKER = "Switch agent — "
 # within three seconds; the rest is left for the acknowledgement to arrive.
 SOCKET_ACK_WITHIN_SECONDS = 2.0
 
+# A read-back reads a channel this many posts a page, newest first, and reads
+# channels for this long in all (`SlackAdapter.read_back`).
+_READ_BACK_PAGE = 200
+_READ_BACK_SECONDS = 10.0
+
 # User group calls are rate-limited at roughly 20/minute, and the Slack client
 # retries connection errors but not throttling.
 _RATE_LIMIT_MAX_ATTEMPTS = 5
@@ -267,6 +272,23 @@ def _granted_scopes(headers: Any) -> frozenset[str] | None:
 def _spaceless(text: str) -> str:
     """`text` for matching a name: case folded, with every space dropped."""
     return "".join(text.casefold().split())
+
+
+def _ts_value(ts: object) -> float:
+    """A Slack timestamp as a number, so two compare in time order; none is 0."""
+    try:
+        return float(str(ts or 0))
+    except ValueError:
+        return 0.0
+
+
+def _rate_limit(error: SlackApiError) -> bool:
+    """Whether Slack refused for the rate limit, in either shape it uses: the
+    name on a Web API error body, or the status where the HTTP layer refused."""
+    return (
+        error.response.get("error") == "ratelimited"
+        or getattr(error.response, "status_code", None) == 429
+    )
 
 
 def _retry_after_seconds(error: SlackApiError) -> int:
@@ -672,6 +694,11 @@ class SlackAdapter(PlatformAdapter):
     # A quiet Slack bridge opens no Socket Mode connection. One over the
     # Events API opens none anywhere: Slack posts each event to one process.
     keeps_quiet_unless_listening: ClassVar[bool] = True
+    # Slack sends an event nobody acknowledged again, a minute later.
+    sends_missed_events_again: ClassVar[bool] = True
+    # Slack routes events to a new Socket Mode connection about a second
+    # after it opens; a post in that second would otherwise come a minute late.
+    listening_settles_seconds: ClassVar[float] = 5.0
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -773,6 +800,9 @@ class SlackAdapter(PlatformAdapter):
         self._config = config
         self._web_client: AsyncWebClient | None = None
         self._socket_client: SocketModeClient | None = None
+        # Set once the Socket Mode connection is open, from when posts reach
+        # this adapter live (`listening`).
+        self._socket_connected = False
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
@@ -927,6 +957,7 @@ class SlackAdapter(PlatformAdapter):
                 self._handle_socket_event  # type: ignore[arg-type]
             )
             await self._socket_client.connect()
+            self._socket_connected = True
             logger.info("Slack Socket Mode connected")
 
     def set_tenant_id(self, tenant_id: str) -> None:
@@ -941,6 +972,7 @@ class SlackAdapter(PlatformAdapter):
         return self._tenant_id
 
     async def stop(self) -> None:
+        self._socket_connected = False
         if self._socket_client:
             try:
                 await self._socket_client.close()
@@ -1596,10 +1628,7 @@ class SlackAdapter(PlatformAdapter):
         None where the refusal is something else, leaving the caller to make of
         it whatever it was going to.
         """
-        if (
-            error.response.get("error") != "ratelimited"
-            and getattr(error.response, "status_code", None) != 429
-        ):
+        if not _rate_limit(error):
             return None
         delay = self._retry_after(error)
         self._rich_update_cooldown.start(delay)
@@ -4401,11 +4430,182 @@ class SlackAdapter(PlatformAdapter):
                 channel_id, str(event.get("old_name") or ""), name
             )
 
-    async def _handle_message_event(self, event: dict[str, object]) -> None:
+    def listening(self) -> bool:
+        """Whether Slack's events reach this adapter (`SupportsReadBack`): over
+        its Socket Mode connection once that is open, or over HTTP, which a
+        move between processes does not interrupt."""
+        return self._config.event_delivery == "webhook" or self._socket_connected
+
+    async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
+        """Hand on, in order, what was posted in these channels after `since`
+        (`SupportsReadBack`). Slack sends an event nobody acknowledged again,
+        but a minute later, so a post made while the bridge moved between
+        processes would reach its room that late. Read back, it arrives now,
+        and the copy Slack sends after is skipped as seen.
+
+        What this does not reach still comes, with that copy: reading and
+        handing on stop after `_READ_BACK_SECONDS` or when Slack rate-limits the
+        reading, and replies are read only in threads whose root is among the
+        posts read. Over HTTP a move interrupts nothing, so nothing is read.
+
+        Posts the live path leaves out are left out here too (`_bridged`).
+        What was handed on already is handed on again rather than skipped: it
+        may be a live post waiting for this read-back, and a reply read back
+        before it would lose its thread. A post or a command handed on twice is
+        written once."""
+        if self._config.event_delivery == "webhook":
+            return 0
+        client = self._require_web_client()
+        oldest = since.timestamp()
+        loop = asyncio.get_running_loop()
+        reading_until = loop.time() + _READ_BACK_SECONDS
+        handed = 0
+        for channel_id in channel_ids:
+            try:
+                async with asyncio.timeout_at(reading_until):
+                    said = await self._said_since(client, channel_id, oldest)
+                    channel_type = (
+                        await self._slack_channel_type(channel_id) if said else ""
+                    )
+            except TimeoutError:
+                self._read_back_out_of_time()
+                break
+            except SlackApiError as e:
+                if _rate_limit(e):
+                    logger.warning(
+                        "Slack rate-limited reading back channel %s; what was "
+                        "posted in it and the channels after it comes when "
+                        "Slack sends it again",
+                        channel_id,
+                    )
+                    break
+                logger.warning(
+                    "Could not read back Slack channel %s: %s", channel_id, e
+                )
+                continue
+            except Exception as e:
+                logger.warning(
+                    "Could not read back Slack channel %s: %s", channel_id, e
+                )
+                continue
+            for message in said:
+                if loop.time() >= reading_until:
+                    self._read_back_out_of_time()
+                    return handed
+                event = {**message, "channel": channel_id, "channel_type": channel_type}
+                if not self._bridged(event):
+                    continue
+                message_ts = str(event.get("ts", ""))
+                try:
+                    await self._deliver_message_event(
+                        event, channel_id, message_ts, read_back=True
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not hand on Slack post %s read back from channel "
+                        "%s; it comes when Slack sends it again",
+                        message_ts,
+                        channel_id,
+                    )
+                    continue
+                # Seen once handed on and not before, so Slack's copy arriving
+                # meanwhile is handed on as well, in case this fails.
+                self._remember_seen(message_ts)
+                handed += 1
+        return handed
+
+    def _read_back_out_of_time(self) -> None:
+        logger.warning(
+            "Stopped reading back Slack channels after %.0fs; what was posted "
+            "and not handed on yet comes when Slack sends it again",
+            _READ_BACK_SECONDS,
+        )
+
+    async def _said_since(
+        self, client: AsyncWebClient, channel_id: str, oldest: float
+    ) -> list[dict[str, Any]]:
+        """A channel's posts after `oldest`, oldest first: its own, read newest
+        first until older, and the replies in each thread those pages show was
+        replied to since."""
+        posts: dict[str, dict[str, Any]] = {}
+        replied: list[str] = []
+        cursor: str | None = None
+        while True:
+            page = await client.conversations_history(
+                channel=channel_id, limit=_READ_BACK_PAGE, cursor=cursor
+            )
+            messages = page.get("messages") or []
+            for message in messages:
+                if _ts_value(message.get("ts")) > oldest:
+                    posts[str(message["ts"])] = message
+                if _ts_value(message.get("latest_reply")) > oldest:
+                    replied.append(str(message["ts"]))
+            cursor = (page.get("response_metadata") or {}).get("next_cursor") or None
+            if (
+                not messages
+                or _ts_value(messages[-1].get("ts")) <= oldest
+                or not page.get("has_more")
+                or cursor is None
+            ):
+                break
+        for root in replied:
+            cursor = None
+            while True:
+                page = await client.conversations_replies(
+                    channel=channel_id,
+                    ts=root,
+                    oldest=f"{oldest:.6f}",
+                    limit=_READ_BACK_PAGE,
+                    cursor=cursor,
+                )
+                for message in page.get("messages") or []:
+                    if _ts_value(message.get("ts")) > oldest:
+                        posts.setdefault(str(message["ts"]), message)
+                cursor = (page.get("response_metadata") or {}).get(
+                    "next_cursor"
+                ) or None
+                if not page.get("has_more") or cursor is None:
+                    break
+        return sorted(posts.values(), key=lambda message: _ts_value(message.get("ts")))
+
+    async def _slack_channel_type(self, channel_id: str) -> str:
+        """The channel's type as Slack's events name it (`_to_channel_type`),
+        which a post read back does not carry. Its name comes with it."""
+        known = self._channel_type_cache.get(channel_id)
+        if known:
+            return known
+        result = await self._require_web_client().conversations_info(channel=channel_id)
+        channel = result["channel"]
+        name = channel.get("name") or channel.get("name_normalized")
+        if name:
+            self._channel_name_cache[channel_id] = name
+        if channel.get("is_im"):
+            kind = "im"
+        elif channel.get("is_mpim"):
+            kind = "mpim"
+        elif channel.get("is_private") or channel.get("is_group"):
+            kind = "group"
+        else:
+            kind = "channel"
+        self._channel_type_cache[channel_id] = kind
+        return kind
+
+    def _bridged(self, event: dict[str, object]) -> bool:
+        """Whether the bridge carries this post: not one of its own
+        (`_is_own_post`), and of a kind it handles."""
         if self._is_own_post(event):
-            return
+            return False
         subtype = event.get("subtype")
-        if subtype and subtype not in self._ALLOWED_SUBTYPES:
+        return not subtype or subtype in self._ALLOWED_SUBTYPES
+
+    def _remember_seen(self, message_ts: str) -> None:
+        self._seen_ts[message_ts] = None
+        self._seen_ts.move_to_end(message_ts)
+        if len(self._seen_ts) > self._seen_ts_max:
+            self._seen_ts.popitem(last=False)
+
+    async def _handle_message_event(self, event: dict[str, object]) -> None:
+        if not self._bridged(event):
             return
 
         channel_id = str(event.get("channel", ""))
@@ -4416,9 +4616,7 @@ class SlackAdapter(PlatformAdapter):
 
         if message_ts in self._seen_ts:
             return
-        self._seen_ts[message_ts] = None
-        if len(self._seen_ts) > self._seen_ts_max:
-            self._seen_ts.popitem(last=False)
+        self._remember_seen(message_ts)
         try:
             await self._deliver_message_event(event, channel_id, message_ts)
         except BaseException:
@@ -4433,10 +4631,15 @@ class SlackAdapter(PlatformAdapter):
             raise
 
     async def _deliver_message_event(
-        self, event: dict[str, object], channel_id: str, message_ts: str
+        self,
+        event: dict[str, object],
+        channel_id: str,
+        message_ts: str,
+        *,
+        read_back: bool = False,
     ) -> None:
-        """Route a post `_handle_message_event` let through to the command or
-        message callback."""
+        """Route a post `_handle_message_event` or `read_back` let through to
+        the command or message callback."""
         user_id = str(event.get("user", ""))
         text = self._post_text(event)
         slack_channel_type = str(event.get("channel_type", ""))
@@ -4448,7 +4651,13 @@ class SlackAdapter(PlatformAdapter):
             logger.warning(
                 "Slack message event missing channel_type for %s", channel_id
             )
-        self._last_user_message_ts[channel_id] = message_ts
+        # A post read back can be older than one that has arrived live since,
+        # and the channel's latest post is the one a reply threads under.
+        latest = not read_back or _ts_value(message_ts) > _ts_value(
+            self._last_user_message_ts.get(channel_id)
+        )
+        if latest:
+            self._last_user_message_ts[channel_id] = message_ts
 
         # App/bot posts (e.g. Datadog) carry no `user`; their identity lives in
         # bot_id + bot_profile/username. Key the human actor on the stable bot_id and
@@ -4476,8 +4685,9 @@ class SlackAdapter(PlatformAdapter):
             root_id = f"{channel_id}:{thread_ts}"
         # Remember the thread this message belongs to so the "thinking"
         # indicator can be posted into the same conversation.
-        self._last_thread_ts[channel_id] = thread_ts or message_ts
-        self._note_requester(channel_id, message_ts, thread_ts, user_id, bot_id)
+        if latest:
+            self._last_thread_ts[channel_id] = thread_ts or message_ts
+            self._note_requester(channel_id, message_ts, thread_ts, user_id, bot_id)
         message_ref = f"{channel_id}:{message_ts}"
         stripped = text.strip()
         if user_id and not bot_id:

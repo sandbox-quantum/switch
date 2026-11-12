@@ -41,7 +41,9 @@ claim it (`ProcessLease.surely_held`).
 Every claim bumps the row's `token`, and the work is started with it (`Fence`).
 Writes that must not outlive the hold name the token in the same statement
 (`DeliveryCursorStore.advance`), so a holder taken over without knowing it is
-refused, and is stopped when it is.
+refused, and is stopped when it is. The fence also says since when the work
+ran nowhere, so work that listens to something outside Switch can read back
+what it missed meanwhile.
 
 Changes reach the other processes over the signal bus: `ownership.changed`
 after a process releases keys, starts, or has marked its process lease stopped
@@ -61,7 +63,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from switch_core.process_lease import (
@@ -73,7 +75,10 @@ from switch_core.process_lease import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+    from switch_core.db.stores.ownership_lease_store import (
+        Claim,
+        OwnershipLeaseStore,
+    )
     from switch_core.db.stores.switch_core_process_store import (
         SwitchCoreProcessStore,
     )
@@ -103,12 +108,16 @@ StopWork = Callable[[str], Awaitable[None]]
 @dataclass(frozen=True)
 class Fence:
     """The hold a piece of work was started under: which lease, which process,
-    and the token the claim returned."""
+    and the token the claim returned. `unheld_since` is when the work last
+    ran elsewhere, as far as its row told: when its last holder let go of it,
+    or that holder's last renewal if it stopped holding its lease without
+    letting go. None for work no process held before."""
 
     kind: str
     key: str
     process_id: str
     token: int
+    unheld_since: datetime | None
 
 
 def owner_of(kind: str, key: str, processes: Sequence[str]) -> str | None:
@@ -232,12 +241,18 @@ class OwnedKind:
         if not wanted:
             return
         claimed = await self._ownership.claim(self.name, wanted)
-        for key, token in sorted(claimed.items()):
+        for key, claim in sorted(claimed.items()):
             # Dropped while the claim was in flight: give it straight back.
             if key not in self._wanted:
                 await self._ownership.release(self.name, [key])
                 continue
-            fence = Fence(kind=self.name, key=key, process_id=me, token=token)
+            fence = Fence(
+                kind=self.name,
+                key=key,
+                process_id=me,
+                token=claim.token,
+                unheld_since=claim.unheld_since,
+            )
             self._held[key] = fence
             try:
                 await self._start(key, fence)
@@ -495,7 +510,7 @@ class Ownership:
         for kind in list(self._kinds.values()):
             await kind._stop_all()
 
-    async def claim(self, kind: str, keys: Sequence[str]) -> dict[str, int]:
+    async def claim(self, kind: str, keys: Sequence[str]) -> dict[str, Claim]:
         async with self._session_factory() as session:
             claimed = await self._store.claim(
                 session,

@@ -12,6 +12,7 @@ publication draws is the whole of what a channel sees of a turn.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -27,6 +28,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.mattermost import adapter as mattermost_adapter
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -112,20 +114,38 @@ class _FakePosts:
         self.channel_calls.append((channel_id, params))
         if self.read_error:
             raise self.read_error
+        if params is not None and "page" in params:
+            # A page of the channel, newest first, as the server pages it.
+            newest = sorted(
+                self.channel.values(),
+                key=lambda post: int(post.get("create_at") or 0),
+                reverse=True,
+            )
+            size = int(params["per_page"])
+            page = newest[int(params["page"]) * size : (int(params["page"]) + 1) * size]
+            return {
+                "order": [post["id"] for post in page],
+                "posts": {post["id"]: post for post in page},
+            }
         return {"posts": self.channel}
 
 
 class _FakeUsers:
     def __init__(self, **users: str) -> None:
         self.users = users
+        self.bots: set[str] = set()
         self.calls: list[str] = []
         self.error: Exception | None = None
 
-    def get_user(self, user_id: str) -> dict[str, str]:
+    def get_user(self, user_id: str) -> dict[str, Any]:
         self.calls.append(user_id)
         if self.error:
             raise self.error
-        return {"id": user_id, "username": self.users[user_id]}
+        return {
+            "id": user_id,
+            "username": self.users[user_id],
+            "is_bot": user_id in self.bots,
+        }
 
 
 class _FakeReactions:
@@ -161,8 +181,15 @@ class _FakeChannels:
 
     def __init__(self) -> None:
         self.members: dict[str, set[str]] = {}
+        # Each channel as the server describes it.
+        self.described: dict[str, dict[str, Any]] = {}
         self.error: Exception | None = None
         self.calls: list[tuple[str, str]] = []
+
+    def get_channel(self, channel_id: str) -> dict[str, Any]:
+        if channel_id not in self.described:
+            raise ResourceNotFound(f"no channel {channel_id}")
+        return self.described[channel_id]
 
     def get_channel_member(self, channel_id: str, user_id: str) -> dict[str, str]:
         self.calls.append((channel_id, user_id))
@@ -843,3 +870,125 @@ async def test_child_progress_is_posted_and_updated_on_the_same_mattermost_card(
     assert "Reviewer: Check changes — failed" in _posts(adapter).stored[ref]["message"]
     assert "— running" not in _posts(adapter).stored[ref]["message"]
     assert len(_posts(adapter).created) == 1
+
+
+# ── Reading back what was said while no process listened ────────────────────
+
+_SINCE = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+_SINCE_MS = int(_SINCE.timestamp() * 1000)
+
+
+def _said(
+    post_id: str, user_id: str, message: str, after_ms: int, **fields: Any
+) -> dict[str, Any]:
+    return {
+        "id": post_id,
+        "channel_id": "C1",
+        "user_id": user_id,
+        "message": message,
+        "create_at": _SINCE_MS + after_ms,
+        "type": "",
+        "delete_at": 0,
+        "props": {},
+        "root_id": "",
+        "file_ids": [],
+    } | fields
+
+
+def _reading_adapter() -> tuple[MattermostAdapter, list[str]]:
+    """A bridge on a channel that had posts since `_SINCE`, of every kind a
+    read-back must tell apart, and what it hands on, by message."""
+    adapter = _adapter("worker", ann="ann", app="app", hooker="hooker")
+    _users(adapter).bots.add("app")
+    driver: Any = adapter._admin_driver
+    driver.channels.described["C1"] = {
+        "id": "C1",
+        "type": "O",
+        "display_name": "general",
+        "last_post_at": _SINCE_MS + 4000,
+    }
+    posts = [
+        _said("p3", "ann", "third", 3000),
+        _said("p1", "ann", "first", 1000),
+        _said("edited", "ann", "said before, edited since", -5000),
+        _said("deleted", "ann", "taken back", 2000, delete_at=_SINCE_MS + 2500),
+        _said("joined", "ann", "ann joined", 2100, type="system_join_channel"),
+        _said("agent", "bot-worker", "an agent's words", 2200),
+        _said("app", "app", "an integration's", 2300),
+        _said("hook", "hooker", "a webhook's", 2400, props={"from_webhook": "true"}),
+    ]
+    _posts(adapter).channel = {post["id"]: post for post in posts}
+    handed: list[str] = []
+
+    async def on_message(message: Any) -> None:
+        handed.append(message.content)
+
+    adapter._on_message = on_message
+    return adapter, handed
+
+
+async def test_a_read_back_hands_on_peoples_posts_since_in_order() -> None:
+    adapter, handed = _reading_adapter()
+
+    assert await adapter.read_back(_SINCE, ["C1"]) == 2
+
+    assert handed == ["first", "third"]
+    assert _posts(adapter).channel_calls == [("C1", {"page": 0, "per_page": 200})]
+
+
+async def test_a_read_back_reads_page_after_page_until_it_is_past_the_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mattermost_adapter, "_READ_BACK_PAGE", 2)
+    adapter, handed = _reading_adapter()
+    _posts(adapter).channel = {
+        f"m{n}": _said(f"m{n}", "ann", f"said {n}", n * 100) for n in range(1, 6)
+    } | {"before": _said("before", "ann", "said before", -100)}
+
+    assert await adapter.read_back(_SINCE, ["C1"]) == 5
+
+    assert handed == [f"said {n}" for n in range(1, 6)]
+    assert [params for _, params in _posts(adapter).channel_calls] == [
+        {"page": 0, "per_page": 2},
+        {"page": 1, "per_page": 2},
+        {"page": 2, "per_page": 2},
+    ]
+
+
+async def test_a_post_heard_already_is_handed_on_again_in_its_place() -> None:
+    """It may be a live post waiting for this read-back. Handed on twice, it
+    is written once."""
+    adapter, handed = _reading_adapter()
+    adapter._first_sighting("p1")
+
+    assert await adapter.read_back(_SINCE, ["C1"]) == 2
+
+    assert handed == ["first", "third"]
+
+
+async def test_a_read_back_reads_no_posts_where_none_came_since() -> None:
+    adapter, handed = _reading_adapter()
+    driver: Any = adapter._admin_driver
+    driver.channels.described["C1"]["last_post_at"] = _SINCE_MS - 1
+
+    assert await adapter.read_back(_SINCE, ["C1", "gone"]) == 0
+
+    assert handed == []
+    assert _posts(adapter).channel_calls == []
+
+
+async def test_a_bridge_listens_once_every_agents_bot_said_hello() -> None:
+    adapter = _adapter("worker", "other")
+    assert not adapter.listening()
+
+    for bot in ("bot-worker", "bot-other"):
+        hello = {"event": "hello", "data": {}, "broadcast": {"user_id": bot}}
+        await adapter._ws_handler(json.dumps(hello), "worker")
+
+    assert adapter.listening()
+
+
+async def test_a_bridge_with_no_bot_does_not_listen() -> None:
+    adapter = _adapter("worker")
+    adapter._agent_bots.clear()
+    assert not adapter.listening()

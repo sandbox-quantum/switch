@@ -24,6 +24,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
@@ -363,6 +364,10 @@ class CollaborationBridgeLifecycleService:
         # Why the last take-over of each bridge failed to start it, for
         # `register` to raise: the ownership logs the failure and goes on.
         self._failed_take_overs: dict[str, Exception] = {}
+        # When each bridge taken over here last ran elsewhere
+        # (`Fence.unheld_since`), for its start to read back what was said
+        # while no process listened.
+        self._read_back_from: dict[str, datetime] = {}
         # The version of its row (`_started_from`) each bridge a start guard
         # refused here was read from: not tried again here until it changes,
         # or the bridge is restarted (`_RefusedBefore`).
@@ -1258,6 +1263,7 @@ class CollaborationBridgeLifecycleService:
         adapter_cls: type[PlatformAdapter] | None = None
         fence = self._owned.fence(bridge_id)
         active = fence is not None
+        read_back_from = self._read_back_from.pop(bridge_id, None)
         # Before the first statement that can fail, so a bridge that never gets
         # past reading its own row still reports how long that took.
         self._connect_started[bridge_id] = time.monotonic()
@@ -1428,6 +1434,9 @@ class CollaborationBridgeLifecycleService:
                 active=active,
                 trust_client=self._trust_client,
             )
+
+            if active and read_back_from is not None:
+                collaboration_core.read_back_from(read_back_from)
 
             # Only where this process holds the bridge: everywhere else the
             # bridge relays nothing out, and its rooms are read by the holder.
@@ -2047,6 +2056,8 @@ class CollaborationBridgeLifecycleService:
         the listening one. Called by the ownership with the hold in place."""
         logger.info("Taking over collaboration bridge %s", bridge_id)
         self._failed_take_overs.pop(bridge_id, None)
+        if fence.unheld_since is not None:
+            self._read_back_from[bridge_id] = fence.unheld_since
         try:
             await self.start(bridge_id)
         except BridgeStartRefused as exc:
@@ -2058,6 +2069,10 @@ class CollaborationBridgeLifecycleService:
         except Exception as exc:
             self._failed_take_overs[bridge_id] = exc
             raise
+        finally:
+            # Read back by the start just made, or by none: never by a later
+            # one, after what it would read from is long past.
+            self._read_back_from.pop(bridge_id, None)
 
     async def _hand_over(self, bridge_id: str) -> None:
         """This process no longer holds the bridge: stop listening, finish the

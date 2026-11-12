@@ -18,7 +18,7 @@ from collections.abc import (
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from sqlalchemy.exc import IntegrityError
@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.adapter import (
     MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
+    SupportsReadBack,
     SupportsSharedConnection,
     agent_identity,
 )
@@ -81,6 +82,7 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
@@ -124,6 +126,7 @@ from switch_core.transport import (
     TransportError,
     writes_derived_from,
 )
+from switch_core.transport.cursors import BACKLOG_MAX_AGE
 from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
 from switch_core.trust.client import (
     NullTrustClient,
@@ -200,6 +203,30 @@ _UNPOSTED_CLAIM_LAPSES_AFTER = timedelta(
 # another process has just written, before giving up on telling whose it is.
 # That process writes the `ExternalUser` right after the client.
 _HUMAN_ACTOR_MINTING_SECONDS = 2.0
+
+# How far before the last holder let go of a bridge its next holder reads
+# back from: it stops listening a moment before it lets go, and the
+# platform's clock is not the database's.
+_READ_BACK_MARGIN = timedelta(seconds=30)
+
+# The same, for the read-back once the platform's delivery has settled
+# (`PlatformAdapter.listening_settles_seconds`): only the platform's clock
+# against this process's.
+_SETTLING_MARGIN = timedelta(seconds=5)
+
+# How long a bridge taken over waits for its platform's live events to reach
+# it before it says it is still waiting (it reads back once they do, so
+# nothing said falls between the two); how often it looks; how long a live
+# message waits for the read-back under way; and how long a bridge let go of
+# before its read-back ran reads back as it stops, inside the hand-over's own
+# budget (`main._HAND_OVER_SECONDS`).
+_READ_BACK_WAIT_SECONDS = 60.0
+_READ_BACK_POLL_SECONDS = 0.25
+_READ_BACK_HOLD_SECONDS = 30.0
+_READ_BACK_ON_STOP_SECONDS = 5.0
+
+# Set inside a read-back, so what it hands on is not held behind itself.
+_READING_BACK: ContextVar[bool] = ContextVar("bridge_reading_back", default=False)
 
 
 def _is_thread_reply(content: Mapping[str, object]) -> bool:
@@ -363,6 +390,11 @@ class CollaborationCore:
     _activity_publisher: AgentSessionActivityPublisher | None = None
     _approval_answers: ApprovalAnswers | None = None
     _active: bool = True
+    _read_back_owed: datetime | None = None
+    _read_back_task: asyncio.Task[None] | None = None
+    _read_back_done: asyncio.Event | None = None
+    _identities_begun: asyncio.Event | None = None
+    _receipts = MessagingEventReceiptStore()
 
     def __init__(
         self,
@@ -681,6 +713,13 @@ class CollaborationCore:
         return traced
 
     async def start(self) -> None:
+        try:
+            await self._start()
+        except BaseException:
+            await self._drop_read_back()
+            raise
+
+    async def _start(self) -> None:
         await self._load_channel_map()
         await self._load_existing_human_actors()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
@@ -703,7 +742,7 @@ class CollaborationCore:
         # Provisioning that ran at start unattached would have failed, so it is
         # re-run on attach.
         if isinstance(self._adapter, SupportsSharedConnection):
-            self._adapter.set_on_attached(self._provision_identities_on_attach)
+            self._adapter.set_on_attached(self._on_shared_connection_attached)
         # Always, not only where approval cards are drawn: a link prompt's
         # buttons (CHOO-4121) come back this way on every platform with any.
         self._adapter.set_interaction_handler(
@@ -721,8 +760,12 @@ class CollaborationCore:
             request_sync=self._resync_members_requested,
         )
         await self._adapter.start(
-            on_message=self._traced("message", self._handle_inbound_message),
-            on_command=self._traced("command", self._handle_inbound_command),
+            on_message=self._traced(
+                "message", self._held_for_read_back(self._handle_inbound_message)
+            ),
+            on_command=self._traced(
+                "command", self._held_for_read_back(self._handle_inbound_command)
+            ),
             on_agent_joined=self._traced(
                 "agent_joined", self._handle_agent_joined_channel
             ),
@@ -731,6 +774,12 @@ class CollaborationCore:
             ),
             on_app_joined=self._traced("app_joined", self._handle_app_joined_channel),
         )
+        # Once the channels and the adapter's callbacks are in place: a shared
+        # connection can be listening already, and a read-back before then
+        # reads no channel. Live messages wait for it from the takeover on
+        # (`read_back_from`), as a platform can deliver while its adapter is
+        # still starting (Discord does while it syncs its commands).
+        self._start_read_back()
         if self._active:
             await self._ensure_channel_captures()
             if self._activity_publisher is not None:
@@ -747,6 +796,7 @@ class CollaborationCore:
         # an attach while the adapter started may have begun a run already.
         if not self._awaiting_shared_connection():
             self._provision_identities_on_attach()
+            self._identities_under_way()
         # Not awaited either: one platform read per channel, and nothing waits
         # on it. Only where the bridge is held: one process is enough.
         if self._active:
@@ -756,6 +806,198 @@ class CollaborationCore:
             # People who joined or left while the bridge was down, or before
             # Switch was in the channel at all, are only found by asking.
             self._sync_members_soon(None)
+
+    def read_back_from(self, since: datetime) -> None:
+        """Read back what was said in the bridge's channels while no process
+        listened, which was since `since` (`SupportsReadBack`). Set before
+        `start`, by the process taking the bridge over. Live messages wait
+        from now until it is done."""
+        if not self._active or not isinstance(self._adapter, SupportsReadBack):
+            return
+        self._read_back_owed = since
+        self._read_back_done = asyncio.Event()
+        self._identities_begun = asyncio.Event()
+
+    def _start_read_back(self) -> None:
+        """In the background, once: a channel's history is a platform call,
+        and the bridge is online without it."""
+        since = self._read_back_owed
+        if since is None or self._read_back_task is not None:
+            return
+        self._read_back_task = asyncio.create_task(self._read_back(since))
+
+    def _identities_under_way(self) -> None:
+        if self._identities_begun is not None:
+            self._identities_begun.set()
+
+    async def _read_back(self, since: datetime) -> None:
+        """Once the platform's live events reach the bridge, so whatever is
+        said after the read arrives live; first its agents' identities, where
+        those are what listens. Cancelled, by a stop, it leaves the messages
+        it holds to the read-back the stop makes."""
+        assert isinstance(self._adapter, SupportsReadBack)
+        if self._adapter.listens_through_agent_identities:
+            assert self._identities_begun is not None
+            await self._identities_begun.wait()
+            identities = self._identity_task
+            if identities is not None and not identities.done():
+                await asyncio.wait({identities})
+        if not await self._until_listening(self._adapter):
+            self._read_back_owed = None
+            logger.warning(
+                "Bridge %s's platform events did not reach it within %s, so it "
+                "reads nothing back; anything said while no process listened, "
+                "since %s, %s",
+                self._bridge_id,
+                BACKLOG_MAX_AGE,
+                since.isoformat(),
+                self._unread(),
+            )
+            self._let_held_go()
+            return
+        listening_from = datetime.now(UTC)
+        await self._read_back_now(since)
+        self._let_held_go()
+        await self._read_back_once_settled(listening_from)
+
+    async def _read_back_once_settled(self, listening_from: datetime) -> None:
+        """Once more, `listening_settles_seconds` after the platform's events
+        began to reach the bridge, for what it said in between and did not yet
+        deliver. Live messages do not wait for this one: what it finds was
+        missed, and anything it reads twice is written once."""
+        settles = self._adapter.listening_settles_seconds
+        if settles <= 0:
+            return
+        await asyncio.sleep(settles)
+        await self._read_back_now(listening_from, margin=_SETTLING_MARGIN)
+
+    def _unread(self) -> str:
+        """What becomes of what was said while no process listened and is not
+        read back."""
+        if self._adapter.sends_missed_events_again:
+            return "arrives late, when the platform sends it again"
+        return "is lost"
+
+    async def _read_back_now(
+        self, since: datetime, *, margin: timedelta = _READ_BACK_MARGIN
+    ) -> None:
+        """From `margin` before `since`, for what the last holder may have
+        missed as it stopped, and at most `BACKLOG_MAX_AGE` back: older than
+        that is no longer being waited for."""
+        assert isinstance(self._adapter, SupportsReadBack)
+        start = max(since - margin, datetime.now(UTC) - BACKLOG_MAX_AGE)
+        reading = _READING_BACK.set(True)
+        try:
+            handed = await self._adapter.read_back(start, sorted(self._channel_to_room))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Could not read back what was said in bridge %s's channels since "
+                "%s, while no process listened; anything said then %s",
+                self._bridge_id,
+                start.isoformat(),
+                self._unread(),
+                exc_info=True,
+            )
+            return
+        finally:
+            _READING_BACK.reset(reading)
+        self._read_back_owed = None
+        if handed:
+            logger.info(
+                "Read back %d message(s) said in bridge %s's channels since %s",
+                handed,
+                self._bridge_id,
+                start.isoformat(),
+            )
+
+    async def _until_listening(self, adapter: SupportsReadBack) -> bool:
+        """Whether the platform's live events reach the adapter, waiting for
+        them up to `BACKLOG_MAX_AGE`, past which nothing read back would
+        still be waited for; said once if they take longer than
+        `_READ_BACK_WAIT_SECONDS`."""
+        waited_from = time.monotonic()
+        said = False
+        while not adapter.listening():
+            waited = time.monotonic() - waited_from
+            if waited >= BACKLOG_MAX_AGE.total_seconds():
+                return False
+            if not said and waited >= _READ_BACK_WAIT_SECONDS:
+                said = True
+                logger.warning(
+                    "Bridge %s's platform events have not reached it after "
+                    "%.0fs; it reads back what was said while no process "
+                    "listened once they do",
+                    self._bridge_id,
+                    _READ_BACK_WAIT_SECONDS,
+                )
+            await asyncio.sleep(_READ_BACK_POLL_SECONDS)
+        return True
+
+    def _let_held_go(self) -> None:
+        if self._read_back_done is not None:
+            self._read_back_done.set()
+
+    async def _drop_read_back(self) -> None:
+        """The bridge did not start: nothing reads back here, and nothing
+        waits for it."""
+        task, self._read_back_task = self._read_back_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._let_held_go()
+
+    async def _read_back_before_stopping(self) -> None:
+        """A bridge let go of before its read-back ran reads back now, within
+        `_READ_BACK_ON_STOP_SECONDS`: the next holder reads back only from
+        when this one let go. Then the messages it held go."""
+        owed, self._read_back_owed = self._read_back_owed, None
+        try:
+            if owed is not None and isinstance(self._adapter, SupportsReadBack):
+                async with asyncio.timeout(_READ_BACK_ON_STOP_SECONDS):
+                    await self._read_back_now(owed)
+        except TimeoutError:
+            logger.warning(
+                "Bridge %s was let go of before it read back what was said "
+                "since %s, and reading it back as it stopped took longer than "
+                "%.0fs; what it did not reach %s",
+                self._bridge_id,
+                owed.isoformat() if owed is not None else "",
+                _READ_BACK_ON_STOP_SECONDS,
+                self._unread(),
+            )
+        finally:
+            self._let_held_go()
+
+    def _held_for_read_back(
+        self, handle: Callable[[_InboundEventT], Awaitable[object]]
+    ) -> Callable[[_InboundEventT], Awaitable[object]]:
+        """`handle`, waiting first for the read-back under way, if any: it is
+        what the platform delivers as it arrives."""
+
+        async def held(event: _InboundEventT) -> object:
+            await self._after_read_back()
+            return await handle(event)
+
+        return held
+
+    async def _after_read_back(self) -> None:
+        """A message arriving live while the bridge reads back what was said
+        before it waits for that, up to `_READ_BACK_HOLD_SECONDS`, so it lands
+        after it in the room."""
+        done = self._read_back_done
+        if done is None or done.is_set() or _READING_BACK.get():
+            return
+        try:
+            await asyncio.wait_for(done.wait(), _READ_BACK_HOLD_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                "Bridge %s is still reading back after %.0fs; handing on a live "
+                "message before what it has not read yet",
+                self._bridge_id,
+                _READ_BACK_HOLD_SECONDS,
+            )
 
     @property
     def active(self) -> bool:
@@ -803,7 +1045,14 @@ class CollaborationCore:
             for task in list(self._member_sync_tasks):
                 task.cancel()
             self._member_sync_tasks.clear()
-            await self._adapter.stop()
+            reading, self._read_back_task = self._read_back_task, None
+            try:
+                if reading is not None and not reading.done():
+                    reading.cancel()
+                    await asyncio.gather(reading, return_exceptions=True)
+                await self._read_back_before_stopping()
+            finally:
+                await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
 
@@ -878,6 +1127,11 @@ class CollaborationCore:
 
             if client:
                 self._human_user_ids.add(client.transport_user_id)
+
+    def _on_shared_connection_attached(self) -> None:
+        """A shared connection attached: what waited for it can run now."""
+        self._provision_identities_on_attach()
+        self._identities_under_way()
 
     def _provision_identities_on_attach(self) -> None:
         """Run identity provisioning when a shared connection attaches.
@@ -2071,6 +2325,13 @@ class CollaborationCore:
         alone. A command typed in a channel may reach the apps of other Switch
         servers in the same workspace as well, so there only a server with
         something to say about the account answers.
+
+        A command post runs once, however often it is handed on: read back
+        after the bridge moved, or sent again by the platform. Unlike a room
+        command, nothing it writes is written from the post, and a second run
+        is not harmless: its code is used up by then, and a link made since
+        would be undone. The post is claimed in the transaction that runs it,
+        so a run that fails leaves it to run again.
         """
         only_here = cmd.reply_ref is not None or cmd.channel_type in (
             "direct",
@@ -2080,6 +2341,25 @@ class CollaborationCore:
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
+            receipt_id: str | None = None
+            if cmd.message_ref is not None:
+                receipt = await self._receipts.claim(
+                    session,
+                    platform=self._bridge_type,
+                    external_event_id=_post_source(
+                        self._bridge_id, cmd.channel_id, cmd.message_ref
+                    ),
+                )
+                if receipt is None:
+                    logger.info(
+                        "Did not run %s from %s in channel %s again: that post "
+                        "has run it already",
+                        cmd.command,
+                        cmd.sender_name,
+                        cmd.channel_id,
+                    )
+                    return
+                receipt_id = receipt.id
             account = await self._external_user_store.get_by_external_id(
                 session, self._bridge_id, cmd.sender_id
             )
@@ -2115,6 +2395,10 @@ class CollaborationCore:
                     wanted=cmd.args,
                     only_here=only_here,
                 )
+            if receipt_id is not None:
+                await self._receipts.mark_handled(session, receipt_id=receipt_id)
+                await self._receipts.prune(session)
+                await session.commit()
         if reply is None:
             logger.info(
                 "Left %s from %s in channel %s unanswered: nothing on this server "

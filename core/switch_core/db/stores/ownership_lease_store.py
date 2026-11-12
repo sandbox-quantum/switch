@@ -8,7 +8,8 @@ still holds is answered by the same clock that stamped it.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, bindparam, text, update
@@ -27,26 +28,54 @@ if TYPE_CHECKING:
 # its holder's process lease no longer holds: stopped, or not renewed within
 # the lease's lifetime. The new token is one more than the last, whoever held
 # it, so a holder that was taken over is refused by everything it still tries.
+#
+# Each row taken also says when the work last ran elsewhere, as the row stood
+# before the claim: when its holder let go of it, or the last renewal of a
+# holder that stopped holding its lease without letting go.
 _CLAIM = text(
     """
-    INSERT INTO ownership_leases AS lease (kind, key, process_id, token, changed_at)
-    SELECT :kind, claimed.key, :process_id, 1, now()
-    FROM unnest(:keys) AS claimed(key)
-    ON CONFLICT (kind, key) DO UPDATE
-    SET process_id = EXCLUDED.process_id,
-        token = lease.token + 1,
-        changed_at = now()
-    WHERE lease.process_id IS NULL
-       OR lease.process_id = EXCLUDED.process_id
-       OR NOT EXISTS (
-            SELECT 1 FROM switch_core_processes holder
-            WHERE holder.id = lease.process_id
-              AND holder.stopped_at IS NULL
-              AND holder.beat_at > now() - CAST(:lease_ttl AS interval)
-       )
-    RETURNING lease.key, lease.token
+    WITH previous AS (
+        SELECT lease.key,
+               CASE WHEN lease.process_id IS NULL THEN lease.changed_at
+                    ELSE holder.beat_at
+               END AS unheld_since
+        FROM ownership_leases lease
+        LEFT JOIN switch_core_processes holder ON holder.id = lease.process_id
+        WHERE lease.kind = :kind AND lease.key = ANY(:keys)
+    ),
+    taken AS (
+        INSERT INTO ownership_leases AS lease
+            (kind, key, process_id, token, changed_at)
+        SELECT :kind, claimed.key, :process_id, 1, now()
+        FROM unnest(:keys) AS claimed(key)
+        ON CONFLICT (kind, key) DO UPDATE
+        SET process_id = EXCLUDED.process_id,
+            token = lease.token + 1,
+            changed_at = now()
+        WHERE lease.process_id IS NULL
+           OR lease.process_id = EXCLUDED.process_id
+           OR NOT EXISTS (
+                SELECT 1 FROM switch_core_processes holder
+                WHERE holder.id = lease.process_id
+                  AND holder.stopped_at IS NULL
+                  AND holder.beat_at > now() - CAST(:lease_ttl AS interval)
+           )
+        RETURNING lease.key, lease.token
+    )
+    SELECT taken.key, taken.token, previous.unheld_since
+    FROM taken LEFT JOIN previous ON previous.key = taken.key
     """
 ).bindparams(bindparam("keys", type_=ARRAY(Text)))
+
+
+@dataclass(frozen=True)
+class Claim:
+    """A key taken: its new token, and when the work last ran elsewhere as
+    far as its row told. None for work no process held before, or whose last
+    holder's lease is long gone."""
+
+    token: int
+    unheld_since: datetime | None
 
 
 class OwnershipLeaseStore:
@@ -58,7 +87,7 @@ class OwnershipLeaseStore:
         keys: Collection[str],
         process_id: str,
         lease_ttl: timedelta,
-    ) -> dict[str, int]:
+    ) -> dict[str, Claim]:
         """Take every one of `keys` that may be taken, in one statement.
 
         Returns the keys taken, each with its new token. A key held by a
@@ -75,7 +104,10 @@ class OwnershipLeaseStore:
                 "lease_ttl": lease_ttl,
             },
         )
-        return {key: token for key, token in result.tuples().all()}
+        return {
+            key: Claim(token=token, unheld_since=unheld_since)
+            for key, token, unheld_since in result.tuples().all()
+        }
 
     async def release(
         self,

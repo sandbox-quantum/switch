@@ -1550,6 +1550,18 @@ version of their own to them without also giving them a release of their own.
   not come back in time reads offline from when its pod stopped, and its
   owner's Console is told, as it now is when a machine's pod dies; before,
   Console showed such a machine online until it next refreshed on its own.
+- **Messages typed in a Slack, Discord or Mattermost channel while its bridge
+  moves between switch-core pods no longer go missing or come a minute
+  late.** Discord and Mattermost do not send again what was said while the
+  bridge had no connection, so a message typed between one pod letting go of
+  the bridge and the next taking it up never reached the room, and Slack sent
+  it again a minute later. The pod taking a bridge over now reads its channels
+  back from shortly before the last one let go, at most ten minutes back, and
+  hands on what was said there. On Discord and Mattermost, posts by bots and
+  integrations in that gap are still not read back. On Slack, the read-back
+  stops after ten seconds or at Slack's rate limit, and reads replies only in
+  threads whose root is among the posts it reads; what it leaves still comes
+  a minute late.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
