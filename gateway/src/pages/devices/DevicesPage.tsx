@@ -335,24 +335,27 @@ function Devices({
       const actions: RowAction[] = [];
       const name = row.display_name ?? row.name;
       if (row.can_edit) {
-        const blocked =
-          row.controller_id === null
-            ? "It isn't on a device. Edit it to put it on one."
-            : unreachable(row.controller_name ?? "Its device", row.controller_state ?? "unknown");
+        const notPlaced = row.controller_id === null ? "It isn't on a device. Edit it to put it on one." : null;
+        const deviceName = row.controller_name ?? "Its device";
+        const away = notPlaced ? null : unreachable(deviceName, row.controller_state ?? "unknown");
         const running = row.desired_state === "running";
+        // What is wanted is kept, and the device acts on it when it is back:
+        // pausing an agent on a device that is off keeps it from starting
+        // again when it comes back. A restart is only for now.
         actions.push({
           label: running ? "Pause" : "Start",
           icon: running ? <PauseCircleOutline fontSize="small" /> : <PlayCircleOutline fontSize="small" />,
-          disabledReason: blocked,
+          disabledReason: notPlaced,
           onClick: () =>
-            void act(running ? `Pausing ${name}.` : `Starting ${name}.`, () =>
-              updateManagedAgent(row.agent_id, { desired_state: running ? "stopped" : "running" }),
+            void act(
+              `${running ? "Pausing" : "Starting"} ${name}.${away ? ` ${deviceName} does it once it's back.` : ""}`,
+              () => updateManagedAgent(row.agent_id, { desired_state: running ? "stopped" : "running" }),
             ),
         });
         actions.push({
           label: "Restart",
           icon: <RestartAltOutlined fontSize="small" />,
-          disabledReason: blocked ?? (running ? null : "It's paused. Start it instead."),
+          disabledReason: notPlaced ?? away ?? (running ? null : "It's paused. Start it instead."),
           onClick: () =>
             void act(`Asked to restart ${name}.`, () =>
               createOperation({

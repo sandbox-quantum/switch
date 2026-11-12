@@ -277,7 +277,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
             addingColumns,
             addingSearch,
             { one: "key", other: "keys" },
-            <TableEmptyState title={yours ? "You don't hold a key for adding agents here" : "No keys for adding agents yet"}>
+            <TableEmptyState title={yours ? "You don't have a key for adding agents here" : "No keys for adding agents yet"}>
               Create one to add an agent to {workspace}.
             </TableEmptyState>,
           )}

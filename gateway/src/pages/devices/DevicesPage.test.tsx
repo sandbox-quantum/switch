@@ -209,13 +209,60 @@ describe("DevicesPage", () => {
     serve([device("laptop", { state: "offline" })], [managed("helper", { controller_state: "offline" })]);
     render(<DevicesPage />);
 
+    // Pausing is kept for when the device is back; restarting is only for now.
     expect(await menuOf("helper", "helper")).toEqual([
-      "Pauselaptop is offline.",
+      "Pause",
       "Restartlaptop is offline.",
       "Edit",
       "Stop managing",
       "Delete",
     ]);
+  });
+
+  it("pauses an agent on an offline device, saying when it takes effect", async () => {
+    signedInAs("member");
+    const calls = answer({
+      "GET /management/workspace": [
+        200,
+        {
+          devices: [device("laptop", { state: "offline" })],
+          managed_agents: [managed("helper", { controller_state: "offline" })],
+          operations: [],
+        },
+      ],
+      "GET /hosted-machines": [200, { available: false, machines: [] }],
+      "GET /management/providers": [200, { providers: [] }],
+      "PATCH /management/agents/helper": [200, {}],
+    });
+    render(<DevicesPage />);
+
+    await menuOf("helper", "helper");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Pause/ }));
+
+    expect(await screen.findByText("Pausing helper. laptop does it once it's back.")).toBeTruthy();
+    expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({ desired_state: "stopped" });
+  });
+
+  it("says why a removal was refused when the device went in the meantime", async () => {
+    signedInAs("admin");
+    answer({
+      "GET /management/workspace": [200, { devices: [THEIRS], managed_agents: [], operations: [] }],
+      "GET /hosted-machines": [200, { available: false, machines: [] }],
+      "GET /management/providers": [200, { providers: [] }],
+      "DELETE /management/controllers/grace-laptop": [
+        404,
+        { error: { code: "not_found", message: "Controller not found.", retryable: false } },
+      ],
+    });
+    render(<DevicesPage />);
+
+    await menuOf("grace-laptop", "grace-laptop");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Remove/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    expect(await within(dialog).findByText("Controller not found.")).toBeTruthy();
+    expect(screen.queryByText("Removed grace-laptop.")).toBeNull();
   });
 
   it("lets an admin stop managing or delete someone else's agent, and nothing more", async () => {
