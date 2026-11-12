@@ -15,6 +15,8 @@ import {
   workspaceSwitchNote,
 } from '@renderer/features/connectors/connector-copy';
 import {
+  beyondYours,
+  browseMoreText,
   cardQuickAction,
   connectedAsLine,
   connectorsInTab,
@@ -25,6 +27,7 @@ import {
   signInLabel,
   tokenLifetimeLabel,
   workspaceOffNotice,
+  yoursSearchEmptyText,
 } from '@renderer/features/connectors/connectors-catalog';
 import {
   repositoriesActionLabel,
@@ -347,6 +350,30 @@ describe('the Yours and Discover tabs', () => {
     expect(names(connectorsInTab(catalog, 'yours', 'atlas'))).toEqual([]);
     expect(names(connectorsInTab(catalog, 'discover', ' NOTION '))).toEqual(['Notion']);
     expect(names(connectorsInTab(catalog, 'discover', 'incidents'))).toEqual(['Datadog']);
+  });
+
+  it('counts what Discover has beyond Yours, leaving coming soon out unless searched for', () => {
+    expect(names(beyondYours(catalog, ''))).toEqual(['Atlassian']);
+    expect(names(beyondYours(catalog, 'notion'))).toEqual(['Notion']);
+    expect(names(beyondYours(catalog, 'project'))).toEqual(['Atlassian']);
+    expect(names(beyondYours(catalog, 'datadog'))).toEqual([]);
+    expect(names(beyondYours(catalog, 'zzz'))).toEqual([]);
+    expect(
+      beyondYours([entry({ status: 'connected' }), entry({ status: 'coming_soon' })], '')
+    ).toEqual([]);
+  });
+
+  it('words the trailing card and the search on Yours for one and for several', () => {
+    expect(browseMoreText(1, '')).toBe('Browse 1 more connector');
+    expect(browseMoreText(3, '')).toBe('Browse 3 more connectors');
+    expect(browseMoreText(1, ' google ')).toBe('1 more connector matches “google” on Discover');
+    expect(browseMoreText(2, 'google')).toBe('2 more connectors match “google” on Discover');
+    expect(yoursSearchEmptyText(' github ', 1)).toBe(
+      'None of your connectors match “github”. 1 on Discover does.'
+    );
+    expect(yoursSearchEmptyText('project', 2)).toBe(
+      'None of your connectors match “project”. 2 on Discover do.'
+    );
   });
 });
 

@@ -41,6 +41,35 @@ export function connectorsInTab(
 }
 
 /**
+ * What Discover lists for `query` that Yours does not: the way to the rest of
+ * the catalog from Yours, for its trailing card and its search. With a query,
+ * every match, coming soon included, since Discover shows those too; without
+ * one, only services the person could connect, so the count is not padded by
+ * services not built yet. Either way the number is what one click shows.
+ */
+export function beyondYours(
+  entries: ConnectionCatalogEntry[],
+  query: string
+): ConnectionCatalogEntry[] {
+  const notYours = connectorsInTab(entries, 'discover', query).filter((entry) => !isYours(entry));
+  return query.trim() ? notYours : notYours.filter((entry) => entry.status !== 'coming_soon');
+}
+
+/** The trailing card on Yours, which opens Discover. */
+export function browseMoreText(count: number, query: string): string {
+  const noun = count === 1 ? 'connector' : 'connectors';
+  const needle = query.trim();
+  return needle
+    ? `${count} more ${noun} ${count === 1 ? 'matches' : 'match'} “${needle}” on Discover`
+    : `Browse ${count} more ${noun}`;
+}
+
+/** What Yours says when nothing connected matches a search but Discover has `count` that do. */
+export function yoursSearchEmptyText(query: string, count: number): string {
+  return `None of your connectors match “${query.trim()}”. ${count} on Discover ${count === 1 ? 'does' : 'do'}.`;
+}
+
+/**
  * The card's own control, beside the part that opens the profile: the fix
  * its state offers the person looking (set the app up, turn it on for the
  * workspace), a way to connect where the profile would offer Connect, and a

@@ -3151,6 +3151,14 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connectors page no longer hides the rest of the catalog behind
+  Yours.** Yours, where the page opens once something is connected, now ends
+  with a card saying how many more services Discover offers ("Browse 3 more
+  connectors"), leaving out ones marked coming soon. A search there that
+  matches nothing connected says how many match on Discover, with a Show button
+  that keeps the search, instead of "No connector matches". Cards on Yours no
+  longer carry the green connected tick, which said nothing there and made a
+  single card read as the whole set; Discover keeps it.
 - **Google Workspace shows Google's full-colour G** on the Connections grid,
   in place of a one-colour blue G that Google's guidelines do not offer, and
   the Atlassian connection shows the Atlassian logo rather than Jira's.
