@@ -1389,7 +1389,7 @@ class RoomYamlService:
         async with self._session_factory() as session:
             for doc in docs:
                 try:
-                    created_doc = await self._resources.create_room_document_for_user(
+                    created_doc = await self._resources.create_template_room_document(
                         session,
                         room_id=room_id,
                         owner_id=user_id,

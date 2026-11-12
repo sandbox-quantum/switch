@@ -16,7 +16,6 @@ import {
   deleteRoomRole,
   fetchArchivedRooms,
   fetchBridgePeople,
-  fetchBridgeUserNames,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -55,6 +54,7 @@ import {
   fetchRoomDetail,
   fetchRoomGroups,
   fetchRoomRoles,
+  fetchRoomSchedules,
   fetchRooms,
   fetchTemplateDetail,
   fetchTemplateRuns,
@@ -98,6 +98,10 @@ import {
   fetchRoomResources,
   removeLinkedRoom,
   setRoomResourceAttached,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  setRoomSchedulePaused,
+  updateRoomSchedule,
 } from '@main/core/switch-servers/gateway-client';
 import {
   cancelLinkRequestOnServer,
@@ -206,6 +210,8 @@ import type {
   SetRoomAutoRouteParams,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
+  RoomScheduleDraft,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
@@ -1260,16 +1266,60 @@ export const workspacesController = createRPCController({
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
     ),
 
-  /** The people Switch knows on one bridge, with who linked each, for the New room dialog. */
+  /** The people Switch knows on one bridge, with who linked each, for offering them to a room. */
   listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchBridgePeople(server, params.bridgeId)
     ),
 
-  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
-  listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
-    withWorkspaceSession(params.workspaceId, (server) =>
-      fetchBridgeUserNames(server, params.bridgeId)
+  /** A room's schedules, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /**
+   * Add, change, pause or remove one of a room's schedules. Failures propagate
+   * as-is, so a refusal (no write access, an agent not in the room, a time
+   * already past) reaches the form in the server's own words.
+   */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.draft)
+    ),
+
+  setRoomSchedulePaused: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    paused: boolean;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomSchedulePaused(server, params.roomId, params.scheduleId, params.paused)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
     ),
 
   /**

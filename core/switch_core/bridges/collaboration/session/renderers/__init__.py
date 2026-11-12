@@ -26,6 +26,8 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
+from .subagents import is_tool_call
+
 # How finely a running turn's clock is shown, and so how often the clock alone
 # is worth redrawing a message for. Seconds would sit still between those
 # redraws and read as a card that had stopped.
@@ -90,9 +92,7 @@ def turn_state(
         worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
         state = worked if turn.status == "completed" else f"{state} {worked}"
     unfinished = sum(
-        1
-        for item in items
-        if item.kind == "tool-activity" and item.status == "in-progress"
+        1 for item in items if is_tool_call(item) and item.status == "in-progress"
     )
     if not unfinished:
         return state
@@ -102,7 +102,7 @@ def turn_state(
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:
     """How long a turn ran, and how much of that was tool calls."""
-    calls = sum(1 for item in items if item.kind == "tool-activity")
+    calls = sum(1 for item in items if is_tool_call(item))
     worked = f"Worked for {_format_duration(elapsed_seconds)}."
     if not calls or not tool_detail:
         return worked

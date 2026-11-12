@@ -505,6 +505,24 @@ AGENT_CONNECTIONS_EXPIRED = _spec(
     "alone cannot show.",
 )
 
+# Agent controller connections, by what happened to one: `opened` (a fresh
+# open on this process), `adopted` (a socket attaching here to a connection
+# another process opened), `taken_over` (closed here because a newer
+# connection replaced it through another process), and `closed` with the
+# close code as `reason` (heartbeat_lapsed, taken_over, ...). These were
+# info log lines, hundreds of thousands a day on pilot while controllers
+# reconnected every few seconds; a rate is what says that is happening.
+CONTROLLER_CONNECTIONS = _spec(
+    "switch.controllers.connections",
+    "sum",
+    "{connection}",
+    "Agent controller connection events, by event: opened, adopted, "
+    "taken_over, closed (with the close code as reason). A steady rate "
+    "against a flat count of controllers is reconnect churn.",
+    "event",
+    "reason",
+)
+
 # Every stream open, by what it was. `reattach` is a live connection whose
 # socket came back; `after_lapse` and `after_close` are a connection id this
 # process closed recently, coming back; `fresh` is one this process has never
@@ -815,6 +833,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_CONNECTIONS_EXPIRED,
         AGENT_OPENS_DEFERRED,
         AGENT_CONNECTIONS_OPENED,
+        CONTROLLER_CONNECTIONS,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
         SERVICE_TOKEN_REQUESTS,

@@ -173,6 +173,18 @@ def test_private_channels_are_reported_per_platform() -> None:
     assert service.supports_private_channels("teams") is True
 
 
+def test_a_public_channel_puts_its_creator_in_except_on_teams() -> None:
+    # On Teams a standard channel's members are the whole team's.
+    service = _service()
+    service.register_adapter("telegram", TelegramAdapter, TelegramConnectionConfig)
+    service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+    service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+
+    assert service.adds_creator_to_public_channel("slack") is True
+    assert service.adds_creator_to_public_channel("teams") is False
+    assert service.adds_creator_to_public_channel("telegram") is False
+
+
 def test_an_unregistered_type_is_not_reported_as_incapable() -> None:
     # Registration rejects an unknown type by name, which is a better error than
     # a capability claim about a platform Switch does not have.
