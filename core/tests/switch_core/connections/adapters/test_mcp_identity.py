@@ -152,13 +152,15 @@ async def test_mcp_identity_sanitizes_transport_failure(monkeypatch):
     assert "private-diagnostic" not in str(exc.value)
 
 
-def _adapter(http):
+def _adapter(http, arguments: dict[str, str] | None = None):
     entry = yaml.safe_load(OAUTH_ENTRY)
     entry["auth"]["identity"] = {
         "mcp_tool": "get_user",
         "account_id": "data.gid",
         "label": "data.name",
     }
+    if arguments is not None:
+        entry["auth"]["identity"]["arguments"] = arguments
     return OAuthAdapter(
         ConnectionDefinition.model_validate(entry),
         StaticClient(
@@ -463,7 +465,7 @@ def _unevaluated_chain(levels: int, keyword: str) -> dict[str, Any]:
 )
 def test_accepts_no_arguments_takes_a_safe_shape(schema):
     started = time.monotonic()
-    assert oauth._accepts_no_arguments(schema) is True
+    assert oauth._accepts_arguments(schema, []) is True
     assert time.monotonic() - started < 0.1
 
 
@@ -480,7 +482,7 @@ def test_accepts_no_arguments_takes_a_safe_shape(schema):
     ids=lambda schema: str(schema)[:40],
 )
 def test_accepts_no_arguments_refuses_other_shapes(schema):
-    assert oauth._accepts_no_arguments(schema) is False
+    assert oauth._accepts_arguments(schema, []) is False
 
 
 async def test_mcp_identity_refuses_a_schema_that_rejects_empty_arguments(
@@ -502,6 +504,102 @@ async def test_mcp_identity_spends_no_time_on_a_hostile_schema(monkeypatch):
         identity = await _adapter(http).identify("example-bearer-value", {})
     assert time.monotonic() - started < 1
     assert identity.account_id == "account-example"
+
+
+ME = {"query": "me"}
+# Linear's get_user input schema, as measured.
+QUERY_SCHEMA = {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "query": {"type": "string", "description": 'User ID, name, email, or "me"'}
+    },
+    "required": ["query"],
+    "additionalProperties": False,
+}
+
+
+async def _identify_with(arguments: dict[str, str], tool: dict[str, Any], monkeypatch):
+    vendor = _ScriptedMcp({None: ([tool], None)})
+    _over_mock(monkeypatch, vendor)
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
+        try:
+            result = await _adapter(http, arguments).identify("example-bearer-value")
+        except ServiceAdapterError as error:
+            assert error.__context__ is None and error.__cause__ is None
+            return error, vendor
+    return result, vendor
+
+
+async def test_mcp_identity_sends_the_catalogs_arguments_exactly(monkeypatch):
+    tool = {**GET_USER, "inputSchema": QUERY_SCHEMA}
+    identity, vendor = await _identify_with(ME, tool, monkeypatch)
+    assert not isinstance(identity, ServiceAdapterError)
+    assert identity.account_id == "account-example"
+    assert [call["params"]["name"] for call in vendor.calls] == ["get_user"]
+    assert [call["params"]["arguments"] for call in vendor.calls] == [ME]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "properties": {"other": {"type": "string"}}},
+        {"type": "object"},
+        {"type": "object", "properties": ["query"]},
+        {**QUERY_SCHEMA, "required": ["query", "team"]},
+        {**QUERY_SCHEMA, "required": "query"},
+        {**QUERY_SCHEMA, "required": {"query": 1}},
+        {"type": "object", "properties": {"query": {"type": "integer"}}},
+        {"type": "object", "properties": {"query": {"type": ["string"]}}},
+        {"type": "object", "properties": {"query": True}},
+        {**QUERY_SCHEMA, "type": "array"},
+        {key: value for key, value in QUERY_SCHEMA.items() if key != "type"},
+    ],
+    ids=lambda schema: str(schema)[:60],
+)
+async def test_mcp_identity_refuses_a_schema_its_arguments_do_not_fit(
+    monkeypatch, schema
+):
+    error, vendor = await _identify_with(
+        ME, {**GET_USER, "inputSchema": schema}, monkeypatch
+    )
+    assert isinstance(error, ServiceAdapterError)
+    _assert_reason(error, "needs_arguments")
+    assert vendor.calls == []
+
+
+async def test_mcp_identity_with_arguments_still_needs_a_read_only_tool(monkeypatch):
+    tool = {
+        "name": "get_user",
+        "inputSchema": QUERY_SCHEMA,
+        "annotations": {"readOnlyHint": False},
+    }
+    error, vendor = await _identify_with(ME, tool, monkeypatch)
+    assert isinstance(error, ServiceAdapterError)
+    _assert_reason(error, "not_read_only")
+    assert vendor.calls == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        QUERY_SCHEMA,
+        {"type": "object", "properties": {"query": {}}},
+        {"type": "object", "properties": {"query": {"type": "string"}, "team": {}}},
+        {**QUERY_SCHEMA, "required": []},
+        {**QUERY_SCHEMA, "allOf": [{}] * 21000},
+    ],
+    ids=lambda schema: str(schema)[:60],
+)
+def test_accepts_arguments_takes_a_schema_they_fit(schema):
+    started = time.monotonic()
+    assert oauth._accepts_arguments(schema, ["query"]) is True
+    assert time.monotonic() - started < 0.1
+
+
+def test_accepts_arguments_refuses_an_unhashable_required_entry():
+    schema = {**QUERY_SCHEMA, "required": [{"query": 1}]}
+    assert oauth._accepts_arguments(schema, ["query"]) is False
 
 
 @pytest.mark.parametrize(

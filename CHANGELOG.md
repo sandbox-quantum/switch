@@ -76,6 +76,10 @@ version of their own to them without also giving them a release of their own.
   counts with its next observation, which Core counts once the observation is
   saved. Against an older Core that refuses the counts, it sends the
   observation without them and leaves them off for an hour. Deploy Core first.
+- **An MCP identity tool can take fixed arguments.** A catalog entry can give
+  fixed `arguments` to the MCP tool that tells Core whose sign-in it is, such
+  as `{ query: me }`. Core sends them only if the tool's schema declares each
+  one, with no type or as a string, and requires no other.
 - **Usage telemetry counts Switch Console chat.** Messages people post in a
   Switch Console chat were stored without being counted, so desktop chat was
   invisible to the message events and the period counts. Each post is now a
