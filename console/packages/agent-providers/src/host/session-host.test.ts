@@ -147,7 +147,7 @@ async function start(provider: Session['provider']) {
   await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root, host };
 }
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen', 'junie'] as const)(
   'serializes and deduplicates %s commands across recovery',
   async (provider) => {
     const { root, host, adapter } = await start(provider);
@@ -1303,7 +1303,7 @@ it('resumes a stopped native conversation only once per explicit operation witho
   expect(again.adapter.startSession).not.toHaveBeenCalled();
 });
 
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen', 'junie'] as const)(
   'starts %s without waiting for model discovery',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'startup-models-'));

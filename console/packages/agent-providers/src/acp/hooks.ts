@@ -7,9 +7,10 @@ import type {
   UserInputQuestion,
 } from '../events';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
-import type { ProviderLogger } from '../transport/stdio-json-rpc';
+import type { ProviderLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 import type {
   AcpAgentCapabilities,
+  AcpConfigOption,
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
@@ -177,6 +178,21 @@ export interface AcpProviderHooks {
    */
   sessionMode?(runtimeMode: RuntimeMode, modes: AcpSessionModes | undefined): string | undefined;
   /**
+   * Session config options to set for Switch's runtime mode, for an agent
+   * whose permission level is a config option rather than a mode (Junie's
+   * brave mode). Given the options the new session offers; each value must be
+   * one its option offers, or the session does not start.
+   */
+  sessionConfigOptions?(
+    runtimeMode: RuntimeMode,
+    options: AcpConfigOption[]
+  ): Record<string, string>;
+  /**
+   * Permission option kinds that outlive the session on this agent (Junie's
+   * `allow_always` writes its allowlist for every later run). Never offered.
+   */
+  persistentPermissionKinds?: readonly string[];
+  /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
    * without it starts a fresh conversation with `legacyMessage`.
@@ -232,10 +248,15 @@ export interface AcpSignedInQuery {
   request<T>(method: string, params: unknown): Promise<T>;
 }
 
+/** The agent's connection, for a sign-in check that must ask it more than `initialize`. */
+export type AcpConnection = Pick<StdioJsonRpcClient, 'request' | 'onNotification'>;
+
 export interface AcpSignInInput extends SignInCheckInput {
   handshake(): Promise<AcpInitializeResult>;
   /** A request to the process `handshake` started; fails when it has not run. */
   request<T>(method: string, params: unknown): Promise<T>;
+  /** The connection `handshake` opened; throws before it has. */
+  connection(): AcpConnection;
 }
 
 export interface AcpAdapterOptions {

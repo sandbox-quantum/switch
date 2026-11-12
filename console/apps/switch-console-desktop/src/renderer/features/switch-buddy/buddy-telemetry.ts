@@ -21,6 +21,7 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'qwen',
   'droid',
   'cline',
+  'junie',
 ];
 
 /** A provider id as telemetry may carry it: one of these, else `none`. */
