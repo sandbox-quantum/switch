@@ -1103,6 +1103,10 @@ class AgentRecipient:
         leaving = event.membership == "leave"
         if not (arriving or leaving):
             return NOTHING
+        if arriving and (event.content or {}).get("quiet"):
+            # Someone the member sync found already in the channel: history,
+            # not news, so nobody is woken for each of a channel's people.
+            return NOTHING
         if not self._member.listening:
             # The agent does not listen for members coming and going in this
             # room, so the change is not written to its own events. A reader

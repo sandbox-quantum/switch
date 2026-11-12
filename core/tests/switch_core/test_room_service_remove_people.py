@@ -44,6 +44,16 @@ class _Adapter:
 class _Bridge:
     def __init__(self, adapter: _Adapter) -> None:
         self.adapter = adapter
+        self.expected: dict[str, str | None] = {}
+
+    def expect_removals(
+        self, channel_id: str, ids: list[str], removed_by: str | None
+    ) -> None:
+        self.expected.update(dict.fromkeys(ids, removed_by))
+
+    def forget_expected_removals(self, channel_id: str, ids: list[str]) -> None:
+        for i in ids:
+            self.expected.pop(i, None)
 
 
 class _Lifecycle:
@@ -274,3 +284,38 @@ async def test_an_unbridged_room_is_refused(
 
     with pytest.raises(ValueError, match="not bridged"):
         await service.remove_people_from_room(room_id, ["U-BOB"])
+
+
+async def test_a_departure_reported_twice_counts_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A socket per bot, two Slack events, a team's channels: the second
+    report has nothing to undo and tells nobody."""
+    service, left = _service(session_factory, _Adapter(refuses=set()))
+    seeded = await _seed(session_factory)
+    await _put_bob_in(service, seeded)
+
+    await service.remove_people_from_room(seeded["room_id"], ["U-BOB"])
+    await service.remove_people_from_room(seeded["room_id"], ["U-BOB"])
+
+    assert len(left) == 1
+
+
+async def test_a_disconnected_bridge_is_a_clear_refusal(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    class _Down(_Adapter):
+        async def remove_users_from_channel(
+            self, channel_id: str, user_external_ids: list[str]
+        ) -> list[str]:
+            raise RuntimeError("client not connected")
+
+    service, _ = _service(session_factory, _Down(refuses=set()))
+    seeded = await _seed(session_factory)
+    await _put_bob_in(service, seeded)
+
+    with pytest.raises(ValueError, match="isn't connected right now"):
+        await service.remove_users_from_room(
+            seeded["room_id"], ["bob"], removed_by="Rita"
+        )
+    assert await _is_member(session_factory, seeded)

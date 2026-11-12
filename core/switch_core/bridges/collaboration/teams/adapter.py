@@ -8,7 +8,7 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -2980,7 +2980,9 @@ class TeamsAdapter(PlatformAdapter):
                 failed.append(user_id)
         return failed
 
-    async def list_channel_members(self, channel_id: str) -> ChannelMembers | None:
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
         """The people in a channel, from Graph, by Entra object id: a standard
         channel's are its team's. None for a chat, whose membership its
         platform fixes, and for a channel whose team Switch does not know.

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, Literal, NamedTuple
@@ -3244,6 +3245,42 @@ class TelegramAdapter(PlatformAdapter):
                     channel_name=channel_name,
                 )
             )
+
+    #: Pause between membership checks, well inside Telegram's limits.
+    _MEMBER_CHECK_PAUSE = 0.1
+
+    async def members_gone(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> set[str] | None:
+        """Who of these has left the group, or been removed, by asking
+        Telegram about each person.
+
+        Telegram cannot list a group's members, but answers for one person,
+        which catches anyone who left while Switch was not running. Its docs
+        only promise that answer to a bot that administers the group; where
+        it is refused, nobody is counted as gone.
+        """
+        if self._bot is None:
+            return None
+        gone: set[str] = set()
+        for index, external_user_id in enumerate(external_user_ids):
+            if index:
+                await asyncio.sleep(self._MEMBER_CHECK_PAUSE)
+            try:
+                member = await self._bot.get_chat_member(
+                    chat_id=self._chat_id(channel_id), user_id=int(external_user_id)
+                )
+            except Exception:
+                logger.debug(
+                    "Could not read %s's membership of Telegram chat %s",
+                    external_user_id,
+                    channel_id,
+                    exc_info=True,
+                )
+                continue
+            if getattr(member, "status", None) in ("left", "kicked"):
+                gone.add(external_user_id)
+        return gone
 
     async def _handle_member_left(self, member: Any, author: Any, chat_id: str) -> None:
         """Someone left the group, or was taken out of it.

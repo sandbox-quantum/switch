@@ -2835,3 +2835,22 @@ def test_a_command_given_its_argument_is_not_interrupted() -> None:
 
     assert [(c.command, c.args) for c in commands] == [("invite-agent", "@scout")]
     assert _bot(adapter).messages == []
+
+
+def test_members_gone_names_those_who_left_and_trusts_no_refusal() -> None:
+    """Telegram cannot list a group, but says whether one person is in it,
+    which is how a restart finds people who left while Switch was down."""
+    adapter = _adapter()
+    adapter._MEMBER_CHECK_PAUSE = 0  # type: ignore[misc]
+
+    class _Bot:
+        async def get_chat_member(self, *, chat_id: int, user_id: int) -> Any:
+            if user_id == 3:
+                raise RuntimeError("not allowed")
+            return _FakeMember({1: "member", 2: "left", 4: "kicked"}[user_id])
+
+    adapter._bot = _Bot()  # type: ignore[assignment]
+
+    gone = _run(adapter.members_gone(str(CHAT_ID), ["1", "2", "3", "4"]))
+
+    assert gone == {"2", "4"}

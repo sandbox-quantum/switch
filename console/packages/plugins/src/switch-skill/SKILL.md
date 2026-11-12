@@ -676,7 +676,8 @@ carrying a display name addresses no one.
   for a refusal that they can remove the person on the platform, which Switch
   then follows. People do the same in a room with `!remove-user @username`.
   Someone who leaves the channel on the platform is taken out of the room by
-  Switch on its own.
+  Switch on its own, and at each restart Switch lines rooms up with their
+  channels (people it finds already there join quietly, waking no agent).
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.

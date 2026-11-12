@@ -33,9 +33,17 @@ BRIDGE = "bridge-1"
 class _Adapter:
     def __init__(self, listing: ChannelMembers | None) -> None:
         self.listing = listing
+        self.gone: set[str] | None = None
+        self.known: set[str] = set()
 
-    async def list_channel_members(self, channel_id: str) -> ChannelMembers | None:
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Any = ()
+    ) -> ChannelMembers | None:
+        self.known = set(known_people)
         return self.listing
+
+    async def members_gone(self, channel_id: str, ids: Any) -> set[str] | None:
+        return self.gone
 
 
 class _RoomService:
@@ -55,6 +63,7 @@ def _core(
     *,
     present: list[str],
     agents: set[str] = frozenset(),  # type: ignore[assignment]
+    known: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> SimpleNamespace:
     @asynccontextmanager
     async def _tenant_session(_factory: Any, _tenant: str):  # type: ignore[no-untyped-def]
@@ -91,7 +100,11 @@ def _core(
         _is_registered_agent=is_agent,
         _room_tenant=room_tenant,
         _room_service=_RoomService(),
+        _human_actors={i: f"client-{i}" for i in known},
         added=added,
+    )
+    core._sync_by_asking = lambda channel, room, tenant: (
+        CollaborationCore._sync_by_asking(core, channel, room, tenant)  # type: ignore[arg-type]
     )
     return core
 
@@ -142,6 +155,38 @@ async def test_an_empty_listing_removes_nobody(
     assert core._room_service.removed == []
 
 
+async def test_a_platform_that_answers_per_person_loses_those_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Telegram: no listing, but it says who of the room's people has left,
+    which catches anyone who left while Switch was down."""
+    core = _core(monkeypatch, None, present=["U2", "U3"])
+    core._adapter.gone = {"U3"}
+
+    await _sync(core)
+
+    assert core.added == []
+    assert core._room_service.removed == [("room-1", ["U3"])]
+
+
+async def test_people_switch_knows_are_added_without_a_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The adapter skips looking up people Switch already files as people,
+    and lists them with no name; they are still added."""
+    core = _core(
+        monkeypatch,
+        ChannelMembers(members={"U1": ""}, complete=True),
+        present=[],
+        known={"U1"},
+    )
+
+    await _sync(core)
+
+    assert core.added == ["U1"]
+    assert core._adapter.known == {"U1"}
+
+
 async def test_a_platform_that_cannot_list_members_is_left_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,12 +234,19 @@ class _SlackClient:
     def __init__(self, pages: list[dict[str, Any]], users: dict[str, Any]) -> None:
         self._pages = pages
         self._users = users
+        self.info_calls = 0
+        self.list_calls = 0
 
     async def conversations_members(self, **kw: Any) -> dict[str, Any]:
         return self._pages.pop(0)
 
     async def users_info(self, *, user: str) -> dict[str, Any]:
+        self.info_calls += 1
         return {"user": self._users[user]}
+
+    async def users_list(self, **kw: Any) -> dict[str, Any]:
+        self.list_calls += 1
+        return {"members": [{"id": k, **v} for k, v in self._users.items()]}
 
 
 def test_slack_lists_people_across_pages_without_bots() -> None:
@@ -204,6 +256,7 @@ def test_slack_lists_people_across_pages_without_bots() -> None:
         )
     )
     adapter._bot_user_id = "UBOT"
+    adapter._DESCRIBE_PAUSE = 0  # type: ignore[misc]
     adapter._web_client = _SlackClient(  # type: ignore[assignment]
         pages=[
             {"members": ["U1", "UBOT"], "response_metadata": {"next_cursor": "n"}},
@@ -270,3 +323,28 @@ def test_mattermost_lists_people_without_bots_or_the_admin() -> None:
         return await adapter.list_channel_members("ch-1")
 
     assert asyncio.run(go()) == ChannelMembers(members={"u1": "alice"}, complete=True)
+
+
+def test_slack_skips_known_people_and_reads_the_workspace_for_many() -> None:
+    """A big channel is described from one paged read of the workspace's
+    users, not a lookup per member, and people Switch knows are not asked
+    about at all."""
+    adapter = SlackAdapter(
+        config=SlackConnectionConfig(
+            bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
+        )
+    )
+    adapter._bot_user_id = "UBOT"
+    many = {f"U{i}": {"name": f"p{i}"} for i in range(60)}
+    client = _SlackClient(
+        pages=[{"members": ["UKNOWN", *many]}],
+        users={"UKNOWN": {"name": "known"}, **many},
+    )
+    adapter._web_client = client  # type: ignore[assignment]
+
+    listing = asyncio.run(adapter.list_channel_members("C1", known_people={"UKNOWN"}))
+
+    assert listing is not None and listing.complete
+    assert listing.members["UKNOWN"] == ""
+    assert len(listing.members) == 61
+    assert (client.info_calls, client.list_calls) == (0, 1)

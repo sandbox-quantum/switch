@@ -4,7 +4,7 @@ import logging
 import math
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -1926,7 +1926,9 @@ class PlatformAdapter(ABC):
         """
         return list(user_external_ids)
 
-    async def list_channel_members(self, channel_id: str) -> ChannelMembers | None:
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
         """Who is in a channel, for lining its room up with it, or None on a
         platform that cannot list a channel's members (Telegram).
 
@@ -1934,7 +1936,21 @@ class PlatformAdapter(ABC):
         A listing cut short says so (`complete` False) rather than passing
         for the whole channel, as the caller removes whoever is missing from
         a complete one.
+
+        `known_people` are platform ids Switch already files as people on
+        this bridge: an adapter that has to ask the platform about each
+        member may skip them, and list them with an empty name.
         """
+        return None
+
+    async def members_gone(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> set[str] | None:
+        """Of these people, the ones the platform says are no longer in the
+        channel, asked one by one: for a platform that cannot list a
+        channel's members (Telegram) but can say whether one person is in it.
+        None where the platform cannot answer either. Someone it would not
+        answer about is not counted as gone."""
         return None
 
     @abstractmethod

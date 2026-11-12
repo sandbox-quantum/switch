@@ -10,7 +10,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -3082,7 +3082,9 @@ class MattermostAdapter(PlatformAdapter):
     #: Members read per page when listing a channel; Mattermost's ceiling.
     _MEMBERS_PAGE = 200
 
-    async def list_channel_members(self, channel_id: str) -> ChannelMembers | None:
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
         """The people in a channel, read page by page as the admin account.
 
         Bots (every agent's, the bridge's, anyone else's), the admin account

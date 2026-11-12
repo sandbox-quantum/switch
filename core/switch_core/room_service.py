@@ -1850,7 +1850,11 @@ class RoomService:
             else:
                 ids[external_user_id] = name
         refused = await self.remove_people_from_room(
-            room_id, list(ids), removed_by=removed_by, from_channel=True
+            room_id,
+            list(ids),
+            removed_by=removed_by,
+            removed_by_kind="user",
+            from_channel=True,
         )
         misses.extend(
             RemovalMiss(name=ids.get(i, i), reason="platform_refused") for i in refused
@@ -1863,6 +1867,7 @@ class RoomService:
         external_user_ids: list[str],
         *,
         removed_by: str | None = None,
+        removed_by_kind: Literal["user", "platform"] = "platform",
         from_channel: bool = False,
     ) -> list[str]:
         """Take people out of a bridged room, by their account on its bridge.
@@ -1894,9 +1899,31 @@ class RoomService:
         if from_channel:
             collaboration_core = self._collab_lifecycle.get(room.bridge_id)
             if collaboration_core is None:
-                raise ValueError(f"Bridge not running: {room.bridge_id}")
-            refused = await collaboration_core.adapter.remove_users_from_channel(
-                room.external_channel_id, external_user_ids
+                raise ValueError(
+                    "The room's messaging app isn't connected right now, so "
+                    "nobody can be removed. Try again shortly."
+                )
+            # The platform reports each removal back as a leave, which can
+            # arrive before this call takes them out of the room itself:
+            # whichever removes the row writes the departure, so the bridge
+            # is told who asked, to name them either way.
+            collaboration_core.expect_removals(
+                room.external_channel_id, external_user_ids, removed_by
+            )
+            try:
+                refused = await collaboration_core.adapter.remove_users_from_channel(
+                    room.external_channel_id, external_user_ids
+                )
+            except RuntimeError as e:
+                collaboration_core.forget_expected_removals(
+                    room.external_channel_id, external_user_ids
+                )
+                raise ValueError(
+                    "The room's messaging app isn't connected right now, so "
+                    "nobody can be removed. Try again shortly."
+                ) from e
+            collaboration_core.forget_expected_removals(
+                room.external_channel_id, refused
             )
             external_user_ids = [i for i in external_user_ids if i not in refused]
 
@@ -1914,10 +1941,17 @@ class RoomService:
                     if client is not None:
                         targets.append((client.id, client.transport_user_id))
             for client_id, transport_user_id in targets:
-                await self._provisioning.kick_user(
-                    room.transport_room_id, transport_user_id, removed_by=removed_by
-                )
-                removed.append(client_id)
+                # Only a call that removed the membership counts: the same
+                # departure is often reported more than once (a socket per
+                # bot, two Slack events, a team's channels), and the rest
+                # have nothing to undo.
+                if (
+                    await self._provisioning.kick_user(
+                        room.transport_room_id, transport_user_id, removed_by=removed_by
+                    )
+                    is not False
+                ):
+                    removed.append(client_id)
 
         if removed:
             logger.info("Removed %d people from room %s", len(removed), room_id)
@@ -1934,7 +1968,7 @@ class RoomService:
                 "room_users_removed",
                 {
                     "user_count": len(removed),
-                    "removed_by_kind": "platform" if removed_by is None else "user",
+                    "removed_by_kind": removed_by_kind,
                 },
             )
         return refused
@@ -2442,7 +2476,9 @@ class RoomService:
             raise ValueError("the room's messaging app is not running")
         return await collaboration_core.resolve_external_user_id_map(names)
 
-    async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
+    async def ensure_client_in_room(
+        self, room_id: str, client_id: str, *, quiet: bool = False
+    ) -> None:
         """Invite a single running client to the room (it auto-joins) and record
         its membership. Idempotent — safe to call repeatedly, e.g. on every
         bridged message from an external user's human actor."""
@@ -2461,9 +2497,14 @@ class RoomService:
         # so it is bound here alongside the membership record below rather
         # than left to whatever tenant happened to already be ambient.
         with tenant_scope(room.tenant_id):
-            await self._provisioning.invite_to_room(
-                room.transport_room_id, client.transport_user_id
-            )
+            if quiet:
+                await self._provisioning.invite_to_room(
+                    room.transport_room_id, client.transport_user_id, quiet=True
+                )
+            else:
+                await self._provisioning.invite_to_room(
+                    room.transport_room_id, client.transport_user_id
+                )
 
             if not already_member:
                 async with self._session_factory() as session:

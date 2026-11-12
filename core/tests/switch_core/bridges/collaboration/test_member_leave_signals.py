@@ -12,6 +12,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -322,22 +323,38 @@ def test_teams_the_bot_being_removed_is_not_a_person_leaving() -> None:
 class _RoomService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str], str | None]] = []
+        self.kinds: list[str] = []
 
     async def remove_people_from_room(
-        self, room_id: str, external_user_ids: list[str], *, removed_by: str | None
+        self,
+        room_id: str,
+        external_user_ids: list[str],
+        *,
+        removed_by: str | None,
+        removed_by_kind: str = "platform",
     ) -> list[str]:
         self.calls.append((room_id, external_user_ids, removed_by))
+        self.kinds.append(removed_by_kind)
         return []
 
 
 def _core(known: dict[str, str]) -> Any:
     from types import SimpleNamespace
 
-    return SimpleNamespace(
+    core = SimpleNamespace(
         _channel_to_room={"C1": ("room-1", "!room-1:test")},
         _human_actors=known,
         _room_service=_RoomService(),
+        _expected_removals={},
+        EXPECTED_REMOVAL_SECONDS=CollaborationCore.EXPECTED_REMOVAL_SECONDS,
     )
+    core._expected_remover = lambda channel, person: (
+        CollaborationCore._expected_remover(core, channel, person)  # type: ignore[arg-type]
+    )
+    core.expect_removals = lambda channel, people, by: (
+        CollaborationCore.expect_removals(core, channel, people, by)  # type: ignore[arg-type]
+    )
+    return core
 
 
 async def test_the_core_takes_a_person_who_left_out_of_the_channels_room() -> None:
@@ -355,6 +372,24 @@ async def test_the_core_takes_a_person_who_left_out_of_the_channels_room() -> No
     )
 
     assert core._room_service.calls == [("room-1", ["U1"], "Rita")]
+
+
+async def test_a_removal_switch_asked_for_names_who_asked() -> None:
+    """The platform's leave for a removal Switch requested can arrive before
+    Switch's own call; it names the person who asked, not the platform's
+    account, and counts as a removal by a person."""
+    core = _core({"U1": "client-1"})
+    core.expect_removals("C1", ["U1"], "carol")
+
+    await CollaborationCore._handle_user_left_channel(
+        core,
+        InboundUserLeave(
+            channel_id="C1", external_user_id="U1", removed_by_name="admin"
+        ),
+    )
+
+    assert core._room_service.calls == [("room-1", ["U1"], "carol")]
+    assert core._room_service.kinds == ["user"]
 
 
 async def test_the_core_ignores_a_channel_with_no_room_or_a_stranger() -> None:

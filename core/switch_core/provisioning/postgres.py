@@ -103,7 +103,9 @@ class PostgresProvisioning:
         """
         return new_room_id()
 
-    async def invite_to_room(self, room_id: str, user_id: str) -> None:
+    async def invite_to_room(
+        self, room_id: str, user_id: str, *, quiet: bool = False
+    ) -> None:
         """Put a user in a room, waking them if they are running.
 
         A live client joins itself, which is what leaves its transport
@@ -141,6 +143,7 @@ class PostgresProvisioning:
                 room_id,
                 user_id,
                 (switch_room_id, tenant_id, client_id, display_name),
+                quiet=quiet,
             )
             await session.commit()
         committed()
@@ -161,7 +164,12 @@ class PostgresProvisioning:
         room_id: str,
         user_id: str,
         resolved: tuple[str, str, str, str],
+        *,
+        quiet: bool = False,
     ) -> Callable[[], None]:
+        """Record a membership and the arrival that announces it. A `quiet`
+        arrival is history only: it is marked so no agent is woken for it
+        (someone found already in a channel, not someone arriving now)."""
         switch_room_id, tenant_id, client_id, display_name = resolved
         if not await self._room_store.add_client(session, client_id, switch_room_id):
             # Recorded by another writer meanwhile, which wrote the arrival too.
@@ -177,7 +185,11 @@ class PostgresProvisioning:
             body=None,
             formatted_body=None,
             thread_root_event_id=None,
-            content={"membership": "join", "displayname": display_name},
+            content={
+                "membership": "join",
+                "displayname": display_name,
+                **({"quiet": True} if quiet else {}),
+            },
         )
         routed = await self._router.store(
             session,
@@ -268,10 +280,12 @@ class PostgresProvisioning:
         *,
         removed_by: str | None = None,
         announce: bool = True,
-    ) -> None:
+    ) -> bool:
         """Remove a membership, stopping a live client's delivery with it.
+        Returns whether this call removed it.
 
-        Already out is success, per the port.
+        Already out is success, per the port, and returns False: a caller
+        told of the same departure twice acts on it once.
 
         The departure is written in the same transaction as the removal, and
         only by the call that removed the row, as an arrival is only written
@@ -321,6 +335,7 @@ class PostgresProvisioning:
         await removed.committed()
         await self._invites.remove(client_id, room_id)
         self._membership_changed(tenant_id, switch_room_id, client_id)
+        return was_member
 
     async def delete_room(self, room_id: str) -> None:
         """Nothing of its own to discard.

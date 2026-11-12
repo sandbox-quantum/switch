@@ -186,6 +186,14 @@ class TestRoomJoinEnqueue:
         assert isinstance(built.payload, RoomLeavePayload)
         assert built.payload.removed_by == "Rita"
 
+    async def test_a_quiet_arrival_wakes_nobody(self) -> None:
+        """Someone the member sync found already in the channel is history,
+        not news: listeners are not woken for each of a channel's people."""
+        event = _member_event()
+        event.content["quiet"] = True
+
+        assert await _enqueued(_client(), event) == []
+
     async def test_leave_does_not_enqueue_for_an_agent_not_listening(self) -> None:
         assert (
             await _enqueued(

@@ -32,8 +32,11 @@ class Provisioning(Protocol):
         """Create a room and return its transport-side id."""
         ...
 
-    async def invite_to_room(self, room_id: str, user_id: str) -> None:
-        """Put a user in a room. Already a member is success."""
+    async def invite_to_room(
+        self, room_id: str, user_id: str, *, quiet: bool = False
+    ) -> None:
+        """Put a user in a room. Already a member is success. A `quiet`
+        arrival is written to history but wakes no agent."""
         ...
 
     async def record_join(
@@ -66,8 +69,10 @@ class Provisioning(Protocol):
         *,
         removed_by: str | None = None,
         announce: bool = True,
-    ) -> None:
-        """Take a user out of a room. Already out is success.
+    ) -> bool | None:
+        """Take a user out of a room. Already out is success. Returns whether
+        this call removed the membership (None from an implementation that
+        cannot say, read as removed).
 
         The departure is written into the room's history ("X left the room"),
         naming `removed_by` when someone took them out, unless `announce` is
