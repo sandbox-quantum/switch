@@ -224,6 +224,21 @@ version of their own to them without also giving them a release of their own.
   service sign-in lost its `confirm` route) but kept declaring revision 1. It
   now declares `speaks: 2, accepts: 2`, so a Switch Console can tell it apart
   from a server too old for it.
+- **A new switch-core pod takes traffic as soon as it can serve, so a rolling
+  update leaves the other pods carrying everything for less time.** With
+  more than one replica, a starting pod read not ready until the health
+  check after its listeners connected, ten seconds later, and the chart's
+  readiness probe looked every ten seconds, so pods became ready 11 to 19
+  seconds after they could serve. A not-ready answer is now checked again
+  after a second, and the chart probes readiness every two seconds. A pod is
+  still taken out of service only after a minute of failures.
+- **Kubernetes no longer restarts a switch-core pod that is still booting or
+  only busy.** The chart's liveness probe began 30 seconds after a pod started
+  and gave up after three answers slower than a second, so a pod whose boot
+  waited for others starting at the same time, or whose event loop was busy
+  taking over another pod's agents during a roll, was restarted and handed its
+  work over again. A startup probe now gives a booting pod up to five minutes,
+  and liveness waits five seconds for an answer.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
