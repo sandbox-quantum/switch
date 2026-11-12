@@ -85,6 +85,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
         "linear",
         "notion",
         "sentry",
+        "snowflake",
     }
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
@@ -106,6 +107,14 @@ def test_a_key_service_needs_nothing_set_up_on_the_server(tmp_path: Path) -> Non
         registration=REG,
     )
     assert isinstance(adapters["example"], ApiKeyAdapter)
+    shipped = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=REG,
+    )
+    assert isinstance(shipped["snowflake"], ApiKeyAdapter)
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
@@ -450,6 +459,19 @@ async def test_a_key_that_never_expires_is_neither_connected_nor_granted(
     )
     assert await connectable(broker, "example") is False
     assert (await standing(broker, "example")).server_setup_needed is False
+    shipped_adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    shipped_broker = _broker(CATALOG, session_factory, shipped_adapters, None)
+    snowflake = (await standing(shipped_broker, "snowflake")).unavailable
+    assert snowflake is not None
+    assert (snowflake.code, snowflake.reason) == (
+        "key_never_expires",
+        "Snowflake keys do not expire and only Snowflake can revoke them, so "
+        "Switch does not hand them to agents.",
+    )
+    assert await connectable(shipped_broker, "snowflake") is False
+    assert (await standing(shipped_broker, "snowflake")).server_setup_needed is False
 
 
 async def test_a_replaced_adapter_is_used_at_once(

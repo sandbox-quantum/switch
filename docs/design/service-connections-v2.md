@@ -577,15 +577,15 @@ auth:
   type: api_key
   refresh: none                 # a key is used as it is
   api_key:
-    fields:                     # 1 to 4; at least one secret
+    fields:                     # 1 to 5; at least one secret
       - { name: api_key, label: API key, secret: true, help: Where to make it. }
-      - name: site              # not secret: a choice, never free text
+      - name: site              # not secret: a choice or pattern, never free text
         label: Site
         secret: false
         choices: [example.com, eu.example.com]
     identity:                   # checks the key, before anything is stored
       method: GET               # or POST, with a JSON body
-      url: "https://api.{site}/me"          # a URL names only choices
+      url: "https://api.{site}/me"          # a URL names only choices or pattern fields
       headers: { X-Api-Key: "{api_key}" }
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
@@ -1153,6 +1153,32 @@ Built from sign-ins against sentry.io with a test organization:
 To connect: Settings, Connections in Switch Console, then Sentry. Nothing
 needs configuring on the server. To roll back, add `sentry` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
+## Snowflake
+
+Connects with a personal access token (PAT) to Snowflake data warehouses and
+Cortex AI agents, through vendor-managed MCP endpoints.
+
+- **Credentials.** Uses `adapter: api_key`. Connecting requires five fields:
+  `account` (account identifier, e.g. `orgname-accountname`), `database`,
+  `schema`, and `mcp_server` (object name), validated by strict regex
+  patterns, plus `pat` (personal access token with role restriction, secret).
+- **Identity call.** Core verifies the token and server availability by calling
+  `POST https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{mcp_server}`
+  with `method: tools/list`. If Snowflake accepts the call, the token's SHA-256
+  is used as the `account_id`.
+- **Pass-through token, never issued to agents.** Snowflake personal access
+  tokens expire (default 15 days, maximum 365), but the loader requires
+  `max_lifetime: null` for key entries, so Switch does not hand credentials to
+  agents. Like Datadog, on current main the broker marks the service
+  `key_never_expires`, refusing `connect()` and `check_key()` (403 `forbidden`),
+  and Switch Console displays the entry as Unavailable without a Connect button
+  until server-side credential proxying lands or a finite token lifetime is
+  agreed for PATs.
+- **Tools.** Tools pass through dynamically from the remote MCP server;
+  administrator grants in Snowflake define allowable operations.
+
+To roll back, add `snowflake` to `DISABLED_SERVICES` or set `enabled: false`.
 
 ## Not yet
 
