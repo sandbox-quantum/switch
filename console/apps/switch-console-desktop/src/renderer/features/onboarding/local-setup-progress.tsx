@@ -85,11 +85,15 @@ export const LocalSetupProgress = observer(function LocalSetupProgress({
     if (registeredId !== null) onRegistered(registeredId);
   }, [registeredId, onRegistered]);
 
+  // Not as soon as the server reports running: the start is finished only once
+  // the server list has been refreshed with it, and the flow needs it listed to
+  // go on to the workspace rather than out of the flow.
+  const finished = running && !transitioning;
   useEffect(() => {
-    if (!running || done.current) return;
+    if (!finished || done.current) return;
     done.current = true;
     onDone(store.status?.serverId ?? null);
-  }, [running, onDone, store]);
+  }, [finished, onDone, store]);
 
   const needsPerson = ready && !running && !transitioning && (attempted || blocked);
   if (needsPerson) {

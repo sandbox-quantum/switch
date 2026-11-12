@@ -339,6 +339,25 @@ describe('the first-run flow', () => {
     expect(onDone).toHaveBeenCalledWith('local-1');
   });
 
+  it('waits for the start to finish, not just for the server to report running', async () => {
+    Object.assign(localServer, {
+      status: { serverId: 'local-1', version: '1.0.0' },
+      isRunning: true,
+      isTransitioning: true,
+      phase: 'running',
+    });
+    const onDone = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () =>
+      root!.render(<LocalSetupProgress onBack={() => {}} onDone={onDone} onRegistered={() => {}} />)
+    );
+
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
   it('opens the full setup page, with the error and Retry, when the server could not start', async () => {
     localServer.start.mockImplementationOnce(() => {
       Object.assign(localServer, { phase: 'error', error: 'PostgreSQL did not start.' });
