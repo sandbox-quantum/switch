@@ -128,7 +128,8 @@ function ExistingChannelId({
 
 /**
  * What a room can be made with that is easy to change afterwards, in its
- * Configuration tab: its group and who may see and change it. Shut until
+ * Configuration tab: its group, and who may see it for a room with no channel
+ * (a room on a messaging app takes that from its channel). Shut until
  * opened, its row saying what each is set to so the defaults are never a
  * surprise — no group, and open to the workspace for a room on a messaging
  * app or private to those taking part for a Switch Console chat.
@@ -172,8 +173,20 @@ export function CreateRoomOptions({
   // Until someone picks, a bridged room takes it from its channel (for an
   // existing channel only the server knows: it asks the platform), and a room
   // on no app is private.
-  const access = value.access ?? (bridged ? roomAccessForChannel(value.channel) : 'private');
+  const access = bridged ? roomAccessForChannel(value.channel) : (value.access ?? 'private');
   const accessLabel = access === null ? SAME_AS_CHANNEL : ACCESS_LABELS[access];
+
+  // A room on a messaging app takes its access from its channel: the channel
+  // choice is the access choice, and an existing channel's is the platform's.
+  // Its owner or an admin can change it later in the room's settings. Only a
+  // room with no channel is asked.
+  if (bridged && !administersWorkspace) {
+    return (
+      <span className="text-xs text-foreground-muted">
+        Access: {accessLabel}. Changed later in the room’s Configuration.
+      </span>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -216,31 +229,29 @@ export function CreateRoomOptions({
             </Field>
           )}
 
-          <Field>
-            <FieldLabel>Access</FieldLabel>
-            <Select
-              value={access ?? ''}
-              onValueChange={(next) => onChange({ ...value, access: next as RoomAccess })}
-            >
-              <SelectTrigger className="w-full" aria-label="Access">
-                <SelectValue>{accessLabel}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {ACCESS_ORDER.map((each) => (
-                  <SelectItem key={each} value={each}>
-                    {ACCESS_LABELS[each]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <span className="text-xs text-foreground-muted">
-              {bridged && value.access === null
-                ? 'The same as the channel unless you pick: a private channel makes a private room. '
-                : ''}
-              {access !== null && ACCESS_HELPERS[access]}
-              {bridged && ' It does not decide who can read or post in the channel.'}
-            </span>
-          </Field>
+          {!bridged && (
+            <Field>
+              <FieldLabel>Access</FieldLabel>
+              <Select
+                value={access ?? ''}
+                onValueChange={(next) => onChange({ ...value, access: next as RoomAccess })}
+              >
+                <SelectTrigger className="w-full" aria-label="Access">
+                  <SelectValue>{accessLabel}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {ACCESS_ORDER.map((each) => (
+                    <SelectItem key={each} value={each}>
+                      {ACCESS_LABELS[each]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-foreground-muted">
+                {access !== null && ACCESS_HELPERS[access]}
+              </span>
+            </Field>
+          )}
         </>
       )}
     </div>

@@ -140,19 +140,26 @@ describe('creating a room on a messaging app', () => {
     expect(radio(el, 'Existing channel')).toBeUndefined();
   });
 
-  it('opens More options on the group and access', async () => {
+  it('opens More options on the group, with no access to pick: the channel decides', async () => {
     const el = await render();
     await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
-    expect(el.querySelector('[aria-label="Access"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Access"]')).toBeNull();
   });
 
-  it('offers the group only to a workspace admin, who alone puts rooms in groups', async () => {
+  it('follows the channel after switching between public and private', async () => {
+    const el = await render();
+    await click(radio(el, 'New private channel')!);
+    await click(radio(el, 'New public channel')!);
+    expect(latest.access).toBeNull();
+    expect(el.textContent).toContain('Group: none · Public');
+  });
+
+  it('offers no More options to someone who is not a workspace admin, only what access will be', async () => {
     const el = await render(BRIDGE, false);
     expect(el.textContent).not.toContain('Group:');
-    await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
-    expect(el.querySelector('[aria-label="Group"]')).toBeNull();
-    expect(el.querySelector('[aria-label="Access"]')).not.toBeNull();
+    expect(el.querySelector('button[aria-expanded]')).toBeNull();
+    expect(el.textContent).toContain('Access: Public');
   });
 });
 
@@ -163,7 +170,7 @@ describe('creating a Switch Console chat', () => {
     expect(el.textContent).toContain('Group: none · Private');
     await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
-    expect(el.textContent).not.toContain('who can read or post in the channel');
+    expect(el.querySelector('[aria-label="Access"]')).not.toBeNull();
     expect(latest.access).toBeNull();
   });
 });

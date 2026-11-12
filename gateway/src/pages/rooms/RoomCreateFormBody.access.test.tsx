@@ -81,27 +81,18 @@ describe("RoomCreateFormBody access", () => {
     expect(options.map((o) => o.textContent)).toEqual(["Public", "Private"]);
   });
 
-  it("follows a new private channel, and leaves it to the server", async () => {
+  it("offers no access for a room on an app: its channel decides", async () => {
     await choose(/Bridge/, "Slack (slack)");
     await choose(/Channel type/, "Private channel");
 
-    expect(select(/Access/).textContent).toBe("Private");
-    screen.getByText(/^The same as the channel\./);
+    expect(screen.queryByRole("combobox", { name: /Access/ })).toBeNull();
     expect(await submit()).not.toHaveProperty("read_visibility");
   });
 
-  it("sends a choice made over the channel's", async () => {
+  it("drops a choice made before an app was picked", async () => {
+    await choose(/Access/, "Private");
     await choose(/Bridge/, "Slack (slack)");
-    await choose(/Channel type/, "Private channel");
-    await choose(/Access/, "Public");
 
-    expect(await submit()).toMatchObject({ read_visibility: "public" });
-  });
-
-  it("says an existing channel decides until someone picks", async () => {
-    await choose(/Bridge/, "Slack (slack)");
-    fireEvent.click(screen.getByLabelText("Use existing channel"));
-
-    screen.getByText(/The same as the channel: a private channel makes a private room/);
+    expect(await submit()).not.toHaveProperty("read_visibility");
   });
 });

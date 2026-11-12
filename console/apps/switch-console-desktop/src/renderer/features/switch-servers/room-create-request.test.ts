@@ -97,7 +97,9 @@ describe('roomCreateRequest', () => {
     expect(request.kind === 'room' && request.params.userNames).toEqual(['bob', 'carol']);
   });
 
-  it('carries the More options: a private channel, a group and an access choice', () => {
+  it('carries the More options, and leaves access to the channel', () => {
+    // A stale access choice (say, picked before switching from Switch Console
+    // to an app) is not sent: a room on an app takes it from its channel.
     const request = roomCreateRequest({
       ...form,
       bridgeId: 'b1',
@@ -106,7 +108,7 @@ describe('roomCreateRequest', () => {
     expect(request.kind === 'room' && request.params).toMatchObject({
       channel: { kind: 'new', private: true },
       groupId: 'g1',
-      access: 'public',
+      access: null,
     });
   });
 
