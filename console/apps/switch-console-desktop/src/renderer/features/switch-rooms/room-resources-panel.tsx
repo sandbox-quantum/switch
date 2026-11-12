@@ -228,7 +228,7 @@ const ResourceSection = observer(function ResourceSection({
                   locked={
                     kind === 'packages' && serverId !== null && !opensInResources(resource, viewer)
                   }
-                  removeLabel={canUnlink ? `Detach ${resource.name}` : null}
+                  remove={canUnlink ? { text: 'Detach', label: `Detach ${resource.name}` } : null}
                   busy={busy === resource.id}
                   onRemove={() => void detach(resource)}
                 />
@@ -247,8 +247,10 @@ const ResourceSection = observer(function ResourceSection({
                     onOpen={() => setReading(resource)}
                     // Deleting an agent's document is for its author, the room's owner
                     // and admins: the server says per document, else detaching's rule.
-                    removeLabel={
-                      (resource.canRemove ?? canUnlink) ? `Delete ${resource.name}` : null
+                    remove={
+                      (resource.canRemove ?? canUnlink)
+                        ? { text: 'Delete', label: `Delete ${resource.name}` }
+                        : null
                     }
                     busy={busy === resource.id}
                     // It is deleted for everyone, with no undo, so it asks first.
@@ -297,7 +299,7 @@ function ResourceRow({
   via,
   onOpen,
   locked = false,
-  removeLabel,
+  remove,
   busy,
   confirm = false,
   onRemove,
@@ -308,8 +310,11 @@ function ResourceRow({
   onOpen: (() => void) | null;
   /** Shown to the viewer but not theirs to open: dimmed and locked. */
   locked?: boolean;
-  /** The remove button's label, or null for someone who may not remove it. */
-  removeLabel: string | null;
+  /**
+   * The remove button: the word it shows ("Detach", "Delete") and the label
+   * naming what it removes. Null for someone who may not remove it.
+   */
+  remove: { text: string; label: string } | null;
   busy: boolean;
   /** Ask before removing: the first click arms it, the second removes. */
   confirm?: boolean;
@@ -362,7 +367,7 @@ function ResourceRow({
           {body}
         </div>
       )}
-      {removeLabel && confirm && armed && (
+      {remove && confirm && armed && (
         <span className="flex shrink-0 items-center gap-1">
           <span className="text-xs text-foreground-muted">Delete for everyone?</span>
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => setArmed(false)}>
@@ -373,16 +378,15 @@ function ResourceRow({
           </Button>
         </span>
       )}
-      {removeLabel && !(confirm && armed) && (
+      {remove && !(confirm && armed) && (
         <Button
           variant="ghost"
-          size="icon-xs"
-          aria-label={removeLabel}
-          title={removeLabel}
+          size="xs"
+          aria-label={remove.label}
           disabled={busy}
           onClick={confirm ? () => setArmed(true) : onRemove}
         >
-          {busy ? <Loader2 className="animate-spin" /> : <X />}
+          {busy ? <Loader2 className="animate-spin" /> : remove.text}
         </Button>
       )}
     </div>
@@ -636,8 +640,8 @@ const LinkedRoomsSection = observer(function LinkedRoomsSection({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Unlink ${link.name}`}
-                  title={`Unlink ${link.name}`}
+                  aria-label={`Remove link to ${link.name}`}
+                  title={`Remove link to ${link.name}`}
                   disabled={busy === link.roomId}
                   onClick={() => void remove(link.roomId, link.name)}
                 >

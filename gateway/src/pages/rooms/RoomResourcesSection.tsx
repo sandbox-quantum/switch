@@ -34,7 +34,7 @@ import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
-  // Attaching takes write access to the room; unlinking takes part in it.
+  // Attaching takes write access to the room; detaching takes part in it.
   canWrite: boolean;
   canUnlink: boolean;
 }
@@ -226,9 +226,9 @@ function RoomReferences({
                   size="small"
                   onClick={() => handleDetach(ref.id)}
                   disabled={busy}
-                  aria-label={`Unlink ${ref.name || ref.description}`}
+                  aria-label={`Detach ${ref.name || ref.description}`}
                 >
-                  Unlink
+                  Detach
                 </Button>
               )}
             </Stack>
@@ -350,9 +350,9 @@ function RoomDocuments({
                       size="small"
                       onClick={() => handleDetach(doc.id)}
                       disabled={busy}
-                      aria-label={`Unlink ${doc.name || doc.description}`}
+                      aria-label={`Detach ${doc.name || doc.description}`}
                     >
-                      Unlink
+                      Detach
                     </Button>
                   )}
                 </Stack>
@@ -525,9 +525,9 @@ function RoomPackages({
                     handleDetach(p.id);
                   }}
                   disabled={busy}
-                  aria-label={`Unlink ${p.name || p.description}`}
+                  aria-label={`Detach ${p.name || p.description}`}
                 >
-                  Unlink
+                  Detach
                 </Button>
               )}
             </Stack>

@@ -39,8 +39,8 @@ function roomDocuments({ canRemove }: { canRemove: boolean }) {
 }
 
 const ATTACH = ["Attach reference", "Attach document", "Attach package"];
-const UNLINK = ["Unlink Runbook", "Unlink Starter kit"];
-const REMOVE = ["Unlink Spec", "Delete Notes"];
+const UNLINK = ["Detach Runbook", "Detach Starter kit"];
+const REMOVE = ["Detach Spec", "Delete Notes"];
 
 function button(name: string) {
   return screen.queryByRole("button", { name });

@@ -228,6 +228,11 @@ describe('the Resources tab', () => {
     expect(el.querySelector('[aria-label="Detach Guide"]')).not.toBeNull();
   });
 
+  it('labels the detach control with its word, not an icon only', async () => {
+    const el = await renderPanel();
+    expect(el.querySelector('[aria-label="Detach Guide"]')?.textContent).toBe('Detach');
+  });
+
   it('only lists for someone who may not change the room', async () => {
     permissions.value = { canWrite: false, canManage: false, canUnlink: false };
     const el = await renderPanel();

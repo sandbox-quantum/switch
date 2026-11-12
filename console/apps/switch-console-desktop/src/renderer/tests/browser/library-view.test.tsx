@@ -455,7 +455,9 @@ describe('an item’s page', () => {
     ] as never;
     await render(libraryItemView.MainPanel);
     expect(container.querySelector('[aria-label="Detach from design"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Detach from support"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Detach from support"]')?.textContent).toBe(
+      'Detach'
+    );
   });
 
   it('shows two packages of the same name as two', async () => {
