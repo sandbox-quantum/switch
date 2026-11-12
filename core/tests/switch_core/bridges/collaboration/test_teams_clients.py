@@ -220,6 +220,31 @@ def test_create_channel_sends_body_and_returns_channel() -> None:
     body = rec.last_json()
     assert body["displayName"] == "My Room"
     assert body["membershipType"] == "private"
+    assert "members" not in body
+
+
+def test_create_channel_names_the_owner_graph_requires() -> None:
+    rec = _Recorder(201, {"id": "19:new@thread.tacv2", "membershipType": "private"})
+    graph = _graph(rec)
+    owner = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+    _run(
+        graph.create_channel(
+            team_id="t1",
+            display_name="My Room",
+            description="topic",
+            membership_type="private",
+            owner_aad_id=owner,
+        )
+    )
+
+    assert rec.last_json()["members"] == [
+        {
+            "@odata.type": "#microsoft.graph.aadUserConversationMember",
+            "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{owner}')",
+            "roles": ["owner"],
+        }
+    ]
 
 
 def test_list_subscriptions_returns_value_array() -> None:

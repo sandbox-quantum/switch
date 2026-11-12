@@ -27,6 +27,7 @@ async def _sync(chats: _Harness, room_id: str, user: User) -> str:
             CollaborationBridgeStore(),
             None,  # type: ignore[arg-type]
             None,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
             user,
             False,
         )

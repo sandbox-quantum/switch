@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Annotated
 
@@ -415,7 +416,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="ready", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
-        token = create_jwt(user_id, "ready@example.invalid", "user", _KEYRING, TENANT_B)
+        token = create_jwt(
+            user_id,
+            "ready@example.invalid",
+            "user",
+            _KEYRING,
+            TENANT_B,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         response = await self._get(session_factory, token, signup_mode="default_tenant")
 
@@ -436,7 +445,15 @@ class TestSessionStateEndpoint:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         user_id = await _make_user(session_factory, name="single", tenant_id=TENANT_B)
-        token = create_jwt(user_id, "single@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "single@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         body = (
             await self._get(session_factory, token, signup_mode="default_tenant")
@@ -451,7 +468,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="chooser", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
-        token = create_jwt(user_id, "chooser@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "chooser@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         body = (
             await self._get(session_factory, token, signup_mode="default_tenant")
@@ -469,7 +494,13 @@ class TestSessionStateEndpoint:
         contradicted by the very next request."""
         user_id = await _make_user(session_factory, name="stale", tenant_id=TENANT_B)
         token = create_jwt(
-            user_id, "stale@example.invalid", "user", _KEYRING, NOT_A_MEMBER_TENANT
+            user_id,
+            "stale@example.invalid",
+            "user",
+            _KEYRING,
+            NOT_A_MEMBER_TENANT,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -496,7 +527,13 @@ class TestSessionStateEndpoint:
             session.add(Tenant(id=entered, slug=entered, name="Elsewhere"))
             await session.commit()
         token = create_jwt(
-            operator_id, "operator@example.invalid", "admin", _KEYRING, entered
+            operator_id,
+            "operator@example.invalid",
+            "admin",
+            _KEYRING,
+            entered,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -520,7 +557,13 @@ class TestSessionStateEndpoint:
             operator.role = "admin"
             await session.commit()
         token = create_jwt(
-            operator_id, "operator-stale@example.invalid", "admin", _KEYRING, "gone"
+            operator_id,
+            "operator-stale@example.invalid",
+            "admin",
+            _KEYRING,
+            "gone",
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         body = (
@@ -535,7 +578,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="nowhere", tenant_ids=[]
         )
-        token = create_jwt(user_id, "nowhere@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "nowhere@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         body = (await self._get(session_factory, token, signup_mode="open")).json()
 
@@ -573,7 +624,13 @@ class TestSessionStateEndpoint:
             await self._get(
                 session_factory,
                 create_jwt(
-                    admin_id, "a@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+                    admin_id,
+                    "a@example.invalid",
+                    "user",
+                    _KEYRING,
+                    TENANT_ZERO_ID,
+                    session_version=0,
+                    auth_time=datetime.now(UTC),
                 ),
                 signup_mode="invite_only",
             )
@@ -582,7 +639,13 @@ class TestSessionStateEndpoint:
             await self._get(
                 session_factory,
                 create_jwt(
-                    member_id, "m@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+                    member_id,
+                    "m@example.invalid",
+                    "user",
+                    _KEYRING,
+                    TENANT_ZERO_ID,
+                    session_version=0,
+                    auth_time=datetime.now(UTC),
                 ),
                 signup_mode="invite_only",
             )
@@ -603,7 +666,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="waiting", tenant_ids=[]
         )
-        token = create_jwt(user_id, "waiting@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "waiting@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         body = (
             await self._get(session_factory, token, signup_mode="invite_only")
@@ -618,7 +689,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="single", tenant_ids=[TENANT_ZERO_ID]
         )
-        token = create_jwt(user_id, "single@example.invalid", "admin", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "single@example.invalid",
+            "admin",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         body = (
             await self._get(
@@ -634,7 +713,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="mailer", tenant_ids=[TENANT_B]
         )
-        token = create_jwt(user_id, "mailer@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "mailer@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         off = await self._get(session_factory, token, signup_mode="open")
         on = await self._get(
@@ -672,7 +759,15 @@ class TestAGatewayRequestBindsTheCallersTenant:
             await session.commit()
             user_id = user.id
 
-        token = create_jwt(user_id, "ada@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "ada@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
 
@@ -708,7 +803,13 @@ class TestAClaimSelectsAMembership:
             session_factory, name="claimant", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
         token = create_jwt(
-            user_id, "claimant@example.invalid", "user", _KEYRING, TENANT_B
+            user_id,
+            "claimant@example.invalid",
+            "user",
+            _KEYRING,
+            TENANT_B,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -724,7 +825,13 @@ class TestAClaimSelectsAMembership:
             session_factory, name="mismatched", tenant_id=TENANT_ZERO_ID
         )
         token = create_jwt(
-            user_id, "mismatched@example.invalid", "user", _KEYRING, NOT_A_MEMBER_TENANT
+            user_id,
+            "mismatched@example.invalid",
+            "user",
+            _KEYRING,
+            NOT_A_MEMBER_TENANT,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -755,7 +862,15 @@ class TestNoClaimWithSeveralMemberships:
         user_id = await _make_user_with_memberships(
             session_factory, name="undecided", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
-        token = create_jwt(user_id, "undecided@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "undecided@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(
             _app(session_factory, choice_enabled=False), token
@@ -771,7 +886,15 @@ class TestNoClaimWithSeveralMemberships:
         user_id = await _make_user_with_memberships(
             session_factory, name="chooser", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
-        token = create_jwt(user_id, "chooser@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "chooser@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
             response = await client.get("/whoami")
@@ -811,7 +934,15 @@ class TestNoClaimWithSeveralMemberships:
         user_id = await _make_user_with_memberships(
             session_factory, name="counted", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
-        token = create_jwt(user_id, "counted@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "counted@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
             response = await client.get("/whoami")
@@ -840,7 +971,15 @@ class TestAUserWithNoMembership:
             await session.commit()
             user_id = user.id
 
-        token = create_jwt(user_id, "orphan@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "orphan@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
 
@@ -862,7 +1001,13 @@ class TestConcurrentRequests:
 
         async def _call(user_id: str, name: str) -> dict:
             token = create_jwt(
-                user_id, f"{name}@example.invalid", "user", _KEYRING, None
+                user_id,
+                f"{name}@example.invalid",
+                "user",
+                _KEYRING,
+                None,
+                session_version=0,
+                auth_time=datetime.now(UTC),
             )
             async with _client(app, token) as client:
                 response = await client.get("/whoami", params={"hold": 0.2})
@@ -890,7 +1035,15 @@ class TestListTenantsEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="lister", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
-        token = create_jwt(user_id, "lister@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "lister@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(_tenants_app(session_factory), token) as client:
             response = await client.get("/tenants")
@@ -912,7 +1065,13 @@ class TestListTenantsEndpoint:
             session_factory, name="undecided2", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
         token = create_jwt(
-            user_id, "undecided2@example.invalid", "user", _KEYRING, None
+            user_id,
+            "undecided2@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -929,7 +1088,15 @@ class TestSwitchTenantEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="switcher", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
         )
-        token = create_jwt(user_id, "switcher@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "switcher@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(_tenants_app(session_factory), token) as client:
             response = await client.post(f"/tenants/{TENANT_B}/switch")
@@ -948,7 +1115,15 @@ class TestSwitchTenantEndpoint:
         user_id = await _make_user(
             session_factory, name="notmember", tenant_id=TENANT_ZERO_ID
         )
-        token = create_jwt(user_id, "notmember@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "notmember@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(_tenants_app(session_factory), token) as client:
             response = await client.post(f"/tenants/{TENANT_B}/switch")
@@ -995,7 +1170,15 @@ class TestARequestHoldsOneConnection:
         user_id = await _make_user(
             one_connection_session_factory, name="solo", tenant_id=TENANT_ZERO_ID
         )
-        token = create_jwt(user_id, "solo@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "solo@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(_app(one_connection_session_factory), token) as client:
             response = await client.get("/whoami")
@@ -1009,7 +1192,15 @@ class TestARequestHoldsOneConnection:
         user_id = await _make_user(
             one_connection_session_factory, name="editable", tenant_id=TENANT_ZERO_ID
         )
-        token = create_jwt(user_id, "editable@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "editable@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
         app = _app(one_connection_session_factory)
 
         @app.post("/rename")
@@ -1052,7 +1243,15 @@ class TestTenantListingHoldsOneConnectionAtATime:
             name="poolsolo",
             tenant_ids=[TENANT_ZERO_ID, TENANT_B],
         )
-        token = create_jwt(user_id, "poolsolo@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "poolsolo@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(
             _tenants_app(one_connection_session_factory), token
@@ -1112,7 +1311,15 @@ class TestSigningInHoldsOneConnectionAtATime:
             name="poolstate",
             tenant_ids=[TENANT_ZERO_ID, TENANT_B],
         )
-        token = create_jwt(user_id, "poolstate@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "poolstate@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         async with _client(
             _session_app(one_connection_session_factory, signup_mode="open"), token

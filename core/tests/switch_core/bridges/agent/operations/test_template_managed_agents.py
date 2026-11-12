@@ -663,6 +663,47 @@ agent:
     assert added == [(lobby_id, [created["agent_id"]])]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_type", ["direct", "group"])
+async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
+    managed, channel_type
+):
+    """Its platform fixes who is in it, however writable its room is: a DM the
+    bridge adopted is writable by every member of the workspace."""
+    added: list[tuple[str, list[str]]] = []
+
+    async def add_agents_to_room(room_id: str, agent_ids: list[str]) -> None:
+        added.append((room_id, agent_ids))
+
+    managed["protocol"].room_service.add_agents_to_room = add_agents_to_room
+    async with managed["session_factory"]() as session:
+        session.add(
+            Room(
+                transport_room_id="!someones-dm:test.local",
+                name="someones-dm",
+                description="d",
+                channel_type=channel_type,
+                write_visibility="public",
+            )
+        )
+        await session.commit()
+    template = """\
+agent:
+  name: joiner
+  instructions: Join.
+  provider: claude
+  machine: laptop
+  directory: /srv/joiner
+  join: [someones-dm]
+"""
+    stored = await _stored(managed, template, kind="agent")
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=stored)
+    assert {p.code for p in e.value.problems} == {"join_fixed_membership"}
+    assert managed["management"].created == []
+    assert added == []
+
+
 def test_a_provider_chain_takes_the_first_ready_on_the_machine():
     template = """\
 params:

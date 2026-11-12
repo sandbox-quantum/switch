@@ -148,6 +148,16 @@ def require(principal: Principal, action: Action, resource: Authorizable) -> Non
         raise PermissionError(f"Not authorized to {action} this resource")
 
 
+def owns(principal: Principal, owner_id: str | None) -> bool:
+    """Whether `principal` owns the entity, whatever their role.
+
+    For what only the owner may do, where administering the workspace is not
+    enough: an agent's own capabilities and the service access it holds on its
+    owner's connections, and a person's own API keys, devices and connections.
+    """
+    return owner_id is not None and owner_id == principal.id
+
+
 def can_manage(principal: Principal, owner_id: str | None) -> bool:
     """Owner-or-admin check for entities that have no visibility model.
 
@@ -156,7 +166,7 @@ def can_manage(principal: Principal, owner_id: str | None) -> bool:
     delete them. This is equivalent to write/delete on an always-private
     resource.
     """
-    return principal.is_admin or (owner_id is not None and owner_id == principal.id)
+    return principal.is_admin or owns(principal, owner_id)
 
 
 def require_manage(principal: Principal, owner_id: str | None) -> None:
@@ -217,6 +227,46 @@ def can_delete_room_document(
         room_owner_id,
         document_owner_id,
     )
+
+
+def can_change_workspace_member(
+    *, administers: bool, member_is_organization_admin: bool
+) -> bool:
+    """Whether the caller may change a workspace member's role or remove them.
+
+    A workspace admin may, their own row included, so an admin steps down or
+    leaves while another admin remains; the last one is refused when asked.
+    Never an organization admin's row, whose standing in the workspace comes
+    from the organization and is changed in its members.
+    """
+    return administers and not member_is_organization_admin
+
+
+def admin_by_own_membership(tenant_role: str | None) -> bool:
+    """Whether `tenant_role` is an admin's own membership of the workspace:
+    not the operator's bypass and not an organization admin acting as one.
+
+    What nobody can undo takes it: deleting the workspace, erasing a person,
+    and setting its messages to be deleted."""
+    return tenant_role in TENANT_ADMIN_ROLES
+
+
+def can_delete_workspace(*, tenant_role: str | None, is_default: bool) -> bool:
+    """Whether the caller may delete the workspace they hold `tenant_role` in:
+    `admin_by_own_membership`, and never the server's default workspace,
+    where new accounts start. That it must first be emptied is checked when
+    it is deleted.
+    """
+    return admin_by_own_membership(tenant_role) and not is_default
+
+
+def can_delete_api_key(
+    principal: Principal, owner_id: str | None, *, an_agent_signs_in_with_it: bool
+) -> bool:
+    """Whether `principal` may delete an API key: their own, unless an agent
+    still signs in with it. That key goes with its agent; once the agent is
+    deleted, what is left of it may go too."""
+    return owns(principal, owner_id) and not an_agent_signs_in_with_it
 
 
 def require_group_filing(is_admin: bool) -> None:

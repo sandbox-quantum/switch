@@ -288,7 +288,7 @@ it('waits longer after each failed round and returns to its pace once one succee
 });
 
 const downHost = new HostUnreachableError({
-  ...unknownHostReachability('hoot-agent-host'),
+  ...unknownHostReachability('switch-agent-host'),
   status: 'unreachable',
   lastError: 'Connection lost before handshake',
   lastCheckedAt: '2026-09-27T10:52:57.945Z',

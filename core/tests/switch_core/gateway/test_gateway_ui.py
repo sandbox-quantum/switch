@@ -31,7 +31,9 @@ from switch_core.observability.metrics import MetricsRegistry, install, uninstal
 from switch_core.trust.client import NullTrustClient
 from tests.db_buffer import QuietRooms
 
-_APP_TSX = Path(__file__).resolve().parents[4] / "gateway/src/App.tsx"
+_GATEWAY_SRC = Path(__file__).resolve().parents[4] / "gateway/src"
+_APP_TSX = _GATEWAY_SRC / "App.tsx"
+_ROUTE_TABLE = _GATEWAY_SRC / "routes/routeTable.tsx"
 
 _INDEX = "<!doctype html><title>dashboard</title>"
 _SCRIPT = "console.log('dashboard')"
@@ -89,25 +91,40 @@ def _normalized(path: str) -> str:
     return re.sub(r"\{[^}]+\}", "{}", path)
 
 
-def _app_tsx_routes() -> set[str]:
-    """Every page route `gateway/src/App.tsx` declares, as an absolute template."""
-    source = _APP_TSX.read_text()
-    routes = {"/"} if re.search(r"<Route\s+index\b", source) else set()
-    for path in re.findall(r'<Route\b[^>]*?\bpath="([^"]+)"', source, re.DOTALL):
-        if path == "*":
-            continue
-        absolute = path if path.startswith("/") else f"/{path}"
-        routes.add(re.sub(r":[A-Za-z_]+", "{}", absolute))
+def _template(path: str) -> str:
+    absolute = path if path.startswith("/") else f"/{path}"
+    return re.sub(r":[A-Za-z_]+", "{}", absolute)
+
+
+def _dashboard_routes() -> set[str]:
+    """Every page route the dashboard declares, as an absolute template: the
+    signed-out and onboarding screens in `App.tsx`, and every page, settings
+    area and redirect of the signed-in dashboard in its route table, in both
+    layouts. A redirect's old URL is served too, or a reload of it would 404
+    instead of being sent on."""
+    app = _APP_TSX.read_text()
+    routes = {"/"} if re.search(r"<Route\s+index\b", app) else set()
+    for path in re.findall(r'<Route\b[^>]*?\bpath="([^"]+)"', app, re.DOTALL):
+        if path != "*":
+            routes.add(_template(path))
+    table = _ROUTE_TABLE.read_text()
+    for path in re.findall(
+        r'\b(?:page|settingsPage|areaIndex|redirect)\(\s*"([^"]+)"', table
+    ):
+        routes.add(_template(path))
     return routes
 
 
 def test_the_page_list_is_exactly_the_dashboards_routes() -> None:
-    declared = _app_tsx_routes()
+    declared = _dashboard_routes()
     listed = {_normalized(path) for path in PAGE_PATHS}
-    assert declared, "found no routes in gateway/src/App.tsx; has it moved?"
+    assert declared, (
+        "found no routes in gateway/src; have App.tsx or the route table moved?"
+    )
     assert listed == declared, (
         "PAGE_PATHS in switch_core/gateway/ui.py must match the routes in "
-        f"gateway/src/App.tsx. Missing: {sorted(declared - listed)}; "
+        "gateway/src/App.tsx and gateway/src/routes/routeTable.tsx. "
+        f"Missing: {sorted(declared - listed)}; "
         f"not in the dashboard: {sorted(listed - declared)}."
     )
 

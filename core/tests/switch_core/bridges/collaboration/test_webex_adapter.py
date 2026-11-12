@@ -506,7 +506,11 @@ async def test_working_and_finished_card(
 
 async def test_room_creation_and_partial_membership(api: dict[str, Any]) -> None:
     adapter = await start(api)
-    assert await adapter.create_channel("Review", "Topic") == "space"
+    channel = await adapter.create_channel(
+        "Review", "Topic", owner_external_id="person"
+    )
+    assert channel.id == "space"
+    assert channel.name == "Review"
 
     def respond(request: httpx.Request) -> httpx.Response | None:
         if request.url.path == "/v1/memberships":

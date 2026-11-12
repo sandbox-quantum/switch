@@ -173,7 +173,7 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
         has_id=True,
         tabs={
             "chats": "your agent's chats",
-            "connections": "your agent's connections",
+            "connections": "your agent's connectors",
             "settings": "your agent's settings",
         },
     ),
@@ -184,7 +184,7 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
         "switch-buddy's page",
         tabs={
             "chats": "switch-buddy's chats",
-            "connections": "switch-buddy's connections",
+            "connections": "switch-buddy's connectors",
             "settings": "switch-buddy's settings",
         },
     ),

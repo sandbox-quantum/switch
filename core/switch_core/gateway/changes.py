@@ -22,7 +22,9 @@ socket that would not open, and its next read of a list (which still polls
 every few minutes) gets the same 401 and asks the user to sign in again. The
 socket holds no database connection while it is open. It is closed with 4401
 when the cookie it was opened with expires, so a client reconnects with the
-cookie it has renewed since.
+cookie it has renewed since, and, at the next ping, once the account's
+sessions are ended (signing out of all devices, a password change), so the
+reconnect is refused.
 
 A user holds at most `MAX_SOCKETS_PER_USER` of these at once. Console opens
 one per server, so the cap only meets a client opening sockets in a loop, which
@@ -39,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -46,7 +49,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import SocketCaller, authenticate_socket
+from switch_core.gateway.auth import (
+    SocketCaller,
+    authenticate_socket,
+    session_is_current,
+)
 from switch_core.gateway.dependencies import (
     get_config,
     get_session_factory,
@@ -63,7 +70,8 @@ PROTOCOL = 1
 PING_INTERVAL_SECONDS = 25.0
 # Intervals without a word from the client before its socket is closed.
 _SILENT_PINGS = 3
-# The close code for a session cookie that has expired: 4000 plus 401.
+# The close code for a session cookie that has expired or whose sessions were
+# ended: 4000 plus 401.
 _EXPIRED = 4401
 # Sockets one user may hold on this process: one per Console is the norm, so this
 # leaves room for several machines and windows and stops a runaway client.
@@ -92,7 +100,16 @@ async def changes_socket(
     websocket: WebSocket,
     caller: Annotated[SocketCaller, Depends(get_socket_caller)],
     changes: Annotated[LocalUserChanges, Depends(get_user_changes)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> None:
+    async def still_current() -> bool:
+        return await session_is_current(
+            session_factory, user_store, caller.user_id, caller.session_version
+        )
+
     await websocket.accept()
     # No await between the count and the subscribe, so two sockets opening at
     # once cannot both slip under the cap.
@@ -118,7 +135,14 @@ async def changes_socket(
                 },
             }
         )
-        code = await _serve(websocket, subscription, heard, listener, caller.expires_at)
+        code = await _serve(
+            websocket,
+            subscription,
+            heard,
+            listener,
+            caller.expires_at,
+            still_current,
+        )
     except (WebSocketDisconnect, RuntimeError):
         # Gone, or closed under us by the server shutting down: nothing to send.
         return
@@ -144,9 +168,11 @@ async def _serve(
     heard: asyncio.Event,
     listener: asyncio.Task[None],
     expires_at: float,
+    still_current: Callable[[], Awaitable[bool]],
 ) -> int:
     """Send notices as they come and a ping every interval, until the client
-    goes quiet, goes away or its cookie expires. Returns the close code.
+    goes quiet, goes away, its cookie expires or, asked at each ping, its
+    session no longer `still_current`. Returns the close code.
 
     One writer: a WebSocket must not be sent to from two tasks at once, so
     notices and pings both go out from this loop."""
@@ -181,6 +207,8 @@ async def _serve(
             heard.clear()
             if silent >= _SILENT_PINGS:
                 return 1001
+            if not await still_current():
+                return _EXPIRED
             await websocket.send_json({"event": "ping", "data": {}})
             next_ping = loop.time() + PING_INTERVAL_SECONDS
     return 1000

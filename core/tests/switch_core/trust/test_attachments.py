@@ -371,6 +371,9 @@ def test_a_word_document_is_recognised_by_extension_alone() -> None:
             }
         ),
     ],
+    # The zips carry the time they were built at, so an id made from their
+    # bytes differs between pytest-xdist workers collecting a second apart.
+    ids=["not-a-zip", "no-document-body", "body-named-but-missing"],
 )
 def test_a_broken_word_document_is_unchecked_not_an_error(data: bytes) -> None:
     file_text = extract_file_text(data, _DOCX_TYPE, "memo.docx")

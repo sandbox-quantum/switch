@@ -506,7 +506,7 @@ describe('room creation', () => {
     vi.unstubAllGlobals();
   });
 
-  it('maps the bridge list, defaulting is_default and home_url when absent', async () => {
+  it('maps the bridge list, defaulting is_default, preconfigured and home_url when absent', async () => {
     // `home_url` post-dates the pinned switch-core, so a current server omits
     // it entirely — that has to read as "no link", not undefined.
     fetchMock.mockResolvedValue(
@@ -517,6 +517,7 @@ describe('room creation', () => {
           display_name: 'Mattermost',
           status: 'active',
           is_default: true,
+          preconfigured: true,
           home_url: 'mattermost://chat.example.com/switch',
           channel_creation_supported: true,
           channel_creation_enabled: true,
@@ -532,6 +533,7 @@ describe('room creation', () => {
         displayName: 'Mattermost',
         status: 'active',
         isDefault: true,
+        preconfigured: true,
         homeUrl: 'mattermost://chat.example.com/switch',
         channelCreationSupported: true,
         canCreateChannels: true,
@@ -539,6 +541,8 @@ describe('room creation', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -548,6 +552,8 @@ describe('room creation', () => {
         displayName: 'Slack',
         status: 'stopped',
         isDefault: false,
+        // Absent on a server predating the flag: unknown, not "a person connected it".
+        preconfigured: null,
         homeUrl: null,
         // Both fields post-date the pinned switch-core too, defaulting the
         // same way home_url does: absent reads as the pre-capability world,
@@ -558,6 +564,8 @@ describe('room creation', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -601,6 +609,28 @@ describe('room creation', () => {
 
     const [bridge] = await fetchBridges(SERVER);
     expect(bridge.channelIdsRefused).toBe('Rooms come from connecting a chat.');
+  });
+
+  it('carries whether a connection can make a private channel and whether it needs a linked account', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'teams',
+          display_name: 'Teams',
+          status: 'active',
+          private_channels_supported: true,
+          private_channel_needs_linked_account: true,
+        },
+        { bridge_id: 'b2', bridge_type: 'teams', display_name: 'Older', status: 'active' },
+      ]) as never
+    );
+
+    const [current, older] = await fetchBridges(SERVER);
+    expect(current.privateChannels).toBe(true);
+    expect(current.privateChannelNeedsLinkedAccount).toBe(true);
+    expect(older.privateChannels).toBeNull();
+    expect(older.privateChannelNeedsLinkedAccount).toBe(false);
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
@@ -863,7 +893,7 @@ describe('registerKnownAgent', () => {
     // builds for it, so a default here would silently mislabel every
     // non-Claude agent (CHOO-1436).
     const registered = await registerKnownAgent(SERVER, {
-      name: 'codex-hoot',
+      name: 'codex-agent',
       description: 'Codex running in repo',
       agentType: 'codex',
       options: { channels_enabled: true, repo_dir: '/repo' },
@@ -875,7 +905,7 @@ describe('registerKnownAgent', () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
     expect(JSON.parse(init.body)).toEqual({
       agent_type: 'codex',
-      name: 'codex-hoot',
+      name: 'codex-agent',
       description: 'Codex running in repo',
       options: { channels_enabled: true, repo_dir: '/repo' },
       icon_url: null,

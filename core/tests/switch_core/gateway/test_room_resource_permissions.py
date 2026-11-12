@@ -67,7 +67,7 @@ from switch_core.gateway.room_links import (
 )
 from switch_core.gateway.rooms import list_rooms
 from switch_core.gateway.schemas import LinkedRoomCreateRequest
-from tests.switch_core.gateway.agent_route_harness import add_agent
+from tests.switch_core.gateway.agent_route_harness import SERVICES_ON, add_agent
 
 _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
@@ -554,6 +554,7 @@ async def test_an_agents_detail_names_only_rooms_its_viewer_may_read(
                 protocol,  # type: ignore[arg-type]
                 user,
                 admin,
+                SERVICES_ON,  # type: ignore[arg-type]
             )
             return {room.room_name for room in detail.rooms}
 

@@ -63,6 +63,7 @@ vi.mock("../../data/api", async (importOriginal) => {
 // so it renders none. This draws each row, its selection checkbox when the
 // row is selectable, and its action cell plainly.
 vi.mock("../../components/DataTable", () => ({
+  TableEmptyState: () => null,
   default: function FakeTable({
     rows,
     columns,

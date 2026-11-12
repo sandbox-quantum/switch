@@ -39,7 +39,7 @@ lapsed. What a signal asks this process to read goes through the bus's
 `PendingWork`, so a read that fails is kept and tried again.
 
 Three requests are handed to the holder rather than served where they land: a
-`POST /connection/beat` from an old event-stream client (forwarded in batches,
+beat for a connection another process holds (forwarded in batches,
 `agent_connections.beats`), a session command for a stream another process
 holds, the agent's watcher or its controller's (stored as a relay row for that
 process and signalled, `agent_connections.session_command`, since its content
@@ -79,6 +79,7 @@ from switch_core.process_lease import (
     LEASE_TTL,
     PRUNE_AFTER,
     RENEW_INTERVAL_SECONDS,
+    SERVER_SHUTDOWN,
     ProcessLease,
 )
 from switch_core.signals import RETRY_SECONDS, payload_chunks
@@ -265,7 +266,9 @@ class SharedConnections:
                         scope=conn.scope,
                         delivery_filter=conn.delivery_filter,
                         spawn_capable=conn.spawn_capable,
-                        transport=conn.stream_transport,
+                        # The column outlived the event stream: every
+                        # connection travels over the WebSocket now.
+                        transport="websocket",
                         speaks=conn.declaration.speaks,
                         accepts=conn.declaration.protocol_floor,
                     )
@@ -663,25 +666,47 @@ class SharedConnections:
         while True:
             await asyncio.sleep(WATCH_SECONDS)
             try:
-                leases = await self._lease.read_all()
-                lapsed = {
-                    process_id
-                    for process_id in self._registry.held_by_processes()
-                    if not leases.holds(process_id)
-                }
-                if not lapsed:
-                    continue
-                agents = self._registry.drop_copies_held_by(lapsed)
-                logger.warning(
-                    "Switch-core process(es) %s stopped holding their lease; "
-                    "their connections of %d agent(s) no longer count",
-                    ", ".join(sorted(lapsed)),
-                    len(agents),
-                )
-                # The placements those processes held go with them too, which
-                # only a read of the rows can tell apart.
-                await self.reload_all()
+                await self.check_leases()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Checking the other processes' connections failed")
+
+    async def check_leases(self) -> None:
+        """Stop counting the connections of every process no longer holding
+        its lease. A process that shut down, as each old one does in a
+        deploy, is said at info; one that stopped renewing without shutting
+        down crashed or lost the database, and is the warning."""
+        leases = await self._lease.read_all()
+        lapsed = {
+            process_id
+            for process_id in self._registry.held_by_processes()
+            if not leases.holds(process_id)
+        }
+        if not lapsed:
+            return
+        shut_down = {
+            process_id
+            for process_id in lapsed
+            if leases.ended(process_id)[1] == SERVER_SHUTDOWN
+        }
+        lost = lapsed - shut_down
+        if shut_down:
+            agents = self._registry.drop_copies_held_by(shut_down)
+            logger.info(
+                "Switch-core process(es) %s shut down; their connections of %d "
+                "agent(s) no longer count",
+                ", ".join(sorted(shut_down)),
+                len(agents),
+            )
+        if lost:
+            agents = self._registry.drop_copies_held_by(lost)
+            logger.warning(
+                "Switch-core process(es) %s stopped holding their lease without "
+                "shutting down; their connections of %d agent(s) no longer count",
+                ", ".join(sorted(lost)),
+                len(agents),
+            )
+        # The placements those processes held go with them too, which only a
+        # read of the rows can tell apart.
+        await self.reload_all()

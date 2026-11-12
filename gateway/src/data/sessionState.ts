@@ -18,22 +18,6 @@ export function appView(session: Session | null, pendingInvite: string | null): 
   return session.state;
 }
 
-/** May this session administer the workspace it is in? The operator bit, or
- * admin of the current workspace — the same rule the server applies
- * (`require_tenant_admin`). */
-export function canAdminTenant(session: Session | null): boolean {
-  if (session === null) return false;
-  if (session.user.is_operator) return true;
-  const role = session.tenant?.role;
-  return role === "admin";
-}
-
-/** Is this session an admin of the current workspace's organization? The
- * platform operator is not, by the operator bit alone. */
-export function administersOrganization(session: Session | null): boolean {
-  return session?.tenant?.organization_role === "org_admin";
-}
-
 const INVITE_KEY = "switch.pendingInvite";
 
 /** Session storage, not local: an invite token is a bearer credential, and
@@ -92,7 +76,7 @@ export function deliveryNotice(delivery: EmailDelivery, email: string | null): D
     case "not_configured":
       return {
         severity: "warning",
-        text: `No e-mail was sent — this server has no mail set up. Send this link to ${email} yourself; it is shown only once.`,
+        text: `No e-mail was sent — e-mail isn't set up here. Send this link to ${email} yourself; it is shown only once.`,
       };
     case "failed":
       return {

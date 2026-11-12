@@ -49,6 +49,7 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
+    FollowUp,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
@@ -59,7 +60,7 @@ from switch_core.clients.admin_messages import (
     platform_replies_in_channel,
 )
 from switch_core.clients.mentions import (
-    NAME_CHAR as _NAME_CHAR,
+    mention_pattern as _mention_pattern,
 )
 from switch_core.clients.mentions import (
     mention_regex as _mention_regex,
@@ -79,6 +80,7 @@ from switch_core.delivery.addressing import (
     AddressingResolver,
     IncomingMessage,
 )
+from switch_core.delivery.conversation import ConversationRoute
 from switch_core.events import (
     CommandEvent,
 )
@@ -344,7 +346,7 @@ def _start_from_console_message(
     console = f"opening **{agent_name}** in Switch Console"
     sign_in = (
         "If Switch Console says I'm signed out, sign me in first with "
-        f"`{sign_in_command}` on the machine I run on."
+        f"`{sign_in_command}` on the device I run on."
     )
     if connected_not_live:
         return (
@@ -392,7 +394,7 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
     """A managed agent whose controller's stream is down: Core restarted, the
     machine lost its network, or it is switched off."""
     return (
-        f"My machine, **{machine}**, is offline or reconnecting to Switch, so "
+        f"My device, **{machine}**, is offline or reconnecting to Switch, so "
         "I can't answer right now. If I haven't answered once it's back, address "
         f"me again. If it stays offline, {_owner_ref(owner_handle)} needs to "
         "check it."
@@ -420,7 +422,7 @@ def _cloud_machine_waking_message(machine: str) -> str:
     """A managed agent whose Switch cloud machine was asleep, and is starting
     for this message: Switch keeps the message until the machine is back."""
     return (
-        f"My machine, **{machine}**, was asleep and is starting now. I'll pick "
+        f"My device, **{machine}**, was asleep and is starting now. I'll pick "
         "this up as soon as it's back, usually within a few minutes."
     )
 
@@ -429,15 +431,15 @@ def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> st
     """A managed agent whose Switch cloud machine its owner stopped: a message
     does not start it again."""
     return (
-        f"My machine, **{machine}**, is stopped, so I can't answer. "
+        f"My device, **{machine}**, is stopped, so I can't answer. "
         f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
     )
 
 
 def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
     removed = (
-        f"my machine, **{machine}**, has been removed from Switch, so nothing "
-        "runs me. My owner has to move me to another machine to bring me back."
+        f"my device, **{machine}**, has been removed from Switch, so nothing "
+        "runs me. My owner has to move me to another device to bring me back."
     )
     if owner_handle:
         return f"@{owner_handle} — {removed}"
@@ -634,7 +636,14 @@ class AgentRecipient:
         )
         notice = await self._switch_notice(session) if addressed else None
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role, notice
+            meta,
+            event,
+            thread_id,
+            self.agent.id,
+            sender_role,
+            notice,
+            routed_reason=None,
+            follow_up=None,
         )
 
         async def after(row: InboundEvent) -> None:
@@ -684,7 +693,14 @@ class AgentRecipient:
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
-                meta, event, event.thread_root_id, self.agent.id, sender_role, notice
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                notice,
+                routed_reason=None,
+                follow_up=_follow_up(decision),
             ),
             after=after,
         )
@@ -724,6 +740,65 @@ class AgentRecipient:
             else "the sender may not instruct this agent, or it is over budget",
         )
         return delivered
+
+    async def admits(self, session: AsyncSession, event: InboundMessage) -> bool:
+        """Whether the agent's addressing policy and budget let the sender of
+        `event` through, as they would for a mention, without a refusal: the
+        decision service's candidates are the agents this admits."""
+        agent = await self._fresh_agent(session)
+        return (await self._gate_addressed(session, agent, event, self._meta)).addressed
+
+    async def decide_routed(
+        self,
+        session: AsyncSession,
+        event: InboundMessage,
+        reason: Literal["decided", "fallback"],
+    ) -> Delivery:
+        """The agent's own event for a message routed to it once the message
+        has committed (`delivery/decision.py`): the decision service picked it
+        (`decided`), or the service failed and it is the room's triage agent
+        (`fallback`). Only when its addressing policy and budget let the
+        sender through.
+
+        As quiet as a follow-up, for the same reason: the sender asked no one
+        in particular. A refusal is logged rather than posted, and an agent
+        with no session gets no "unavailable" notice.
+        """
+        meta = self._meta
+        agent = await self._fresh_agent(session)
+        gate = await self._gate_addressed(session, agent, event, meta)
+        if not gate.addressed:
+            # The router's decision record says so (`dropped_not_allowed`).
+            logger.debug(
+                "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
+                "outcome=dropped_not_permitted reason=the sender may not "
+                "instruct this agent, or it is over budget",
+                meta.room_id,
+                event.event_id,
+                agent.name,
+                reason,
+            )
+            return NOTHING
+
+        async def after(row: InboundEvent) -> None:
+            assert isinstance(row, InboundMessage)
+            await self._after_follow_up(row, has_attachment=False)
+
+        sender_role = await self._sender_role(session, event.sender, event.content)
+        notice = await self._switch_notice(session)
+        return Delivery(
+            own_event=_message_own_event(
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                notice,
+                routed_reason=reason,
+                follow_up=None,
+            ),
+            after=after,
+        )
 
     async def _after_follow_up(
         self, event: InboundMessage, *, has_attachment: bool
@@ -876,11 +951,14 @@ class AgentRecipient:
         anchor = post_anchor(files, lead)
         gate = _GateOutcome(addressed=False, refusal=None)
         followed = False
+        follow_up: FollowUp | None = None
         if named:
             agent = await self._fresh_agent(session)
             gate = await self._gate_addressed(session, agent, anchor, meta)
         elif follow is not None:
             followed = await self._follows(session, anchor, follow)
+            if followed:
+                follow_up = _follow_up(follow)
         delivered = gate.addressed or followed
 
         sender_name = lead.sender_name
@@ -938,6 +1016,7 @@ class AgentRecipient:
                 opening_message=opening,
                 sender_role=sender_role,
                 switch_notice=switch_notice,
+                follow_up=follow_up,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1871,7 +1950,7 @@ class AgentRecipient:
 
     def _strip_mention(self, text: str) -> str:
         pattern = re.compile(
-            re.escape(f"@{self.agent.name}") + rf"(?!{_NAME_CHAR}):?",
+            _mention_pattern(self.agent.name) + ":?",
             re.IGNORECASE,
         )
         return pattern.sub("", text).strip()
@@ -1886,6 +1965,20 @@ def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
     return written.get("body")
 
 
+_FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
+    ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
+    ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
+    ConversationRoute.MAIN_AGENT: "main_agent",
+}
+
+
+def _follow_up(decision: ConversationDecision) -> FollowUp:
+    """The rule a follow-up was delivered by, as the agent's event names it."""
+    if decision.route is None:
+        raise ValueError(f"No rule delivered this follow-up: {decision.reason}")
+    return _FOLLOW_UPS[decision.route]
+
+
 def _message_own_event(
     meta: RoomMeta,
     event: InboundMessage,
@@ -1893,9 +1986,14 @@ def _message_own_event(
     agent_id: str,
     sender_role: str | None,
     switch_notice: str | None,
+    *,
+    routed_reason: Literal["decided", "fallback"] | None,
+    follow_up: FollowUp | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
-    written."""
+    written. `routed_reason` marks a message Switch routed to the agent after
+    it tagged nobody (`delivery/decision.py`), and `follow_up` one that
+    following the conversation delivered (`delivery/conversation.py`)."""
     sender_name = event.sender_name
     if not sender_name:
         sender_name = event.sender
@@ -1918,6 +2016,8 @@ def _message_own_event(
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
             switch_notice=switch_notice,
+            routed_reason=routed_reason,
+            follow_up=follow_up,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

@@ -35,6 +35,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -479,6 +480,7 @@ class WebexAdapter(PlatformAdapter):
                 channel_id=str(action["roomId"]),
                 sender_id=sender,
                 sender_name=str(person.get("displayName", sender)),
+                sender_display_name=str(person.get("displayName", sender)),
                 action_id=position_action(position),
                 value=token,
                 message_ref=str(action["messageId"]),
@@ -704,10 +706,15 @@ class WebexAdapter(PlatformAdapter):
         return None
 
     async def create_channel(
-        self, name: str, topic: str, *, channel_type: ChannelType = "channel_public"
-    ) -> str:
+        self,
+        name: str,
+        topic: str,
+        *,
+        channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         room = await self._client().request("POST", "rooms", json={"title": name})
-        return str(room["id"])
+        return CreatedChannel(id=str(room["id"]), name=str(room.get("title") or name))
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         room = await self._client().request("GET", resource_path("rooms", channel_id))

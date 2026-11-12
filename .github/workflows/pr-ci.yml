@@ -74,6 +74,7 @@ jobs:
       artifacts: ${{ steps.filter.outputs.artifacts }}
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
+      decision: ${{ steps.filter.outputs.decision }}
       e2e: ${{ steps.filter.outputs.e2e }}
       local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
     steps:
@@ -105,6 +106,13 @@ jobs:
               # checked against the server below.
               - 'scripts/e2e_surface.py'
               - 'console/tooling-e2e/surface/**'
+              # A core test holds switch-core's OTLP log encoding equal to the
+              # decision service's copy through this fixture.
+              - 'decision/tests/fixtures/**'
+            # The decision service: its own package, tested on its own.
+            decision:
+              - *shared
+              - 'decision/**'
             console:
               - *shared
               - 'console/**'
@@ -148,6 +156,8 @@ jobs:
               - 'deploy/hosted/chart/**'
               - 'deploy/hosted/render-check-values.yaml'
               - 'scripts/pin_chart_images.py'
+              - 'scripts/release_charts.sh'
+              - 'scripts/check_chart_decision.py'
               - '.github/workflows/switch-release.yml'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
@@ -247,11 +257,34 @@ jobs:
           --splitting-algorithm least_duration
           --timeout 300
 
+  decision:
+    name: Decision service
+    needs: changes
+    if: ${{ needs.changes.outputs.decision == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --project decision
+
+      - name: pytest
+        working-directory: decision
+        run: uv run pytest -q
+
   console:
     name: Switch Console
     needs: changes
     if: ${{ needs.changes.outputs.console == 'true' || needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: console
@@ -426,6 +459,11 @@ jobs:
         # feature flag is checked too.
         run: |
           scripts/release_charts.sh build ghcr.io/render-check 0.0.0-check "$RUNNER_TEMP/chart" --placeholder-digests
+
+      - name: The decision service renders as configured
+        # Off renders nothing; on runs it, points switch-core at it and admits
+        # only switch-core; an endpoint elsewhere is wired without it.
+        run: python3 scripts/check_chart_decision.py
 
   gateway:
     name: Gateway UI

@@ -153,14 +153,18 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
     const permissions = switchRoomsStore.roomPermissions(workspaceId, room);
     const inviteability = roomInviteability(room, bridgePlatformLabel(room.bridgeType));
     if (permissions.canWrite) {
+      // A direct or group conversation's platform fixes who is in it.
+      const members = permissions.canChangeMembers;
       controls = {
-        addAgents: () => setAdding('agents'),
-        addPeople: inviteability.canInvite ? () => setAdding('people') : null,
+        addAgents: members ? () => setAdding('agents') : null,
+        addPeople: members && inviteability.canInvite ? () => setAdding('people') : null,
         peopleNote: inviteability.canInvite ? null : inviteability.reason,
-        removeAgent: async (agentId) => {
-          await rpc.workspaces.removeRoomAgent({ workspaceId, roomId, agentId });
-          await refreshRoom();
-        },
+        removeAgent: members
+          ? async (agentId) => {
+              await rpc.workspaces.removeRoomAgent({ workspaceId, roomId, agentId });
+              await refreshRoom();
+            }
+          : null,
         // Switch only knows the people it saw or added; it cannot take them out of a channel.
         removePerson: () => null,
         joinEvents: {

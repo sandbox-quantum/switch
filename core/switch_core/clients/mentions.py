@@ -4,11 +4,20 @@ import functools
 import re
 
 # Characters that may appear inside an agent / role / alias name (e.g.
-# "cc-bug-fixing-2", "claude-code.my-project.alice"). An `@name` is
-# only a real mention when the character right after the name is NOT one of
-# these (or the string ends) — otherwise a name that is a prefix of a longer one
-# (`@cc-bug-fixing` inside `@cc-bug-fixing-2`) would be falsely matched.
+# "cc-bug-fixing-2", "claude-code.my-project.alice").
 NAME_CHAR = r"[A-Za-z0-9._-]"
+
+# Where a mention may start: an `@` that does not continue a word, so an
+# address such as `root@staging` or `ops@example.com` names nobody.
+_MENTION_START = r"(?<![A-Za-z0-9])"
+
+# Where a mention ends: no more name characters that reach a letter or digit.
+# A name that is a prefix of a longer one (`@cc-bug-fixing` inside
+# `@cc-bug-fixing-2`) is therefore not matched, while the `.`, `-` or `_` that
+# closes a sentence or an emphasis (`@reviewer.`, `@reviewer...`, `_@reviewer_`)
+# is punctuation rather than part of the name — the same rule
+# `room_wide_mention.py` applies to `@channel.`.
+_MENTION_END = rf"(?!{NAME_CHAR}*[A-Za-z0-9])"
 
 # Markdown / Slack-mrkdwn emphasis markers that can wrap or abut an @mention —
 # a bolded mention arrives as "@*name*", which would otherwise hide the name
@@ -17,7 +26,9 @@ NAME_CHAR = r"[A-Za-z0-9._-]"
 # a valid character in agent and role names.
 _EMPHASIS = re.compile(r"[*~]")
 
-_MENTION_TOKEN = re.compile(rf"@({NAME_CHAR}+)")
+# A token ends on a letter or digit, so trailing punctuation is left out of it
+# by the same rule `_MENTION_END` uses.
+_MENTION_TOKEN = re.compile(rf"{_MENTION_START}@({NAME_CHAR}*[A-Za-z0-9])")
 
 
 def strip_emphasis(text: str) -> str:
@@ -25,20 +36,26 @@ def strip_emphasis(text: str) -> str:
     return _EMPHASIS.sub("", text)
 
 
+def mention_pattern(name: str) -> str:
+    """The regex source matching `@name` as a whole mention (see
+    `mention_regex`), for a caller that extends it."""
+    return _MENTION_START + re.escape(f"@{name}") + _MENTION_END
+
+
 @functools.lru_cache(maxsize=16384)
 def mention_regex(name: str) -> re.Pattern[str]:
-    """Compile a case-insensitive regex matching `@name` only at a full-token
-    boundary, so a prefix name is never matched inside a longer name. Kept
-    per name: `re`'s own cache holds 512 patterns, fewer than the names a
-    large deployment tags."""
-    return re.compile(re.escape(f"@{name}") + rf"(?!{NAME_CHAR})", re.IGNORECASE)
+    """Compile a case-insensitive regex matching `@name` as a whole mention:
+    not inside a word before it, and not as the prefix of a longer name after
+    it. Kept per name: `re`'s own cache holds 512 patterns, fewer than the
+    names a large deployment tags."""
+    return re.compile(mention_pattern(name), re.IGNORECASE)
 
 
 def mention_tokens(text: str) -> list[str]:
     """Every `@token` name in `text`, in order of appearance (with duplicates).
 
-    Tokens span the same characters a name may contain, so each token matches
-    what `mention_regex` would treat as one whole mention.
+    Each token is what `mention_regex` treats as one whole mention, without the
+    punctuation that may follow it.
     """
     return _MENTION_TOKEN.findall(strip_emphasis(text))
 

@@ -6,6 +6,7 @@ import type { SshConfig } from '@shared/core/ssh/ssh';
 import {
   createSshConnectConfigResolver,
   resolveSshConnectConfig,
+  sshConnectEnv,
   type SshConnectDeps,
 } from './resolve-ssh-connect-config';
 
@@ -784,5 +785,64 @@ describe('resolveSshConnectConfig', () => {
 
     expect(readFiles).toEqual([expect.stringContaining('/.ssh/corp_ed25519')]);
     expect(result.config.privateKey).toBe('ALIAS KEY');
+  });
+});
+
+describe('sshConnectEnv', () => {
+  const pipe = '\\\\.\\pipe\\openssh-ssh-agent';
+
+  it('fills SSH_AUTH_SOCK with the Windows OpenSSH agent pipe without touching the given env', () => {
+    const env: NodeJS.ProcessEnv = { USERPROFILE: 'C:\\Users\\ada' };
+    expect(sshConnectEnv(env, 'win32', () => pipe)).toEqual({
+      USERPROFILE: 'C:\\Users\\ada',
+      SSH_AUTH_SOCK: pipe,
+    });
+    expect(env).toEqual({ USERPROFILE: 'C:\\Users\\ada' });
+  });
+
+  it('keeps an SSH_AUTH_SOCK the user set, whatever its casing', () => {
+    const env: NodeJS.ProcessEnv = { ssh_auth_sock: '\\\\.\\pipe\\custom-agent' };
+    let detected = false;
+    const result = sshConnectEnv(env, 'win32', () => {
+      detected = true;
+      return pipe;
+    });
+    expect(result).toBe(env);
+    expect(detected).toBe(false);
+  });
+
+  it('adds nothing when the Windows agent is not running', () => {
+    const env: NodeJS.ProcessEnv = {};
+    expect(sshConnectEnv(env, 'win32', () => undefined)).toBe(env);
+  });
+
+  it('leaves other platforms to their own SSH_AUTH_SOCK', () => {
+    const env: NodeJS.ProcessEnv = {};
+    expect(sshConnectEnv(env, 'linux', () => pipe)).toBe(env);
+  });
+
+  it('gives agent auth the pipe when neither IdentityAgent nor SSH_AUTH_SOCK is set', async () => {
+    const result = await resolveSshConnectConfig(
+      {
+        kind: 'transient',
+        config: baseConfig({ authType: 'agent', sshConfigAlias: 'switch-wsl' }),
+      },
+      deps({
+        env: sshConnectEnv({}, 'win32', () => pipe),
+        resolveSshConfig: async () => ({
+          hostname: '127.0.0.1',
+          user: 'ada',
+          port: 2222,
+          identityFile: [],
+          identityAgent: undefined,
+          identityAgentDisabled: false,
+          identitiesOnly: false,
+          proxyCommand: undefined,
+          proxyJump: undefined,
+          forwardAgent: false,
+        }),
+      })
+    );
+    expect(result.config.agent).toBe(pipe);
   });
 });

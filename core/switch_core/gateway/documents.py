@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import (
     Principal,
+    can,
     can_delete_room_document,
+    can_manage,
     can_unlink_from_room,
 )
 from switch_core.bridges.resource.service import ResourceService
@@ -46,6 +48,7 @@ router = APIRouter()
 
 def _to_detail(
     doc: Document,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
@@ -71,11 +74,13 @@ def _to_detail(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        **_capabilities(reader, doc),
     )
 
 
 def _to_summary(
     doc: Document,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
@@ -100,7 +105,31 @@ def _to_summary(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        **_capabilities(reader, doc),
     )
+
+
+def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
+    """What `reader` may do with `doc` through the library routes, for its
+    detail or summary: nothing with a room's own document, which is changed
+    and removed in its room (`RoomDocumentDetail.can_remove`)."""
+    library = doc.room_id is None
+    manage = library and can_manage(reader, doc.owner_id)
+    return {
+        # The library's own rule, whatever the scope: its read route asks it.
+        "can_read": can(reader, "read", doc),
+        "can_edit": library and can(reader, "write", doc),
+        "can_manage": manage,
+        "can_transfer": manage,
+    }
+
+
+def _room_can_read(reader: Principal, doc: Document) -> bool:
+    """`can_read` on a room's own routes, whose caller may already read the
+    room: a room's own document opens through the room for everyone there,
+    whoever wrote it. An attached library document keeps the library's rule,
+    since what it gates is opening the document's own page."""
+    return doc.room_id is not None or can(reader, "read", doc)
 
 
 def _can_remove(
@@ -146,6 +175,7 @@ async def _enrich_summaries(
     return [
         _to_summary(
             d,
+            reader,
             owner_name=owners.get(d.owner_id) if d.owner_id else None,
             attached_rooms_count=counts[d.id].attached,
             hidden_rooms_count=counts[d.id].hidden,
@@ -180,6 +210,7 @@ async def _enrich_detail(
     )
     return _to_detail(
         doc,
+        reader,
         owner_name=owner.name if owner else None,
         attached_rooms_count=counts[doc.id].attached,
         hidden_rooms_count=counts[doc.id].hidden,
@@ -270,6 +301,31 @@ async def get_document(
     )
 
 
+async def _refuse_room_document(
+    session: AsyncSession,
+    resource_service: ResourceService,
+    document_id: str,
+    user_id: str,
+    is_admin: bool,
+) -> None:
+    """Raise 409 for a room's own document, which is changed and removed in
+    its room, not here; first refusing whoever may not read it, as the change
+    itself would, so the refusal names nothing they couldn't see."""
+    try:
+        doc = await resource_service.get_document_for_user(
+            session, document_id, user_id, is_admin=is_admin
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    if doc.room_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This document belongs to a room: change or remove it in the room.",
+        )
+
+
 @router.patch("/documents/{document_id}")
 async def patch_document(
     document_id: str,
@@ -281,6 +337,9 @@ async def patch_document(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
+    await _refuse_room_document(
+        session, resource_service, document_id, user.id, is_admin
+    )
     try:
         doc = await resource_service.update_document(
             session,
@@ -317,6 +376,9 @@ async def delete_document(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDeleteResponse:
+    await _refuse_room_document(
+        session, resource_service, document_id, user.id, is_admin
+    )
     affected_packages = await resource_service.list_packages_for_document(
         session, document_id
     )
@@ -386,7 +448,7 @@ async def list_room_documents(
     )
     return [
         RoomDocumentSummary(
-            **summary.model_dump(),
+            **{**summary.model_dump(), "can_read": _room_can_read(principal, doc)},
             can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
         )
         for summary, doc in zip(summaries, docs, strict=True)
@@ -500,6 +562,6 @@ async def get_room_document(
     )
     takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
     return RoomDocumentDetail(
-        **detail.model_dump(),
+        **{**detail.model_dump(), "can_read": _room_can_read(principal, doc)},
         can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
     )

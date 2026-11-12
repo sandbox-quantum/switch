@@ -113,6 +113,7 @@ class TestMembershipEvents:
             response = await client.patch(
                 f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
             )
+        # The last admin stays.
         assert response.status_code == 409
 
         assert await _events(session_factory, TENANT_A) == []

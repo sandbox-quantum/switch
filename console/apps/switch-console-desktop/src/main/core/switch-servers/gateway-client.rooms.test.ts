@@ -159,8 +159,33 @@ describe('what the server says the caller may do', () => {
       jsonResponse({ ...ROOM, can_write: true, can_manage: false })
     );
     const room = await fetchRoomDetail(SERVER, 'room-1');
-    // A server from before detaching had its own rule: it took write access.
-    expect(room.serverPermissions).toEqual({ canWrite: true, canManage: false, canUnlink: true });
+    // A server from before detaching, or before fixed membership, had its own
+    // rule for each: it took write access.
+    expect(room.serverPermissions).toEqual({
+      canWrite: true,
+      canChangeMembers: true,
+      canManage: false,
+      canUnlink: true,
+    });
+  });
+
+  it('carries that a direct conversation’s members are not the caller’s to change', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        channel_type: 'direct',
+        can_write: true,
+        can_change_members: false,
+        can_manage: true,
+        can_unlink: true,
+      })
+    );
+    expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
+      canWrite: true,
+      canChangeMembers: false,
+      canManage: true,
+      canUnlink: true,
+    });
   });
 
   it('carries who may detach and delete when the server says', async () => {
@@ -169,6 +194,7 @@ describe('what the server says the caller may do', () => {
     );
     expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
       canWrite: true,
+      canChangeMembers: true,
       canManage: false,
       canUnlink: false,
     });
@@ -311,6 +337,8 @@ describe('room resources', () => {
       roomScoped: false,
       createdByAgentName: null,
       packageIds: ['pkg-1'],
+      ownerId: null,
+      readVisibility: 'private',
     });
   });
 

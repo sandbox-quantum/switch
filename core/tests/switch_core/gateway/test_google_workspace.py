@@ -243,8 +243,7 @@ class TestTheClientSignedInThrough:
             )
         assert completed.status_code == 400
         assert completed.json()["detail"] == (
-            "This server's Google Workspace app changed during your sign-in. "
-            "Start it again."
+            "Switch's Google Workspace app changed during your sign-in. Start it again."
         )
         assert [
             request
@@ -452,12 +451,12 @@ class TestTheProfileChanging:
         for refused in (issuing.value, granting.value):
             assert (refused.status_code, refused.code) == (409, "connector_revoked")
         assert issuing.value.message == (
-            "The agent's owner must reconnect Google Workspace: this server now "
+            "The agent's owner must reconnect Google Workspace: Switch now "
             "asks for other Google Workspace access than the sign-in granted. "
-            "Reconnect it under Settings, Connections."
+            "Reconnect it in Switch Console, under Connectors."
         )
         assert granting.value.message == (
-            "Reconnect Google Workspace under Settings, Connections first."
+            "Reconnect Google Workspace in Switch Console, under Connectors, first."
         )
         assert later.google.token_requests == []
 
@@ -693,9 +692,8 @@ class TestAvailability:
             (
                 False,
                 {},
-                "Google Workspace is not set up on this server. Whoever runs your "
-                "Switch server can set it up in Switch Console, under Admin → "
-                "Connector apps.",
+                "Google Workspace is not set up here. Whoever runs Switch can set "
+                "it up in Switch Console, under Admin → Connector apps.",
                 "app_not_set_up",
             ),
             (

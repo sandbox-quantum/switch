@@ -217,6 +217,7 @@ async def _verify(world: _World, caller: User, adapter: _Adapter | None) -> obje
             UserStore(),
             _Lifecycle(adapter),  # type: ignore[arg-type]
             caller,
+            False,
         )
 
 
@@ -664,6 +665,7 @@ class TestVerifyingWithASession:
                     UserStore(),
                     _Lifecycle(_Adapter(_STAND_IN)),  # type: ignore[arg-type]
                     world.ada,
+                    False,
                 )
 
         assert refused.value.status_code == 409

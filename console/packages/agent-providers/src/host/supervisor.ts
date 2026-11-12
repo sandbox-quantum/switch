@@ -5,21 +5,12 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { isProcessAlive } from '../process-alive';
 import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, killProcessTree } from './process-fence';
 import { pipeRedactedLogs } from './redaction';
 import type { SessionLinks } from './session-channel';
 import { requestChildStop } from './stop-request';
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
 
 async function ownerPid(path: string): Promise<number | null> {
   try {
@@ -74,7 +65,7 @@ export async function superviseSharedHost(input: {
   const owner = { pid: process.pid, token: randomUUID(), build: input.build };
   await withOwnershipLock(directory, async () => {
     const pid = await ownerPid(ownerPath);
-    if (pid !== null && alive(pid))
+    if (pid !== null && isProcessAlive(pid, 'recorded'))
       throw new Error('The shared host supervisor is already running.');
     await replaceOwner(ownerPath, owner);
   });
@@ -82,7 +73,7 @@ export async function superviseSharedHost(input: {
     while (!input.signal.aborted) {
       // A replacement supervisor adopts a living worker instead of starting a competitor.
       const existing = await ownerPid(join(input.root, 'shared-owner.lock'));
-      if (existing !== null && alive(existing)) {
+      if (existing !== null && isProcessAlive(existing, 'recorded')) {
         await delay(500, undefined, { signal: input.signal });
         continue;
       }
