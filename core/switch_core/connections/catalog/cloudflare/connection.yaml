@@ -1,0 +1,54 @@
+slug: cloudflare
+name: Cloudflare
+category: Infrastructure
+description: Inspect and manage Cloudflare resources (Workers, Pages, DNS, logs, R2, D1) as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Cloudflare offers dynamic registration for MCP clients.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: "https://api.cloudflare.com/client/v4/user"
+    account_id: result.id
+    label: result.email
+# Cloudflare access tokens live 24 hours by default and are renewable by
+# reconnecting; the OAuth refresh keeps an agent's copy alive without the
+# owner re-signing.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - name: cloudflare
+      url: "https://mcp.cloudflare.com/mcp"
+access:
+  # Cloudflare scopes are scoped per-account and per-resource. We ask for the
+  # read scopes needed to inspect (DNS, Workers, Pages, R2, D1, logs) and the
+  # write scopes only when the owner chose read-write at connect time. No
+  # admin, org-wide or delete scopes are requested without a written reason.
+  read:
+    scopes:
+      - account:read
+      - workers:read
+      - pages:read
+      - dns:read
+      - r2:read
+      - d1:read
+      - logs:read
+      - offline_access
+  write:
+    scopes:
+      - account:read
+      - workers:write
+      - pages:write
+      - dns:write
+      - r2:write
+      - d1:write
+      - logs:read
+      - offline_access
+tools: { mode: pass_through }

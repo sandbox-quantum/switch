@@ -68,3 +68,9 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+
+- **Cloudflare** (`cloudflare.svg`): the Cloudflare logo from Cloudflare's
+  brand assets, fetched from https://www.cloudflare.com/favicon.ico and
+  https://www.cloudflare.com/img/cloudflare-logo.svg. Fetched 2026-11-10.
+  Vendor permission has not been verified; trademark of its owner. Terms:
+  Cloudflare's Brand Guidelines (https://www.cloudflare.com/brand/).

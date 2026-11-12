@@ -36,10 +36,12 @@ def test_shipped_catalog_enables_its_live_connectors():
         "gitlab",
         "notion",
         "sentry",
+        "cloudflare",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "github",
         "gitlab",
@@ -55,6 +57,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
+    assert "SKILL.md" in CATALOG["cloudflare"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
