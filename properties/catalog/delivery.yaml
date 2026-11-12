@@ -25,6 +25,7 @@ properties:
     levels: [model, code, system]
     owner: platform
     status: checked
+    supports: [delivery.no-silent-loss]
     notes: >
       Numbers come from `agent_event_heads`, not the highest stored row,
       because retention deletes old rows.
@@ -32,13 +33,17 @@ properties:
     title: An addressed message reaches its agent exactly once
     statement: >
       A message addressed to an agent in a room it belongs to produces
-      exactly one own event for that agent.
+      exactly one own event stored for that agent.
     kind: safety
     formality: formal
     spec: delivery.qnt::AddressedExactlyOnce
     levels: [model, code, system]
     owner: platform
     status: checked
+    notes: >
+      The stored half. That the agent then receives the event once, through its
+      stream and its session, is a separate property:
+      `session.addressed-reaches-controller` for an agent behind a controller.
   - id: delivery.no-silent-loss
     title: A resuming agent misses nothing without being told
     statement: >
@@ -55,22 +60,26 @@ properties:
       Retention deletes old rows (`agent_event_drops`) and a restarted server
       numbers from a new boot (`agent_event_heads.first_seq`); both must
       surface as a gap, never as silence.
-  - id: delivery.unaddressed-silent
-    title: An unaddressed message notifies no one
-    statement: A message not addressed to an agent produces no notification for it.
+  - id: delivery.addressing-matches-reference
+    title: A row is addressed to exactly the agents the rules say
+    statement: >
+      For any message and room state, the agents the router decides a row is
+      for are exactly those a reference model of the addressing rules says it
+      is for: mentions, aliases, roles, groups, who may address whom, and
+      direct chats.
     kind: safety
     formality: semi-formal
-    levels: [code, system]
+    levels: [code]
     owner: platform
     status: proposed
-  - id: delivery.per-room-order
-    title: An agent sees one room's events in the order they were written
-    statement: An agent's own events from one room arrive in `room_seq` order.
-    kind: safety
-    formality: semi-formal
-    levels: [model, system]
-    owner: platform
-    status: proposed
+    gaps:
+      code: no reference model of `addresses()` yet
+    notes: >
+      Replaces `delivery.unaddressed-silent`, which was false as stated: an
+      agent alone in a direct chat, an alias and a role all address without a
+      mention. Every other delivery property assumes this one. The inputs that
+      find bugs are free text: punctuation, code spans, case, one name inside
+      another.
   - id: delivery.no-events-after-leave
     title: A member who has left has no events in the room
     statement: >

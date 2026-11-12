@@ -290,8 +290,7 @@ moves the delivery ones to `checked`.
 | `delivery.own-seq-contiguous` | An agent's own-event `seq` is contiguous and never reused, across retention and server restarts | safety | model, code, system |
 | `delivery.addressed-exactly-once` | A message addressed to an agent in a room it belongs to produces exactly one own event for it | safety | model, code, system |
 | `delivery.no-silent-loss` | A resuming client receives every own event after its position, in order, or a gap naming each room that lost events | safety | model, code, system |
-| `delivery.unaddressed-silent` | A message not addressed to an agent produces no notification for it | safety | code, system |
-| `delivery.per-room-order` | An agent's own events from one room arrive in `room_seq` order | safety | model, system |
+| `delivery.addressing-matches-reference` | For any message and room state, a row is for exactly the agents a reference model of the addressing rules says | safety | code |
 | `lease.fenced-takeover` | A lease's token strictly increases per key; once a key is taken over, every write by an earlier holder is refused | safety | model, code |
 | `lease.eventual-owner` | Work whose holder stopped or stopped renewing is eventually held by a live process | liveness | model, system |
 | `session.addressed-reaches-controller` | Every event addressed to an agent a controller has attached reaches the controller's stream, in order, none skipped (one process; delivery across replicas is not covered) | liveness | code |

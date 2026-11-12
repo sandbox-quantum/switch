@@ -26,7 +26,25 @@ properties:
     status: proposed             # proposed | checked | retired
     gaps:                        # optional, level: why no checker yet
       system: no history check yet
+    supports: [other.id]         # optional: exists to make that property hold
+    smoke: true                  # optional: shows the harness works, not Switch
 ```
+
+`supports` marks a mechanism rather than something a user observes (an agent's
+event numbers never skip, so that nothing is lost silently), and `smoke` marks a
+check that would pass on a broken Switch if the explorer itself were working;
+`just properties table` shows both in its last column, so neither reads as
+assurance of its own.
+
+## What agents are promised
+
+The delivery properties are not equals. An agent is promised that a message
+addressed to it is delivered once and that a resuming agent misses nothing
+without being told: `delivery.addressed-exactly-once` and
+`delivery.no-silent-loss`. The rest (`delivery.own-seq-contiguous`,
+`delivery.decided-at-write`, `delivery.no-events-after-leave`, `bus.room-seq-dense`)
+exist to make those two hold, and `delivery.addressing-matches-reference` is
+what decides whether a message is addressed at all.
 
 A `formal` property also has `spec: <file>.qnt::<Definition>`, a definition in
 `specs/`. Fields and rules are in `gate/gate.py`.
