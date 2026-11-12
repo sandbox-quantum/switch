@@ -37,7 +37,7 @@ from switch_core.connections.adapters.oauth import (
     StaticClient,
 )
 from switch_core.connections.broker import Principal, ServiceBroker
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
@@ -961,3 +961,62 @@ class TestThroughTheBroker:
         assert vendor.revoked == []
         async with session_factory() as session:
             assert await STORE.get_connection(session, owner.id, "example") is None
+
+
+class TestTheShippedGitLabEntry:
+    """GitLab's token must also reach the REST API (the identity read, and
+    the calls its MCP tools make), so no sign-in names the MCP server as its
+    `resource`."""
+
+    async def test_no_sign_in_request_names_a_resource(self) -> None:
+        sent: list[httpx.Request] = []
+
+        def gitlab(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            if request.url.path == "/oauth/token":
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": "example-access",
+                        "token_type": "Bearer",
+                        "expires_in": 7200,
+                        "refresh_token": "example-refresh",
+                        "scope": "mcp read_api read_user",
+                    },
+                )
+            return httpx.Response(404)
+
+        definition = CATALOG["gitlab"].definition
+        assert definition.access is not None and definition.access.write is not None
+        adapter = OAuthAdapter(
+            definition,
+            StaticClient(
+                OAuthClientCredentials(
+                    STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+                )
+            ),
+            httpx.AsyncClient(transport=httpx.MockTransport(gitlab)),
+        )
+        for level in (definition.access.read, definition.access.write):
+            url = await adapter.authorization_url(
+                redirect_uri=REDIRECT,
+                state="s",
+                code_challenge=s256("verifier"),
+                scopes=level.scopes,
+            )
+            query = parse_qs(urlsplit(url).query)
+            assert url.startswith("https://gitlab.com/oauth/authorize?")
+            assert query["scope"] == [" ".join(level.scopes)]
+            assert "resource" not in query
+        signed_in = await adapter.exchange_code(
+            code="example-code",
+            verifier="verifier",
+            redirect_uri=REDIRECT,
+            scopes=definition.access.read.scopes,
+        )
+        await adapter.refresh(signed_in.secret)
+        assert [str(request.url) for request in sent] == [
+            "https://gitlab.com/oauth/token"
+        ] * 2
+        for request in sent:
+            assert "resource" not in parse_qs(request.content.decode())

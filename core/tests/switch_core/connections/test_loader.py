@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 
 import pytest
@@ -14,7 +15,6 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
-    "gitlab",
     "bitbucket",
     "microsoft-365",
     "new-relic",
@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "atlassian",
         "datadog",
         "google-workspace",
+        "gitlab",
         "notion",
         "sentry",
     }
@@ -41,6 +42,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "atlassian",
         "datadog",
         "github",
+        "gitlab",
         "google-workspace",
         "notion",
         "sentry",
@@ -50,6 +52,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
 
@@ -394,6 +397,61 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
+
+
+# The endpoint and scope values come from GitLab's published MCP
+# documentation and authorization-server metadata; the shipped entry's
+# comment explains the registration shape.
+def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["gitlab"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    # The operator's application is named through its settings variable.
+    assert oauth.client_settings == "GITLAB"
+    # No loopback redirect, so no ports are fixed or listed.
+    assert oauth.loopback_ports is None
+    # A static entry names its endpoints (the discovery document's own
+    # values) instead of discovering them, and no prompt is forced on
+    # every authorization.
+    assert oauth.authorization_url == "https://gitlab.com/oauth/authorize"
+    assert oauth.token_url == "https://gitlab.com/oauth/token"
+    assert oauth.revocation_url == "https://gitlab.com/oauth/revoke"
+    assert oauth.prompt is None
+    assert oauth.revocation_discovered is False
+    # A check with a made-up code shows neither the redirect URI nor the
+    # application's scopes, so the operator is told what to confirm.
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    assert {"mcp", "read_api", "read_user", "api"} <= set(
+        re.findall(r"[a-z_]+", oauth.unchecked)
+    )
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        2 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("gitlab", "https://gitlab.com/api/v4/mcp")
+    ]
+    # The operator's application carries the REST scopes beside `mcp`:
+    # read_api at the read level, api at the write level, and read_user
+    # for the identity read below at both — the scopes a dynamically
+    # registered client is never given, which is why the entry is static.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["mcp", "read_api", "read_user"]
+    assert definition.access.write.scopes == ["mcp", "api", "read_user"]
+    assert definition.tools is not None
+    assert definition.tools.mode == "pass_through"
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://gitlab.com/api/v4/user"
+    assert definition.auth.identity.account_id == "id"
+    assert definition.auth.identity.label == "username"
 
 
 @pytest.fixture

@@ -244,6 +244,7 @@ class TestResults:
             "atlassian",
             "datadog",
             "github",
+            "gitlab",
             "google-workspace",
             "notion",
             "sentry",

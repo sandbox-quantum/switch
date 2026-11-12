@@ -70,6 +70,16 @@ version of their own to them without also giving them a release of their own.
 - **Agents can use their owner's Sentry, through the Sentry connection.** Core
   signs in through Sentry's MCP server and reads the account from its `whoami`
   tool. Agents have Sentry for up to an hour after each sign-in.
+- **The GitLab connection.** A person connects gitlab.com from Switch
+  Console, and a granted agent works with projects, work items, merge
+  requests, files and pipelines, as that person, through GitLab's MCP server. Each server's operator registers a
+  GitLab OAuth application with the scopes `mcp`, `read_api`, `read_user`
+  and `api`, and saves it under Connector apps or names it in
+  `GITLAB_CLIENT_CONFIG_PATH`. Like Google Workspace and Airtable, it needs
+  `GATEWAY_PUBLIC_URL`. GitLab's dynamic registration grants only `mcp` and
+  no refresh, so Switch does not use it. Every connection can write: a
+  sign-in asks for `api`, and GitLab's MCP server lets a token write even
+  without it.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
@@ -151,6 +161,11 @@ version of their own to them without also giving them a release of their own.
   graph of the day itself instead of taking a Datadog snapshot, with a title,
   the time span, labelled axes, a legend and a caption on how to read it, so
   the image makes sense on its own in Slack.
+- **The dashboard's Connector apps page lists the scopes to give an app**
+  for a vendor that has no setup steps of its own, such as GitLab. A
+  vendor refuses a sign-in that asks for a scope its app lacks. The page's
+  warning before switching apps says tokens already handed to agents stay
+  valid until they expire, no longer "up to an hour".
 - **switch-core's logs keep to what matters.** Successful routine polls (health
   checks, controller status, assignment and operations polls, Console's
   controller and agent lists, host observations, session activity) and
@@ -3180,6 +3195,10 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connector apps page lists the scopes to give an app** for a vendor
+  that has no setup steps of its own, such as GitLab. The warning before
+  switching apps says tokens already handed to agents stay valid until they
+  expire, no longer "up to an hour". GitLab's tokens live two hours.
 - **Google Workspace shows Google's full-colour G** on the Connections grid,
   in place of a one-colour blue G that Google's guidelines do not offer, and
   the Atlassian connection shows the Atlassian logo rather than Jira's.
