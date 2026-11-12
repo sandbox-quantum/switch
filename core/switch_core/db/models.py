@@ -1601,6 +1601,12 @@ class Document(TenantScoped, Base):
     )
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Made by a room template's `docs:`: any agent in the room may change or
+    # delete it. A NULL `created_by_agent_id` alone does not say this, since
+    # deleting the agent that wrote a document NULLs it too.
+    from_template: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     write_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)

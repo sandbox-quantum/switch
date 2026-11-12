@@ -698,8 +698,8 @@ You can also author a document scoped to the room:
   for the agent reading it, the same way an attached reference does.
 - **`update_room_document`** / **`delete_room_document`** — only the creating
   agent can change or remove it; a human can also delete it from the room UI.
-  A document no agent created (one the room's template made) can be changed
-  or removed by any agent in the room.
+  A document the room's template made can be changed or removed by any agent
+  in the room, including one added later.
 
 ### Prefer bridged rooms — and let the user pick the bridge
 

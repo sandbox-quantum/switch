@@ -1,18 +1,19 @@
 """Who among a room's agents may change or delete a room-scoped document.
 
-An agent's own document is its alone to change. A document no agent wrote,
-such as one a room template's `docs:` created, belongs to the room, and any
-agent in it may maintain it; that the agent is in the room is checked by the
-caller before the service is asked.
+An agent's own document is its alone to change. One a room template's
+`docs:` created belongs to the room, and any agent in it may maintain it; that
+the agent is in the room is checked by the caller before the service is asked.
+A document whose writer was deleted has no author either, and stays locked.
 """
 
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.db.models import Agent, ApiKey, Client, Room
+from switch_core.db.models import Agent, ApiKey, Client, Document, Room
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -82,7 +83,7 @@ async def test_any_agent_maintains_a_document_the_template_created(
         owner = await _make_user(session, "owner")
         agent = await _make_agent(session, "maintainer", owner.id)
         room = await _room(session, owner.id)
-        doc = await service.create_room_document_for_user(
+        doc = await service.create_template_room_document(
             session,
             room_id=room.id,
             owner_id=owner.id,
@@ -130,7 +131,7 @@ async def test_only_the_creating_agent_changes_an_agents_document(
         )
         await session.commit()
 
-        with pytest.raises(PermissionError, match="another agent"):
+        with pytest.raises(PermissionError, match="only its creating agent"):
             await service.update_room_document(
                 session,
                 room_id=room.id,
@@ -138,7 +139,7 @@ async def test_only_the_creating_agent_changes_an_agents_document(
                 document_id=doc.id,
                 content="v2",
             )
-        with pytest.raises(PermissionError, match="another agent"):
+        with pytest.raises(PermissionError, match="only its creating agent"):
             await service.delete_room_document(
                 session, room_id=room.id, agent_id=other.id, document_id=doc.id
             )
@@ -151,3 +152,45 @@ async def test_only_the_creating_agent_changes_an_agents_document(
             content="v2",
         )
         assert updated.content == "v2"
+
+
+async def test_a_document_whose_writer_is_gone_stays_locked(
+    session_factory: async_sessionmaker[AsyncSession], service: ResourceService
+) -> None:
+    async with session_factory() as session:
+        owner = await _make_user(session, "owner")
+        author = await _make_agent(session, "author", owner.id)
+        other = await _make_agent(session, "other", owner.id)
+        room = await _room(session, owner.id)
+        doc = await service.create_room_document(
+            session,
+            room_id=room.id,
+            agent_id=author.id,
+            owner_id=owner.id,
+            name="private notes",
+            description="",
+            instructions="",
+            content="v1",
+        )
+        room_id, other_id, doc_id = room.id, other.id, doc.id
+        # What the foreign key's ON DELETE SET NULL leaves behind.
+        await session.execute(
+            update(Document)
+            .where(Document.id == doc_id)
+            .values(created_by_agent_id=None)
+        )
+        await session.commit()
+        session.expire_all()
+
+        with pytest.raises(PermissionError, match="only its creating agent"):
+            await service.update_room_document(
+                session,
+                room_id=room_id,
+                agent_id=other_id,
+                document_id=doc_id,
+                content="v2",
+            )
+        with pytest.raises(PermissionError, match="only its creating agent"):
+            await service.delete_room_document(
+                session, room_id=room_id, agent_id=other_id, document_id=doc_id
+            )
