@@ -458,8 +458,9 @@ is missing, ambiguous or not the deployer's to read stops the run; an entry
 with `type`, `name`, `description`, `instructions` and `value: {urls: [...]}`
 creates a new one (private unless `read_visibility` / `write_visibility` say
 otherwise). `docs:` are documents created in the room, each
-`{name, description, instructions, content}`; any agent in the room may
-update or delete them. An exported room writes roles
+`{name, description, instructions, content}`; an agent in the room whose
+owner can edit the room may update or delete them, as for its roles. An
+exported room writes roles
 and docs in full and references by `id`.
 
 `agents:` names agents that exist on the server, plus the ones this

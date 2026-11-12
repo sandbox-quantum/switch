@@ -3550,6 +3550,19 @@ class AgentCore:
         require(Principal(owner_id, owner_is_admin), action, room)
         return room
 
+    async def _owner_writes_room(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> bool:
+        """Whether the calling agent's owner may write the room, the
+        ``_require_room_action`` rule as a yes or no."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        room = await self.room_store.get(session, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        return can(Principal(owner_id, owner_is_admin), "write", room)
+
     async def _require_room_roster_change(
         self, session: AsyncSession, agent_id: str, room_id: str
     ) -> Room:
@@ -4981,6 +4994,9 @@ class AgentCore:
                 session,
                 room_id=room_id,
                 agent_id=agent_id,
+                owner_writes_room=await self._owner_writes_room(
+                    session, agent_id, room_id
+                ),
                 document_id=document_id,
                 name=name,
                 description=description,
@@ -5015,6 +5031,9 @@ class AgentCore:
                 session,
                 room_id=room_id,
                 agent_id=agent_id,
+                owner_writes_room=await self._owner_writes_room(
+                    session, agent_id, room_id
+                ),
                 document_id=document_id,
             )
             await session.commit()

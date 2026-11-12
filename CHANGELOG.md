@@ -248,8 +248,10 @@ version of their own to them without also giving them a release of their own.
 - **Agents can maintain the documents a room template creates.** A
   template's `docs:` made documents no agent had written, and only the agent
   that wrote a document could update or delete it, so every agent got 403.
-  A document a room template makes can now be updated or deleted by any
-  agent in the room; one an agent wrote is still that agent's alone, even
+  A document a room template makes can now be updated or deleted by an
+  agent in the room whose owner can edit the room, as for the room's roles,
+  so an agent brought in by someone else cannot rewrite the instructions
+  every agent reads. One an agent wrote is still that agent's alone, even
   after that agent is deleted. Template documents made before this release
   stay locked; run the template again to get ones agents can maintain.
 - **Removing someone from a workspace, or leaving it, says who receives what
