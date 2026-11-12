@@ -2038,6 +2038,12 @@ class TemplateSummary(BaseModel):
     # client cannot tell from the user's global role.
     can_edit: bool
     can_manage: bool
+    # Why a person should not run it by hand, for a client to give beside a
+    # greyed Run; None when nothing stands in the way. Advice, not a refusal.
+    run_blocked_reason: str | None
+    # How many times it has been run in this workspace, by people and agents,
+    # since runs were first counted.
+    run_count: int
     version: int
     size_bytes: int
     created_at: str
@@ -2046,6 +2052,11 @@ class TemplateSummary(BaseModel):
 
 class TemplateDetail(TemplateSummary):
     content: str
+
+
+class TemplateRunRecorded(BaseModel):
+    template_id: str
+    run_count: int
 
 
 # The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels

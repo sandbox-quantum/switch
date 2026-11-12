@@ -62,6 +62,7 @@ import {
   fetchTemplateSchema,
   GatewayError,
   ownsOwnerAddressedAgent,
+  recordTemplateRun,
   releaseBridgeIdentity,
   removeBridgeTeam,
   removeRoomAgent,
@@ -932,6 +933,34 @@ export const workspacesController = createRPCController({
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchTemplateDetail(server, params.templateId)
     ),
+
+  /**
+   * Count a stored or official template's run, once the whole run has
+   * succeeded. Never fails: the run is done either way, so a server that does
+   * not count runs, or one that cannot be reached, is logged and the run goes
+   * uncounted.
+   */
+  recordTemplateRun: async (params: { workspaceId: string; templateId: string }): Promise<void> => {
+    try {
+      const counted = await withWorkspaceSession(params.workspaceId, (server) =>
+        recordTemplateRun(server, params.templateId)
+      );
+      if (!counted) {
+        log.warn('A template run was not counted: the server does not count it', {
+          event: 'template_run_count',
+          errorCode: 'not_counted',
+          templateId: params.templateId,
+        });
+      }
+    } catch (error) {
+      log.warn('A template run was not counted', {
+        event: 'template_run_count',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        templateId: params.templateId,
+        error: String(error),
+      });
+    }
+  },
 
   deleteTemplate: (params: { workspaceId: string; templateId: string }): Promise<void> =>
     withWorkspaceSession(params.workspaceId, (server) => deleteTemplate(server, params.templateId)),

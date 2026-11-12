@@ -276,8 +276,24 @@ export interface RoomDetail extends RoomSummary {
   // Agent ids configured to receive room_join events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
+  // What deleting the room can do to its platform channel, as that platform's
+  // bridge declares it; null when the room has no channel.
+  channel_on_delete: ChannelRetirement | null;
   /** Absent on servers that predate decision routing. */
   auto_route?: RoomAutoRoute;
+}
+
+/** What deleting a room does to its platform channel when asked to: archived
+ * on Slack and Mattermost, deleted on Discord, left by the bot on Telegram,
+ * and kept on Teams, where Switch may not remove it. */
+export type ChannelRetirement = "archived" | "deleted" | "left" | "kept";
+
+/** What deleting a room did to its platform channel. `failed` means the
+ * channel is still there and someone has to remove it by hand; `reason`
+ * says why. */
+export interface RetireOutcome {
+  outcome: ChannelRetirement | "failed";
+  reason: string | null;
 }
 
 /**
@@ -423,6 +439,12 @@ export async function fetchRooms(
  * rather than answering null so a failure can say why. */
 export async function loadRooms(): Promise<RoomSummary[]> {
   return jsonRequest<RoomSummary[]>("/rooms", "GET");
+}
+
+/** Every room the viewer may read, archived ones included, throwing rather
+ * than answering null so a failure can say why. */
+export async function loadRoomsWithArchived(): Promise<RoomSummary[]> {
+  return jsonRequest<RoomSummary[]>("/rooms?include_archived=true", "GET");
 }
 
 export async function fetchRoom(roomId: string): Promise<RoomDetail | null> {
@@ -609,31 +631,25 @@ export async function addRoomUsers(
   });
 }
 
-export async function deleteRoom(roomId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/rooms/${roomId}`, {
-    method: "DELETE",
-  });
-  return res?.ok ?? false;
+/** Delete the room. Its platform channel is kept unless `retireChannel`
+ * asks for what `channel_on_delete` says; `channel` reports how that went. */
+export async function deleteRoom(
+  roomId: string,
+  retireChannel: boolean,
+): Promise<{ ok: boolean; channel: RetireOutcome | null }> {
+  return jsonRequest(`/rooms/${roomId}?retire_channel=${retireChannel}`, "DELETE");
 }
 
-export async function bulkDeleteRooms(
-  roomIds: string[],
-): Promise<{ deleted: number } | null> {
-  return fetchJson<{ deleted: number }>("/rooms/bulk-delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds }),
-  });
-}
-
+/** Archive or unarchive many rooms. The server skips, without failing, any
+ * room the viewer may not change or that is gone, and says how many it did
+ * change. */
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
-): Promise<{ updated: number } | null> {
-  return fetchJson<{ updated: number }>("/rooms/bulk-archive", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds, archived }),
+): Promise<{ updated: number }> {
+  return jsonRequest<{ updated: number }>("/rooms/bulk-archive", "POST", {
+    room_ids: roomIds,
+    archived,
   });
 }
 
@@ -2543,6 +2559,12 @@ export interface TemplateSummary {
   /** What the signed-in user may do with it, as the server judges it. */
   can_edit: boolean;
   can_manage: boolean;
+  /** Why a person should not run it by hand (switch-buddy, which Switch
+   * Console sets up itself); null when nothing stands in the way. */
+  run_blocked_reason: string | null;
+  /** How many times it has been run in this workspace, since runs were
+   * first counted. */
+  run_count: number;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -2582,17 +2604,18 @@ export interface TemplateFilter {
   owner_id?: string;
 }
 
-/** The templates the signed-in user may see, narrowed on the server. */
+/** The templates the signed-in user may see, narrowed on the server, or an
+ * error carrying the server's reason. */
 export async function fetchTemplates(
   filter: TemplateFilter = {},
-): Promise<TemplateSummary[] | null> {
+): Promise<TemplateSummary[]> {
   const params = new URLSearchParams();
   const q = filter.q?.trim();
   if (q) params.set("q", q);
   if (filter.kind) params.set("kind", filter.kind);
   if (filter.owner_id) params.set("owner_id", filter.owner_id);
   const qs = params.toString();
-  return fetchJson<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`);
+  return jsonRequest<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`, "GET");
 }
 
 /** One template, or an error carrying the server's reason (403, 404, or the
@@ -2891,6 +2914,83 @@ export interface ServiceKeyForm {
 export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
   return (await jsonRequest<{ connections: ServiceConnection[] }>("/service-connections", "GET"))
     .connections;
+}
+
+/** Why nobody in a workspace can use a service: `UnavailableCode` in
+ * `core/switch_core/connections/broker.py`. A server newer than this
+ * dashboard may send one it doesn't know yet. */
+export type UnavailableCode =
+  | "coming_soon"
+  | "switched_off"
+  | "needs_https"
+  | "needs_public_url"
+  | "app_not_set_up"
+  | "not_set_up"
+  | "organization_app_unusable"
+  | "not_fully_set_up"
+  | "key_never_expires";
+
+/** Which setting decides whether a service is on in the workspace. */
+export type WorkspaceServiceDecider =
+  | "organization_locked"
+  | "workspace"
+  | "organization_default"
+  | "workspace_default";
+
+/** A catalog service as the workspace's settings show it: on or off here, and why. */
+export interface WorkspaceService {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  auth_type: "oauth" | "api_key";
+  enabled: boolean;
+  decided_by: WorkspaceServiceDecider;
+  organization_locked: boolean;
+  /** The organization's unlocked setting, which applies once the workspace drops its own; null where it has none. */
+  organization_default: boolean | null;
+  /** Whether the caller may switch it here: an admin, on a service the organization has not locked. */
+  can_change: boolean;
+  /** Who made the setting that decides it; null for the workspace's default or a deleted account. */
+  updated_by_name: string | null;
+  updated_at: string | null;
+  /** Whether the workspace's admin set it themselves. */
+  workspace_set: boolean;
+  /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
+  app_source: "organization" | "server";
+  /** Why nobody here can use it whatever the switch says; null when they can. */
+  unavailable_reason: string | null;
+  unavailable_code: string | null;
+  /** How many people have connected it and agents are granted it; null for anyone but an admin. */
+  connected_members: number | null;
+  granted_agents: number | null;
+}
+
+export interface WorkspaceServices {
+  /** Whether the caller administers the workspace, and so may switch what isn't locked. */
+  can_change: boolean;
+  /** Whether a service nobody has set is on here. */
+  on_by_default: boolean;
+  /** The workspace's organization, where it has a say in connectors; null where it has none. */
+  organization_name: string | null;
+  services: WorkspaceService[];
+}
+
+export async function fetchWorkspaceServices(): Promise<WorkspaceServices> {
+  return jsonRequest<WorkspaceServices>("/workspace/services", "GET");
+}
+
+/** Switch a service on or off for the workspace; `warning` says what could not be revoked yet. */
+export async function setWorkspaceService(
+  service: string,
+  enabled: boolean,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/workspace/services/${service}`, "PUT", { enabled });
+}
+
+/** Drop the workspace's own setting, so its organization's default applies. */
+export async function clearWorkspaceService(service: string): Promise<{ warning: string | null }> {
+  return jsonRequest(`/workspace/services/${service}`, "DELETE");
 }
 
 export async function removeServiceGrant(
