@@ -201,6 +201,52 @@ describe("AgentListPage", () => {
     expect(screen.getByRole("dialog", { name: "Delete agent" })).toBeTruthy();
   });
 
+  it("refreshes the list when a delete is refused because the agent is already gone", async () => {
+    signedInAs("admin");
+    const calls = answer({
+      "GET /agents": [
+        [200, [agent("gone", "u1"), agent("kept", "u1")]],
+        [200, [agent("kept", "u1")]],
+      ],
+      "DELETE /agents/gone": [404, { detail: "Agent not found: gone" }],
+    });
+    show();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for gone" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Delete/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    expect(await within(dialog).findByText("Agent not found: gone")).toBeTruthy();
+    expect(await screen.findByText("1 agent")).toBeTruthy();
+    expect(calls.filter((call) => call.method === "GET" && call.path === "/agents")).toHaveLength(2);
+  });
+
+  it("keeps the delete dialog's words while it closes, though the list changes under it", async () => {
+    signedInAs("admin");
+    answer({
+      "GET /agents": [
+        [200, [agent("parent", "u1"), agent("child", "u1", { parent_agent_id: "parent" })]],
+        // After the delete, the child has no parent, as the server answers.
+        [200, [agent("child", "u1")]],
+      ],
+      "DELETE /agents/parent": [200, { ok: true, bridge_cleanup_failures: [] }],
+    });
+    show();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for parent" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Delete/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await screen.findByText('Deleted "parent".');
+    await screen.findByText("1 agent");
+
+    // Still on screen as it fades out, with what it said when it opened.
+    expect(dialog.textContent).toContain('Delete "parent"?');
+    expect(dialog.textContent).toContain("Its sub-agent stays, as a top-level agent.");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Delete agent" })).toBeNull());
+  });
+
   it("deletes, refreshes the list, and says so", async () => {
     signedInAs("admin");
     const calls = answer({

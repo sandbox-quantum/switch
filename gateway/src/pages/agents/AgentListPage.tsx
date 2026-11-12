@@ -27,7 +27,13 @@ import PageBanner from "../../components/PageBanner";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { useAuth } from "../../data/AuthContext";
-import { type AgentDevice, type AgentListEntry, deleteAgent, loadAgents } from "../../data/api";
+import {
+  type AgentDevice,
+  type AgentListEntry,
+  type DeleteAgentResult,
+  deleteAgent,
+  loadAgents,
+} from "../../data/api";
 import { AGENT_MANAGEMENT } from "../../data/featureFlags";
 import { type ListScope, agentsInScope, listScopeOf } from "../../data/listScope";
 import { EM_DASH, formatDate, sentenceCase } from "../../theme/format";
@@ -139,7 +145,11 @@ function AgentList({
   const [registerOpen, setRegisterOpen] = useState(false);
   const [renaming, setRenaming] = useState<AgentListEntry | null>(null);
   const [transferring, setTransferring] = useState<AgentListEntry | null>(null);
-  const [deleting, setDeleting] = useState<AgentListEntry | null>(null);
+  // What the delete dialog shows, taken when it opens and kept after it
+  // closes: the dialog fades out with the words it had, while the list
+  // refreshes under it. `deleteOpen` alone opens and closes it.
+  const [deleting, setDeleting] = useState<{ agent: AgentListEntry; subAgents: number } | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const yours = scope === "yours";
 
@@ -168,11 +178,14 @@ function AgentList({
         label: "Delete",
         icon: <DeleteOutline fontSize="small" />,
         destructive: true,
-        onClick: () => setDeleting(agent),
+        onClick: () => {
+          setDeleting({ agent, subAgents: all.filter((other) => other.parent_agent_id === agent.id).length });
+          setDeleteOpen(true);
+        },
       });
     }
     return actions;
-  }, []);
+  }, [all]);
 
   const columns = useMemo<TableColumn<AgentListEntry>[]>(() => {
     const parents: FilterOption[] = [
@@ -359,8 +372,6 @@ function AgentList({
     </Card>
   );
 
-  const deletingChildren = deleting ? all.filter((agent) => agent.parent_agent_id === deleting.id).length : 0;
-
   let body: ReactNode;
   if (data === null && loading) {
     body = <CircularProgress aria-label="Loading agents" />;
@@ -474,35 +485,44 @@ function AgentList({
       )}
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={deleteOpen}
         title="Delete agent"
         tone="destructive"
         confirmLabel="Delete"
         description={
           deleting && (
             <>
-              Delete "{deleting.name}"? Its client stops, and its tools and models are removed.
-              {deletingChildren > 0 &&
-                (deletingChildren === 1
+              Delete "{deleting.agent.name}"? Its client stops, and its tools and models are removed.
+              {deleting.subAgents > 0 &&
+                (deleting.subAgents === 1
                   ? " Its sub-agent stays, as a top-level agent."
-                  : ` Its ${deletingChildren} sub-agents stay, as top-level agents.`)}
+                  : ` Its ${deleting.subAgents} sub-agents stay, as top-level agents.`)}
             </>
           )
         }
-        onClose={() => setDeleting(null)}
+        onClose={() => setDeleteOpen(false)}
         onConfirm={async () => {
           if (!deleting) return;
-          const result = await deleteAgent(deleting.id);
+          const { agent } = deleting;
+          let result: DeleteAgentResult;
+          try {
+            result = await deleteAgent(agent.id);
+          } catch (err) {
+            // The refusal may be that it is already gone, deleted elsewhere:
+            // the list catches up while the dialog says why.
+            void refetch();
+            throw err;
+          }
           setNotice(
             result.bridge_cleanup_failures.length > 0
               ? {
                   severity: "warning",
                   lines: [
-                    `Deleted "${deleting.name}", but its chat platform clean-up did not finish ` +
+                    `Deleted "${agent.name}", but its chat platform clean-up did not finish ` +
                       `(${result.bridge_cleanup_failures.join("; ")}). It finishes when that bridge next starts.`,
                   ],
                 }
-              : { severity: "success", lines: [`Deleted "${deleting.name}".`] },
+              : { severity: "success", lines: [`Deleted "${agent.name}".`] },
           );
           void refetch();
         }}
