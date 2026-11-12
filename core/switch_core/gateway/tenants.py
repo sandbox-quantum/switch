@@ -25,6 +25,9 @@ from switch_core.authz import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
 from switch_core.clients.client_lifecycle_service import (
     ClientLifecycleService,
 )
@@ -107,6 +110,7 @@ from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_budget_store,
     get_client_lifecycle,
+    get_collab_lifecycle,
     get_config,
     get_erasure_store,
     get_invitation_store,
@@ -116,6 +120,7 @@ from switch_core.gateway.dependencies import (
     get_organization_store,
     get_protocol,
     get_retention_store,
+    get_room_service,
     get_session,
     get_session_factory,
     get_system_session,
@@ -148,14 +153,19 @@ from switch_core.gateway.schemas import (
     JoinDomainCreateRequest,
     JoinDomainDetail,
     JoinDomainsResponse,
+    MakeRoomsPrivateRequest,
+    MakeRoomsPrivateResponse,
     MemberDetail,
     MemberUpdateRequest,
     OperatorWorkspaceResponse,
     PersonDetail,
+    PrivateChannelRoom,
+    PrivateChannelRoomsPreview,
     RetentionPolicyRequest,
     RetentionPolicyResponse,
     RetentionPreviewResponse,
     SessionUserResponse,
+    SkippedRoom,
     TenantCreateRequest,
     TenantDeleteRequest,
     TenantMembershipResponse,
@@ -174,6 +184,8 @@ from switch_core.organization_access import (
     remove_membership,
 )
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
+from switch_core.private_channel_rooms import PrivateChannelRooms, notice_poster
+from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -1006,6 +1018,93 @@ async def clear_retention_policy(
         )
         await session.commit()
     return _retention_response(None, None, None)
+
+
+def _private_channel_rooms(
+    session_factory: async_sessionmaker[AsyncSession],
+    collab_lifecycle: CollaborationBridgeLifecycleService,
+    room_service: RoomService,
+    client_lifecycle: ClientLifecycleService,
+) -> PrivateChannelRooms:
+    return PrivateChannelRooms(
+        session_factory=session_factory,
+        collab_lifecycle=collab_lifecycle,
+        room_changes=room_service,
+        post_notice=notice_poster(client_lifecycle),
+    )
+
+
+@router.get("/tenants/{tenant_id}/private-channel-rooms")
+async def preview_private_channel_rooms(
+    tenant_id: str,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    _user: Annotated[User, Depends(require_tenant_admin)],
+) -> PrivateChannelRoomsPreview:
+    """The Public rooms bound to a private channel, a group or a DM, which
+    `POST .../private-channel-rooms/make-private` would make Private. A dry
+    run: changes nothing. Admins only.
+
+    Asks each room's messaging app whether it can list the channel's members,
+    and what a channel of unrecorded type is."""
+    _require_bound_tenant(tenant_id)
+    rooms = await _private_channel_rooms(
+        session_factory, collab_lifecycle, room_service, client_lifecycle
+    ).preview(tenant_id)
+    return PrivateChannelRoomsPreview(
+        rooms=[
+            PrivateChannelRoom(
+                room_id=room.room_id,
+                name=room.name,
+                bridge_id=room.bridge_id,
+                bridge_name=room.bridge_name,
+                bridge_type=room.bridge_type,
+                channel_type=room.channel_type,
+                people=room.people,
+                members_listed=room.members_listed,
+                cautions=list(room.cautions),
+                recommended=room.recommended,
+            )
+            for room in rooms
+        ]
+    )
+
+
+@router.post("/tenants/{tenant_id}/private-channel-rooms/make-private")
+async def make_private_channel_rooms_private(
+    tenant_id: str,
+    body: MakeRoomsPrivateRequest,
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> MakeRoomsPrivateResponse:
+    """Make the rooms the admin confirmed from the preview Private, and only
+    those. A room changed since the preview (already Private, archived, or
+    no longer on a private channel) is skipped and said so. Each room made
+    Private is audited and gets a line in its history. Admins only."""
+    _require_bound_tenant(tenant_id)
+    result = await _private_channel_rooms(
+        session_factory, collab_lifecycle, room_service, client_lifecycle
+    ).apply(tenant_id, body.room_ids, actor_user_id=user.id)
+    return MakeRoomsPrivateResponse(
+        changed=result.changed,
+        skipped=[
+            SkippedRoom(room_id=room_id, reason=reason)
+            for room_id, reason in result.skipped
+        ],
+    )
 
 
 #: The `platform` a person taking part from Switch Console is listed under.

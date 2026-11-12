@@ -2919,6 +2919,10 @@ class SlackAdapter(PlatformAdapter):
                     failed.append(user_id)
         return failed
 
+    async def can_list_channel_members(self, channel_id: str) -> bool:
+        """Slack lists the members of every conversation the app is in."""
+        return True
+
     async def list_channel_members(
         self, channel_id: str, *, known_people: Collection[str] = ()
     ) -> ChannelMembers | None:

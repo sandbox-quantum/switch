@@ -2470,6 +2470,48 @@ class RetentionPreviewResponse(BaseModel):
     messages_to_delete: int
 
 
+class PrivateChannelRoom(BaseModel):
+    """A Public room on a private channel, as the clean-up's preview lists it
+    (`private_channel_rooms.Candidate`)."""
+
+    room_id: str
+    name: str
+    bridge_id: str
+    bridge_name: str | None
+    bridge_type: str | None
+    # The recorded type, or the platform's answer when none was recorded.
+    channel_type: str | None
+    people: int
+    # Whether the platform can list the channel's members; None when it
+    # could not be asked.
+    members_listed: bool | None
+    # Why the room starts unticked: "members_not_listed",
+    # "channel_type_unknown" or "bridge_not_connected". Empty when none.
+    cautions: list[str]
+    recommended: bool
+
+
+class PrivateChannelRoomsPreview(BaseModel):
+    rooms: list[PrivateChannelRoom]
+
+
+class MakeRoomsPrivateRequest(BaseModel):
+    """The rooms from the preview the admin confirmed."""
+
+    room_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
+class SkippedRoom(BaseModel):
+    room_id: str
+    # "not_found", "already_private", "archived" or "not_eligible".
+    reason: str
+
+
+class MakeRoomsPrivateResponse(BaseModel):
+    changed: list[str]
+    skipped: list[SkippedRoom]
+
+
 # ── Erasing a person ────────────────────────────────────────────────────────
 
 

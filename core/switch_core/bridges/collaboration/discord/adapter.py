@@ -1183,6 +1183,15 @@ class DiscordAdapter(PlatformAdapter):
         )
         self._resync_members(targets)
 
+    async def can_list_channel_members(self, channel_id: str) -> bool:
+        """With the members intent, for a server small enough to read whole:
+        the same conditions `list_channel_members` lists under."""
+        connection = self._connection
+        if connection is None or not connection.has_members_intent:
+            return False
+        guild = self._cached_guild()
+        return guild is not None and (guild.member_count or 0) <= _MEMBER_LIST_MAX
+
     async def list_channel_members(
         self, channel_id: str, *, known_people: Collection[str] = ()
     ) -> ChannelMembers | None:

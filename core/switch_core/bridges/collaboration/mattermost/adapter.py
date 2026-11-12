@@ -3082,6 +3082,10 @@ class MattermostAdapter(PlatformAdapter):
     #: Members read per page when listing a channel; Mattermost's ceiling.
     _MEMBERS_PAGE = 200
 
+    async def can_list_channel_members(self, channel_id: str) -> bool:
+        """Mattermost lists the members of every channel, as the admin account."""
+        return True
+
     async def list_channel_members(
         self, channel_id: str, *, known_people: Collection[str] = ()
     ) -> ChannelMembers | None:
