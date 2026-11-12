@@ -15,8 +15,9 @@ auth:
     # Switch Console and the server needs no public address. Its consent
     # screen asks the person to confirm they trust that address first.
     redirect: [loopback]
-    # Notion advertises its token endpoint for revocation. Revoking the
-    # refresh token ends the access token at once (measured).
+    # Notion advertises its token endpoint for revocation. Measured: a
+    # revoked refresh token is refused (invalid_grant), and the access token
+    # issued with it stops at once (introspection active: false, MCP 401).
     revocation_discovered: true
   identity:
     # A Notion MCP token reaches neither Notion's REST API (/v1/users/me
@@ -29,9 +30,13 @@ auth:
     introspection: true
     account_id: [workspace_id, user_id]
     label: workspace_id
-# Notion's MCP access tokens live 8 hours (measured), and Notion offers no way
-# to ask for a shorter one or to revoke one alone, so an agent's copy may
-# outlive its grant by up to that long. Agents still ask again hourly.
+# Notion's MCP access tokens live 8 hours (measured), and none can be asked
+# for shorter. An agent's token is the owner's own access token (pass
+# through). Notion can revoke an access token alone (measured), but that
+# would also end the token the connection and every other agent use, so
+# Switch does not. An agent's copy may outlive its grant by up to 8 hours.
+# Agents still ask again hourly. Disconnecting revokes the sign-in, which
+# ends its tokens at once (measured).
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
