@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.own_app_setup import (
     slack_create_url,
     slack_manifest,
 )
+from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.slack.install import BOT_SCOPES
 
 
@@ -41,6 +42,12 @@ class TestSlackManifest:
             for command in COMMANDS
             if command.description.strip() and not command.hidden
         }
+
+    def test_subscribes_to_a_channel_being_deleted_or_archived(self) -> None:
+        bot_events = slack_manifest()["settings"]["event_subscriptions"]["bot_events"]
+
+        assert set(SlackAdapter._CHANNEL_REMOVED_EVENTS) <= set(bot_events)
+        assert {"channels:read", "groups:read"} <= set(BOT_SCOPES)
 
     def test_every_registered_command_does_something(self) -> None:
         registered = {

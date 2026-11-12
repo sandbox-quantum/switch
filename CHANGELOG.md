@@ -53,6 +53,19 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **What someone deletes or edits in a bridged chat is deleted or edited in
+  Switch too.** When a person deletes their post in Slack, Discord or
+  Mattermost, its room message goes at once, with its
+  files and the copies agents were sent. When they edit it, the room message
+  says the new words in place; agents are not sent it again, and the new words
+  pass Switch Trust like a new message (words it refuses delete the message).
+  Edits in Telegram are followed too, but Telegram never tells a bot about a
+  deletion. A channel deleted on its platform takes every message of its room
+  with it and leaves the room unlinked; an archived channel only unlinks the
+  room, since archiving can be undone. Posts the bridge made for messages
+  written in Switch are left alone. A Slack app must subscribe to four more
+  events (`channel_deleted`, `channel_archive`, `group_deleted`,
+  `group_archive`) and be reinstalled for channel removals to arrive.
 - **Templates have a page of their own in the new dashboard layout, and say
   how often each one is run.** Behind `gateway_v2`, Templates leaves the
   Resources tabs: the workspace's own templates and the ones that come with

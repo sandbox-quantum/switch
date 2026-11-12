@@ -36,9 +36,12 @@ from switch_core.bridges.collaboration.models import (
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
+    InboundChannelRemoved,
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDeleted,
+    InboundMessageEdited,
     InboundUserJoin,
     OutboundAttachment,
 )
@@ -75,6 +78,7 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
+from switch_core.retention.platform_deletes import PlatformDeletions
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
@@ -147,6 +151,9 @@ _InboundEventT = TypeVar(
     InboundAgentJoin,
     InboundUserJoin,
     InboundAppJoin,
+    InboundMessageDeleted,
+    InboundMessageEdited,
+    InboundChannelRemoved,
 )
 
 # How long to wait for a freshly-invited external-user human actor to actually join a
@@ -335,6 +342,7 @@ class CollaborationCore:
         )
         self._max_attachment_bytes = max_attachment_bytes
         self._trust_client = trust_client
+        self._platform_deletions = PlatformDeletions()
 
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
@@ -568,6 +576,17 @@ class CollaborationCore:
         self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_channel_rename_handler(self._handle_channel_named)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
+        self._adapter.set_takeback_handlers(
+            on_message_deleted=self._traced(
+                "message_deleted", self._handle_message_deleted
+            ),
+            on_message_edited=self._traced(
+                "message_edited", self._handle_message_edited
+            ),
+            on_channel_removed=self._traced(
+                "channel_removed", self._handle_channel_removed
+            ),
+        )
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
         # Provisioning that ran at start unattached would have failed, so it is
@@ -1814,6 +1833,150 @@ class CollaborationCore:
             new_id,
             "This chat has been given a new id by the platform. Its Switch room "
             "has been moved onto it, so messages here reach the agents again.",
+        )
+
+    # ── Taken back on the platform ───────────────────────────────────────────
+
+    async def _handle_message_deleted(self, event: InboundMessageDeleted) -> None:
+        """A post was deleted on the platform: delete the room's copy of it.
+
+        Only a post a person wrote there (`PlatformDeletions.find_post`); one
+        the bridge posted for a message written in Switch is left alone, and so
+        is a post the bridge never relayed."""
+        room_ids = self._channel_to_room.get(event.channel_id)
+        if room_ids is None:
+            return
+        room_id = room_ids[0]
+        async with (
+            tenant_session(
+                self._session_factory, await self._room_tenant(room_id)
+            ) as session,
+            session.begin(),
+        ):
+            message = await self._platform_deletions.find_post(
+                session,
+                bridge_id=self._bridge_id,
+                room_id=room_id,
+                external_post_id=event.message_ref,
+            )
+            if message is None:
+                logger.debug(
+                    "[BRIDGE-IN] %s deleted in channel %s carries no message "
+                    "written there; nothing to delete",
+                    event.message_ref,
+                    event.channel_id,
+                )
+                return
+            deleted = await self._platform_deletions.delete_post(session, message)
+        logger.info(
+            "[BRIDGE-IN] %s was deleted in channel %s: deleted %d message(s) "
+            "from room %s",
+            event.message_ref,
+            event.channel_id,
+            len(deleted.event_ids),
+            room_id,
+        )
+
+    async def _handle_message_edited(self, event: InboundMessageEdited) -> None:
+        """A post was edited on the platform: the room's copy says the new words
+        instead of the old, in place, and nobody is handed it again. An edit
+        does not address anyone afresh.
+
+        The new words pass Switch Trust as a new message would. Words it
+        refuses are not kept, and nor are the old ones, which the author has
+        withdrawn: the message is deleted."""
+        room_ids = self._channel_to_room.get(event.channel_id)
+        if room_ids is None:
+            return
+        room_id = room_ids[0]
+        content = self._adapter.translate_inbound(event.content)
+        check = await check_message(
+            self._trust_client, role="user", content=content, room_id=room_id
+        )
+        refused = check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        )
+        if check.redacted_content is not None:
+            content = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            content = f"{content}\n\n{annotation}"
+        async with (
+            tenant_session(
+                self._session_factory, await self._room_tenant(room_id)
+            ) as session,
+            session.begin(),
+        ):
+            message = await self._platform_deletions.find_post(
+                session,
+                bridge_id=self._bridge_id,
+                room_id=room_id,
+                external_post_id=event.message_ref,
+            )
+            if message is None:
+                logger.debug(
+                    "[BRIDGE-IN] %s edited in channel %s carries no message "
+                    "written there; nothing to change",
+                    event.message_ref,
+                    event.channel_id,
+                )
+                return
+            if refused:
+                await self._platform_deletions.delete_post(session, message)
+            else:
+                await self._platform_deletions.replace_text(
+                    session, message, content, edited_at_ms=int(time.time() * 1000)
+                )
+        if refused:
+            logger.warning(
+                "[BRIDGE-IN] %s was edited in channel %s and Switch Trust refused "
+                "the new text (outcome=%s, policy=%s): its message is deleted "
+                "from room %s",
+                event.message_ref,
+                event.channel_id,
+                check.outcome,
+                check.policy_id,
+                room_id,
+            )
+            return
+        logger.info(
+            "[BRIDGE-IN] %s was edited in channel %s: its message in room %s "
+            "now says the new text",
+            event.message_ref,
+            event.channel_id,
+            room_id,
+        )
+
+    async def _handle_channel_removed(self, event: InboundChannelRemoved) -> None:
+        """A channel was deleted or archived on the platform: its room is
+        unlinked from it, and kept as a room of Switch alone.
+
+        A deleted channel takes every message of its room with it, whoever
+        wrote them: the room was the channel's copy, and a room has one
+        channel. An archived one takes none, since the platform can bring it
+        back: only the link goes, as when someone unlinks the room by hand,
+        and linking it again later relays from then on."""
+        room_ids = self._channel_to_room.get(event.channel_id)
+        if room_ids is None:
+            return
+        room_id = room_ids[0]
+        tenant_id = await self._room_tenant(room_id)
+        lock = self._channel_locks.setdefault(event.channel_id, asyncio.Lock())
+        async with lock:
+            deleted = 0
+            if event.deleted:
+                deleted = await self._platform_deletions.delete_room_messages(
+                    self._session_factory, tenant_id, room_id
+                )
+            await self._room_service.unlink_bridge_from_room(room_id)
+        self._room_service.room_changed(tenant_id, room_id)
+        logger.warning(
+            "Channel %s was %s on %s: room %s is no longer linked to it%s",
+            event.channel_id,
+            "deleted" if event.deleted else "archived",
+            self._adapter.platform_name,
+            room_id,
+            f", and its {deleted} message(s) were deleted" if event.deleted else "",
         )
 
     # ── Auto-room creation ────────────────────────────────────────────────────

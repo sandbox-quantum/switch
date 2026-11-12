@@ -3638,8 +3638,16 @@ class SlackAdapter(PlatformAdapter):
                 await self._handle_member_joined_channel(event)
             elif event_subtype in self._RENAME_SUBTYPES:
                 await self._handle_channel_renamed(event)
+            elif event_subtype == "message_deleted":
+                await self._handle_message_deleted(event)
+            elif event_subtype == "message_changed":
+                await self._handle_message_changed(event)
             else:
                 await self._handle_message_event(event)
+        elif event_type in self._CHANNEL_REMOVED_EVENTS:
+            await self._handle_channel_removed(
+                event, deleted=self._CHANNEL_REMOVED_EVENTS[event_type]
+            )
         elif event_type == "member_joined_channel":
             await self._handle_member_joined_channel(event)
         elif event_type == "subteam_updated":
@@ -3762,7 +3770,8 @@ class SlackAdapter(PlatformAdapter):
     # Message subtypes we still treat as real posts. file_share carries uploaded
     # attachments; thread_broadcast is a thread reply also sent to the channel;
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
-    # Everything else (edits, deletes, channel-join system messages, …) is skipped.
+    # Every other subtype (system lines such as a channel's purpose changing) is
+    # skipped; edits and deletions are routed before they reach this.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
     # The system line Slack posts into a channel when someone renames it,
@@ -3771,6 +3780,61 @@ class SlackAdapter(PlatformAdapter):
     # them channels. Read off the message subscriptions the app already has,
     # where the `channel_rename` event would need one more and a reinstall.
     _RENAME_SUBTYPES = frozenset({"channel_name", "group_name"})
+
+    # A channel deleted (True) or archived (False). "group_*" is a private
+    # channel from before Slack made them channels.
+    _CHANNEL_REMOVED_EVENTS: ClassVar[dict[str, bool]] = {
+        "channel_deleted": True,
+        "group_deleted": True,
+        "channel_archive": False,
+        "group_archive": False,
+    }
+
+    async def _handle_channel_removed(
+        self, event: dict[str, object], *, deleted: bool
+    ) -> None:
+        channel_id = event.get("channel")
+        if not isinstance(channel_id, str) or not channel_id:
+            logger.warning(
+                "Slack %s event without a channel, skipping", event.get("type")
+            )
+            return
+        await self.report_channel_removed(channel_id, deleted=deleted)
+
+    async def _handle_message_deleted(self, event: dict[str, object]) -> None:
+        """A post deleted in Slack. A deleted file is reported by Slack only
+        as `file_deleted`, naming a file id Switch does not keep, so it is
+        followed only when Slack also changes or deletes the post it was in."""
+        channel_id = str(event.get("channel") or "")
+        deleted_ts = str(event.get("deleted_ts") or "")
+        if not channel_id or not deleted_ts:
+            logger.warning(
+                "Slack message_deleted event without a channel or deleted_ts, skipping"
+            )
+            return
+        await self.report_message_deleted(channel_id, f"{channel_id}:{deleted_ts}")
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        """A post changed in Slack. Slack reports a link unfurling, a file or a
+        thread reply being added as a change too; only a change to its words is
+        reported. A thread root deleted while it has replies stays as a
+        `tombstone` and is reported as deleted."""
+        channel_id = str(event.get("channel") or "")
+        message = event.get("message")
+        if not channel_id or not isinstance(message, dict) or not message.get("ts"):
+            logger.warning(
+                "Slack message_changed event without a channel or message, skipping"
+            )
+            return
+        message_ref = f"{channel_id}:{message['ts']}"
+        if message.get("subtype") == "tombstone":
+            await self.report_message_deleted(channel_id, message_ref)
+            return
+        text = self._post_text(message)
+        previous = event.get("previous_message")
+        if isinstance(previous, dict) and self._post_text(previous) == text:
+            return
+        await self.report_message_edited(channel_id, message_ref, text)
 
     async def _handle_channel_renamed(self, event: dict[str, object]) -> None:
         channel_id = str(event.get("channel") or "")
@@ -3829,11 +3893,7 @@ class SlackAdapter(PlatformAdapter):
         """Route a post `_handle_message_event` let through to the command or
         message callback."""
         user_id = str(event.get("user", ""))
-        text = str(event.get("text", ""))
-        if not text.strip():
-            # App posts (e.g. Datadog) often carry no top-level text — the body
-            # lives in Block Kit blocks or legacy attachments.
-            text = self._extract_rich_text(event)
+        text = self._post_text(event)
         slack_channel_type = str(event.get("channel_type", ""))
         channel_type = self._to_channel_type(slack_channel_type)
 
@@ -4084,6 +4144,15 @@ class SlackAdapter(PlatformAdapter):
             return resp.content
 
     # ── User resolution ──────────────────────────────────────────────────────
+
+    def _post_text(self, message: dict[str, object]) -> str:
+        """A post's words as `InboundMessage.content` carries them."""
+        text = str(message.get("text", ""))
+        if not text.strip():
+            # App posts (e.g. Datadog) often carry no top-level text — the body
+            # lives in Block Kit blocks or legacy attachments.
+            text = self._extract_rich_text(message)
+        return text
 
     def _extract_rich_text(self, event: dict[str, object]) -> str:
         """Recover the readable body of an app post that has no top-level text.

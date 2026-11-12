@@ -267,6 +267,33 @@ class InboundAppJoin(BaseModel):
     channel_name: str | None = None
 
 
+class InboundMessageDeleted(BaseModel):
+    """A post was deleted on the platform, by its author or a moderator.
+
+    `message_ref` is in the form `InboundMessage.message_ref` uses, so it
+    names the post the bridge recorded when the message came in."""
+
+    channel_id: str
+    message_ref: str
+
+
+class InboundMessageEdited(BaseModel):
+    """A post's words were changed on the platform. `content` is the whole new
+    text, as `InboundMessage.content` would carry it."""
+
+    channel_id: str
+    message_ref: str
+    content: str
+
+
+class InboundChannelRemoved(BaseModel):
+    """A channel was taken away on the platform: deleted, or archived where the
+    platform can bring an archived channel back (`deleted` False)."""
+
+    channel_id: str
+    deleted: bool
+
+
 class BridgeInstallLink(BaseModel):
     """A link that adds this bridge's app to a channel in one step.
 

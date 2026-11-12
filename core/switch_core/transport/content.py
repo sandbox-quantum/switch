@@ -93,6 +93,38 @@ def media_content(
     return content
 
 
+#: Content key stamped on a message whose author edited it where it was
+#: written: when Switch replaced its words, in milliseconds since the epoch.
+EDITED_AT_KEY = "com.switch.edited_at"
+
+
+def edited_content(
+    content: dict[str, object], body: str, *, edited_at_ms: int
+) -> dict[str, object]:
+    """`content` saying `body` instead, for a message edited after it was sent.
+
+    Built the way `message_content` and `media_content` build it, so an edited
+    message reads like one sent with those words: a text keeps its format and
+    a file keeps its filename, `body` becoming its caption, or the filename
+    again when the caption was taken away. Mentions are not rendered again;
+    a person's message carries none."""
+    edited = dict(content)
+    if "url" in content:
+        filename = content.get("filename", content.get("body"))
+        if body.strip():
+            edited["body"] = body
+            edited["filename"] = filename
+        else:
+            edited["body"] = filename
+            edited.pop("filename", None)
+    else:
+        edited["body"] = body
+        if "formatted_body" in content:
+            edited["formatted_body"] = _rendered(body, None)
+    edited[EDITED_AT_KEY] = edited_at_ms
+    return edited
+
+
 def _rendered(body: str, mentions: list[str] | None) -> str:
     """Markdown as HTML, with each mentioned id turned into a link.
 

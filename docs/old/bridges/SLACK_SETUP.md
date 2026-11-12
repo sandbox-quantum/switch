@@ -121,7 +121,11 @@ You need one Slack app for the whole bridge. There are two ways to create it —
                 "message.groups",
                 "message.im",
                 "message.mpim",
-                "subteam_updated"
+                "subteam_updated",
+                "channel_deleted",
+                "channel_archive",
+                "group_deleted",
+                "group_archive"
             ]
         },
         "interactivity": {
@@ -390,7 +394,12 @@ Subscribe the **bot** to (no request URL is needed with Socket Mode):
   Slack, so Switch can put it back (see *Agent name autocomplete*). Optional:
   without it, the repair waits for the next bridge start.
 - `message.channels`, `message.groups`, `message.im`, `message.mpim` — inbound
-  messages in public/private channels, DMs, and group DMs.
+  messages in public/private channels, DMs, and group DMs, and their edits and
+  deletions, which the room's copy follows.
+- `channel_deleted`, `group_deleted` — a bridged channel deleted in Slack
+  deletes the room's messages.
+- `channel_archive`, `group_archive` — a bridged channel archived in Slack
+  unlinks the room and keeps its messages.
 
 A message that tags the app itself is recognised from these `message.*` events
 (the bridge detects its own bot mention inline), so a separate `app_mention`

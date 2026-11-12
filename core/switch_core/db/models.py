@@ -1259,9 +1259,10 @@ class Room(TenantScoped, Base):
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # The highest live `seq` retention has deleted from this room. Numbering
-    # continues above it, so a room emptied by retention never hands out a
-    # position a cursor has already passed. See `MessageStore._next_seq`.
+    # The highest live `seq` deleted from this room (`MessageStore._delete_where`).
+    # Numbering continues above it, so a room whose newest rows were deleted
+    # never hands out a position a cursor has already passed. See
+    # `MessageStore._next_seq`.
     seq_floor: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("0")
     )
@@ -2937,7 +2938,9 @@ class Message(TenantScoped, Base):
     This table is the message bus: a send is an insert here, and `seq` is the
     position every delivery cursor reads from. It is also the room's history,
     and the only copy Switch keeps, so deleting a row (data retention, erasing
-    a person) deletes the message for every reader. `rooms.seq_floor` keeps
+    a person, its author deleting it on a bridged platform) deletes the
+    message for every reader. A row is changed in place only when its author
+    edits it on that platform (`MessageStore.replace_body`). `rooms.seq_floor` keeps
     numbering intact when the deleted rows were a room's newest.
 
     Every participant in a room is a Switch-owned client, so recording each
