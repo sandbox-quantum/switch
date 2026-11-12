@@ -253,7 +253,7 @@ async def _seed(factory: Any, tenant: str, label: str) -> World:
             factory,
             room.id,
             body,
-            sender=world.agents[0].name,
+            sender=f"@{world.agents[0].name}:test",
             sender_name=world.agents[0].name,
             tenant_id=tenant,
         )
@@ -311,10 +311,12 @@ class AgentSurface(RuleBasedStateMachine):
 
     def _release(self) -> None:
         try:
-            if self._client is not None:
-                self.run(self._client.__aexit__(None, None, None))
-            if self._role is not None:
-                self.run(self._role.__aexit__(None, None, None))
+            try:
+                if self._client is not None:
+                    self.run(self._client.__aexit__(None, None, None))
+            finally:
+                if self._role is not None:
+                    self.run(self._role.__aexit__(None, None, None))
         finally:
             op_context._protocol = self._previous
             disable_agent_management()
@@ -336,13 +338,24 @@ class AgentSurface(RuleBasedStateMachine):
             )
             return {row.name: (row.n, row.h) for row in rows}
 
-    def _argument(self, data: st.DataObject, schema: dict[str, Any], me: World) -> Any:
+    def _argument(
+        self,
+        data: st.DataObject,
+        schema: dict[str, Any],
+        me: World,
+        root: dict[str, Any],
+    ) -> Any:
         theirs = self.worlds[next(t for t in TENANTS if t != me.tenant)]
         pool = [*me.tokens, *theirs.tokens, "", "x", "0", "*"]
+        if "$ref" in schema:
+            target: Any = root
+            for part in schema["$ref"].removeprefix("#/").split("/"):
+                target = target[part]
+            return self._argument(data, target, me, root)
         kind = schema.get("type")
         if "anyOf" in schema:
-            options = [s for s in schema["anyOf"]]
-            return self._argument(data, data.draw(st.sampled_from(options)), me)
+            options = schema["anyOf"]
+            return self._argument(data, data.draw(st.sampled_from(options)), me, root)
         if kind == "string":
             return data.draw(st.sampled_from(pool))
         if kind == "boolean":
@@ -352,9 +365,23 @@ class AgentSurface(RuleBasedStateMachine):
         if kind == "array":
             item = schema.get("items", {"type": "string"})
             count = data.draw(st.integers(min_value=0, max_value=2))
-            return [self._argument(data, item, me) for _ in range(count)]
+            return [self._argument(data, item, me, root) for _ in range(count)]
         if kind == "object":
-            return {}
+            members = schema.get("properties", {})
+            required = set(schema.get("required", []))
+            made = {
+                key: self._argument(data, spec, me, root)
+                for key, spec in members.items()
+                if key in required or data.draw(st.booleans())
+            }
+            if schema.get("additionalProperties") is True or (
+                not members and "additionalProperties" not in schema
+            ):
+                for _ in range(data.draw(st.integers(min_value=0, max_value=2))):
+                    made[data.draw(st.sampled_from(pool))] = data.draw(
+                        st.sampled_from(pool)
+                    )
+            return made
         if kind == "null":
             return None
         return data.draw(st.sampled_from(pool))
@@ -371,7 +398,7 @@ class AgentSurface(RuleBasedStateMachine):
         properties = schema.get("properties", {})
         required = set(schema.get("required", []))
         arguments = {
-            key: self._argument(data, spec, me)
+            key: self._argument(data, spec, me, schema)
             for key, spec in properties.items()
             if key in required or data.draw(st.booleans())
         }
@@ -394,18 +421,23 @@ class AgentSurface(RuleBasedStateMachine):
             except Exception as failure:
                 COVERAGE["a call that raised"] += 1
                 RAISED[f"{name}: {type(failure).__name__}: {str(failure)[:80]}"] += 1
-                return 500, f"{type(failure).__name__}: {failure}"
+                raise AssertionError(
+                    f"{agent.name} of {attacker_tenant} called {name}({arguments}) "
+                    f"and the server raised {type(failure).__name__}: {failure}"
+                ) from failure
             return response.status_code, response.text
 
         status, said = self.run(go())
         asked = json.dumps(arguments, default=str)
+        reading = name.startswith(READS)
         foreign = [
             t
             for t in them.tokens
-            if t not in me.tokens and t not in self.given[attacker_tenant]
+            if t not in me.tokens and (reading or t not in self.given[attacker_tenant])
         ]
         named = [token for token in foreign if token in asked]
-        self.given[attacker_tenant].update(t for t in them.tokens if t in asked)
+        if 200 <= status < 300 and not reading:
+            self.given[attacker_tenant].update(t for t in them.tokens if t in asked)
         if named:
             COVERAGE["a foreign id asked for"] += 1
         COVERAGE[
@@ -415,7 +447,6 @@ class AgentSurface(RuleBasedStateMachine):
             # What the request itself carried is echoed back by a write; a
             # read of an object by an id of the other tenant is never answered
             # with it.
-            reading = name.startswith(READS)
             leaked = [
                 token
                 for token in foreign
