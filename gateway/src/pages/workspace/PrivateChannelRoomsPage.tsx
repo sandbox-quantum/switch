@@ -206,8 +206,9 @@ export default function PrivateChannelRoomsPage() {
     const names = new Map(all.map((r) => [r.room_id, r.name]));
     const outcome = await makeRoomsPrivate(tenantId, [...ticked]);
     setConfirming(false);
-    setNotice(describeResult(outcome, names));
+    // The list first, so the message never sits over rooms it says changed.
     await reload();
+    setNotice(describeResult(outcome, names));
   };
 
   const ask = async () => {
@@ -215,8 +216,8 @@ export default function PrivateChannelRoomsPage() {
     setActionError(null);
     try {
       const outcome = await askPlatformAboutRooms(tenantId);
-      setNotice(describeAsk(outcome));
       await reload();
+      setNotice(describeAsk(outcome));
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Could not ask the apps");
     } finally {
