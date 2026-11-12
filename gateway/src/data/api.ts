@@ -958,6 +958,21 @@ export async function deleteApiKey(keyId: string): Promise<void> {
   await jsonRequest<{ ok: boolean }>(`/api-keys/${encodeURIComponent(keyId)}`, "DELETE");
 }
 
+// ── Guardrails ───────────────────────────────────────────────────────────────
+
+/** The Switch Trust policy that checks the workspace's messages: null `policy_id`
+ *  when nothing checks them, and null `policy_url` when the policy is on a
+ *  Switch Trust Switch can't link into. */
+export interface WorkspaceGuardrails {
+  checking: boolean;
+  policy_id: string | null;
+  policy_url: string | null;
+}
+
+export async function loadWorkspaceGuardrails(): Promise<WorkspaceGuardrails> {
+  return jsonRequest<WorkspaceGuardrails>("/workspace/guardrails", "GET");
+}
+
 // ── Collaborations ───────────────────────────────────────────────────────────
 
 export interface BridgeConfigSchema {

@@ -122,6 +122,7 @@ const EVERY_ROLE: readonly string[] = [
   'GET /gateway/feature-flags',
   'GET /gateway/tenants/current',
   'GET /gateway/api-keys',
+  'GET /gateway/workspace/guardrails',
   'GET /gateway/collaborations',
   'GET /gateway/collaborations/types',
   'GET /gateway/messaging-apps',

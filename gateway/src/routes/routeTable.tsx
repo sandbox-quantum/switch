@@ -57,6 +57,7 @@ import ReferenceDetailPage from "../pages/resources/ReferenceDetailPage";
 import ResourcesPage from "../pages/resources/ResourcesPage";
 import TemplateDetailPage from "../pages/resources/TemplateDetailPage";
 import CreateRoomPage from "../pages/rooms/CreateRoomPage";
+import WorkspaceGuardrailsPage from "../pages/guardrails/WorkspaceGuardrailsPage";
 import GroupsPage from "../pages/rooms/GroupsPage";
 import RoomDetailPage from "../pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "../pages/rooms/RoomScopedDocumentView";
@@ -245,13 +246,7 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   redirect("/settings/api-keys", CURRENT, "/registration-keys"),
-  settingsPage(
-    "/settings/guardrails",
-    "workspace",
-    "Guardrails",
-    everyone,
-    <PlannedPage title="Guardrails" />,
-  ),
+  settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <MachinesPage />),
   redirect("/settings/devices", CURRENT, "/machines"),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),

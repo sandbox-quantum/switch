@@ -123,7 +123,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/settings/messaging-apps", EVERYONE),
     built("/settings/connectors", EVERYONE),
     built("/settings/api-keys", EVERYONE),
-    planned("/settings/guardrails", EVERYONE),
+    built("/settings/guardrails", EVERYONE),
     built("/settings/devices", EVERYONE),
     built("/usage", ADMINS),
     planned("/settings/account", EVERYONE),
