@@ -2709,7 +2709,7 @@ async def test_a_switch_console_room_is_internal_with_its_runner_in_it(env):
     svc = _svc(env)
     parsed = svc.parse_template(CONSOLE_TEXT, inputs={"bridge": CONSOLE_ROOM})
     await svc.check_entity_params(parsed, reader=_reader(env))
-    await svc.check_bridges(parsed)
+    await svc.check_bridges(parsed, creator="alice")
 
     result = await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
 
@@ -2735,22 +2735,45 @@ async def test_switch_console_is_refused_without_group_chats(env):
     with pytest.raises(ValueError, match="param 'bridge'.*group_chats"):
         await svc.check_entity_params(parsed, reader=_reader(env))
     with pytest.raises(ValueError, match="group_chats"):
-        await svc.check_bridges(parsed)
+        await svc.check_bridges(parsed, creator="alice")
     with pytest.raises(ValueError, match="group_chats"):
         await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
     assert env["rooms"].configs == []
 
 
 @pytest.mark.asyncio
-async def test_a_switch_console_room_names_no_users(env):
+async def test_a_switch_console_room_names_no_users_but_its_runner(env):
+    """The official room templates name ``{$creator}`` whenever a bridge is
+    set; in a Switch Console room that person is a member anyway."""
     svc = _svc(env)
-    spec, _ = svc.parse(
-        "room:\n  name: r\n  description: d\n"
-        f"  bridge: {CONSOLE_ROOM}\n  users: [someone]\n"
+    text = (
+        "params:\n  bridge:\n    type: bridge\n    required: false\n"
+        'room:\n  name: r\n  description: d\n  bridge: "{bridge}"\n'
+        '  users: ["{$creator}"]\n'
     )
-    with pytest.raises(ValueError, match="leave users out"):
-        await svc.provision(spec, user_id=env["user_id"], is_admin=False)
-    assert env["rooms"].configs == []
+    parsed = svc.parse_template(
+        text, inputs={"bridge": CONSOLE_ROOM}, builtins={"$creator": "alice"}
+    )
+    await svc.check_bridges(parsed, creator="alice")
+    await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
+    (config,) = env["rooms"].configs
+    assert config.user_names is None
+
+    other, _ = svc.parse(
+        "room:\n  name: r\n  description: d\n"
+        f"  bridge: {CONSOLE_ROOM}\n  users: [alice, someone]\n"
+    )
+    with pytest.raises(ValueError, match="leave out someone"):
+        await svc.provision(other, user_id=env["user_id"], is_admin=False)
+    with pytest.raises(ValueError, match="leave out someone"):
+        await svc.check_bridges(
+            svc.parse_template(
+                "room:\n  name: r\n  description: d\n"
+                f"  bridge: {CONSOLE_ROOM}\n  users: [alice, someone]\n"
+            ),
+            creator="alice",
+        )
+    assert len(env["rooms"].configs) == 1
 
 
 @pytest.mark.asyncio

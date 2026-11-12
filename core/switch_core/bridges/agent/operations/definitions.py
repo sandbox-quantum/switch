@@ -1977,7 +1977,7 @@ async def _provision_as_agent(
         # Without the owner's admin reach, which filing rooms in a group needs.
         require_group_filing(False)
     await rooms_yaml.check_entity_params(parsed, reader=reader)
-    await rooms_yaml.check_bridges(parsed)
+    await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
     room_specs = (
         [(r, r.kickoff) for r in parsed.spec.rooms]
         if isinstance(parsed.spec, GroupSpec)

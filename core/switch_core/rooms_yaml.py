@@ -594,6 +594,19 @@ def is_console_room(bridge: str | None) -> bool:
     return bridge == CONSOLE_ROOM
 
 
+def _refuse_console_users(spec: RoomSpec, creator: str) -> None:
+    """A Switch Console room's people are its members, not a messaging app's
+    users. The person who runs the template is put in it anyway, so naming
+    them (``{$creator}``, which is their Switch name there) changes nothing;
+    anyone else is refused."""
+    others = [u for u in spec.users if u != creator]
+    if others:
+        raise ValueError(
+            f"Room {spec.name!r} is in Switch Console, so it names no users "
+            f"(they are a messaging app's): leave out {', '.join(others)}"
+        )
+
+
 class RoomYamlService:
     """Parse / provision / export rooms as YAML. Free of HTTP concerns so it
     is unit-testable and reusable for future MCP / CLI surfaces."""
@@ -1103,15 +1116,11 @@ class RoomYamlService:
         owner: User | None = None
         if console:
             console_rooms = self._require_console_rooms()
-            if spec.users:
-                raise ValueError(
-                    f"Room {spec.name!r} is in Switch Console, so it names no users "
-                    "(they are a messaging app's): leave users out"
-                )
             async with self._session_factory() as session:
                 owner = await session.get(User, user_id)
             if owner is None:
                 raise ValueError(f"No user {user_id!r} to put in the room")
+            _refuse_console_users(spec, owner.name)
             try:
                 await console_rooms.require_can_join(require_tenant_id(), owner.id)
             except Exception as e:
@@ -1122,7 +1131,7 @@ class RoomYamlService:
             bridge_id = None
         else:
             bridge_id = await self._resolve_bridge_id(spec.bridge)
-        if spec.users and bridge_id is None:
+        if spec.users and bridge_id is None and not console:
             raise ValueError(
                 "Cannot attach users to a room with no bridge "
                 "(users live on a collaboration bridge)"
@@ -1141,7 +1150,7 @@ class RoomYamlService:
             instructions=spec.instructions,
             channel_type=cast(ChannelType, spec.channel_type),
             agent_names=spec.agents or None,
-            user_names=spec.users or None,
+            user_names=None if console else (spec.users or None),
             bridge_id=bridge_id,
             internal_only=console,
             group_id=group_id,
@@ -1294,10 +1303,11 @@ class RoomYamlService:
             errors=errors,
         )
 
-    async def check_bridges(self, parsed: ParsedTemplate) -> None:
+    async def check_bridges(self, parsed: ParsedTemplate, *, creator: str) -> None:
         """Every messaging app the rooms name must exist, checked before
         anything is created: a run that creates agents first would otherwise
-        find out only once they exist."""
+        find out only once they exist. ``creator`` is ``{$creator}``, which a
+        Switch Console room may name."""
         specs = (
             list(parsed.spec.rooms)
             if isinstance(parsed.spec, GroupSpec)
@@ -1306,11 +1316,7 @@ class RoomYamlService:
         for spec in specs:
             if is_console_room(spec.bridge):
                 self._require_console_rooms()
-                if spec.users:
-                    raise ValueError(
-                        f"Room {spec.name!r} is in Switch Console, so it names no "
-                        "users (they are a messaging app's): leave users out"
-                    )
+                _refuse_console_users(spec, creator)
                 continue
             bridge_id = await self._resolve_bridge_id(spec.bridge)
             if spec.users and bridge_id is None:
