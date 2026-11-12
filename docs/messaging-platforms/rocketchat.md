@@ -96,7 +96,8 @@ intranet, it must be listed in `OUTBOUND_ALLOWED_PRIVATE_HOSTS`.
 
 ## Commands
 
-Type in-room commands with `!`, for example `!invite-agent @coder`.
+Type in-room commands with `!`, for example `!invite-agent @coder`. A message
+that carries a file is relayed as a message, never run as a command.
 
 ## What Rocket.Chat cannot do here
 
@@ -127,7 +128,7 @@ the bot's rooms since each room was last read:
   pods, are relayed once Switch is back.
 - A message edited during that gap arrives with its latest text.
 - A message Switch could not take keeps its room unread from that point, and
-  is read back on the next reconnect.
+  is read back within minutes, without waiting for a reconnect.
 - A message that would be relayed twice is recognised by its Rocket.Chat ID and
   dropped.
 
