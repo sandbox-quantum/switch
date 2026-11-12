@@ -1025,6 +1025,34 @@ describe("a link naming a workspace", () => {
     ).toBeTruthy();
   });
 
+  it("says so to someone in no workspace yet, and to someone holding an invitation", async () => {
+    mockFetch({
+      "/auth/session": [200, session({ state: "needs_workspace" })],
+      "/feature-flags": [200, { flags: [] }],
+    });
+    renderAt("/?workspace=t9");
+    expect(await screen.findByText("Welcome to Switch")).toBeTruthy();
+    expect(
+      screen.getByText("The link you followed is for a workspace you aren't in."),
+    ).toBeTruthy();
+    cleanup();
+
+    storePendingInvite("invite-token");
+    renderAt("/?workspace=t9");
+    expect(await screen.findByText("Join a workspace")).toBeTruthy();
+    expect(
+      screen.getByText("The link you followed is for a workspace you aren't in."),
+    ).toBeTruthy();
+  });
+
+  it("lets the notice be put away", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms?workspace=t9");
+    const notice = await screen.findByText(/The link you followed/);
+    fireEvent.click(within(notice.closest('[role="alert"]') as HTMLElement).getByRole("button"));
+    await waitFor(() => expect(screen.queryByText(/The link you followed/)).toBeNull());
+  });
+
   it("says why when the switch is refused, and opens the page where it was", async () => {
     mockFetch({
       ...signedInAs("member", { tenants: [beta] }),

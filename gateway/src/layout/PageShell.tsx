@@ -2,6 +2,7 @@ import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
 import { type Layout, areaOf } from "../routes/routeTable";
+import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
@@ -53,18 +54,6 @@ export default function PageShell({ layout }: { layout: Layout }) {
         </Stack>
       </Stack>
     </Box>
-  );
-}
-
-/** Says so when a link named a workspace the page could not switch to, so
- * nobody takes this workspace's page for the one the link was for. */
-function LinkNoticeBanner() {
-  const { linkNotice, dismissLinkNotice } = useAuth();
-  if (linkNotice === null) return null;
-  return (
-    <Alert severity="info" sx={{ mb: 2 }} onClose={dismissLinkNotice}>
-      {linkNotice}
-    </Alert>
   );
 }
 
