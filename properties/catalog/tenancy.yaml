@@ -26,7 +26,6 @@ properties:
     owner: platform
     status: proposed
     gaps:
-      code: no machine over the agent operations as agents of two tenants yet
       system: the gateway fuzz does not reach the agent surface
     notes: >
       `tenancy.no-cross-tenant-ids` covers the gateway only. The agent
