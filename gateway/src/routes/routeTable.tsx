@@ -56,6 +56,7 @@ import PackageDetailPage from "../pages/resources/PackageDetailPage";
 import ReferenceDetailPage from "../pages/resources/ReferenceDetailPage";
 import ResourcesPage from "../pages/resources/ResourcesPage";
 import TemplateDetailPage from "../pages/resources/TemplateDetailPage";
+import DevicesPage from "../pages/devices/DevicesPage";
 import CreateRoomPage from "../pages/rooms/CreateRoomPage";
 import WorkspaceGuardrailsPage from "../pages/guardrails/WorkspaceGuardrailsPage";
 import GroupsPage from "../pages/rooms/GroupsPage";
@@ -247,7 +248,7 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   redirect("/settings/api-keys", CURRENT, "/registration-keys"),
   settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
-  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <MachinesPage />),
+  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   redirect("/settings/devices", CURRENT, "/machines"),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
   settingsPage(

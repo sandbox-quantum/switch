@@ -155,6 +155,8 @@ const EVERY_ROLE: readonly string[] = [
   'GET /gateway/management/controllers',
   'GET /gateway/management/operations',
   'GET /gateway/management/providers',
+  'GET /gateway/management/workspace',
+  'GET /gateway/hosted-machines',
 ];
 
 /** What only some roles reach: the routes making them calls, and the pages only they may open. */
