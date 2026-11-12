@@ -1,11 +1,12 @@
+import { Circle, CircleCheck } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { LocalSetupStep } from '@renderer/features/switch-servers/AddServerModal';
 import { localServerStore } from '@renderer/features/switch-servers/local-server-store';
 import { Button } from '@renderer/lib/ui/button';
-import { Progress } from '@renderer/lib/ui/progress';
+import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
-import { SETUP_STAGES, setupProgress, setupStage } from './setup-stages';
+import { SETUP_STAGES, setupStage } from './setup-stages';
 
 /** How long the setup runs before the page says that a long one is expected. */
 const LONG_SETUP_MS = 30_000;
@@ -15,7 +16,7 @@ const LONG_SETUP_MS = 30_000;
  * "On this computer" was the answer, so the server starts as the page opens
  * and the flow moves on by itself once it is up.
  *
- * What it says while it works is a bar and one plain line per stage (see
+ * What it says while it works is a short checklist of plain stages (see
  * {@link SETUP_STAGES}), not the steps themselves: the first run's downloads
  * and versions read as alarming detail to someone who only wanted to try Switch.
  *
@@ -38,7 +39,7 @@ export const LocalSetupProgress = observer(function LocalSetupProgress({
   const [attempted, setAttempted] = useState(false);
   const done = useRef(false);
   // The furthest stage reached: a step the list does not know, or one that
-  // repeats an earlier stage's work, never moves the bar back.
+  // repeats an earlier stage's work, never unticks one.
   const [stage, setStage] = useState(0);
   const [long, setLong] = useState(false);
 
@@ -108,14 +109,35 @@ export const LocalSetupProgress = observer(function LocalSetupProgress({
     >
       <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-4 text-center">
         <h1 className="text-2xl font-semibold">Setting things up…</h1>
-        <Progress
-          value={running ? 100 : setupProgress(stage)}
+        <ul
+          className="flex flex-col gap-2.5 text-left"
+          role="status"
           aria-label="Setting things up"
-          className="w-full [&_[data-slot=progress-indicator]]:duration-700"
-        />
-        <p className="text-sm text-foreground-muted" role="status">
-          {SETUP_STAGES[stage]}
-        </p>
+        >
+          {SETUP_STAGES.map((label, index) => {
+            const state = running || index < stage ? 'done' : index === stage ? 'current' : 'next';
+            return (
+              <li
+                key={label}
+                data-state={state}
+                className={
+                  state === 'next'
+                    ? 'flex items-center gap-2.5 text-sm text-foreground-muted'
+                    : 'flex items-center gap-2.5 text-sm text-foreground'
+                }
+              >
+                {state === 'done' ? (
+                  <CircleCheck aria-hidden className="size-4 text-green-500" />
+                ) : state === 'current' ? (
+                  <Spinner aria-hidden className="size-4" />
+                ) : (
+                  <Circle aria-hidden className="size-4" />
+                )}
+                {label}
+              </li>
+            );
+          })}
+        </ul>
         {long && (
           <p className="text-xs text-foreground-muted">
             Still working — the first setup can take a couple of minutes on a slow connection.

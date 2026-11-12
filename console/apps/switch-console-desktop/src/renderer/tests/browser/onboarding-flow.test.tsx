@@ -308,9 +308,16 @@ describe('the first-run flow', () => {
 
     await act(async () => button(el, 'Continue').click());
 
-    expect(el.textContent).toContain('Preparing the database…');
+    const states = [...el.querySelectorAll('li[data-state]')].map(
+      (li) => `${li.textContent} ${li.getAttribute('data-state')}`
+    );
+    expect(states).toEqual([
+      'Getting what’s needed done',
+      'Preparing the database current',
+      'Starting Switch next',
+      'Signing you in next',
+    ]);
     expect(el.textContent).not.toContain('PostgreSQL');
-    expect(el.querySelector('[data-slot="progress"]')).not.toBeNull();
   });
 
   it('moves on by itself, with the server, once the server on this computer is up', async () => {

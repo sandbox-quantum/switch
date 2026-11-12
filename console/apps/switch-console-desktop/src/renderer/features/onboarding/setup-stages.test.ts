@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SETUP_STAGES, setupProgress, setupStage } from './setup-stages';
+import { setupStage } from './setup-stages';
 
 describe('setupStage', () => {
   it.each([
@@ -21,13 +21,5 @@ describe('setupStage', () => {
   it('knows no stage for a step it has never seen, or for none', () => {
     expect(setupStage('Reticulating splines…')).toBeNull();
     expect(setupStage(null)).toBeNull();
-  });
-});
-
-describe('setupProgress', () => {
-  it('fills as the stages go by, and is never full before the end', () => {
-    const values = SETUP_STAGES.map((_, stage) => setupProgress(stage));
-    expect(values).toEqual([...values].sort((a, b) => a - b));
-    expect(Math.max(...values)).toBeLessThan(100);
   });
 });
