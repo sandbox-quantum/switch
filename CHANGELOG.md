@@ -45,10 +45,17 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+#### Added
 - **Twilio SMS messaging platform adapter.** Senders on a configured allow-list
   can interact with Switch agents by cellular SMS through an operator's Twilio
   account. Includes GSM-7 and UCS-2 segment budgeting, allow-list filtering, and
   webhook signature verification.
+- **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
+  through Meta's Cloud API and people can talk to agents in one-to-one chats,
+  with files, quoted replies as threads and read receipts. Each connection
+  needs its own Meta app, and Switch checks the token's app and permissions
+  when you save it. Replies more than 24 hours after the person's last message
+  are refused by WhatsApp; Switch doesn't send template messages.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn

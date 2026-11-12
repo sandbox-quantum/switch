@@ -53,6 +53,7 @@ class _RoomService:
         ("discord", "deleted"),
         ("telegram", "left"),
         ("teams", "kept"),
+        ("google_chat", "left"),
         ("sms", "kept"),
     ],
 )

@@ -15,6 +15,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.google_chat.adapter import (
+    GoogleChatAdapter,
+    GoogleChatConnectionConfig,
+)
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -35,6 +39,10 @@ from switch_core.bridges.collaboration.teams.adapter import (
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
+)
+from switch_core.bridges.collaboration.whatsapp.adapter import (
+    WhatsAppAdapter,
+    WhatsAppConnectionConfig,
 )
 
 if TYPE_CHECKING:
@@ -57,6 +65,8 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("teams", TeamsAdapter, TeamsConnectionConfig),
     PlatformRegistration("discord", DiscordAdapter, DiscordConnectionConfig),
     PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
+    PlatformRegistration("whatsapp", WhatsAppAdapter, WhatsAppConnectionConfig),
+    PlatformRegistration("google_chat", GoogleChatAdapter, GoogleChatConnectionConfig),
     PlatformRegistration("sms", SmsAdapter, SmsConnectionConfig),
 )
 
