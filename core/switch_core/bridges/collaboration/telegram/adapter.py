@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import logging
@@ -139,6 +140,11 @@ _MAX_CAPTION_CHARS = 1024
 # The Bot API refuses to serve a file larger than this, whatever the bridge's
 # own ceiling is set to.
 _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+# A download is a read, so repeating one cannot post anything twice. A timeout
+# or dropped connection gets two more tries before the file is disclosed as not
+# relayed and the sender has to send it again.
+_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_RETRY_DELAY_SECONDS = 1.0
 
 # sendMediaGroup takes between two and ten items, all of the same kind.
 _MEDIA_GROUP_MIN = 2
@@ -3413,9 +3419,7 @@ class TelegramAdapter(PlatformAdapter):
                 )
                 continue
             try:
-                bot = self._require_bot()
-                handle = await bot.get_file(file_id)
-                data = bytes(await handle.download_as_bytearray())
+                data = await self._download(file_id, filename)
             except Exception as exc:
                 logger.exception("Failed to download Telegram attachment %s", filename)
                 failures.append(
@@ -3436,6 +3440,34 @@ class TelegramAdapter(PlatformAdapter):
                 Attachment(filename=filename, mimetype=mimetype, data=data)
             )
         return attachments, failures
+
+    async def _download(self, file_id: str, filename: str) -> bytes:
+        """The file's bytes, retrying a transient network failure.
+
+        Definite refusals are re-raised at once. In python-telegram-bot
+        `BadRequest` is a subclass of `NetworkError`, so they are tested first,
+        the same ordering `_as_rich_failure` uses. A timeout or dropped
+        connection is retried with a growing pause, up to `_DOWNLOAD_ATTEMPTS`
+        attempts in all."""
+        bot = self._require_bot()
+        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+            try:
+                handle = await bot.get_file(file_id)
+                return bytes(await handle.download_as_bytearray())
+            except (BadRequest, Forbidden, ChatMigrated):
+                raise
+            except NetworkError as exc:
+                if attempt == _DOWNLOAD_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Telegram download of %s failed (%s), retrying (attempt %d of %d)",
+                    filename,
+                    exc,
+                    attempt + 1,
+                    _DOWNLOAD_ATTEMPTS,
+                )
+                await asyncio.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS * attempt)
+        raise AssertionError("unreachable: the last attempt returns or raises")
 
     @staticmethod
     def _describe_files(message: Any) -> list[tuple[str, str, str, int | None]]:

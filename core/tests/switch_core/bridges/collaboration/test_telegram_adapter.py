@@ -174,6 +174,9 @@ class _FakeBot:
         self.reactions: list[dict[str, Any]] = []
         self.answers: list[dict[str, Any]] = []
         self.files: dict[str, _FakeFileHandle] = {}
+        # Raised by get_file, one per call and in order, before it serves the file.
+        self.get_file_errors: list[Exception] = []
+        self.get_file_calls = 0
         # Set to an exception to make every set_message_reaction raise it.
         self.reaction_error: Exception | None = None
         self.published_commands: list[Any] = []
@@ -267,6 +270,9 @@ class _FakeBot:
         return _FakeMember(self.member_status)
 
     async def get_file(self, file_id: str) -> _FakeFileHandle:
+        self.get_file_calls += 1
+        if self.get_file_errors:
+            raise self.get_file_errors.pop(0)
         handle = self.files.get(file_id)
         if handle is None:
             raise TelegramError(f"no such file {file_id}")
@@ -825,6 +831,58 @@ def test_a_failed_download_is_disclosed_not_dropped() -> None:
 
     assert seen[0].attachments == []
     assert "download failed" in seen[0].attachment_failures[0].reason
+
+
+def _deliver_document(adapter: TelegramAdapter, sink: list[InboundMessage]) -> None:
+    adapter._on_message = lambda m: _collect(sink, m)
+    with patch.object(adapter_module, "_DOWNLOAD_RETRY_DELAY_SECONDS", 0):
+        _run(
+            adapter._handle_message(
+                _FakeInbound(
+                    text=None,
+                    document=_FakeDocument(
+                        "d1", "packing-list-v2.pdf", "application/pdf", 8
+                    ),
+                )
+            )
+        )
+
+
+def test_a_download_that_times_out_once_is_retried() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    _bot(adapter).files["d1"] = _FakeFileHandle(b"%PDF-1.7")
+    _bot(adapter).get_file_errors = [TimedOut("Timed out")]
+
+    _deliver_document(adapter, seen)
+
+    assert seen[0].attachment_failures == []
+    assert seen[0].attachments[0].data == b"%PDF-1.7"
+
+
+def test_a_download_that_keeps_timing_out_is_disclosed_after_the_last_try() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    _bot(adapter).files["d1"] = _FakeFileHandle(b"%PDF-1.7")
+    _bot(adapter).get_file_errors = [TimedOut("Timed out") for _ in range(3)]
+
+    _deliver_document(adapter, seen)
+
+    assert _bot(adapter).get_file_calls == 3
+    assert "download failed" in seen[0].attachment_failures[0].reason
+
+
+def test_a_refused_download_is_not_retried() -> None:
+    # BadRequest subclasses NetworkError in python-telegram-bot; a refusal
+    # must not be mistaken for a flaky connection and retried.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    _bot(adapter).get_file_errors = [BadRequest("File is too big")]
+
+    _deliver_document(adapter, seen)
+
+    assert _bot(adapter).get_file_calls == 1
+    assert seen[0].attachment_failures[0].filename == "packing-list-v2.pdf"
 
 
 # ── Outbound messaging ───────────────────────────────────────────────────────
