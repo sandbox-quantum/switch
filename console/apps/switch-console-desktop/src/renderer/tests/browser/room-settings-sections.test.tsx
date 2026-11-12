@@ -16,6 +16,7 @@ const permissions = vi.hoisted(() => ({
 }));
 const admin = vi.hoisted(() => ({ value: true }));
 const setRoomGroup = vi.hoisted(() => vi.fn());
+const listBridgePeople = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -40,6 +41,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       ),
       listRoomGroups: vi.fn(() => Promise.resolve([{ id: 'g-1', name: 'Design' }])),
       setRoomGroup,
+      listBridgePeople,
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
   },
@@ -131,6 +133,8 @@ beforeEach(() => {
   );
   permissions.value = { canWrite: true, canChangeMembers: true, canManage: true };
   admin.value = true;
+  listBridgePeople.mockReset();
+  listBridgePeople.mockResolvedValue([]);
   setRoomGroup.mockReset();
   setRoomGroup.mockImplementation(() =>
     Promise.resolve({ ...ROOM, groupId: null, groupName: null })
@@ -191,7 +195,10 @@ async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string
 describe('room settings for someone who may write to the room', () => {
   it('shows access as a control for its manager, and leaves who is in the room to the side', async () => {
     const el = await renderPanel();
-    expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Access"]')).not.toBeNull();
+    // A short name in the control, and what it means spelled out under it.
+    expect(el.textContent).toMatch(/Public — read & write|Public — read only|Private/);
+    expect(el.textContent).toMatch(/Only its owner and admins can change/);
     expect(el.textContent).toContain('C123');
     expect(el.textContent).not.toContain('Notify on join');
   });
@@ -202,6 +209,32 @@ describe('room settings for someone who may write to the room', () => {
     expect(el.textContent).toContain('Here now');
     expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Add people"]')).not.toBeNull();
+  });
+
+  it('names who linked each username in the side column, and shows an unlinked username alone', async () => {
+    getRoomDetail.mockResolvedValue({ ...ROOM, connectedUserNames: ['ada', 'bob'] });
+    listBridgePeople.mockResolvedValue([
+      { username: 'ada', externalUserId: 'U1', linkedUserIds: ['u-1'], linkedName: 'Ada Lovelace' },
+      { username: 'bob', externalUserId: 'U2', linkedUserIds: [], linkedName: null },
+    ]);
+    const el = await renderPanel('side');
+    expect(listBridgePeople).toHaveBeenCalledWith({ workspaceId: 'ws-1', bridgeId: 'bridge-1' });
+    expect(el.textContent).toContain('ada (Ada Lovelace)');
+    expect(el.textContent).toContain('bob');
+    expect(el.textContent).not.toContain('bob (');
+  });
+
+  it('shows the usernames alone when who linked them cannot be read, and says so', async () => {
+    listBridgePeople.mockRejectedValue(new Error('offline'));
+    const el = await renderPanel('side');
+    expect(el.textContent).toContain('ada');
+    expect(el.textContent).not.toContain('ada (');
+    expect(el.textContent).toContain('Could not load people’s names');
+  });
+
+  it('says nothing about names when every lookup worked', async () => {
+    const el = await renderPanel('side');
+    expect(el.textContent).not.toContain('Could not load people');
   });
 
   it('offers no adding or removing in a direct conversation, whose platform fixes who is in it', async () => {
@@ -333,7 +366,7 @@ describe('room settings for someone who may only read the room', () => {
     expect(el.textContent).toContain(
       'Only Ada or a workspace admin can change this room’s settings.'
     );
-    expect(el.querySelector('[aria-label="Who can see and change it"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Access"]')).toBeNull();
     expect(button(el, /^Add agent$/)).toBeUndefined();
     expect(button(el, /^Archive$/)).toBeUndefined();
     expect(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.disabled).toBe(true);

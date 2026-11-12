@@ -307,7 +307,7 @@ export function moveTarget(machine: OwnedMachine, provider: string): MoveTarget 
 export type MachineCategory = 'cloud' | 'ssh-host' | 'computer';
 
 export const MACHINE_CATEGORY_LABELS: Record<MachineCategory, string> = {
-  cloud: 'Cloud',
+  cloud: 'Switch Cloud',
   'ssh-host': 'SSH hosts',
   computer: 'Computers',
 };
