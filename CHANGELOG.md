@@ -53,6 +53,28 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Usage telemetry counts Switch Console chat.** Messages people post in a
+  Switch Console chat were stored without being counted, so desktop chat was
+  invisible to the message events and the period counts. Each post is now a
+  `message_sent` with `sender_kind = member`, a chat's Console members count
+  in a room's size, and adding people to a Console chat, when it is created
+  or later (an agent putting its owner in a room it made included), reports
+  `room_users_added`. A room used
+  only from Console chat becomes active (`room_became_active`,
+  `first_room_active`) and reports `was_ever_active` when it is archived or
+  deleted; the daily snapshot's room and people counts still count messaging
+  platforms only.
+- **Usage telemetry counts what agents and templates make.** An agent saving
+  or deleting a template now reports `template_created` / `template_deleted`,
+  a room group an agent or a group template makes reports
+  `room_group_created`, and roles an agent defines or deletes, or that a room
+  is made with, report `room_role_defined` / `room_role_deleted`, as the
+  dashboard's always did.
+- **Every usage telemetry event carries a random id.** The relay derived
+  Amplitude's dedup key from an event's contents, so two identical events from
+  one server in the same millisecond, such as a message addressed to two
+  agents of the same kind, arrived as one. Each record now carries a fresh
+  `flint.insert_id`.
 - **Templates have a page of their own in the new dashboard layout, and say
   how often each one is run.** Behind `gateway_v2`, Templates leaves the
   Resources tabs: the workspace's own templates and the ones that come with
@@ -289,6 +311,33 @@ version of their own to them without also giving them a release of their own.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
+- **One message event instead of two.** `room_message_sent` and
+  `agent_message_sent` are replaced by `message_sent`, which keeps every
+  `sender_kind` and carries the sending agent's `known_agent_type` on an
+  agent's message, a third fewer events for the same messages.
+- **Milestones are claimed while telemetry is off.** A server that switched
+  telemetry on months in reported its next room, agent or connector as its
+  first. Milestones are now claimed whether telemetry is on or not, and what a
+  server did before that is claimed from its database at startup, without
+  being reported. `deployment_installed` still waits for telemetry, and is
+  then dated to the install itself.
+- **Room activation is dated when the room went live.**
+  `room_became_active` and `first_room_active` carried the time of the daily
+  pass that noticed them, up to a day late; they now carry the time of the
+  interaction. A room that went live while telemetry was off is not reported.
+- **A development build reports as `dev`.** A switch-core version that is not
+  a release (a `.dev` version) sends its usage to the development project
+  unless `TELEMETRY_ENVIRONMENT` says otherwise. The Helm chart's
+  `switchCore.telemetry.environment` is now empty by default, so the same
+  applies there; set it to keep a value.
+- **Unknown numbers are left off usage events.** An age, duration or room size
+  that could not be read was sent as `-1`, which every sum and average
+  included; the property is now left out.
+- **`reference_created` and a template's `document_created` say who made
+  them.** They always said `user`; an agent's reference now says `agent`, and
+  what a template makes says `agent` when an agent ran it and `system` when a
+  person did. A room made by a template an agent ran is
+  `created_by_kind = agent` rather than `user`.
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
   `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
   password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
@@ -983,35 +1032,45 @@ version of their own to them without also giving them a release of their own.
   document an agent made counts as made by the agent's owner.
 - **Usage telemetry tells people from bots.** Slack, Discord and Mattermost
   posts from an integration (an app, a bot account, a webhook that isn't
-  Switch's own) were counted as people. The bridge now marks them, and the
-  daily snapshot reports `person_identity_active_*`, `bot_identity_active_*`
-  and `account_active_*` beside the old `chat_identity_active_*` and
-  `user_active_*`, which are still sent for one more stable release. Room and
-  agent message events report such posts as `sender_kind = bot`. An app's post
-  on Discord or Mattermost also no longer answers a request card or wakes an
+  Switch's own) were counted as people. The bridge now marks them: message
+  events report such posts as `sender_kind = bot`, the period counts report
+  integrations as `bot_identity_active` apart from people. An app's post on
+  Discord or Mattermost also no longer answers a request card or wakes an
   agent following the conversation, as already on Slack.
 - **Usage telemetry follows Switch Cloud.** Every event now carries
   `deployment_kind` (`switch_cloud`, `managed_by_console` or `self_hosted`),
   so Cloud can be charted on its own or left out. New events cover its funnel:
   `account_created` (sign-up, a first single sign-on sign-in, or an admin),
   `signup_refused` with the reason, `workspace_created`, and a cloud machine
-  being requested, becoming ready (with how long a new one took), failing
-  (with the reason), being woken, and being stopped. Machine events are sent
-  only once their change is committed.
+  being requested, becoming ready (with how long a new one took to first
+  become ready, however many attempts that took), failing (with the reason),
+  its owner starting (`cloud_machine_started`) or stopping it
+  (`cloud_machine_stopped`), Switch waking it because its agent was addressed
+  or placed (`cloud_machine_woken`), and Switch putting an idle one to sleep
+  (`cloud_machine_idle_stopped`). Machine events are sent only once their
+  change is committed.
 - **Usage telemetry counts each finished day, week and month.** The daily
   snapshot's `*_7d` counts are a trailing week, so a chart adding them up
-  over a week counted a room once for every day it was active. A new
-  `usage_period` event is sent once per finished UTC day, ISO week and
-  calendar month, with distinct active rooms, people and accounts for exactly
-  that period, dated to its middle. Summed at the matching interval it is the
-  real figure. A server that was off sends the periods it missed, up to 35
-  days back, when it next runs.
+  over a week counted a room once for every day it was active. New
+  `usage_day_counted`, `usage_week_counted` and `usage_month_counted` events
+  are sent once per finished UTC day, ISO week and calendar month, with that
+  period's distinct active rooms, people and accounts (Switch Console chat
+  included), integrations and agents, and its messages and turns, dated to the
+  period's middle. Summed at the matching interval each is the real figure.
+  None is dated before the server was installed or telemetry was switched on:
+  a period that ended before then isn't sent, and one that began before is
+  dated no earlier and says `is_partial`. A server that was off sends the
+  periods it missed, up to 35 days back, when it next runs.
 - **Agent telemetry says connection where it meant one.**
-  `agent_connected`, `agent_disconnected` and the `first_agent_connected`
-  milestone are sent alongside `agent_session_started`, `agent_session_ended`
-  and `first_session_started`, which measured an agent coming online, not a
-  coding-agent session. The old names stay for one more stable release. The
-  new `first_agent_session` milestone is the first session a host reports. A
+  `agent_session_started`, `agent_session_ended` and the
+  `first_session_started` milestone, which measured an agent coming online,
+  not a coding-agent session, are replaced by `agent_connected`,
+  `agent_disconnected` and `first_agent_connected`. `agent_disconnected` says
+  `normal` for a close Switch made on purpose (the agent deleted, its key
+  re-issued, moved onto an agent controller, its controller revoked) and
+  `room_claimed` for a room that couldn't be served, and is dated, and its
+  duration measured, to the last connection closing. The new
+  `first_agent_session` milestone is the first session a host reports. A
   deployment that already passed either milestone claims it at startup
   without reporting it.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
@@ -1286,6 +1345,25 @@ version of their own to them without also giving them a release of their own.
   `viewer_is_member: false` and `is_console_chat: false`, so Console's room
   settings named a Console chat's messaging app "None". Both now say what
   the room list says.
+- **Usage events are no longer sent for changes that were rolled back.**
+  Reference, document, package, room link and room role events were sent
+  before the change was committed, and an event sent after commit also went
+  out when only a savepoint inside a rolled-back transaction had committed.
+  Each is now sent once the whole transaction commits.
+- **Usage events report only real changes.** Detaching something that was not
+  attached, removing a room link that did not exist, and archiving an archived
+  room no longer report anything; `room_agents_removed` counts the agents
+  actually removed, and `room_users_added` is not sent when nobody was added.
+- **An integration's posts no longer make a room count as used.** A room where
+  only an app or bot had posted counted in `room_active_*`, and could be
+  reported as `room_became_active`, `first_room_active` and ever active.
+- **A shutdown during the usage pass no longer re-sends it.** Stopping the
+  server while the daily pass was reporting rooms or periods handed its claim
+  back, so the next pass sent the snapshot and every period again.
+- **A milestone can no longer fail the request it rides on.** A mistake in a
+  milestone event could fail an agent's session report, stream or
+  registration; it is now logged instead. A server also stops writing a
+  milestone claim on every agent connection once it knows it is taken.
 - **`!list-documents` and `!list-references` answer again.** Since they began
   listing what a room's packages bring, both failed on the admin client that
   runs them, and the channel got no answer at all.
@@ -1488,6 +1566,8 @@ version of their own to them without also giving them a release of their own.
   uploaded again.
 
 #### Removed
+- **`package_created` no longer carries `created_by_kind`,** which was always
+  `user`: only people create packages.
 - **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
   removed** and answer `404`. They predate the operations door, which runs the
   same operations as MCP. Call `POST /agents/{id}/ops/<operation>` with the
@@ -3287,6 +3367,13 @@ version of their own to them without also giving them a release of their own.
   it as the fallback, and "Send again" sends a fresh message and code. When it
   can't, the screen says why and shows the code as before. A server from
   before this shows only the code.
+- **Every usage event carries a session and an id of its own.**
+  `flint.session_id` is when the current run of things someone did in the app
+  began, in milliseconds; it ends after 30 minutes with nothing done, and is
+  `-1` on events nobody caused. `flint.insert_id` is a random id made for each
+  event, so two events alike in every field and sent in the same millisecond,
+  such as the rooms of one template run or the sessions of an agent deleted at
+  once, are no longer counted as one.
 - **A finished template run is counted on the server.** Once a run from a
   stored or official template has fully succeeded, whichever way it ran,
   Switch Console reports it, and so does switch-buddy's own setup, once. The
@@ -3390,6 +3477,26 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Usage data tells what the app did by itself from what a person did.**
+  Sessions the app found running on a host are sent as `session_discovered`
+  rather than `session_started`. A session the app set up again by itself is
+  `session_reopened`; clicking a session that was not running stays
+  `session_provision_retried`, now with `trigger: session_click`. Subagents
+  the app took on are `subagent_adopted`, and agents loaded from a folder with
+  Load existing agents are `agent_attached`, rather than `agent_created`. An
+  agent removed because its Switch server no longer has it is `agent_pruned`,
+  with the cause, rather than `agent_removed` with `trigger: server_teardown`,
+  and its sessions' `session_ended` are sent in no session.
+- **Less usage data that says nothing about use.** An update check someone
+  asked for is sent as `update_check_requested`, and the checks the app makes
+  at launch and every hour as `update_checked`, which is not counted as
+  someone using the app. The screen a launch resumes on is no
+  longer sent as `view_opened`. `setting_changed` is sent only when a setting
+  actually changed, and never for the usage-data answer or the first run's own
+  progress. `update_install_started` is sent only for an install that did not
+  finish; one that worked is the next launch's `app_launched`.
+- **Adding agents to a room reports when it fails.** `room_agents_added`
+  carries `outcome` and `failure_reason`, as other actions do.
 - **The Connector apps page lists the scopes to give an app** for a vendor
   that has no setup steps of its own, such as GitLab. The warning before
   switching apps says tokens already handed to agents stay valid until they
@@ -3409,18 +3516,13 @@ version of their own to them without also giving them a release of their own.
   Member, and the copy says "an admin of this workspace" where it said "an
   owner or admin". A server from before the merge that still reports `owner`
   shows as Admin, including for workspaces stored before the update.
-- **Usage data follows an install to a working agent.** Three new
-  `activation_milestone` steps (`server_ready`, `agent_ready`,
-  `first_agent_session`) are each sent once per install, and only by installs
-  made on this version or later, with `path` saying whether the install
-  started switch-buddy or skipped it. Sessions of agents on the agent
-  controller Console runs on this computer, which never reached
-  `session_started`, are sent as `managed_session_started`. Updates send
-  `update_download_started` and, on the first launch after one,
-  `update_installed` with the version it came from. Adding a server by
-  address, starting a server Console runs, and creating a room now say why
-  they failed where they said `error`, and Switch Cloud is its own
-  `server_kind`. An install once signed in with a staff account stays
+- **Usage data says more about updates, failures and Switch Cloud.** Pressing
+  Download on an update sends `update_download_started`, and the first launch
+  after an update sends `app_launched` with the version it came from
+  (`from_version`) and whether Restart to update installed it (`update_trigger`).
+  Adding a server by address, starting a server Console runs, and creating a
+  room now say why they failed where they said `error`, and Switch Cloud is its
+  own `server_kind`. An install once signed in with a staff account stays
   labelled internal after it signs out. `agent_reset`, which was listed but
   never sent, is gone from the list. `docs/TELEMETRY.md` has every field.
 - **Managed agents and machines update when the server says they changed.**
@@ -3435,6 +3537,16 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Usage data recognises Switch Cloud the way the app shows it**, by its
+  address's origin, and adding the Cloud by its address reports it as `cloud`
+  rather than `external`. A Switch Cloud address that cannot be read is logged,
+  and a server added by address is then reported with `server_kind: unknown`
+  rather than a guess.
+- **A first launch of the other release channel, or of an older version, is no
+  longer reported as an update.**
+- **`docs/TELEMETRY.md` matches what is sent.** It no longer lists a `bridge`
+  property, a `target` value, providers or screens that do not exist, and it
+  describes the first-run notice and Settings toggle that actually ship.
 - **A Bash pattern in Disallowed tools no longer removes Bash.** For a
   Claude agent, an entry such as `Bash(curl:*)` took away the whole Bash tool.
   It now denies only the commands it matches, as on the command line. A plain
@@ -3575,6 +3687,16 @@ version of their own to them without also giving them a release of their own.
   storage, which keeps the login in plaintext, and sign in again (#1048).
 
 #### Removed
+- **Usage events nothing needed any more.** `buddy_message_sent` (the Switch
+  server counts Console's chats), the setup checklist's
+  `onboarding_step_started`, `onboarding_checklist_dismissed` and
+  `onboarding_completed` (the checklist is no longer shown), and
+  `session_attached` and `session_ended`'s `failed` outcome, which nothing had
+  sent since 0.35.
+- **`buddy_step` no longer reports `created`.** A new buddy was reported twice,
+  as that step and as the `agent_created` its template run sends. It is now
+  only `agent_created`, whose `entry_point` is `switch_buddy` wherever the
+  buddy was set up: one set up in the first run said `onboarding`.
 - **The fallback to the agent event stream.** The agent runtime connects only
   over the WebSocket, so it can no longer reach a Switch server older than the
   socket (agent-protocol 7 and older), and it stops sending its own heartbeat
