@@ -2000,26 +2000,35 @@ async def test_a_bring_your_own_bridges_default_team_is_its_operators() -> None:
     assert graph.asked == []
 
 
-class _Adopter:
-    """Stands in for the lifecycle storing the default team: each call gives
-    the next answer, whether the team was stored, or raises it."""
+class _Writer:
+    """Stands in for the lifecycle storing the default team. Each call takes
+    the next answer, whether the change was stored, or raises it; `hold`
+    keeps the first call waiting until it is set."""
 
     def __init__(self, *answers: bool | Exception) -> None:
         self.answers = list(answers)
-        self.asked: list[str] = []
+        self.calls: list[tuple[str | None, str | None]] = []
+        self.hold: asyncio.Event | None = None
+        self.first_started = asyncio.Event()
 
-    async def __call__(self, team_id: str) -> bool:
-        self.asked.append(team_id)
+    async def __call__(self, expected: str | None, team_id: str | None) -> bool:
+        self.calls.append((expected, team_id))
+        if len(self.calls) == 1:
+            self.first_started.set()
+            if self.hold is not None:
+                await self.hold.wait()
         answer = self.answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
         return answer
 
 
-def _adopting_adapter(adopter: _Adopter, **overrides: Any) -> TeamsAdapter:
+def _writing_adapter(writer: _Writer, **overrides: Any) -> TeamsAdapter:
     adapter = _shared_adapter(**overrides)
-    adapter._graph = _SubscribingGraph(list_failures=0, held=[])  # type: ignore[assignment]
-    adapter.set_default_team_adopter(adopter)
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    graph.installed_in = {"team-1", "team-2"}
+    adapter._graph = graph  # type: ignore[assignment]
+    adapter.set_default_team_writer(writer)
     return adapter
 
 
@@ -2027,45 +2036,45 @@ async def test_the_first_team_switch_is_added_to_becomes_the_default() -> None:
     """A connection is approved before Switch is in any team, so it has no
     default team, and every channel it is asked to create fails until it has
     one. The team an admin first puts it in is that team."""
-    adopter = _Adopter(True)
-    adapter = _adopting_adapter(adopter)
+    writer = _Writer(True)
+    adapter = _writing_adapter(writer)
     assert adapter.default_team_id is None
 
-    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+    await adapter.add_to_team("team-3", catalog_app_id="cat-1")
 
-    assert adopter.asked == ["team-2"]
-    assert adapter.default_team_id == "team-2"
+    assert writer.calls == [(None, "team-3")]
+    assert adapter.default_team_id == "team-3"
 
 
 async def test_switch_added_to_its_first_team_from_teams_makes_it_the_default() -> None:
-    adopter = _Adopter(True)
-    adapter = _adopting_adapter(adopter)
+    writer = _Writer(True)
+    adapter = _writing_adapter(writer)
 
     await adapter._dispatch_installation_update(
-        {"action": "add", "channelData": {"team": {"aadGroupId": "team-2"}}}
+        {"action": "add", "channelData": {"team": {"aadGroupId": "team-3"}}}
     )
 
-    assert adapter.default_team_id == "team-2"
+    assert adapter.default_team_id == "team-3"
 
 
 async def test_a_team_joined_later_does_not_replace_the_default() -> None:
-    adopter = _Adopter()
-    adapter = _adopting_adapter(adopter, team_id="team-1")
+    writer = _Writer()
+    adapter = _writing_adapter(writer, team_id="team-1")
 
-    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+    await adapter.add_to_team("team-3", catalog_app_id="cat-1")
 
-    assert adopter.asked == []
+    assert writer.calls == []
     assert adapter.default_team_id == "team-1"
 
 
 async def test_a_default_team_chosen_meanwhile_is_not_taken_over() -> None:
-    """The lifecycle found one stored: an admin chose it while Switch was
+    """The lifecycle found another stored: an admin chose it while Switch was
     joining. The bridge is restarted from that choice, so this copy keeps
     none rather than claiming the team it joined."""
-    adopter = _Adopter(False)
-    adapter = _adopting_adapter(adopter)
+    writer = _Writer(False)
+    adapter = _writing_adapter(writer)
 
-    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+    await adapter.add_to_team("team-3", catalog_app_id="cat-1")
 
     assert adapter.default_team_id is None
 
@@ -2073,33 +2082,145 @@ async def test_a_default_team_chosen_meanwhile_is_not_taken_over() -> None:
 async def test_a_default_team_that_could_not_be_stored_is_tried_at_the_next_join(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    adopter = _Adopter(RuntimeError("database unavailable"), True)
-    adapter = _adopting_adapter(adopter)
-
-    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
-
-    assert adapter.default_team_id is None
-    assert "Failed to make Teams team team-2 the default team" in caplog.text
+    writer = _Writer(RuntimeError("database unavailable"), True)
+    adapter = _writing_adapter(writer)
 
     await adapter.add_to_team("team-3", catalog_app_id="cat-1")
 
-    assert adopter.asked == ["team-2", "team-3"]
+    assert adapter.default_team_id is None
+    assert "Failed to change the Teams default team from None to team-3" in (
+        caplog.text
+    )
+
+    await adapter.add_to_team("team-4", catalog_app_id="cat-1")
+
+    assert writer.calls == [(None, "team-3"), (None, "team-4")]
+    assert adapter.default_team_id == "team-4"
+
+
+async def test_teams_joined_together_keep_the_first_as_the_default() -> None:
+    writer = _Writer(True)
+    writer.hold = asyncio.Event()
+    adapter = _writing_adapter(writer)
+
+    first = asyncio.create_task(adapter.add_to_team("team-3", catalog_app_id="c"))
+    await writer.first_started.wait()
+    second = asyncio.create_task(adapter.add_to_team("team-4", catalog_app_id="c"))
+    await asyncio.sleep(0)
+    writer.hold.set()
+    await asyncio.gather(first, second)
+
+    assert writer.calls == [(None, "team-3")]
     assert adapter.default_team_id == "team-3"
 
 
+async def test_a_team_joined_alongside_one_that_could_not_be_stored_is_tried() -> None:
+    """Two joins arriving together are taken in turn: when the first cannot be
+    stored, the second is not skipped for having arrived while it was tried."""
+    writer = _Writer(RuntimeError("database unavailable"), True)
+    writer.hold = asyncio.Event()
+    adapter = _writing_adapter(writer)
+
+    first = asyncio.create_task(adapter.add_to_team("team-3", catalog_app_id="c"))
+    await writer.first_started.wait()
+    second = asyncio.create_task(adapter.add_to_team("team-4", catalog_app_id="c"))
+    await asyncio.sleep(0)
+    writer.hold.set()
+    await asyncio.gather(first, second)
+
+    assert writer.calls == [(None, "team-3"), (None, "team-4")]
+    assert adapter.default_team_id == "team-4"
+
+
 async def test_a_quiet_copy_leaves_the_default_team_to_the_holder() -> None:
-    """The holder adopts it when it is handed the join, so two copies never
-    race to store different teams."""
-    adopter = _Adopter()
-    adapter = _adopting_adapter(adopter)
+    """The holder changes it when it is handed the join or the departure, so
+    two copies never race to store different teams."""
+    writer = _Writer()
+    adapter = _writing_adapter(writer, team_id="team-2")
     adapter.set_listening(False)
     relayed: list[dict[str, str]] = []
     adapter.set_holder_relay(relayed.append)
 
-    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+    await adapter.add_to_team("team-3", catalog_app_id="cat-1")
+    await adapter.remove_from_team("team-2")
 
-    assert relayed == [{"action": "team_joined", "team_id": "team-2"}]
-    assert adopter.asked == []
+    assert relayed == [
+        {"action": "team_joined", "team_id": "team-3"},
+        {"action": "team_left", "team_id": "team-2"},
+    ]
+    assert writer.calls == []
+
+
+async def test_leaving_the_default_team_clears_it() -> None:
+    """A channel created in a team Switch is not in is one it can neither post
+    in nor capture, and a default left pointing there would keep the next
+    team Switch joins from becoming the default."""
+    writer = _Writer(True, True)
+    adapter = _writing_adapter(writer, team_id="team-2")
+
+    await adapter.remove_from_team("team-2")
+
+    assert writer.calls == [("team-2", None)]
+    assert adapter.default_team_id is None
+
+    await adapter.add_to_team("team-1", catalog_app_id="cat-1")
+
+    assert adapter.default_team_id == "team-1"
+
+
+async def test_teams_saying_switch_left_the_default_team_clears_it() -> None:
+    writer = _Writer(True)
+    adapter = _writing_adapter(writer, team_id="team-2")
+
+    await adapter._dispatch_installation_update(
+        {"action": "remove", "channelData": {"team": {"aadGroupId": "team-2"}}}
+    )
+
+    assert adapter.default_team_id is None
+
+
+async def test_leaving_another_team_keeps_the_default() -> None:
+    writer = _Writer()
+    adapter = _writing_adapter(writer, team_id="team-1")
+
+    await adapter.remove_from_team("team-2")
+
+    assert writer.calls == []
+    assert adapter.default_team_id == "team-1"
+
+
+async def test_a_default_team_changed_meanwhile_is_not_cleared() -> None:
+    writer = _Writer(False)
+    adapter = _writing_adapter(writer, team_id="team-2")
+
+    await adapter.remove_from_team("team-2")
+
+    assert writer.calls == [("team-2", None)]
+    # Restarted from the admin's choice; this copy does not guess at it.
+    assert adapter.default_team_id == "team-2"
+
+
+async def test_a_departure_noticed_in_error_is_put_right_when_switch_is_seen_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recheck can only ask Graph, and an answer that wrongly says Switch
+    left clears the default; the next answer, saying it is there, sets it
+    back."""
+    writer = _Writer(True, True)
+    adapter = _writing_adapter(writer, team_id="team-2")
+    graph = adapter._graph
+    assert isinstance(graph, _SubscribingGraph)
+    monkeypatch.setattr(adapter_module, "_TEAM_RECHECK_SECONDS", 0)
+    adapter._team_has_switch["team-2"] = (True, 0.0)
+
+    graph.installed_in.discard("team-2")
+    await adapter._recheck_teams()
+    assert adapter.default_team_id is None
+
+    graph.installed_in.add("team-2")
+    await adapter._recheck_teams()
+    assert adapter.default_team_id == "team-2"
+    assert writer.calls == [("team-2", None), (None, "team-2")]
 
 
 async def test_two_catalogue_ids_for_the_app_are_logged(

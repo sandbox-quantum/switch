@@ -231,18 +231,22 @@ async def remove_from_team(
     adapter, _install = await _connection(
         bridge_id, session, bridge_store, install_store, collab_lifecycle
     )
+    # Read before leaving: the copy holding the bridge clears its own default
+    # as it leaves the team.
+    was_default = adapter.default_team_id == team_id
     try:
         await adapter.remove_from_team(team_id)
     except _MICROSOFT_FAILURES as error:
         raise _microsoft_failed(error) from error
-    if adapter.default_team_id == team_id:
+    if was_default:
         # New channels are made in the default team, and cannot be in one the
-        # app has left: channel creation goes off with the default, until
-        # another team is chosen, rather than failing at the next room.
-        await bridge_store.merge_connection_config(
-            session, bridge_id, {"team_id": None}
+        # app has left. The holder clears it too, but perhaps in another
+        # process and a moment later; this copy is rebuilt now so the next
+        # read already has no default. Channel creation stays as an admin set
+        # it: the next team Switch joins becomes the default.
+        await bridge_store.replace_team(
+            session, bridge_id, expected=team_id, team_id=None
         )
-        await bridge_store.set_channel_creation_enabled(session, bridge_id, False)
         await session.commit()
         try:
             await collab_lifecycle.restart(bridge_id)
@@ -254,10 +258,9 @@ async def remove_from_team(
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Switch left the team, and channel creation is off until "
-                    "another default team is chosen, but the messaging app did "
-                    f"not restart ({error}). It is stopped until it is "
-                    "restarted."
+                    "Switch left the team, which was the default team, but the "
+                    f"messaging app did not restart ({error}). It is stopped "
+                    "until it is restarted."
                 ),
             ) from error
     return Response(status_code=204)

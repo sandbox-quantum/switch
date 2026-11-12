@@ -337,12 +337,13 @@ def test_every_route_requires_a_workspace_admin() -> None:
     )
 
 
-async def test_removing_switch_from_the_default_team_turns_channel_creation_off(
+async def test_removing_switch_from_the_default_team_clears_the_default(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """New channels are made in the default team, and cannot be in a team the
-    app has left; the default goes with it rather than failing at the next
-    room."""
+    app has left. Channel creation is the admin's to turn off: the next team
+    Switch joins becomes the default, and room creation says what to do until
+    then."""
     graph = _Graph(installed_in={"team-1": "c-1"})
     async with session_factory() as session:
         bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
@@ -364,8 +365,67 @@ async def test_removing_switch_from_the_default_team_turns_channel_creation_off(
     assert graph.removed == [("team-1", "I-team-1")]
     assert bridge is not None
     assert bridge.connection_config["team_id"] is None
-    assert bridge.channel_creation_enabled is False
+    assert bridge.channel_creation_enabled is True
     assert lifecycle.restarted == [bridge_id]
+
+
+async def test_leaving_the_default_team_through_the_holder_still_rebuilds_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The copy holding the bridge clears its own default as it leaves the
+    team, so the route decides from what the default was before leaving."""
+    graph = _Graph(installed_in={"team-1": "c-1"})
+    cleared: list[tuple[str | None, str | None]] = []
+
+    async def write(expected: str | None, team_id: str | None) -> bool:
+        cleared.append((expected, team_id))
+        return True
+
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        await CollaborationBridgeStore().merge_connection_config(
+            session, bridge_id, {"team_id": "team-1"}
+        )
+        await session.commit()
+        adapter = _shared_adapter(graph)
+        adapter.set_default_team_writer(write)
+        lifecycle = _Lifecycle(adapter)
+
+        await _call(
+            remove_from_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+        )
+
+    async with session_factory() as session:
+        bridge = await CollaborationBridgeStore().get(session, bridge_id)
+    assert cleared == [("team-1", None)]
+    assert adapter.default_team_id is None
+    assert bridge is not None
+    assert bridge.connection_config["team_id"] is None
+    assert lifecycle.restarted == [bridge_id]
+
+
+async def test_a_default_chosen_while_leaving_the_old_one_is_kept(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The holder may already have cleared the old default and taken a team
+    Switch joined since; the route clears only the team it left."""
+    graph = _Graph(installed_in={"team-1": "c-1"})
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        await CollaborationBridgeStore().merge_connection_config(
+            session, bridge_id, {"team_id": "team-2"}
+        )
+        await session.commit()
+        lifecycle = _Lifecycle(_shared_adapter(graph))
+
+        await _call(
+            remove_from_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+        )
+
+    async with session_factory() as session:
+        bridge = await CollaborationBridgeStore().get(session, bridge_id)
+    assert bridge is not None
+    assert bridge.connection_config["team_id"] == "team-2"
 
 
 async def test_a_connection_that_does_not_restart_after_leaving_says_what_happened(

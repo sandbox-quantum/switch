@@ -2189,14 +2189,18 @@ class PlatformAdapter(ABC):
         silently kills capture in every channel outside the configured team."""
         return None
 
-    def set_default_team_adopter(self, adopt: Callable[[str], Awaitable[bool]]) -> None:
-        """Install a callback the adapter uses to store a team it joined as
-        the container new channels go in, when none has been chosen. It
-        answers whether the team was stored; one chosen meanwhile is kept.
+    def set_default_team_writer(
+        self, write: Callable[[str | None, str | None], Awaitable[bool]]
+    ) -> None:
+        """Install a callback the adapter uses to change the container new
+        channels go in as it joins and leaves containers: `write(expected,
+        team_id)` stores `team_id` (None to clear it) only if the stored one is
+        still `expected`, and answers whether it did, so an admin's choice made
+        meanwhile is kept.
 
         Default is a no-op; Teams overrides it because a connection on the
         distributed app is approved before Switch is in any team, so it has
-        no default team until it joins one."""
+        no default team until it joins one, and keeps none it has left."""
         return None
 
     def set_callback_endpoint(self, endpoint: CallbackEndpoint) -> None:

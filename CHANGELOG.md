@@ -331,14 +331,17 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
-- **The first team Switch joins becomes the default Teams team.** A
-  Microsoft Teams connection made by approving Switch's own Teams app starts
-  with no default team, so creating a room with a channel failed until an
-  admin picked one. Now, when Switch joins a team, from the connection's
-  Microsoft Teams panel or from Teams, and no default team is set, that team
-  becomes the default. A default team already chosen is never replaced, and
-  taking Switch out of the default team still clears it. Channel creation
-  stays off after approval until an admin turns it on.
+- **The Teams default team follows the teams Switch is in.** A Microsoft
+  Teams connection made by approving Switch's own Teams app starts with no
+  default team, so creating a room with a channel failed until an admin
+  picked one. Now, when Switch joins a team with no default set, from the
+  connection's Microsoft Teams panel or from Teams, that team becomes the
+  default; a default team already chosen is never replaced. When Switch
+  leaves its default team, from the panel or from Teams, the default is
+  cleared, so no channel is made in a team Switch is not in and the next team
+  it joins becomes the default. Leaving the default team no longer turns
+  channel creation off: that stays an admin's choice, and is still off after
+  approval until an admin turns it on.
 - **A refusal for not being a workspace admin says "Workspace admin access
   required"**, where it said "Tenant admin access required", on every
   gateway route that only the workspace's admins may use.

@@ -1080,10 +1080,14 @@ class TeamsAdapter(PlatformAdapter):
         self._team_of_channel: dict[str, str] = dict(config.channel_teams)
         # Installed by the bridge to persist a newly-learned channel/team pair.
         self._persist_channel_team: Callable[[str, str], Awaitable[None]] | None = None
-        # Installed by the bridge to store the first team Switch joins as the
-        # default team; see `_adopt_first_team`.
-        self._default_team_adopter: Callable[[str], Awaitable[bool]] | None = None
-        self._adopting_default_team = False
+        # Installed by the bridge to store the default team as Switch joins
+        # and leaves teams; see `_adopt_first_team` and `_release_default_team`.
+        self._default_team_writer: (
+            Callable[[str | None, str | None], Awaitable[bool]] | None
+        ) = None
+        # One change to the default team at a time, each deciding from what the
+        # one before it left.
+        self._default_team_lock = asyncio.Lock()
         self._sub_lock = asyncio.Lock()
         # Whether the subscriptions Graph already holds for this bridge have
         # been read since it started; see `_adopt_existing_subscriptions`.
@@ -1637,8 +1641,10 @@ class TeamsAdapter(PlatformAdapter):
     ) -> None:
         self._persist_channel_team = persist
 
-    def set_default_team_adopter(self, adopt: Callable[[str], Awaitable[bool]]) -> None:
-        self._default_team_adopter = adopt
+    def set_default_team_writer(
+        self, write: Callable[[str | None, str | None], Awaitable[bool]]
+    ) -> None:
+        self._default_team_writer = write
 
     async def _learn_channel_team(self, channel_id: str, team_id: str) -> None:
         """Record which team a channel belongs to, and persist it.
@@ -3559,31 +3565,47 @@ class TeamsAdapter(PlatformAdapter):
         any team, so it starts with no default team, and every channel Switch
         is asked to create fails until an admin picks one. The first team it
         joins is the one an admin just put it in, from Switch or from Teams.
-        A default team already set is never replaced, and one the bridge
-        could not store stays unset, to be tried again at the next join.
+        A default team already set is never replaced. Joins that arrive
+        together are taken in turn, so when the first cannot be stored the
+        next one is tried, and a later join tries again.
         """
-        if (
-            not self.serves_shared_app
-            or self._config.team_id
-            or self._default_team_adopter is None
-            or self._adopting_default_team
-        ):
+        await self._write_default_team(expected=None, team_id=team_id)
+
+    async def _release_default_team(self, team_id: str) -> None:
+        """Clear the default team when Switch has left it.
+
+        A channel created in a team Switch is not in is one it can neither post
+        in nor capture, and a default left pointing there would keep the next
+        team Switch joins from becoming the default. Channel creation is left
+        as it is: the next team Switch joins becomes the default, and a removal
+        noticed in error is put right when Switch is seen in the team again.
+        """
+        await self._write_default_team(expected=team_id, team_id=None)
+
+    async def _write_default_team(
+        self, *, expected: str | None, team_id: str | None
+    ) -> None:
+        if not self.serves_shared_app or self._default_team_writer is None:
             return
-        self._adopting_default_team = True
-        try:
-            adopted = await self._default_team_adopter(team_id)
-        except Exception:
-            logger.warning(
-                "Failed to make Teams team %s the default team", team_id, exc_info=True
-            )
-            return
-        finally:
-            self._adopting_default_team = False
-        if adopted:
-            self._config = self._config.model_copy(update={"team_id": team_id})
+        async with self._default_team_lock:
+            if (self._config.team_id or None) != expected:
+                return
+            try:
+                written = await self._default_team_writer(expected, team_id)
+            except Exception:
+                logger.warning(
+                    "Failed to change the Teams default team from %s to %s",
+                    expected,
+                    team_id,
+                    exc_info=True,
+                )
+                return
+            if written:
+                self._config = self._config.model_copy(update={"team_id": team_id})
 
     async def _switch_left_team(self, team_id: str) -> None:
-        """Switch is out of a team: stop capturing it, ready to resume on return."""
+        """Switch is out of a team: stop capturing it, ready to resume on
+        return, and clear it as the default team if it was that."""
         if not self._listening:
             self._hand_to_holder({"action": "team_left", "team_id": team_id})
             return
@@ -3598,6 +3620,7 @@ class TeamsAdapter(PlatformAdapter):
             await self._stop_capture(channel_id)
             if captured:
                 self._capture_parked[channel_id] = team_id
+        await self._release_default_team(team_id)
 
     async def _recheck_teams(self) -> None:
         """Ask again whether Switch is in each team whose answer is old.

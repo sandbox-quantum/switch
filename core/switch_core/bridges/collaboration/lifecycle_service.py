@@ -1295,8 +1295,10 @@ class CollaborationBridgeLifecycleService:
                     bridge_id, tenant_id, channel_id, team_id
                 )
             )
-            adapter.set_default_team_adopter(
-                lambda team_id: self._adopt_default_team(bridge_id, tenant_id, team_id)
+            adapter.set_default_team_writer(
+                lambda expected, team_id: self._write_default_team(
+                    bridge_id, tenant_id, expected, team_id
+                )
             )
             adapter.set_holder_relay(
                 lambda request: self._relay_to_holder(bridge_id, request)
@@ -1472,31 +1474,35 @@ class CollaborationBridgeLifecycleService:
             )
             await session.commit()
 
-    async def _adopt_default_team(
-        self, bridge_id: str, tenant_id: str, team_id: str
+    async def _write_default_team(
+        self,
+        bridge_id: str,
+        tenant_id: str,
+        expected: str | None,
+        team_id: str | None,
     ) -> bool:
-        """Store a team a bridge joined as its default team, unless one has
-        been chosen meanwhile; whether it was stored (used by the Teams
-        adapter).
+        """Change a bridge's default team as it joins or leaves teams, unless
+        it was changed meanwhile; whether it was (used by the Teams adapter).
 
         Unlike what a bridge learns from traffic, this is an edit: every other
         process rebuilds its copy from the new row, so a channel created
-        through any of them goes in that team. The copy that joined the team
-        already uses it, so the row it now runs from is recorded as the one
-        it started from, and the re-check leaves it running."""
+        through any of them goes where the default team now says. The copy
+        that made the change already runs with it, so the row it now runs from
+        is recorded as the one it started from, and the re-check leaves it
+        running."""
         async with tenant_session(self._session_factory, tenant_id) as session:
-            bridge = await self._bridge_store.set_team_if_unset(
-                session, bridge_id, team_id
+            bridge = await self._bridge_store.replace_team(
+                session, bridge_id, expected=expected, team_id=team_id
             )
             await session.commit()
         if bridge is None:
             return False
         self._started_rows[bridge_id] = _started_from(bridge)
         logger.info(
-            "Collaboration bridge %s joined team %s with no default team set; "
-            "it is now the default",
+            "Collaboration bridge %s's default team is now %s (was %s)",
             bridge_id,
             team_id,
+            expected,
         )
         self._announce(bridge_id)
         return True
