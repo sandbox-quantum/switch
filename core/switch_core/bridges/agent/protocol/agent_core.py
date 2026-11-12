@@ -4375,8 +4375,14 @@ class AgentCore:
         room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
+        # A room setting (`room_policy`), so the owner tier, and not for an
+        # agent others may address: a schedule carries its owner's authority.
         if not room_policy.allows(
-            RoomCaller(Principal(owner_id, owner_is_admin), in_room=False),
+            RoomCaller(
+                Principal(owner_id, owner_is_admin),
+                in_room=False,
+                owner_rights=not await others_can_address(session, agent),
+            ),
             room,
             "configure",
         ):
