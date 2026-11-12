@@ -533,6 +533,21 @@ class PlatformAdapter(ABC):
     #: them is a notification they already had.
     notifies_only_by_mention: ClassVar[bool] = False
 
+    #: Whether a reply posted in a thread can also be shown in the channel the
+    #: thread hangs under.
+    #:
+    #: True where one message can be in both at once, the way Slack's
+    #: `reply_broadcast` is: the thread keeps the conversation, and the
+    #: channel still sees the question, without a second post to answer.
+    #:
+    #: False everywhere else, and a request card for a turn that was asked at
+    #: the channel root goes to the root itself there. A card filed in a
+    #: thread nobody opened is a question nobody sees, and the answer it waits
+    #: for can only come from that thread — so whoever replies in the channel,
+    #: where they were asked, leaves the agent waiting on a thread they never
+    #: knew about.
+    broadcasts_thread_replies: ClassVar[bool] = False
+
     #: The token that pages every member of a channel, for a room-wide mention.
     #:
     #: None where the platform has none a bot can send. A room-wide mention

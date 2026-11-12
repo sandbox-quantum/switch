@@ -333,8 +333,10 @@ async def test_a_card_goes_into_the_thread_it_answers(
 async def test_a_card_says_whether_its_turn_was_asked_at_the_channel_root(
     service, publisher, platform, bridged, message_id, at_root
 ):
-    """So an adapter that can also show a thread reply in the channel does,
-    for a question threaded under a channel-root message only."""
+    """An adapter that can also show a thread reply in the channel keeps the
+    card in the thread and asks for that, for a question threaded under a
+    channel-root message only."""
+    platform.broadcasts_thread_replies = True
     await _step(
         service,
         bridged.room_id,
@@ -351,6 +353,53 @@ async def test_a_card_says_whether_its_turn_was_asked_at_the_channel_root(
     [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
     assert card.thread_ref == ASKED_POST
     assert card.content.asked_at_root is at_root
+
+
+async def test_a_root_asked_card_goes_to_the_channel_when_a_thread_is_not_shown(
+    service, publisher, platform, bridged, session_factory
+):
+    """Where the platform cannot mirror a thread reply into its channel, a
+    card in that thread is a question nobody opening the channel sees, and
+    only that thread could answer it. It is asked at the root instead."""
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id=ASKED,
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref is None
+    assert (await _card_post(session_factory)).thread_ref is None
+
+
+async def test_a_card_asked_inside_a_thread_stays_there_without_broadcast(
+    service, publisher, platform, bridged, session_factory
+):
+    """Moving that one to the root would put it in front of a channel that
+    was never part of the conversation."""
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id="sw_reply",
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref == ASKED_POST
+    assert (await _card_post(session_factory)).thread_ref == ASKED_POST
 
 
 async def test_a_card_whose_turn_is_not_recorded_stays_in_its_thread(
