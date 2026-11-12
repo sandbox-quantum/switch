@@ -1251,6 +1251,19 @@ class AgentConnectionRegistry:
             None,
         )
 
+    def live_session_in_room(self, agent_id: str, room_id: str) -> str | None:
+        """A placed session whose owning connection is still live."""
+        live_connections = {connection.id for connection in self.for_agent(agent_id)}
+        owners = self._placement_owners.get(agent_id, {})
+        return next(
+            (
+                session_id
+                for session_id, room in self._session_rooms.get(agent_id, {}).items()
+                if room == room_id and owners.get(session_id) in live_connections
+            ),
+            None,
+        )
+
     def relay_session_command(self, agent_id: str, frame: dict[str, Any]) -> bool:
         """Hand a session command to the agent's watcher stream. False if none is attached.
 
