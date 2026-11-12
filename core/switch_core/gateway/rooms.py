@@ -883,7 +883,7 @@ async def _run_as_person(
                 document, inputs=inputs, builtins=builtins
             )
             await rooms_yaml.check_entity_params(parsed, reader=reader)
-            await rooms_yaml.check_bridges(parsed)
+            await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None

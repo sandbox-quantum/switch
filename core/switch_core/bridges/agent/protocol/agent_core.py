@@ -438,6 +438,9 @@ class AgentCore:
     # Raises the ChatError `_member_adder` would refuse that person with:
     # (tenant_id, user_id). Wired with it.
     _member_join_check: Callable[[str, str], Awaitable[None]] | None = None
+    # Whether people can be in internal rooms as Switch Console chats (the
+    # `group_chats` flag), told with `_member_adder`.
+    _group_chats_enabled: bool = False
 
     def __init__(
         self,
@@ -888,9 +891,12 @@ class AgentCore:
         self,
         adder: Callable[[str, User, str, str], Awaitable[Room]],
         join_check: Callable[[str, str], Awaitable[None]],
+        *,
+        group_chats_enabled: bool,
     ) -> None:
         self._member_adder = adder
         self._member_join_check = join_check
+        self._group_chats_enabled = group_chats_enabled
 
     def set_agent_profile_listener(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -3485,8 +3491,17 @@ class AgentCore:
         it the same way; a collaborator added to ``RoomYamlService`` is then
         added once.
         """
-        from switch_core.rooms_yaml import RoomYamlService
+        from switch_core.rooms_yaml import ConsoleRooms, RoomYamlService
 
+        console_rooms = (
+            ConsoleRooms(
+                enabled=self._group_chats_enabled,
+                add_member=self._member_adder,
+                require_can_join=self._member_join_check,
+            )
+            if self._member_adder is not None and self._member_join_check is not None
+            else None
+        )
         return RoomYamlService(
             room_service=self.room_service,
             resource_service=self.resource_service,
@@ -3497,6 +3512,7 @@ class AgentCore:
             room_role_store=self.room_role_store,
             session_factory=self.session_factory,
             room_group_store=self.room_group_store,
+            console_rooms=console_rooms,
             client_lifecycle=self.client_lifecycle,
         )
 

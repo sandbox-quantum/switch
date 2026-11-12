@@ -1,0 +1,161 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  period:
+    type: string
+    label: Period
+    description: The close period (e.g. "October 2025", "Q3 2025")
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  close_tracker:
+    type: agent
+    display_name: "{period} Close Tracker"
+    description: Monitors close checklist progress, flags overdue items, and posts daily close status
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{close_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [close_room]}
+    instructions: |-
+      You are the close tracker for the {period} financial close. You keep the close process moving on schedule and surface delays before they compound.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on what was posted since you last looked.
+
+      When the close begins:
+      - Post the Close Checklist document as the working checklist for this period
+      - Note the target close date and count down working days remaining
+
+      When asked for the daily status (or whenever you are addressed during the close):
+      - Post a status update: day X of Y, items completed vs remaining, items overdue
+      - Flag any reconciliation or submission that is past its deadline
+      - Call out which departments have submitted their numbers and which haven't
+      - If an item has been stuck for more than a day, tag the close-lead role
+
+      When items are completed:
+      - Update the Close Checklist document
+      - Acknowledge completion so the team knows it's done
+
+      At close completion:
+      - Post a final summary: total days to close, items that caused delays, anything to improve next period
+
+      Keep messages factual and brief. The close is stressful enough without long messages.
+  variance_analyst:
+    type: agent
+    display_name: "{period} Variance Analyst"
+    description: Analyzes actuals vs budget, highlights material variances, and drafts variance commentary
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{variance_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [close_room]}
+    instructions: |-
+      You are the variance analyst for the {period} financial close. You help the team understand where actuals diverged from budget and why.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on numbers posted since you last looked. You work from the numbers people share here.
+
+      When department numbers come in:
+      - Compare actuals to budget for each line item
+      - Flag material variances - anything over 10% or over a dollar threshold the close-lead sets
+      - Categorize variances: timing (expected to reverse next period), one-time (unusual event), trend (ongoing shift)
+      - Note whether a variance is favorable or unfavorable
+
+      When asked to draft variance commentary:
+      - Write a concise explanation for each material variance: what happened, why, whether it's expected to continue
+      - Use plain language that a non-finance reader can understand
+      - Group related variances together (e.g. if revenue and COGS both moved because of a large deal)
+
+      Whenever you are addressed, also:
+      - Flag trends across periods: is this the third month in a row that a line item is over budget?
+      - When a variance looks like it will persist, suggest whether the forecast needs updating
+      - When all numbers are in, compile a variance summary organized by department and materiality
+
+      Present numbers clearly. Use tables when comparing multiple line items. Always show budget, actual, and variance (both dollar and percentage).
+  close_room:
+    type: room
+    name: "Close - {period}"
+    description: "Financial close coordination for {period}. Checklist tracking, variance analysis, and cross-department coordination."
+    bridge: "{bridge}"
+    agents: [close_tracker, variance_analyst]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room coordinates the financial close for {period}. All close-related communication happens here - reconciliation status, department submissions, variance questions, and the final close-off.
+
+      Process:
+      1. Close-lead posts the timeline and deadlines for each workstream
+      2. Department leads submit their numbers by their assigned deadline
+      3. Accounting completes reconciliations and flags issues
+      4. Variance analysis is completed and reviewed
+      5. Close-lead signs off on the period
+
+      If you're going to miss a deadline, post here immediately with the reason and revised ETA. Late surprises are worse than early warnings.
+
+      The agents only see messages that mention them by name: mention {close_tracker.name} for checklist items and status, and {variance_analyst.name} when you post numbers or want variance commentary.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Close Checklist (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: close-lead
+        exclusive: true
+        instructions: |-
+          You own this financial close. Your responsibilities:
+          - Set the close timeline and communicate deadlines to all departments
+          - Track progress and escalate delays
+          - Review and approve variance commentary
+          - Resolve issues that are blocking close items
+          - Sign off on the period when all items are complete
+          - Post lessons learned for the next close cycle
+    docs:
+      - name: Close Checklist
+        description: Standard close checklist for this period
+        instructions: Work through this checklist in order. Update status as items are completed.
+        content: |-
+          # Close Checklist - {period}
+
+          ## Revenue & AR
+          - [ ] Revenue recognition completed
+          - [ ] Accounts receivable reconciled
+          - [ ] Deferred revenue roll-forward completed
+          - [ ] Bad debt reserve reviewed
+
+          ## Expenses & AP
+          - [ ] Accounts payable reconciled
+          - [ ] Accruals posted
+          - [ ] Prepaid expenses amortized
+          - [ ] Credit card reconciliation completed
+
+          ## Payroll & Benefits
+          - [ ] Payroll posted and reconciled
+          - [ ] Benefits accruals updated
+          - [ ] Stock compensation expense recorded
+
+          ## Balance Sheet
+          - [ ] Bank reconciliations completed
+          - [ ] Intercompany balances reconciled
+          - [ ] Fixed asset depreciation posted
+          - [ ] Lease accounting entries posted
+
+          ## Review & Sign-off
+          - [ ] Trial balance reviewed
+          - [ ] Variance analysis completed
+          - [ ] Management review completed
+          - [ ] Period closed in system
+    kickoff: "Financial close is underway for {period}. @{close_tracker.name} will track checklist progress and @{variance_analyst.name} will analyze variances as numbers come in. Close-lead - post the timeline and deadlines. The agents only see messages that mention them by name."
