@@ -87,6 +87,7 @@ RoomAction = Literal[
     "add_person",
     "attach",
     "remove_member",
+    "remove_owner",
     "unlink",
     "delete_document",
     "set_alias",
@@ -112,6 +113,10 @@ RULES: dict[RoomAction, Tier] = {
     "add_person": Tier.IN_ROOM,
     "attach": Tier.IN_ROOM,
     "remove_member": Tier.ROOM_ADMIN,
+    # Taking the room's owner out of it, or out of its channel: a room admin
+    # removes anyone else, other room admins included, but not the owner, who
+    # can always take out a room admin who goes rogue.
+    "remove_owner": Tier.OWNER,
     "unlink": Tier.ROOM_ADMIN,
     "delete_document": Tier.ROOM_ADMIN,
     "set_alias": Tier.ROOM_ADMIN,
@@ -128,7 +133,7 @@ _OWN_THING_SUFFICES: frozenset[RoomAction] = frozenset(
 _OWN_THING_IN_ROOM_SUFFICES: frozenset[RoomAction] = frozenset({"unlink"})
 
 _MEMBERSHIP_ACTIONS: frozenset[RoomAction] = frozenset(
-    {"add_agent", "add_person", "remove_member"}
+    {"add_agent", "add_person", "remove_member", "remove_owner"}
 )
 
 # How each action reads in a refusal: "Only … can <verb>."
@@ -143,6 +148,7 @@ _VERBS: dict[RoomAction, str] = {
     "add_person": "add people to this room",
     "attach": "attach resources to this room",
     "remove_member": "remove agents or people from this room",
+    "remove_owner": "remove this room's owner from it",
     "unlink": "unlink resources from this room",
     "delete_document": "delete this room's documents",
     "set_alias": "set or remove aliases in this room",

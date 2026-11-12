@@ -15,6 +15,9 @@ from switch_core.db.models import (
     AuditEvent,
     Client,
     ClientRoom,
+    CollaborationBridge,
+    ExternalUser,
+    ExternalUserClaim,
     Room,
     TenantMember,
     User,
@@ -23,6 +26,7 @@ from switch_core.db.models import (
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_admins import (
     RoomAdminRefused,
+    add,
     grant,
     is_room_admin,
     list_admins,
@@ -30,6 +34,7 @@ from switch_core.room_admins import (
     standing,
 )
 from switch_core.room_policy import RoomCaller
+from switch_core.room_service import names_the_owner
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
@@ -312,3 +317,116 @@ async def test_one_leaving_does_not_take_the_others_role(
         people = {uid for uid, _ in await STORE.people_in_room(session, room.id)}
         assert people == {olivia.id, bea.id}
         assert outsider.id not in people
+
+
+async def test_a_grant_counts_only_while_they_are_a_workspace_member(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Someone removed from the workspace who is still in the room (through a
+    claimed chat account, say) is no room admin, even if a grant is left."""
+    async with session_factory() as session:
+        olivia = await _person(session, "olivia")
+        max_ = await _person(session, "max")
+        room = await _room(session, olivia)
+        await _in_room(session, max_, room)
+        await grant(session, STORE, room, caller=_caller(olivia), user_id=max_.id)
+
+        member = await session.get(TenantMember, (TENANT_ZERO_ID, max_.id))
+        await session.delete(member)
+        await session.flush()
+
+        assert not await is_room_admin(session, STORE, room.id, max_.id)
+        assert await list_admins(session, STORE, room.id) == []
+        assert max_.id not in {
+            uid for uid, _ in await STORE.people_in_room(session, room.id)
+        }
+
+
+async def test_people_in_room_counts_every_way_in(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        olivia = await _person(session, "olivia")
+        console = await _person(session, "console")
+        agent_owner = await _person(session, "agent-owner")
+        await _person(session, "outsider")
+        room = await _room(session, olivia)
+        await _in_room(session, console, room)
+        agent = await add_agent(session, name="theirs", owner_id=agent_owner.id)
+        await session.execute(
+            room_agents.insert().values(room_id=room.id, agent_id=agent.id)
+        )
+
+        people = {uid for uid, _ in await STORE.people_in_room(session, room.id)}
+
+        assert people == {olivia.id, console.id, agent_owner.id}
+
+
+async def test_a_chat_command_records_the_chat_account(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        olivia = await _person(session, "olivia")
+        max_ = await _person(session, "max")
+        room = await _room(session, olivia)
+        await _in_room(session, max_, room)
+
+        await add(
+            session, STORE, room, max_.id, by=olivia.id, chat_account="@slack-u1:test"
+        )
+
+        [event] = (
+            await session.scalars(
+                select(AuditEvent).where(AuditEvent.action == "room_admin.added")
+            )
+        ).all()
+        assert event.details == {"user_id": max_.id, "chat_account": "@slack-u1:test"}
+
+
+async def test_naming_the_owners_chat_account_takes_the_owner_tier(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`!remove-user` and its tool and route ask `remove_owner` when a name is
+    the owner's own platform account, which a room admin may not."""
+    async with session_factory() as session:
+        olivia = await _person(session, "olivia")
+        bridge_client = Client(
+            transport_user_id="@bridge:test", display_name="bridge", type="bridge"
+        )
+        session.add(bridge_client)
+        await session.flush()
+        bridge = CollaborationBridge(
+            type="slack",
+            display_name="Slack",
+            client_id=bridge_client.id,
+            status="active",
+        )
+        session.add(bridge)
+        await session.flush()
+        room = await _room(session, olivia)
+        room.bridge_id = bridge.id
+        room.external_channel_id = "C1"
+        for handle, claimant in (("olivia.s", olivia), ("bob.s", None)):
+            platform = Client(
+                transport_user_id=f"@{handle}:test", display_name=handle, type="user"
+            )
+            session.add(platform)
+            await session.flush()
+            account = ExternalUser(
+                bridge_id=bridge.id,
+                external_user_id=f"U-{handle}",
+                external_username=handle,
+                client_id=platform.id,
+            )
+            session.add(account)
+            await session.flush()
+            session.add(ClientRoom(client_id=platform.id, room_id=room.id))
+            if claimant is not None:
+                session.add(
+                    ExternalUserClaim(external_user_id=account.id, user_id=claimant.id)
+                )
+        await session.flush()
+
+        assert await names_the_owner(session, room, ["@Olivia.S"])
+        assert await names_the_owner(session, room, ["bob.s", "U-olivia.s"])
+        assert not await names_the_owner(session, room, ["bob.s", "nobody"])

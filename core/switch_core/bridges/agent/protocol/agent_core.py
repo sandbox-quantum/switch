@@ -154,6 +154,7 @@ from switch_core.room_schedules import (
 )
 from switch_core.room_service import (
     RemovalMiss,
+    names_the_owner,
     require_membership_changeable_from_outside,
 )
 from switch_core.room_wide_mention import (
@@ -3496,8 +3497,15 @@ class AgentCore:
             caller = await self.agent_store.get(session, agent_id)
             if caller is None:
                 raise ValueError(f"Unknown agent: {agent_id}")
+            row = await self.room_store.get(session, room_id)
+            names_owner = row is not None and await names_the_owner(
+                session, row, user_names
+            )
             room = await self._require_room_action(
-                session, agent_id, room_id, "remove_member"
+                session,
+                agent_id,
+                room_id,
+                "remove_owner" if names_owner else "remove_member",
             )
             require_membership_changeable_from_outside(room)
         try:

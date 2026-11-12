@@ -74,6 +74,7 @@ from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
 from switch_core.room_invites import not_addressable_refusal
 from switch_core.room_policy import RoomAction, RoomCaller, RoomDecision
+from switch_core.room_service import names_the_owner
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -1505,11 +1506,21 @@ async def _change_room_admins(
         try:
             if add:
                 changed = await room_admins.add(
-                    session, host._room_store, row, user_id, by=by
+                    session,
+                    host._room_store,
+                    row,
+                    user_id,
+                    by=by,
+                    chat_account=event.user_id,
                 )
             else:
                 changed = await room_admins.remove(
-                    session, host._room_store, row, user_id, by=by
+                    session,
+                    host._room_store,
+                    row,
+                    user_id,
+                    by=by,
+                    chat_account=event.user_id,
                 )
         except room_admins.RoomAdminRefused as refused:
             await _reply(client, room, event, f"{refused} Nothing was changed.")
@@ -1741,8 +1752,14 @@ async def _cmd_remove_user(
                 "who is in it is up to the platform.",
             )
             return
+        names_owner = row is not None and await names_the_owner(session, row, names)
         decision = await _room_decision(
-            host, session, meta.room_id, event, "remove_member", "remove_user"
+            host,
+            session,
+            meta.room_id,
+            event,
+            "remove_owner" if names_owner else "remove_member",
+            "remove_user",
         )
         if await _refused(client, room, event, decision):
             return

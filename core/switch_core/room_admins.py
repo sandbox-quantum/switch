@@ -111,10 +111,13 @@ async def add(
     user_id: str,
     *,
     by: str | None,
+    chat_account: str | None = None,
 ) -> bool:
     """`grant`, for a surface that has already asked the room policy whether
     `by` may (`manage_admins`): the chat commands, which ask it for whoever
-    posted. Checks only that `user_id` can be a room admin."""
+    posted. Checks only that `user_id` can be a room admin. `chat_account` is
+    the chat account a command came from, recorded beside `by`, which for an
+    account several people claim is only the first of them."""
     tenant_id = require_tenant_id()
     if room.owner_id == user_id:
         raise RoomAdminRefused(
@@ -139,7 +142,7 @@ async def add(
             action=AuditAction.ROOM_ADMIN_ADDED,
             target_type="room",
             target_id=room.id,
-            details={"user_id": user_id},
+            details=_details(user_id, chat_account),
         )
     return added
 
@@ -177,8 +180,10 @@ async def remove(
     user_id: str,
     *,
     by: str | None,
+    chat_account: str | None = None,
 ) -> bool:
-    """`revoke`, for a surface that has already decided `by` may."""
+    """`revoke`, for a surface that has already decided `by` may; `chat_account`
+    as for `add`."""
     removed = await room_store.remove_admin(session, room.id, user_id)
     if removed:
         await record_audit_event(
@@ -188,9 +193,16 @@ async def remove(
             action=AuditAction.ROOM_ADMIN_REMOVED,
             target_type="room",
             target_id=room.id,
-            details={"user_id": user_id},
+            details=_details(user_id, chat_account),
         )
     return removed
+
+
+def _details(user_id: str, chat_account: str | None) -> dict[str, str]:
+    details = {"user_id": user_id}
+    if chat_account is not None:
+        details["chat_account"] = chat_account
+    return details
 
 
 async def find_person(
@@ -198,9 +210,11 @@ async def find_person(
 ) -> str:
     """The Switch user a chat command means by `name`: someone in the room
     who goes by it on the room's platform and has linked that account to
-    Switch, or a Switch user in the room by that name (a Switch Console
-    chat). Raises `RoomAdminRefused` saying why when nobody fits, or the
-    account isn't linked to exactly one Switch user."""
+    Switch, or, in a room with no platform channel (a Switch Console chat), a
+    Switch user in it by that name. Switch names aren't unique, so a bridged
+    room never falls back to them: a typo must not reach someone else. Raises
+    `RoomAdminRefused` saying why when nobody fits, more than one person
+    does, or the account isn't linked to exactly one Switch user."""
     wanted = name.strip().lstrip("@").lower()
     if room.bridge_id:
         members = [
@@ -230,6 +244,7 @@ async def find_person(
                     "account, so Switch can't tell which of them is meant.",
                 )
             return user_ids.pop()
+        raise RoomAdminRefused(400, f"Nobody in this room goes by `{wanted}`.")
     candidates = (
         await session.scalars(select(User.id).where(func.lower(User.name) == wanted))
     ).all()
@@ -240,4 +255,11 @@ async def find_person(
     ]
     if len(involved) == 1:
         return involved[0]
+    if involved:
+        raise RoomAdminRefused(
+            400,
+            f"More than one person in this room goes by `{wanted}`, so Switch "
+            "can't tell which is meant. Use Switch Console or the room's page "
+            "instead.",
+        )
     raise RoomAdminRefused(400, f"Nobody in this room goes by `{wanted}`.")

@@ -369,3 +369,19 @@ class TestRoomAdmins:
             "**Room admins:**",
             f"- {name}",
         ]
+
+    async def test_a_name_two_people_share_is_refused_as_ambiguous(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world, owner = await _world(session_factory)
+        name = f"sam-{uuid.uuid4().hex[:6]}"
+        for _ in range(2):
+            twin = await _user(session_factory, name, "member")
+            await world.join(twin, name)
+
+        reply = await world.room_admin_command(
+            "add-room-admin", as_=[owner], args=f"@{name}"
+        )
+
+        assert reply.startswith(f"More than one person in this room goes by `{name}`")
+        assert await world.admins() == []

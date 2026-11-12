@@ -111,6 +111,7 @@ from switch_core.room_service import (
     RoleSpec,
     RoomCreateConfig,
     RoomService,
+    names_the_owner,
     require_membership_changeable_from_outside,
 )
 from switch_core.rooms_yaml import (
@@ -1666,10 +1667,19 @@ async def post_room_users_remove(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomUsersRemoved:
     """Take people out of a bridged room and its channel, by their names on
-    its platform: the room's owner or an admin (`remove_member`)."""
+    its platform: the room's owner, a room admin or a workspace admin
+    (`remove_member`). Only the owner tier may take out the owner
+    (`remove_owner`)."""
     principal = Principal(user.id, is_admin)
+    to_check = await authorize_room(session, room_store, room_id, principal, "read")
+    names_owner = await names_the_owner(session, to_check, req.user_names)
     await _require_member_change(
-        session, room_store, room_id, principal, "remove_member", owns_target=False
+        session,
+        room_store,
+        room_id,
+        principal,
+        "remove_owner" if names_owner else "remove_member",
+        owns_target=False,
     )
     try:
         misses = await room_service.remove_users_from_room(

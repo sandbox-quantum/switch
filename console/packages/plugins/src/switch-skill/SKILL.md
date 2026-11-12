@@ -176,8 +176,8 @@ does, and there is no polling tool to call.
   only if you are the room's triage agent, and otherwise nobody), and
   answering a routed message does not make the person's next untagged message
   a follow-up to you: it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
-  own says which it is and whether it can act. The room's owner or a
-  workspace admin may turn it on or off, from the room or from its toggle in
+  own says which it is and whether it can act. The room's owner, a room
+  admin or a workspace admin may turn it on or off, from the room or from its toggle in
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
@@ -503,7 +503,8 @@ description, instructions, roles, links, aliases, archiving, visibility, and
 taking agents or people out. The owner can make other people in the room
 **room admins**, who change it the same way, apart from deleting it, changing
 who can see it, handing it on, and choosing room admins: those stay with the
-owner and workspace admins. An agent of a room admin acts as one. People
+owner and workspace admins. A room admin may take out anyone but the owner,
+other room admins included. An agent of a room admin acts as one. People
 manage them in the room with `!add-room-admin @person`,
 `!remove-room-admin @person` and `!list-room-admins`, or in Switch Console
 and the gateway; only a person in the room with a Switch account can be one,

@@ -14,6 +14,7 @@ from sqlalchemy import (
     or_,
     select,
     true,
+    union,
     update,
 )
 from sqlalchemy import func as sa_func
@@ -470,6 +471,7 @@ class RoomStore:
                 exists().where(
                     RoomAdmin.room_id == Room.id, RoomAdmin.user_id == user_id
                 ),
+                _still_a_member(user_id),
             )
         )
         return set(result.scalars().all())
@@ -478,16 +480,35 @@ class RoomStore:
         self, session: AsyncSession, room_id: str
     ) -> list[tuple[str, str]]:
         """(user id, name) of every workspace member who takes part in the
-        room (`involves`), by name: who could be made a room admin."""
+        room, by name: who could be made a room admin.
+
+        The same four ways in as `involves`, read from the room's own rows
+        rather than tested for every member of the workspace, so a large
+        workspace costs no more than a small one."""
+        ways_in = union(
+            select(Room.owner_id.label("user_id")).where(Room.id == room_id),
+            select(Client.user_id).where(
+                ClientRoom.room_id == room_id,
+                ClientRoom.client_id == Client.id,
+                Client.type == MEMBER_CLIENT_TYPE,
+            ),
+            select(ExternalUserClaim.user_id).where(
+                ClientRoom.room_id == room_id,
+                ClientRoom.client_id == ExternalUser.client_id,
+                ExternalUser.id == ExternalUserClaim.external_user_id,
+            ),
+            select(Agent.owner_id).where(
+                room_agents.c.room_id == room_id,
+                room_agents.c.agent_id == Agent.id,
+            ),
+        ).subquery()
         result = await session.execute(
             select(User.id, User.name)
+            .join(ways_in, ways_in.c.user_id == User.id)
             .join(
                 TenantMember,
                 (TenantMember.user_id == User.id)
                 & (TenantMember.tenant_id == require_tenant_id()),
-            )
-            .where(
-                select(Room.id).where(Room.id == room_id, involves(User.id)).exists()
             )
             .order_by(User.name, User.id)
         )
@@ -499,7 +520,11 @@ class RoomStore:
         result = await session.execute(
             select(RoomAdmin)
             .join(Room, Room.id == RoomAdmin.room_id)
-            .where(RoomAdmin.room_id == room_id, involves(RoomAdmin.user_id))
+            .where(
+                RoomAdmin.room_id == room_id,
+                involves(RoomAdmin.user_id),
+                _still_a_member(RoomAdmin.user_id),
+            )
             .order_by(RoomAdmin.granted_at, RoomAdmin.user_id)
         )
         return list(result.scalars().all())
@@ -1329,6 +1354,22 @@ def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[boo
     if reader_id is not None:
         visible.append(involves(reader_id))
     return or_(*visible)
+
+
+def _still_a_member(
+    user_id: "str | ColumnElement[str] | InstrumentedAttribute[str]",
+) -> ColumnElement[bool]:
+    """True while the user is a member of the bound workspace: a room admin
+    grant counts only then, so someone removed from the workspace who is
+    still in a channel through a claimed account changes nothing."""
+    return (
+        exists()
+        .where(
+            TenantMember.tenant_id == require_tenant_id(),
+            TenantMember.user_id == user_id,
+        )
+        .correlate_except(TenantMember)
+    )
 
 
 def involves(

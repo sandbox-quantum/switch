@@ -19,19 +19,18 @@ describe('roomAdminStandingOf', () => {
     ).toEqual({ userId: 'u-ada', name: 'Ada Lovelace', isAdmin: true });
   });
 
-  it('falls back to the Switch name, its own or the one that linked it', () => {
-    expect(roomAdminStandingOf(ROOM, { name: 'Bob', fullName: null, userIds: [] })).toEqual({
-      userId: 'u-bob',
-      name: 'Bob',
-      isAdmin: false,
-    });
+  it('falls back to the Switch name that linked the username', () => {
     expect(
       roomAdminStandingOf(ROOM, { name: 'ada', fullName: 'Ada Lovelace', userIds: [] })?.userId
     ).toBe('u-ada');
   });
 
+  it('never takes an unlinked username for a Switch user of that name', () => {
+    expect(roomAdminStandingOf(ROOM, { name: 'Bob', fullName: null, userIds: [] })).toBeNull();
+  });
+
   it('says nothing when the name is shared, or nobody has it', () => {
-    expect(roomAdminStandingOf(ROOM, { name: 'Bo', fullName: null, userIds: [] })).toBeNull();
+    expect(roomAdminStandingOf(ROOM, { name: 'x', fullName: 'Bo', userIds: [] })).toBeNull();
     expect(roomAdminStandingOf(ROOM, { name: 'carol', fullName: null, userIds: [] })).toBeNull();
   });
 

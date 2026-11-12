@@ -16,8 +16,9 @@ export type RoomAdminStanding = { userId: string; name: string; isAdmin: boolean
  * Which Switch user a person on the room's people list is, among its room
  * admins and those who could be made one; null when they are neither, or when
  * it cannot be told. A bridged room lists people by their messaging-app
- * username, so who linked it decides; failing that, the Switch name, matched
- * only when one person has it.
+ * username, so who linked it decides; failing that, the linked Switch name,
+ * matched only when one person has it. A username is never matched against
+ * Switch names: an unlinked `bob` on the app is not the Switch user `bob`.
  */
 export function roomAdminStandingOf(
   room: Pick<RemoteRoomDetail, 'roomAdmins' | 'roomAdminCandidates'>,
@@ -32,8 +33,7 @@ export function roomAdminStandingOf(
     byId.length > 0
       ? byId
       : known.filter(
-          (each) =>
-            each.name !== null && (each.name === person.name || each.name === person.fullName)
+          (each) => each.name !== null && person.fullName !== null && each.name === person.fullName
         );
   if (matches.length !== 1) return null;
   const [match] = matches;

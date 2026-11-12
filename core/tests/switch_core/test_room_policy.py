@@ -63,6 +63,7 @@ MATRIX = [
     ("add_person", OP, OP),
     ("attach", OP, OP),
     ("remove_member", RA, RA),
+    ("remove_owner", OWN, OWN),
     ("unlink", RA, RA),
     ("delete_document", RA, RA),
     ("set_alias", RA, RA),
@@ -203,6 +204,15 @@ class TestRoomAdmin:
         assert reason == (
             "Only the room's owner, a room admin or a workspace admin can change "
             "this room's settings."
+        )
+
+    def test_removes_anyone_but_the_owner(self) -> None:
+        assert allows(ROOM_ADMIN, PUBLIC, "remove_member")
+        decision = decide(ROOM_ADMIN, PUBLIC, "remove_owner", owns_target=False)
+        assert not decision.allowed
+        assert decision.reason == (
+            "Only the room's owner or a workspace admin can remove this room's "
+            "owner from it."
         )
 
     def test_their_open_agent_is_capped_at_in_the_room(self) -> None:
