@@ -27,6 +27,7 @@ import {
   usePackageReferences,
   useReferences,
 } from "../../data/hooks";
+import { LockedMark, OpensMark } from "../../components/RowAccess";
 import { privateRoomsLabel } from "./privateRooms";
 
 interface Props {
@@ -176,18 +177,31 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                   px: 1,
                   py: 0.5,
                   borderRadius: 1,
-                  cursor: "pointer",
-                  "&:hover": { backgroundColor: "action.hover" },
+                  ...(r.can_read && {
+                    cursor: "pointer",
+                    "&:hover": { backgroundColor: "action.hover" },
+                  }),
                 }}
-                onClick={() => navigate(`/resources/references/${r.id}`)}
+                // A private item is listed to whoever may read the package,
+                // but its own page would refuse them: no link.
+                onClick={
+                  r.can_read ? () => navigate(`/resources/references/${r.id}`) : undefined
+                }
+                data-testid={`package-reference-${r.id}`}
               >
                 <Chip
                   label={r.type_display_name ?? `${r.type} (unknown type)`}
                   size="small"
                 />
-                <Typography variant="body2" sx={{ flexGrow: 1 }}>
+                <Typography
+                  variant="body2"
+                  color={r.can_read ? undefined : "text.secondary"}
+                >
                   {r.name || "(unnamed)"}
                 </Typography>
+                {!r.can_read && <LockedMark />}
+                <span style={{ flexGrow: 1 }} />
+                {r.can_read && <OpensMark />}
                 {canMutate && (
                   <IconButton
                     size="small"
@@ -240,14 +254,27 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                   px: 1,
                   py: 0.5,
                   borderRadius: 1,
-                  cursor: "pointer",
-                  "&:hover": { backgroundColor: "action.hover" },
+                  ...(d.can_read && {
+                    cursor: "pointer",
+                    "&:hover": { backgroundColor: "action.hover" },
+                  }),
                 }}
-                onClick={() => navigate(`/resources/documents/${d.id}`)}
+                // A private item is listed to whoever may read the package,
+                // but its own page would refuse them: no link.
+                onClick={
+                  d.can_read ? () => navigate(`/resources/documents/${d.id}`) : undefined
+                }
+                data-testid={`package-document-${d.id}`}
               >
-                <Typography variant="body2" sx={{ flexGrow: 1 }}>
+                <Typography
+                  variant="body2"
+                  color={d.can_read ? undefined : "text.secondary"}
+                >
                   {d.name || "(unnamed)"}
                 </Typography>
+                {!d.can_read && <LockedMark />}
+                <span style={{ flexGrow: 1 }} />
+                {d.can_read && <OpensMark />}
                 {canMutate && (
                   <IconButton
                     size="small"

@@ -136,11 +136,14 @@ class VendorServer {
         `The agent host did not hand out a ${this.service} token within ${timeoutMs / 1000} s.`
       );
       try {
-        return await this.connected(credential, signal, exchange);
+        return this.deps.redactions.value(await this.connected(credential, signal, exchange));
       } catch (error) {
         if (signal.aborted)
           throw new Error(`${this.service} did not ${what} within ${timeoutMs / 1000} s.`);
-        if (!(error instanceof VendorRefusedToken)) throw error;
+        if (!(error instanceof VendorRefusedToken))
+          throw new Error(
+            this.deps.redactions.text(error instanceof Error ? error.message : String(error))
+          );
         if (attempt > 0)
           throw new Error(
             `${this.service} refused this agent's token again after Switch issued a new one.`

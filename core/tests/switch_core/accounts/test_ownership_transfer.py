@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 
 import httpx
@@ -16,7 +17,13 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.transfer import TransferRefused, transfer_ownership
+from switch_core.accounts.transfer import (
+    AgentTransferFacts,
+    TransferRefused,
+    agent_transfer_facts,
+    agent_transfer_refusal,
+    transfer_ownership,
+)
 from switch_core.authz import Principal
 from switch_core.bridges.agent.protocol.agent_connections import (
     KEY_REISSUED,
@@ -29,6 +36,7 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
     AgentConnectionRecord,
+    AgentDefinition,
     ApiKey,
     AuditEvent,
     Document,
@@ -222,40 +230,45 @@ async def test_an_agent_moves_with_a_new_key_its_new_owner_holds(
         assert key.key_hash != old_hash
 
 
+async def _grant_github(session: AsyncSession, owner: User, agent: Agent) -> None:
+    """Give `agent` service access on its owner's own GitHub connection."""
+    session.add(
+        ServiceConnection(
+            user_id=owner.id,
+            service="github",
+            status="active",
+            consent="read",
+            granted_scopes=[],
+            account_id="1001",
+            external_identity="owner",
+            encrypted_secret="x",
+            secret_revision=1,
+        )
+    )
+    await session.flush()
+    session.add(
+        ServiceGrant(
+            agent_id=agent.id,
+            owner_id=owner.id,
+            service="github",
+            access="read",
+            tool_mode="allow",
+            tools=[],
+            resources={},
+            account_id="1001",
+            created_by=owner.id,
+        )
+    )
+    await session.commit()
+
+
 async def test_an_agent_using_its_owners_connections_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
         owner, member, _ = await _people(session)
         agent = await _agent(session, TENANT_ZERO_ID, owner, "helper")
-        session.add(
-            ServiceConnection(
-                user_id=owner.id,
-                service="github",
-                status="active",
-                consent="read",
-                granted_scopes=[],
-                account_id="1001",
-                external_identity="owner",
-                encrypted_secret="x",
-                secret_revision=1,
-            )
-        )
-        await session.flush()
-        session.add(
-            ServiceGrant(
-                agent_id=agent.id,
-                owner_id=owner.id,
-                service="github",
-                access="read",
-                tool_mode="allow",
-                tools=[],
-                resources={},
-                account_id="1001",
-                created_by=owner.id,
-            )
-        )
-        await session.commit()
+        await _grant_github(session, owner, agent)
 
         with pytest.raises(TransferRefused) as refused:
             await _transfer(
@@ -268,6 +281,25 @@ async def test_an_agent_using_its_owners_connections_is_refused(
         assert (
             await session.scalar(select(Agent.owner_id).where(Agent.id == agent_id))
         ) == owner_id
+
+
+async def test_only_its_owner_is_told_which_services_an_agent_uses(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The grants are made on the owner's own connections, which an admin is
+    not shown either (`gateway/service_connections.py`)."""
+    async with session_factory() as session:
+        owner, member, admin = await _people(session)
+        agent = await _agent(session, TENANT_ZERO_ID, owner, "helper")
+        await _grant_github(session, owner, agent)
+
+        with pytest.raises(TransferRefused) as refused:
+            await _transfer(
+                session, "agent", agent.id, member, Principal(admin.id, True)
+            )
+        assert refused.value.status == 409
+        assert "service access" in str(refused.value)
+        assert "github" not in str(refused.value)
 
 
 async def test_an_agent_that_may_manage_agents_is_refused(
@@ -399,7 +431,7 @@ async def test_a_server_connectors_agent_is_refused(
                 session, "agent", agent.id, member, Principal(owner.id, False)
             )
         assert refused.value.status == 409
-        assert "server connector" in str(refused.value)
+        assert "run by Switch itself" in str(refused.value)
 
 
 async def test_an_agents_connection_rows_go_with_its_old_key(
@@ -601,3 +633,90 @@ async def test_a_removal_waits_for_a_transfer_to_the_member(
     assert agent_name in response.json()["detail"]
     async with session_factory() as session:
         assert await session.get(TenantMember, (TENANT_A, member_id)) is not None
+
+
+_TIED_BY_NOTHING_ELSE = AgentTransferFacts(
+    granted_services=(),
+    managed=False,
+    may_manage_agents=False,
+    in_family=False,
+    has_oauth_client=False,
+    run_by_server_connector=False,
+)
+
+
+class TestAgentTransferRefusal:
+    def test_an_agent_tied_to_its_owner_by_nothing_else_may_change_owner(self) -> None:
+        assert agent_transfer_refusal(_TIED_BY_NOTHING_ELSE, to_owner=True) is None
+
+    @pytest.mark.parametrize(
+        ("fact", "value", "says"),
+        [
+            ("granted_services", ("github",), "service access"),
+            ("managed", True, "managed on its owner's device"),
+            ("may_manage_agents", True, "manage its owner's agents"),
+            ("in_family", True, "family of sub-agents"),
+            ("has_oauth_client", True, "OAuth client of its own"),
+            ("run_by_server_connector", True, "run by Switch itself"),
+        ],
+    )
+    def test_each_tie_to_its_owner_refuses_on_its_own(
+        self, fact: str, value: object, says: str
+    ) -> None:
+        facts = replace(_TIED_BY_NOTHING_ELSE, **{fact: value})
+
+        for to_owner in (True, False):
+            refusal = agent_transfer_refusal(facts, to_owner=to_owner)
+            assert refusal is not None and says in refusal
+
+    def test_only_the_owner_is_told_which_services(self) -> None:
+        facts = replace(_TIED_BY_NOTHING_ELSE, granted_services=("github", "linear"))
+
+        assert "github, linear" in (agent_transfer_refusal(facts, to_owner=True) or "")
+        assert "github" not in (agent_transfer_refusal(facts, to_owner=False) or "")
+
+
+async def test_the_transfer_facts_of_many_agents_are_read_together(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        owner, _member, _admin = await _people(session)
+        plain = await _agent(session, TENANT_ZERO_ID, owner, "plain")
+        granted = await _agent(session, TENANT_ZERO_ID, owner, "granted")
+        managed = await _agent(session, TENANT_ZERO_ID, owner, "managed")
+        manager = await _agent(session, TENANT_ZERO_ID, owner, "manager")
+        parent = await _agent(session, TENANT_ZERO_ID, owner, "parent")
+        child = await _agent(session, TENANT_ZERO_ID, owner, "parent-child")
+        connector = await _agent(session, TENANT_ZERO_ID, owner, "connector")
+        oauth = await _agent(session, TENANT_ZERO_ID, owner, "oauth")
+        manager.can_manage_agents = True
+        oauth.oauth_client_id = "client-1"
+        child.parent_agent_id = parent.id
+        connector.metadata_ = {"server_connector_id": "github"}
+        session.add(
+            AgentDefinition(
+                agent_id=managed.id,
+                owner_id=owner.id,
+                revision=1,
+                desired_state="running",
+                definition={},
+            )
+        )
+        await session.flush()
+        await _grant_github(session, owner, granted)
+        agents = [plain, granted, managed, manager, parent, child, connector, oauth]
+
+        facts = await agent_transfer_facts(
+            session, TENANT_ZERO_ID, [agent.id for agent in agents]
+        )
+
+        assert facts == {
+            plain.id: _TIED_BY_NOTHING_ELSE,
+            granted.id: replace(_TIED_BY_NOTHING_ELSE, granted_services=("github",)),
+            managed.id: replace(_TIED_BY_NOTHING_ELSE, managed=True),
+            manager.id: replace(_TIED_BY_NOTHING_ELSE, may_manage_agents=True),
+            parent.id: replace(_TIED_BY_NOTHING_ELSE, in_family=True),
+            child.id: replace(_TIED_BY_NOTHING_ELSE, in_family=True),
+            connector.id: replace(_TIED_BY_NOTHING_ELSE, run_by_server_connector=True),
+            oauth.id: replace(_TIED_BY_NOTHING_ELSE, has_oauth_client=True),
+        }

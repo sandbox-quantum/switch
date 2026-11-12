@@ -1,27 +1,27 @@
 import { Alert, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   ORGANIZATION_AUDIT_PAGE,
   type OrganizationAuditEvent,
   fetchOrganizationAuditEvents,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 const ACTION_LABELS: Record<string, string> = {
   "organization.created": "Organization created",
   "organization.workspace_created": "Workspace added",
   "organization.role_changed": "Organization role changed",
-  "organization.member_removed": "Member removed",
+  "organization.member_removed": "User removed",
   "organization.connector_app_saved": "Connector app saved",
   "organization.connector_app_removed": "Connector app removed",
   "organization.service_set": "Service switched",
   "organization.service_cleared": "Service left to workspaces",
-  "organization.member_added_from_directory": "Member added from WorkOS",
-  "organization.member_promoted_from_directory": "Member made Org Admin from WorkOS",
-  "organization.member_demoted_from_directory": "Org Admin made Member from WorkOS",
-  "organization.member_removed_from_directory": "Member removed from WorkOS",
+  "organization.member_added_from_directory": "User added from WorkOS",
+  "organization.member_promoted_from_directory": "Promoted to org admin from WorkOS",
+  "organization.member_demoted_from_directory": "Demoted to member from WorkOS",
+  "organization.member_removed_from_directory": "User removed from WorkOS",
   "organization.directory_conflict": "WorkOS change broke a Switch rule",
   "organization.linked_to_directory": "Linked to WorkOS",
 };
@@ -101,6 +101,11 @@ export default function OrganizationAuditSection() {
         <DataTable
           rows={events}
           columns={COLUMNS}
+          emptyState={
+            <TableEmptyState title="Nothing recorded yet">
+              Changes to this organization's workspaces and users are recorded here.
+            </TableEmptyState>
+          }
           height={Math.min(520, 108 + events.length * 52)}
           pageSize={25}
         />

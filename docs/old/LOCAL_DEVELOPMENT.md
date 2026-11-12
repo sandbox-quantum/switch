@@ -20,7 +20,7 @@ gateway frontend.
 
 ```bash
 just init-env            # first-time setup — generate .env with random secrets
-uv sync                  # install Python dependencies (core/)
+uv sync --project core   # install Python dependencies (core/)
 just gateway-install     # install gateway frontend deps (first time only)
 ```
 
@@ -81,8 +81,7 @@ boot instead, as a standing reminder that tenant isolation is not active.
 
 ```bash
 just up      # start the supporting services (Docker Compose)
-just migrate # apply database migrations
-just run     # run switch-core (:8000)
+just run     # run switch-core (:8000); applies database migrations on start
 just gateway-dev   # run the gateway frontend, in a separate terminal (:5173)
 ```
 
@@ -101,10 +100,10 @@ setting existed lacks it, and
 the Mattermost bridge then refuses to start with a message naming the variable:
 add the line from `.env.example`.
 
-`just migrate` runs `alembic upgrade head` against the Postgres started by
-`just up`. Run it once after the stack is up and again after pulling any
-change that adds a migration — `just run` does not apply migrations itself
-and will fail against a database that's behind.
+switch-core applies pending database migrations when it starts, so `just run`
+brings a database that's behind up to date. Set `DB_MIGRATE_ON_BOOT=false` to
+turn that off. `just migrate` runs `alembic upgrade head` against the
+Postgres started by `just up` without starting the server.
 
 `just run` starts switch-core (`python -m switch_core.main`) on
 `SERVER_PORT` (`8000` by default). This one process is both the Agent Bridge
@@ -139,6 +138,29 @@ them. That's also why cookie-based gateway auth (including OIDC login, see
 [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)) just works in dev without
 any CORS configuration: as far as the browser can tell, it never left
 `:5173`.
+
+### Viewing the dashboard as each role
+
+To check what each permission level sees, run `just seed-dev-roles` once the
+stack and `just run` are up. It creates a test account per level on your
+local server (an org admin, a workspace admin and a member, with a random
+password) plus a second workspace that only the org admin can open, and saves
+their logins, with the gateway admin's from `.env` as the operator, to
+`gateway/.dev-role-accounts.json` (gitignored). It is safe to run again.
+
+With the new layout turned on (`FEATURE_FLAGS_ENABLED=gateway_v2`),
+`just gateway-dev` then shows a **Role:** control at the right end of the top
+bar. Sign in once as anyone, such as the gateway admin from `.env`: the
+server tells a signed-out page none of its flags, so the control is not on
+the sign-in page. Picking a role signs you in as that account, an ordinary
+password sign-in, and reloads the page, staying in the same workspace when
+that account can open it. The server sees only that account, so what you see is
+exactly what a person with that role gets.
+
+It exists only in the Vite dev server: a production build leaves it out, and
+`npm run build` fails if any of it gets in (`gateway/scripts/check-no-dev-tools.mjs`).
+The dashboard switch-core serves from `GATEWAY_UI_DIR` is such a build, so it
+never has the switcher.
 
 ## Which URL is which
 
@@ -224,10 +246,49 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
   their migrations differently cannot break each other's database this
   way. Delete that directory to start the Console from scratch.
 
+## Auto-route locally
+
+Auto-route (the `decision_routing` feature flag) asks a decision service who
+should answer an untagged message. `just decision-up` starts one beside the
+stack: the decision service on `:8230` (`DECISION_PORT` to change it) and a
+llama.cpp server for its model, Qwen3.5-4B in 4-bit, whose weights (about
+2.7 GB) download once into the `decision-models` volume, from a fixed
+Hugging Face commit and checked against their SHA-256 (a file that fails is
+deleted and downloaded again). It is the compose
+`decision` profile; `just decision-up gpu` is the `decision-gpu` profile, for
+Linux with an NVIDIA GPU and the NVIDIA Container Toolkit.
+
+Production (the Helm chart) defaults to a different model, **Strands Decider
+4B**, which made far fewer wrong picks on our routing scenarios (2 against
+Qwen's 9 in 100) but needs an NVIDIA GPU with 24 GB, so it can't be the local
+default. `just decision-up strands` (the `decision-strands-gpu` profile) runs
+it on Linux with an NVIDIA GPU (24 GB), about 24 GiB of free RAM and the
+NVIDIA Container Toolkit; there is no GPU passthrough on macOS. It builds the
+`switch-decision-strands` image, and the first start downloads the checkpoint
+and its Gemma 4 base model (about 17 GB, Gemma terms apply) into the
+`decision-hf` volume, then loads it, which takes minutes; `HF_TOKEN` is
+optional. `decision/README.md` has the numbers and the licence note.
+
+switch-core runs on the host, so point it at the service in `.env` and
+restart `just run`:
+
+```bash
+FEATURE_FLAGS_ENABLED=follow_the_conversation,decision_routing
+DECISION_ENDPOINT_URL=http://localhost:8230
+DECISION_TIMEOUT_SECONDS=30
+```
+
+On CPU each decision takes several seconds, far over the one-second target a
+GPU meets, so raise the timeout as above. It is fine for trying auto-route
+out, not for judging its latency. Another model is `DECISION_MODEL_URL`,
+`DECISION_MODEL_FILE` and `DECISION_MODEL` (plus `HF_TOKEN` for a gated one).
+`just decision-down` stops it. `decision/README.md` covers the service itself.
+
 ## Other useful recipes
 
 | Command | What it does |
 | --- | --- |
+| `just decision-up [gpu\|strands]` / `just decision-down` | Start / stop the decision service for auto-route (see above) |
 | `just local-cloud` / `just local-cloud-console` | Run switch-core as a stand-in for Switch Cloud, and the Console pointed at it (see above) |
 | `just format` / `just check` | Format with ruff / lint-check in CI mode (no changes) |
 | `just typecheck` | mypy over `core/switch_core/` |
@@ -235,3 +296,4 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
 | `just test-integration` | Integration tests against a real Postgres via testcontainers |
 | `just migration "message"` | Autogenerate a new Alembic migration |
 | `just gateway-build` | Build the gateway frontend's production bundle |
+| `just seed-dev-roles` | Create the test accounts the dashboard's dev role switcher signs in as (see above) |

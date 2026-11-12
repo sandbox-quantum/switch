@@ -10,7 +10,7 @@ import type {
  * shows, so a page for one workspace never connects or disconnects in another.
  */
 export type ServiceCalls = {
-  startSignIn: (service: string) => Promise<string>;
+  startSignIn: (service: string, access?: 'read' | 'write') => Promise<string>;
   getSignIn: (service: string, flowId: string) => Promise<ServiceFlow>;
   cancelSignIn: (service: string, flowId: string) => Promise<void>;
   connectWithKey: (service: string, fields: Record<string, string>) => Promise<ServiceKeyConnected>;
@@ -19,7 +19,8 @@ export type ServiceCalls = {
 
 export function serverServiceCalls(serverId: string): ServiceCalls {
   return {
-    startSignIn: (service) => rpc.switchServers.startServiceConnection(serverId, service),
+    startSignIn: (service, access) =>
+      rpc.switchServers.startServiceConnection(serverId, service, access),
     getSignIn: (service, flowId) => rpc.switchServers.getServiceFlow(serverId, service, flowId),
     cancelSignIn: (service, flowId) =>
       rpc.switchServers.cancelServiceConnection(serverId, service, flowId),
@@ -31,7 +32,8 @@ export function serverServiceCalls(serverId: string): ServiceCalls {
 
 export function workspaceServiceCalls(workspaceId: string): ServiceCalls {
   return {
-    startSignIn: (service) => rpc.workspaces.startServiceConnection({ workspaceId, service }),
+    startSignIn: (service, access) =>
+      rpc.workspaces.startServiceConnection({ workspaceId, service, access }),
     getSignIn: (service, flowId) => rpc.workspaces.getServiceFlow({ workspaceId, service, flowId }),
     cancelSignIn: (service, flowId) =>
       rpc.workspaces.cancelServiceConnection({ workspaceId, service, flowId }),

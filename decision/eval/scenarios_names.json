@@ -1,0 +1,518 @@
+{
+ "room": {
+  "name": "eng-platform",
+  "instructions": "Platform team room. Deploys and CI go to deploy-bot; cloud infrastructure, databases and cloud costs go to infra-bot; customer invoices and plans go to billing-bot; customer tickets and escalations go to support-bot, who is on call; docs and release notes go to docs-bot. People here also talk among themselves; agents should not jump into those."
+ },
+ "agents": [
+  {
+   "name": "deploy-bot",
+   "description": "Runs and watches CI pipelines and deployments; investigates failed builds and deploys, reruns and rolls back.",
+   "role": "release"
+  },
+  {
+   "name": "infra-bot",
+   "description": "Cloud infrastructure: databases, queues, Kubernetes clusters, networking, capacity and the cloud bill."
+  },
+  {
+   "name": "billing-bot",
+   "description": "Customer billing: pricing, plans, invoices, refunds, payment failures."
+  },
+  {
+   "name": "support-bot",
+   "description": "Customer support tickets, escalations and account questions from customers.",
+   "role": "on-call"
+  },
+  {
+   "name": "docs-bot",
+   "description": "Product documentation, guides, API reference and release notes."
+  }
+ ],
+ "scenarios": [
+  {
+   "id": "name-exact-presence",
+   "expect": [
+    "deploy-bot"
+   ],
+   "note": "Exact agent name, no @, presence ping: that agent answers.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "are you there deploy-bot?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-exact-leading-request",
+   "expect": [
+    "deploy-bot"
+   ],
+   "note": "Exact name first, then a request.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "deploy-bot can you rerun the nightly build",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-exact-trailing",
+   "expect": [
+    "docs-bot"
+   ],
+   "note": "Exact name at the end.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "bob",
+    "text": "where are the release notes for 4.2, docs-bot?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-mid-sentence",
+   "expect": [
+    "infra-bot"
+   ],
+   "note": "Name mid-sentence, as the subject of a request to it.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "could infra-bot check why the staging database is slow?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-loose-space",
+   "expect": [
+    "deploy-bot"
+   ],
+   "note": "Loose spelling: space instead of hyphen.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "deploy bot, is the pipeline green?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-loose-case",
+   "expect": [
+    "billing-bot"
+   ],
+   "note": "Different capitalisation.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "Billing-Bot can you resend the acme invoice",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-loose-words",
+   "expect": [
+    "billing-bot"
+   ],
+   "note": "Name written as two words in a greeting.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "bob",
+    "text": "hey billing bot quick question about our plan",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-greeting-only",
+   "expect": [
+    "docs-bot"
+   ],
+   "note": "A bare greeting to an agent: it should answer (it is being called).",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "hey docs-bot",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-greeting-question",
+   "expect": [
+    "support-bot"
+   ],
+   "note": "Presence check to the on-call agent.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "support-bot you around?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-in-thread-after-other",
+   "expect": [
+    "deploy-bot"
+   ],
+   "note": "Name in a thread reply after another person spoke.",
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "the canary for 4.3 looks stuck",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "yeah I see it too, not sure why",
+     "addressed": []
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "deploy-bot can you check this one?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "name-wins-over-helper",
+   "expect": [
+    "docs-bot"
+   ],
+   "note": "A different agent was helping; the named agent wins.",
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "prod deploy for 4.2 failed",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "It failed at the migration; I reran it with a longer timeout and it passed.",
+     "addressed": [
+      "sara"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "docs-bot please add that to the changelog",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "name-wins-over-topic",
+   "expect": [
+    "support-bot"
+   ],
+   "note": "Topic leans to billing, but the message names support-bot.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "bob",
+    "text": "support-bot can you handle the acme refund ticket?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-after-colleague-1",
+   "expect": [
+    "deploy-bot"
+   ],
+   "note": "Mirrors a real failure: a 1:1 with an agent, then a message to a colleague, then the agent called by name without @.",
+   "thread": [],
+   "recent": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "can you rerun the integration tests",
+     "addressed": [
+      "deploy-bot"
+     ]
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "Rerunning now, about 10 minutes.",
+     "addressed": [
+      "sara"
+     ]
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "thanks",
+     "addressed": [
+      "deploy-bot"
+     ]
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "lee can you review my PR when you get a minute?",
+     "addressed": [
+      "lee"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "sara",
+    "text": "are you still there deploy-bot?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-after-colleague-2",
+   "expect": [
+    "infra-bot"
+   ],
+   "note": "Same pattern, loose spelling.",
+   "thread": [],
+   "recent": [
+    {
+     "sender": "bob",
+     "sender_kind": "person",
+     "text": "resize the staging db to the next size up",
+     "addressed": [
+      "infra-bot"
+     ]
+    },
+    {
+     "sender": "infra-bot",
+     "sender_kind": "agent",
+     "text": "Started the resize; it takes about 15 minutes.",
+     "addressed": [
+      "bob"
+     ]
+    },
+    {
+     "sender": "bob",
+     "sender_kind": "person",
+     "text": "sara are we still on for the 3pm sync?",
+     "addressed": [
+      "sara"
+     ]
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "yes",
+     "addressed": [
+      "bob"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "bob",
+    "text": "hey infra bot, did that resize finish?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "name-after-colleague-3",
+   "expect": [
+    "billing-bot"
+   ],
+   "note": "Same pattern, presence ping.",
+   "thread": [],
+   "recent": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "what plan is acme on?",
+     "addressed": [
+      "billing-bot"
+     ]
+    },
+    {
+     "sender": "billing-bot",
+     "sender_kind": "agent",
+     "text": "Acme is on Enterprise, billed annually.",
+     "addressed": [
+      "lee"
+     ]
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "bob do you have the contract pdf?",
+     "addressed": [
+      "bob"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "lee",
+    "text": "billing-bot you there?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-person-named",
+   "expect": [
+    null
+   ],
+   "note": "A person named in plain text: for that person, not an agent.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "bob can you look at the acme invoice?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-person-named-topic",
+   "expect": [
+    null
+   ],
+   "note": "Deploy topic, but addressed to a person by name.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "sara did the deploy go out?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-agent-talked-about",
+   "expect": [
+    null
+   ],
+   "note": "An agent talked about, not to; venting among people.",
+   "thread": [],
+   "recent": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "anyone know why main is red?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "bob",
+    "text": "deploy-bot broke the build again lol",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-agent-quoted",
+   "expect": [
+    null
+   ],
+   "note": "Asking people about an agent's earlier message.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "did anyone see what billing-bot said earlier?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-agent-in-code",
+   "expect": [
+    null
+   ],
+   "note": "Agent name inside a code snippet, an FYI for people.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "fyi the config key is `deploy-bot.timeout`, set it to 900",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-agent-in-url",
+   "expect": [
+    null
+   ],
+   "note": "Agent name inside a URL, shared with people.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "bob",
+    "text": "dashboard is at https://example.com/teams/docs-bot/stats if you need it",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-thanks-agent",
+   "expect": [
+    null
+   ],
+   "note": "Thanks after the agent finished: small talk, no answer needed.",
+   "thread": [],
+   "recent": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "rerun the nightly please",
+     "addressed": [
+      "deploy-bot"
+     ]
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "Done, the nightly is green.",
+     "addressed": [
+      "sara"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "sara",
+    "text": "thanks deploy-bot",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-third-person-plan",
+   "expect": [
+    null
+   ],
+   "note": "A person says they will talk to an agent later; not addressed to it now.",
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "I'll ask docs-bot to write it up tomorrow",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "neg-comparing-agents",
+   "expect": [
+    null
+   ],
+   "note": "People discussing agents.",
+   "thread": [],
+   "recent": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "who should own the disk alerts?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "bob",
+    "text": "I think infra-bot handles this better than deploy-bot honestly",
+    "thread_id": null
+   }
+  }
+ ]
+}

@@ -1,0 +1,44 @@
+<svg viewBox="4 2 40 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M20.0842 3.02539L19.8595 3.1613C19.5021 3.3775 19.1654 3.61923 18.8512 3.88336L19.4993 3.42749H25L26 10.9995L21 15.9995L16 19.4749V23.4824C16 26.2814 17.4629 28.8769 19.8574 30.3263L25.1211 33.5124L14 39.9997H11.8551L7.85737 37.5799C5.46286 36.1305 4 33.535 4 30.736V17.2601C4 14.4602 5.46379 11.864 7.85952 10.4149L19.8595 3.15638C19.9339 3.11141 20.0088 3.06774 20.0842 3.02539Z" fill="url(#connection-microsoft-365-gradient-0)"/>
+<path d="M20.0842 3.02539L19.8595 3.1613C19.5021 3.3775 19.1654 3.61923 18.8512 3.88336L19.4993 3.42749H25L26 10.9995L21 15.9995L16 19.4749V23.4824C16 26.2814 17.4629 28.8769 19.8574 30.3263L25.1211 33.5124L14 39.9997H11.8551L7.85737 37.5799C5.46286 36.1305 4 33.535 4 30.736V17.2601C4 14.4602 5.46379 11.864 7.85952 10.4149L19.8595 3.15638C19.9339 3.11141 20.0088 3.06774 20.0842 3.02539Z" fill="url(#connection-microsoft-365-gradient-1)"/>
+<path d="M31.9973 19V23.4803C31.9973 26.2793 30.5344 28.8748 28.1399 30.3242L16.1399 37.5878C13.6852 39.0737 10.6308 39.1273 8.13281 37.7487L19.8546 44.844C22.4013 46.3855 25.5932 46.3855 28.1399 44.844L40.1399 37.5803C42.5344 36.1309 43.9972 33.5354 43.9972 30.7364V27.5L42.9973 26L31.9973 19Z" fill="url(#connection-microsoft-365-gradient-2)"/>
+<path d="M31.9973 19V23.4803C31.9973 26.2793 30.5344 28.8748 28.1399 30.3242L16.1399 37.5878C13.6852 39.0737 10.6308 39.1273 8.13281 37.7487L19.8546 44.844C22.4013 46.3855 25.5932 46.3855 28.1399 44.844L40.1399 37.5803C42.5344 36.1309 43.9972 33.5354 43.9972 30.7364V27.5L42.9973 26L31.9973 19Z" fill="url(#connection-microsoft-365-gradient-3)"/>
+<path d="M40.1405 10.4153L28.1405 3.15678C25.6738 1.66471 22.6021 1.61849 20.0979 3.01811L19.8595 3.16231C17.4638 4.61143 16 7.20757 16 10.0075V19.4914L19.8595 17.1568C22.4051 15.6171 25.5949 15.6171 28.1405 17.1568L40.1405 24.4153C42.4613 25.8192 43.9076 28.2994 43.9957 30.9985C43.9986 30.9113 44 30.824 44 30.7364V17.2605C44 14.4606 42.5362 11.8644 40.1405 10.4153Z" fill="url(#connection-microsoft-365-gradient-4)"/>
+<path d="M40.1405 10.4153L28.1405 3.15678C25.6738 1.66471 22.6021 1.61849 20.0979 3.01811L19.8595 3.16231C17.4638 4.61143 16 7.20757 16 10.0075V19.4914L19.8595 17.1568C22.4051 15.6171 25.5949 15.6171 28.1405 17.1568L40.1405 24.4153C42.4613 25.8192 43.9076 28.2994 43.9957 30.9985C43.9986 30.9113 44 30.824 44 30.7364V17.2605C44 14.4606 42.5362 11.8644 40.1405 10.4153Z" fill="url(#connection-microsoft-365-gradient-5)"/>
+<path d="M4.00428 30.9984C4.00428 30.9984 4.00428 30.9984 4.00428 30.9984Z" fill="url(#connection-microsoft-365-gradient-6)"/>
+<path d="M4.00428 30.9984C4.00428 30.9984 4.00428 30.9984 4.00428 30.9984Z" fill="url(#connection-microsoft-365-gradient-7)"/>
+<defs>
+<radialGradient id="connection-microsoft-365-gradient-0" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(17.4186 10.6379) rotate(110.528) scale(33.3657 58.1966)">
+<stop offset="0.06441" stop-color="#AE7FE2"/>
+<stop offset="1" stop-color="#0078D4"/>
+</radialGradient>
+<linearGradient id="connection-microsoft-365-gradient-1" x1="17.5119" y1="37.868" x2="12.7513" y2="29.6342" gradientUnits="userSpaceOnUse">
+<stop stop-color="#114A8B"/>
+<stop offset="1" stop-color="#0078D4" stop-opacity="0"/>
+</linearGradient>
+<radialGradient id="connection-microsoft-365-gradient-2" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(10.4272 36.3511) rotate(-8.36717) scale(31.0503 20.5108)">
+<stop offset="0.133928" stop-color="#D59DFF"/>
+<stop offset="1" stop-color="#5E438F"/>
+</radialGradient>
+<linearGradient id="connection-microsoft-365-gradient-3" x1="40.3539" y1="25.3768" x2="35.2525" y2="32.6916" gradientUnits="userSpaceOnUse">
+<stop stop-color="#493474"/>
+<stop offset="1" stop-color="#8C66BA" stop-opacity="0"/>
+</linearGradient>
+<radialGradient id="connection-microsoft-365-gradient-4" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(41.0552 26.504) rotate(-165.772) scale(24.9228 41.9552)">
+<stop offset="0.0584996" stop-color="#50E6FF"/>
+<stop offset="1" stop-color="#436DCD"/>
+</radialGradient>
+<linearGradient id="connection-microsoft-365-gradient-5" x1="16.9758" y1="3.05655" x2="24.4868" y2="3.05655" gradientUnits="userSpaceOnUse">
+<stop stop-color="#2D3F80"/>
+<stop offset="1" stop-color="#436DCD" stop-opacity="0"/>
+</linearGradient>
+<radialGradient id="connection-microsoft-365-gradient-6" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(41.0552 26.504) rotate(-165.772) scale(24.9228 41.9552)">
+<stop offset="0.0584996" stop-color="#50E6FF"/>
+<stop offset="1" stop-color="#436DCD"/>
+</radialGradient>
+<linearGradient id="connection-microsoft-365-gradient-7" x1="16.9758" y1="3.05655" x2="24.4868" y2="3.05655" gradientUnits="userSpaceOnUse">
+<stop stop-color="#2D3F80"/>
+<stop offset="1" stop-color="#436DCD" stop-opacity="0"/>
+</linearGradient>
+</defs>
+</svg>

@@ -82,9 +82,7 @@ export function roomCard(
         ? roomAccessOf(room.readVisibility, room.writeVisibility)
         : null,
     agentCount: room.agentCount,
-    // The server's count is of accounts on the room's app, so a room with no
-    // app always reads 0 whoever is in it: not known, rather than none.
-    peopleCount: bridged ? (room.connectedUserCount ?? null) : null,
+    peopleCount: peopleCount(room, bridged, isConsoleChat),
     createdAt: room.createdAt,
     // Yours as the sidebar counts it, owned or taken part in, plus what it lists as
     // yours on a server that does not say: an archived room is in no sidebar.
@@ -94,6 +92,26 @@ export function roomCard(
       (viewer.listedIds?.has(room.id) ?? false),
     archived: room.archived,
   };
+}
+
+/**
+ * How many people a room has, or null when not known. The server counts the
+ * accounts on a bridged room's app and, where it says `peopleAreMembers`, a
+ * Console chat's members, 0 included. Any other room with no app always reads 0
+ * whoever is in it, as does a chat on a server from before it counted members
+ * (a chat always has one): not known, rather than none.
+ */
+function peopleCount(
+  room: RemoteRoomSummary,
+  bridged: boolean,
+  isConsoleChat: boolean
+): number | null {
+  const count = room.connectedUserCount ?? null;
+  if (bridged) return count;
+  if (room.peopleAreMembers === true) return count;
+  if (isConsoleChat && room.peopleAreMembers === undefined)
+    return count !== null && count > 0 ? count : null;
+  return null;
 }
 
 /** "Owned by you", "Owned by Ada", or null when the server names no owner. */

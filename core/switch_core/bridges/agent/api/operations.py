@@ -38,6 +38,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     UnknownConnectionError,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
 from switch_core.observability.catalogue import (
@@ -46,6 +47,7 @@ from switch_core.observability.catalogue import (
     BRIDGE_EVENTS_IN,
 )
 from switch_core.observability.metrics import metrics
+from switch_core.room_service import MembershipFixed
 from switch_core.trust.client import GuardrailBlockedError
 
 logger = logging.getLogger(__name__)
@@ -76,10 +78,18 @@ def refusal_status(exc: Exception) -> int | None:
         return 422
     if isinstance(exc, PermissionError):
         return 403
+    if isinstance(exc, MembershipFixed):
+        # As the room routes answer it: nothing is wrong with the request, the
+        # room is a direct or group conversation.
+        return 409
     if isinstance(exc, ValueError):
         # Operations raise ValueError for "you asked for something that is not
         # there or not allowed yet" - surfaced rather than swallowed.
         return 400
+    if isinstance(exc, BridgeOperationError):
+        # A messaging platform refused what the operation asked of it, and
+        # its reason names what to change.
+        return 502
     return None
 
 

@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import uuid
+from datetime import datetime
 
 from fastapi import HTTPException, Response
 from sqlalchemy import select
@@ -198,6 +199,7 @@ async def create_organization_for(
     *,
     name: str,
     workspace_name: str,
+    auth_time: datetime,
 ) -> OrganizationCreateResponse:
     """Create an organization and its first workspace for `caller`, count it
     against their allowance, and switch their session into the workspace.
@@ -241,7 +243,12 @@ async def create_organization_for(
     await user_store.record_last_tenant(session, user, tenant.id)
     await session.commit()
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant.id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant.id,
+        auth_time,
     )
     return OrganizationCreateResponse(
         organization=OrganizationSummary(

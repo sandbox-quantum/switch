@@ -44,7 +44,9 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AgentIdentity,
     ChannelNotBindable,
+    MessagePartlySent,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -61,6 +63,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -69,6 +72,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -528,6 +532,9 @@ class TelegramAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Telegram"
     # The Bot API has no call to delete or archive a chat.
     channel_on_delete = "left"
+    #: A bot cannot show a group message to one member alone, so a notice
+    #: about one goes to them in their private chat with the bot.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "direct_message"
     docs_slug: ClassVar[str | None] = "telegram"
     # A quiet self-registered bridge does not poll: Telegram hands each update
     # to a single getUpdates caller, so a poller in every process would split
@@ -576,6 +583,7 @@ class TelegramAdapter(PlatformAdapter):
 
     supports_channel_creation: ClassVar[bool] = False
     supports_directory_search: ClassVar[bool] = False
+    supports_private_channels: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
 
     draws_session_activity: ClassVar[bool] = True
@@ -634,6 +642,9 @@ class TelegramAdapter(PlatformAdapter):
         # (agent identities) can run. Set by BridgeCore.
         self._on_attached: Callable[[], None] | None = None
         self._seen_ids: OrderedDict[tuple[str, int], None] = OrderedDict()
+        # chat id -> the title its updates last carried. Telegram reports a
+        # retitle only as a service message, so a change is noticed by comparing.
+        self._chat_titles: dict[str, str] = {}
         self._seen_ids_max = 1000
         # Telegram user id ↔ username caches, for rendering outbound mentions of
         # people who address by numeric id rather than handle.
@@ -712,7 +723,15 @@ class TelegramAdapter(PlatformAdapter):
             return
 
         assert self._config.bot_token is not None  # guaranteed by the validator
-        app = ApplicationBuilder().token(self._config.bot_token).build()
+        app = (
+            ApplicationBuilder()
+            .token(self._config.bot_token)
+            .connect_timeout(30.0)
+            .read_timeout(30.0)
+            .get_updates_connect_timeout(30.0)
+            .get_updates_read_timeout(30.0)
+            .build()
+        )
         app.add_handler(TypeHandler(Update, self._make_on_update()))
         self._app = app
         self._bot = app.bot
@@ -1365,6 +1384,34 @@ class TelegramAdapter(PlatformAdapter):
             self._admin_body(self.translate_outbound(content), drawn),
             thread_root_id,
         )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """A message in the person's private chat with the bot, naming the
+        group the message was posted in, split over several if it is past
+        Telegram's length cap. Telegram lets a bot write to someone only after
+        they have started a chat with it, and most members of a group never
+        have, so its refusal is raised as `PrivateNoticeRefused`."""
+        where = f" in {html.escape(channel_name)}" if channel_name else ""
+        bot = self._require_bot()
+        body = f"About your message{where}:\n{self.translate_outbound(content)}"
+        try:
+            for chunk in chunk_message(body):
+                await bot.send_message(
+                    chat_id=int(user_id),
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=_NO_PREVIEW,
+                )
+        except Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -2175,7 +2222,8 @@ class TelegramAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "Telegram bots cannot create chats — the Bot API has no such call. "
             f"Create the group for '{name}' in a Telegram client and add "
@@ -2668,6 +2716,23 @@ class TelegramAdapter(PlatformAdapter):
         # refers to exists.
         await self.announce_visibility(channel_id)
 
+    async def _notice_title(
+        self, chat_id: str, channel_type: ChannelType, title: str | None
+    ) -> None:
+        """Hand the bridge a group's title when it is new to this process or
+        has changed. Every update carries the chat's current title, so a
+        retitle — its own service message included — is noticed at the next
+        update, even one made while Switch was not running. The first sighting
+        gives no old title: the bridge compares with the one it recorded."""
+        if channel_type == "direct" or not title:
+            return
+        previous = self._chat_titles.get(chat_id)
+        if previous == title:
+            return
+        self._chat_titles[chat_id] = title
+        if self._on_channel_named is not None:
+            await self._on_channel_named(chat_id, previous or "", title)
+
     async def _handle_message(self, message: Any) -> None:
         chat = message.chat
         chat_id = str(chat.id)
@@ -2686,6 +2751,8 @@ class TelegramAdapter(PlatformAdapter):
         self._seen_ids[key] = None
         if len(self._seen_ids) > self._seen_ids_max:
             self._seen_ids.popitem(last=False)
+
+        await self._notice_title(chat_id, channel_type, channel_name)
 
         new_members = getattr(message, "new_chat_members", None) or []
         if new_members:
@@ -3167,7 +3234,7 @@ class TelegramAdapter(PlatformAdapter):
 
         for file_id, filename, mimetype, size in self._describe_files(message):
             if isinstance(size, int) and size > cap:
-                logger.warning(
+                logger.info(
                     "Telegram attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,
@@ -3550,7 +3617,17 @@ class TelegramAdapter(PlatformAdapter):
         Returns the caption to attach and the ref of any message posted first."""
         if len(caption) <= _MAX_CAPTION_CHARS:
             return caption, None
-        ref = await self._send_text(channel_id, caption, thread_root_id)
+        try:
+            ref = await self._send_text(channel_id, caption, thread_root_id)
+        except MessagePartlySent as partial:
+            # The chat already says the caption is cut short; the file still
+            # goes out after what of it arrived.
+            logger.error(
+                "The caption for a file in Telegram chat %s was cut short: %s",
+                channel_id,
+                partial,
+            )
+            return "", partial.first_ref
         return "", ref
 
     async def _send_text(
@@ -3559,7 +3636,9 @@ class TelegramAdapter(PlatformAdapter):
         """Post one body, split across messages if Telegram's cap demands it.
 
         Returns the ref of the first message so an edit or delete targets the
-        head of the run."""
+        head of the run, or `None` when not even that was taken. A later
+        message refused ends the run with a notice saying the rest is missing,
+        and `MessagePartlySent`."""
         bot = self._require_bot()
         anchor = await self._anchor_kwargs(channel_id, thread_root_id)
         # In a forum the anchor is what keeps the run together: a chunk without
@@ -3573,14 +3652,38 @@ class TelegramAdapter(PlatformAdapter):
         # a forum is also mandatory, so a target deleted mid-run fails the rest
         # of the send instead of scattering it into General.
         every_chunk = bool(anchor) and await self._is_forum(channel_id)
-        first_ref: str | None = None
-        for index, chunk in enumerate(chunk_message(body)):
-            kwargs = anchor if every_chunk or index == 0 else {}
-            sent = await self._send_chunk(bot, channel_id, chunk, kwargs)
-            if sent is None:
-                return first_ref
-            if first_ref is None:
-                first_ref = sent
+        chunks = chunk_message(body)
+        first_ref = await self._send_chunk(bot, channel_id, chunks[0], anchor)
+        if first_ref is None:
+            return None
+        rest = anchor if every_chunk else {}
+        for index, chunk in enumerate(chunks[1:], start=1):
+            if await self._send_chunk(bot, channel_id, chunk, rest) is not None:
+                continue
+            logger.error(
+                "Only %d of %d parts of a message reached Telegram chat %s",
+                index,
+                len(chunks),
+                channel_id,
+            )
+            notice = (
+                f"⚠️ Only {index} of {len(chunks)} parts of this message could "
+                "be delivered — Telegram rejected the rest."
+            )
+            if await self._send_chunk(bot, channel_id, notice, rest) is None:
+                logger.error(
+                    "Could not tell Telegram chat %s that the message %s is "
+                    "missing its last %d parts; nothing there says it is cut short",
+                    channel_id,
+                    first_ref,
+                    len(chunks) - index,
+                )
+            raise MessagePartlySent(
+                platform="Telegram",
+                first_ref=first_ref,
+                delivered=index,
+                total=len(chunks),
+            )
         return first_ref
 
     async def _send_chunk(

@@ -22,16 +22,16 @@ describe("sessionRunner", () => {
     expect(
       sessionRunner(session({ lifecycle: "controller", controller_id: "ctrl-1" })),
     ).toEqual({
-      label: "Run by a machine",
+      label: "Run by a device",
       detail:
-        "Run by agent controller ctrl-1 on the machine the agent is placed on, working in this room.",
+        "Run by agent controller ctrl-1 on the device the agent is placed on, working in this room.",
     });
     expect(
       sessionRunner(
         session({ lifecycle: "controller", controller_id: "ctrl-1", room_id: null, room_name: null }),
       )?.detail,
     ).toBe(
-      "Run by agent controller ctrl-1 on the machine the agent is placed on, running, with no session working in a room yet.",
+      "Run by agent controller ctrl-1 on the device the agent is placed on, running, with no session working in a room yet.",
     );
   });
 
@@ -75,10 +75,10 @@ describe("SessionsSection", () => {
 
     expect(screen.getByText("design")).toBeTruthy();
     expect(screen.getByText("triage")).toBeTruthy();
-    expect(screen.getAllByText("Run by a machine")).toHaveLength(1);
+    expect(screen.getAllByText("Run by a device")).toHaveLength(1);
     expect(screen.queryByText("controller")).toBeNull();
 
-    fireEvent.click(screen.getByText("Run by a machine"));
+    fireEvent.click(screen.getByText("Run by a device"));
     expect(screen.getByText("Machines page")).toBeTruthy();
   });
 
@@ -87,7 +87,7 @@ describe("SessionsSection", () => {
       session({ lifecycle: "controller", controller_id: "ctrl-1", room_id: null, room_name: null }),
     ]);
     expect(screen.getByText("Not in a room yet")).toBeTruthy();
-    expect(screen.getByText("Run by a machine")).toBeTruthy();
+    expect(screen.getByText("Run by a device")).toBeTruthy();
     expect(screen.queryByText("Room-agnostic")).toBeNull();
   });
 });

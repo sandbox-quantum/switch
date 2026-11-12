@@ -22,11 +22,17 @@ from sqlalchemy import ColumnElement, delete, func, select, update
 from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.commands import (
     _cmd_assign_agent,
+    _cmd_auto_route,
     _cmd_follow_ups,
     _cmd_unassign_agent,
 )
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
-from switch_core.clients.admin_messages import ADMIN_MARKER, AUTO_REPLY_FLAG
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    AUTO_REPLY_FLAG,
+    AdminMessageType,
+    admin_extra_content,
+)
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -40,10 +46,14 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.decision.client import DynamicDecisionClient
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery import router as router_module
+from switch_core.delivery.addressing import AddressingResolver
 from switch_core.delivery.conversation import ConversationSettings
 from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport import RoomRef
@@ -60,18 +70,30 @@ class Journey:
     time so the gaps between them are the ones the test gives.
     """
 
-    def __init__(self, world: World, settings: ConversationSettings) -> None:
+    def __init__(
+        self,
+        world: World,
+        settings: ConversationSettings,
+        decisions: DynamicDecisionClient | None = None,
+    ) -> None:
         self.world = world
         self.settings = settings
+        self.decisions = decisions
         self.process: Process
         self.room: Room
         self.clients: dict[str, Client] = {}
         self.at: dict[str, float] = {}
         self.notices: list[str] = []
+        # What Switch told the room on its own: "auto-route is unavailable".
+        self.room_notices: list[str] = []
 
     async def start(self) -> Journey:
         world = self.world
-        self.process = process_on(world.session_factory, conversation=self.settings)
+        self.process = process_on(
+            world.session_factory,
+            conversation=self.settings,
+            decisions=self.decisions,
+        )
         async with world.session_factory() as session:
             room = await RoomStore().get(session, world.room_id)
             assert room is not None
@@ -84,7 +106,17 @@ class Journey:
                 self.clients[name] = client
                 session.add(ClientRoom(client_id=client.id, room_id=room.id))
             await session.commit()
+        self.process.router.use_notices(self._room_notice)
         return self
+
+    async def _room_notice(self, _tenant_id: str, _room: str, body: str) -> None:
+        self.room_notices.append(body)
+        await self.process.say(
+            self.room,
+            body,
+            sender=self.clients["admin"],
+            extra_content=admin_extra_content(AdminMessageType.AUTO_ROUTE_UNAVAILABLE),
+        )
 
     async def _set_the_clock(self, at: float) -> None:
         async with self.world.session_factory() as session:
@@ -227,7 +259,26 @@ class Journey:
             _external_user_store=ExternalUserStore(),
             client_store=ClientStore(),
             _connections=SimpleNamespace(live_connection_ids=lambda: set()),
+            _addressing=AddressingResolver(
+                room_store=RoomStore(),
+                room_role_store=RoomRoleStore(),
+                client_store=ClientStore(),
+                agent_store=AgentStore(),
+                external_user_store=ExternalUserStore(),
+                live_connection_ids=lambda: set(),
+            ),
             _follow_the_conversation_enabled=True,
+            _decision_availability=(
+                self.decisions.availability
+                if self.decisions is not None
+                else DecisionAvailability(
+                    enabled=False,
+                    server=ServerDefault(
+                        endpoint_url=None, api_key=None, bedrock_enabled=False
+                    ),
+                    store=DecisionSettingsStore(),
+                )
+            ),
         )
 
     async def command(self, who: str, command: str, args: str, *, at: float) -> str:
@@ -236,6 +287,7 @@ class Journey:
             "assign-agent": _cmd_assign_agent,
             "unassign-agent": _cmd_unassign_agent,
             "follow-ups": _cmd_follow_ups,
+            "auto-route": _cmd_auto_route,
         }
         event = SimpleNamespace(
             command=command, args=args, thread_id=None, user_id=self.world.mxid(who)
@@ -414,6 +466,56 @@ class TestJourneys:
         assert await room.reached(question) == set()
         assert refused.startswith("You can't assign")
         assert await room.reached(after) == set()
+
+
+class TestWhyTheAgentWasGivenIt:
+    """The event names the rule that delivered a follow-up, so the agent's
+    session can tell a message it may leave alone from one that asked it."""
+
+    async def test_a_mention_names_no_rule(self, room: Journey) -> None:
+        told = await room.say("alice", "@helper what does just up do?", at=0)
+
+        payload = (await room.payloads(told))["helper"]
+        assert payload.follow_up is None
+        assert payload.routed is False
+
+    async def test_a_reply_in_the_agents_thread(self, room: Journey) -> None:
+        answer = await room.post("helper", "It starts the stack", at=0)
+
+        told = await room.say("alice", "why two database roles?", at=30, thread=answer)
+
+        assert (await room.payloads(told))["helper"].follow_up == "thread_follow_up"
+
+    async def test_the_next_channel_message(self, room: Journey) -> None:
+        await room.say("alice", "@helper what does just migrate do?", at=0)
+        await room.post("helper", "It applies migrations", at=10)
+
+        told = await room.say("alice", "and what does just down do?", at=40)
+
+        assert (await room.payloads(told))["helper"].follow_up == "channel_follow_up"
+
+    async def test_the_assigned_agent(self, room: Journey) -> None:
+        await room.command("alice", "assign-agent", "@helper", at=0)
+
+        told = await room.say("bob", "anyone know why the deploy failed?", at=10)
+
+        assert (await room.payloads(told))["helper"].follow_up == "main_agent"
+
+    async def test_a_mention_of_the_assigned_agent_names_no_rule(
+        self, room: Journey
+    ) -> None:
+        await room.command("alice", "assign-agent", "@helper", at=0)
+
+        told = await room.say("alice", "@helper are you there?", at=10)
+
+        assert (await room.payloads(told))["helper"].follow_up is None
+
+    async def test_a_file_in_the_agents_thread(self, room: Journey) -> None:
+        answer = await room.post("helper", "Which log?", at=0)
+
+        told = await room.send_file("alice", "app.log", at=10, thread=answer)
+
+        assert (await room.payloads(told))["helper"].follow_up == "thread_follow_up"
 
 
 class TestAttachments:
@@ -752,7 +854,7 @@ class TestCommandsWhileTheFlagIsOff:
             )  # type: ignore[arg-type]
 
         assert len(replies) == 3
-        assert all("isn't switched on for this Switch server" in r for r in replies)
+        assert all("isn't switched on" in r for r in replies)
         async with world.session_factory() as session:
             assert await RoomStore().main_agent_id(session, world.room_id) is None
             assert await RoomStore().follow_ups_enabled(session, world.room_id)
