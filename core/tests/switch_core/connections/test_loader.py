@@ -1,3 +1,4 @@
+import json
 import shutil
 
 import pytest
@@ -25,7 +26,7 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_notion():
+def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
@@ -33,6 +34,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_worksp
         "datadog",
         "google-workspace",
         "notion",
+        "sentry",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -41,6 +43,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_worksp
         "github",
         "google-workspace",
         "notion",
+        "sentry",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -48,6 +51,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_worksp
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
+    assert "SKILL.md" in CATALOG["sentry"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -178,6 +182,45 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
+    definition = CATALOG["sentry"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    # A renewed Sentry token outlives the cap, so agents have Sentry for up to
+    # an hour after each sign-in, and people are told so. A disconnect deletes
+    # every agent's grant, so the note says to turn Sentry on again.
+    assert definition.token.note is not None
+    assert "up to an hour after each sign-in" in definition.token.note
+    assert "turn Sentry on again for each agent" in definition.token.note
+    assert "up to an hour after each sign-in" in definition.description
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("sentry", "https://mcp.sentry.dev/mcp")
+    ]
+    # Sentry's REST API refuses an MCP token, so the account comes from the
+    # MCP server's whoami tool.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool) == (None, "whoami")
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    # Sentry grants the same scopes whatever is chosen at consent.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == definition.access.write.scopes
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -907,6 +950,27 @@ def test_introspection_needs_a_discovered_authorization_server(catalog_copy, wit
     _write_example(catalog_copy, entry.replace(GET_IDENTITY, INTROSPECTION_IDENTITY))
     with pytest.raises(CatalogError, match="introspection asks the authorization"):
         load_catalog(catalog_copy)
+
+
+def _with_note(note: str) -> str:
+    # JSON is YAML, so the note reaches the loader exactly as given.
+    return OAUTH_ENTRY.replace(
+        "token: { kind: pass_through, max_lifetime: 3600 }",
+        f"token: {{ kind: pass_through, max_lifetime: 3600, note: {json.dumps(note)} }}",
+    )
+
+
+@pytest.mark.parametrize("note", ["", "x" * 401, "a\nb"])
+def test_rejects_a_token_note_that_is_empty_too_long_or_multiline(catalog_copy, note):
+    _write_example(catalog_copy, _with_note(note))
+    with pytest.raises(CatalogError, match="(?s)example is invalid.*note"):
+        load_catalog(catalog_copy)
+
+
+def test_takes_a_token_note_of_400_characters(catalog_copy):
+    _write_example(catalog_copy, _with_note("x" * 400))
+    token = load_catalog(catalog_copy)["example"].definition.token
+    assert token is not None and token.note == "x" * 400
 
 
 def test_placeholders_keep_their_short_form():

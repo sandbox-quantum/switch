@@ -394,6 +394,7 @@ class TestOnlyTheOperator:
         assert [entry["slug"] for entry in body["registered"]] == [
             "atlassian",
             "notion",
+            "sentry",
         ]
 
     async def test_an_unknown_service_is_not_found(

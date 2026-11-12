@@ -1431,6 +1431,7 @@ describe('GitHub connection transport', () => {
               status: 'active',
               pass_through: true,
               token_lifetime: 7200,
+              agent_access_note: 'Agents have it for the hour after each sign-in.',
             },
           ],
         })
@@ -1451,6 +1452,7 @@ describe('GitHub connection transport', () => {
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: 'ada-gh',
@@ -1464,6 +1466,7 @@ describe('GitHub connection transport', () => {
         status: 'connected',
         pass_through: true,
         token_lifetime: 7200,
+        agent_access_note: 'Agents have it for the hour after each sign-in.',
       }),
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1525,6 +1528,7 @@ describe('GitHub connection transport', () => {
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: null,
