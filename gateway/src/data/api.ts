@@ -1898,6 +1898,12 @@ export async function createUser(
   return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
 }
 
+// Deployment operator only. Ends every session the account holds, as the
+// person's own "Sign out of all devices" would; recorded in the audit log.
+export async function endUserSessions(userId: string): Promise<void> {
+  await jsonRequest(`/users/${encodeURIComponent(userId)}/sessions/revoke`, "POST");
+}
+
 // Deployment operator only. Deletes the whole account, as the person
 // deleting it themselves would; the server refuses its own administrator
 // account and the caller's own.

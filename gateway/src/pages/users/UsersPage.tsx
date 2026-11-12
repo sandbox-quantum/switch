@@ -1,23 +1,26 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
+import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import {
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
-  IconButton,
+  Snackbar,
   Stack,
-  Tooltip,
   Typography,
 } from "@mui/material";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, {
   type SelectFilter,
   type TableColumn,
   TableEmptyState,
 } from "../../components/DataTable";
-import type { ListedUser } from "../../data/api";
+import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
+import { type ListedUser, endUserSessions } from "../../data/api";
+import { useAuth } from "../../data/AuthContext";
 import { useUsers } from "../../data/hooks";
 import { formatDate } from "../../theme/format";
 import CreateUserDialog from "./CreateUserDialog";
@@ -38,11 +41,51 @@ const SEARCH = {
 const TABLE_CHROME = 108;
 const ROW = 52;
 const PAGE_SIZE = 25;
+const PINNED = ["actions"];
 
 export default function UsersPage() {
   const { data: users, loading, error, refetch } = useUsers();
+  const { user: me } = useAuth();
+  const selfId = me?.id ?? null;
   const [createOpen, setCreateOpen] = useState(false);
   const [deleting, setDeleting] = useState<ListedUser | null>(null);
+  // Kept after the dialog closes, so its text does not empty as it fades.
+  const [signingOut, setSigningOut] = useState<ListedUser | null>(null);
+  const [signOutOpen, setSignOutOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Your own sessions end from the account menu, which signs you out here
+  // too. The server refuses deleting administrator accounts and your own,
+  // and says which rows it would refuse; you delete your own account from
+  // your account settings.
+  const actionsFor = useCallback(
+    (row: ListedUser): RowAction[] => [
+      ...(row.id === selfId
+        ? []
+        : [
+            {
+              label: "Sign out of all devices",
+              icon: <LogoutOutlined fontSize="small" />,
+              destructive: true,
+              onClick: () => {
+                setSigningOut(row);
+                setSignOutOpen(true);
+              },
+            },
+          ]),
+      ...(row.can_delete
+        ? [
+            {
+              label: "Delete account",
+              icon: <DeleteOutline fontSize="small" />,
+              destructive: true,
+              onClick: () => setDeleting(row),
+            },
+          ]
+        : []),
+    ],
+    [selfId],
+  );
 
   const columns = useMemo<TableColumn<ListedUser>[]>(
     () => [
@@ -72,26 +115,19 @@ export default function UsersPage() {
       {
         field: "actions",
         headerName: "",
-        width: 60,
+        width: 56,
         sortable: false,
-        // The server refuses administrator accounts and your own, and says
-        // which rows it would refuse. You delete your own account from your
-        // account settings.
-        renderCell: ({ row }) =>
-          row.can_delete ? (
-            <Tooltip title="Delete account">
-              <IconButton
-                size="small"
-                onClick={() => setDeleting(row)}
-                aria-label={`Delete ${row.email}`}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          ) : null,
+        disableColumnMenu: true,
+        renderCell: ({ row, tabIndex }) => (
+          <RowActionsMenu
+            label={`Actions for ${row.email}`}
+            actions={actionsFor(row)}
+            tabIndex={tabIndex}
+          />
+        ),
       },
     ],
-    [],
+    [actionsFor],
   );
 
   return (
@@ -125,6 +161,7 @@ export default function UsersPage() {
           search={SEARCH}
           selectFilters={SELECT_FILTERS}
           initialSort={{ field: "name", sort: "asc" }}
+          pinnedRight={PINNED}
         />
       )}
 
@@ -137,6 +174,33 @@ export default function UsersPage() {
         user={deleting}
         onClose={() => setDeleting(null)}
         onDeleted={refetch}
+      />
+      <ConfirmDialog
+        open={signOutOpen}
+        title={`Sign ${signingOut?.name ?? ""} out of all devices?`}
+        description={
+          signingOut && (
+            <>
+              Every session {signingOut.name} ({signingOut.email}) has ends now, Switch Console's
+              included, and they have to sign in again. Their password stays as it is: if the
+              account looks taken over, ask them to change it too.
+            </>
+          )
+        }
+        confirmLabel="Sign out"
+        tone="destructive"
+        onConfirm={async () => {
+          if (signingOut === null) return;
+          await endUserSessions(signingOut.id);
+          setNotice(`Signed ${signingOut.name} out of all devices.`);
+        }}
+        onClose={() => setSignOutOpen(false)}
+      />
+      <Snackbar
+        open={notice !== null}
+        autoHideDuration={4000}
+        onClose={() => setNotice(null)}
+        message={notice}
       />
     </Box>
   );
