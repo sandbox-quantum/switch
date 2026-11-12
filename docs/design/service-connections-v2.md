@@ -48,6 +48,8 @@ auth:
     label: email
     # mcp_tool: whoami        # in place of url: call this read-only
     #                         #   tool on the entry's MCP server
+    # arguments: { query: me }  # with mcp_tool only: fixed arguments for
+    #                           #   the tool, in place of {}
 token: { kind: pass_through, max_lifetime: 28800 }
 # token.note: shown in Switch Console beside how long agent access lasts, for
 #   a vendor that limits it further (Sentry)
@@ -465,19 +467,35 @@ Before Core calls the tool, it checks these things:
 - Exactly one tool on the server has the name.
 - The tool has `readOnlyHint: true`.
 - Its `inputSchema` has `type: object`.
-- Its `required` is absent or empty.
+- Its `required` is absent or a list. Each name in the list is a key of the
+  entry's `arguments`. Without `arguments`, the list is empty.
+- With `arguments`, its `properties` is an object that declares each key. A
+  declared key has no `type`, or `type: string`.
 
 Core reads nothing else in the schema and runs no JSON Schema validator. On a
 small hostile schema, a validator can spend minutes of CPU time and block
-Core's event loop. A tool that still refuses `{}` fails when Core calls it,
-with `tool_error`: an `isError` result or a JSON-RPC invalid-params error.
+Core's event loop. If a check fails, sign-in fails with `needs_arguments`,
+and Core does not call the tool. A tool that still refuses its arguments
+fails when Core calls it, with `tool_error`: an `isError` result or a
+JSON-RPC invalid-params error.
 
-This check only shows that the schema names no required argument. It does
-not show that the tool only reads. That rests on `readOnlyHint: true` and on
-the catalog review of the tool an entry names. The MCP specification calls
-tool annotations untrusted.
+This check only shows that the schema needs no argument that the entry does
+not give. It does not show that the tool only reads. That rests on
+`readOnlyHint: true` and on the catalog review of the tool an entry names.
+The MCP specification calls tool annotations untrusted.
 
-Core calls the tool with `{}`. Core does not check the result against the
+`auth.identity.arguments` is for a tool that identifies the caller only when
+it is told to, such as a user lookup that takes "me". The loader accepts it
+only with `mcp_tool`. It has 1 to 4 keys. Each key matches
+`^[A-Za-z_][A-Za-z0-9_]{0,63}$`. Each value is a string of 1 to 64
+characters, with no `{` or `}` and no control characters. The values are
+fixed catalog text, never from a person or from the vendor, so the loader
+refuses a template. An entry gives only a value that the vendor documents as
+the caller, and cites that documentation in its YAML comment. A value that
+names another account would sign the person in as that account.
+
+Core calls the tool with the entry's `arguments`, or with `{}` without
+them. Core does not check the result against the
 tool's `outputSchema`, because the MCP SDK's check can fetch a remote `$ref`.
 Core's own checks apply instead. The result must be one JSON object, from
 `structuredContent` or from one text block. Each `account_id` path must give

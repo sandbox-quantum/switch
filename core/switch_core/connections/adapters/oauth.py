@@ -396,16 +396,26 @@ def _leaves(error: BaseException) -> Iterator[BaseException]:
             pending.append(current.__cause__)
 
 
-def _accepts_no_arguments(schema: object) -> bool:
-    """Whether a tool's input schema says it needs no arguments: an object
-    schema with no required property. Nothing else is read, so a vendor's
-    schema costs no work: a JSON Schema validator can spend minutes of CPU
-    time on a small hostile schema. A tool that still refuses `{}` fails
-    loudly when called (`tool_error`)."""
-    return (
-        isinstance(schema, dict)
-        and schema.get("type") == "object"
-        and schema.get("required", []) == []
+def _accepts_arguments(schema: object, names: list[str]) -> bool:
+    """Whether a tool's input schema takes string arguments of these names
+    and needs no other: an object schema that declares each name, with no
+    type or type `string`, and requires no other property. Nothing else is
+    read, so a vendor's schema costs no work: a JSON Schema validator can
+    spend minutes of CPU time on a small hostile schema. A tool that still
+    refuses the arguments fails loudly when called (`tool_error`)."""
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return False
+    required = schema.get("required", [])
+    # Compared by equality, not hashed: a vendor's entry can be any JSON.
+    if not isinstance(required, list) or any(name not in names for name in required):
+        return False
+    if not names:
+        return True
+    properties = schema.get("properties")
+    return isinstance(properties, dict) and all(
+        isinstance(properties.get(name), dict)
+        and properties[name].get("type", "string") == "string"
+        for name in names
     )
 
 
@@ -946,7 +956,8 @@ class OAuthAdapter:
             tool = matches[0]
             if tool.annotations is None or tool.annotations.readOnlyHint is not True:
                 raise McpIdentityError(self._name, "not_read_only")
-            if not _accepts_no_arguments(tool.inputSchema):
+            arguments = dict(self._identity.arguments or {})
+            if not _accepts_arguments(tool.inputSchema, list(arguments)):
                 raise McpIdentityError(self._name, "needs_arguments")
             # Sent as a plain request: the SDK's `call_tool` checks the result
             # against the vendor's outputSchema, which can fetch any URL.
@@ -955,14 +966,15 @@ class OAuthAdapter:
                     ClientRequest(
                         CallToolRequest(
                             params=CallToolRequestParams(
-                                name=self._identity.mcp_tool, arguments={}
+                                name=self._identity.mcp_tool, arguments=arguments
                             )
                         )
                     ),
                     CallToolResult,
                 )
             except McpError as refused:
-                # A tool can refuse `{}` this way, not with an isError result.
+                # A tool can refuse its arguments this way, not with an
+                # isError result.
                 if refused.error.code == INVALID_PARAMS:
                     raise McpIdentityError(self._name, "tool_error") from None
                 raise

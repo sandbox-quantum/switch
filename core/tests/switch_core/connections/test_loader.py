@@ -68,6 +68,20 @@ def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages
 GOOGLE = "https://www.googleapis.com/auth/"
 
 
+# Identity arguments are fixed self-references that the vendor documents as
+# the caller. A value that names a person would make every sign-in resolve to
+# that person, so a new value needs a deliberate review here.
+SELF_REFERENCES = {"me"}
+
+
+def test_shipped_identity_arguments_only_refer_to_the_caller():
+    for slug, entry in CATALOG.items():
+        identity = entry.definition.auth.identity
+        if identity is None or identity.arguments is None:
+            continue
+        assert set(identity.arguments.values()) <= SELF_REFERENCES, slug
+
+
 def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_must():
     definition = CATALOG["google-workspace"].definition
     oauth = definition.auth.oauth
@@ -1021,6 +1035,96 @@ def test_introspection_needs_a_discovered_authorization_server(catalog_copy, wit
     _write_example(catalog_copy, entry.replace(GET_IDENTITY, INTROSPECTION_IDENTITY))
     with pytest.raises(CatalogError, match="introspection asks the authorization"):
         load_catalog(catalog_copy)
+
+
+def _mcp_identity(arguments: str) -> str:
+    # JSON is YAML, so the arguments reach the loader exactly as given.
+    return (
+        "  identity:\n"
+        "    mcp_tool: get_user\n"
+        f"    arguments: {arguments}\n"
+        "    account_id: id\n"
+        "    label: email\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"query": "me"},
+        {"a": "1", "b": "2", "c": "3", "_" + "d" * 63: "x" * 64},
+    ],
+)
+def test_loads_an_mcp_identity_with_fixed_arguments(catalog_copy, arguments):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(GET_IDENTITY, _mcp_identity(json.dumps(arguments))),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.mcp_tool, identity.arguments) == ("get_user", arguments)
+
+
+def test_an_identity_has_no_arguments_unless_given(catalog_copy):
+    _write_example(catalog_copy)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None and identity.arguments is None
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        GET_IDENTITY + '    arguments: { query: "me" }\n',
+        INTROSPECTION_IDENTITY + '    arguments: { query: "me" }\n',
+    ],
+    ids=["url", "introspection"],
+)
+def test_rejects_arguments_without_an_mcp_tool(catalog_copy, identity):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(GET_IDENTITY, identity))
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*arguments are for an mcp_tool"
+    ):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"a": "1", "b": "2", "c": "3", "d": "4", "e": "5"},
+        {"1query": "me"},
+        {"que-ry": "me"},
+        {"q" * 65: "me"},
+        {"": "me"},
+        {"query": ""},
+        {"query": "x" * 65},
+        {"query": "{me}"},
+        {"query": "me}"},
+        {"query": "{user_id}"},
+        {"query": "m\ne"},
+        {"query": "me\u0000"},
+        {"query": "me\u007f"},
+        {"query": "me\u0085"},
+        {"query": 1},
+        {"query": None},
+        {"query": ["me"]},
+        ["query", "me"],
+        "me",
+    ],
+    ids=lambda arguments: json.dumps(arguments)[:40],
+)
+def test_rejects_identity_arguments_that_are_not_fixed_short_text(
+    catalog_copy, arguments
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(GET_IDENTITY, _mcp_identity(json.dumps(arguments))),
+    )
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*auth.identity.arguments"
+    ) as raised:
+        load_catalog(catalog_copy)
+    assert "extra_forbidden" not in str(raised.value)
 
 
 def _with_note(note: str) -> str:

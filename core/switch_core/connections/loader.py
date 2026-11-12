@@ -180,11 +180,23 @@ class OAuthClient(BaseModel):
 
 class ConnectionIdentity(BaseModel):
     """Read account identity from an authenticated GET, an MCP tool result,
-    or the vendor's RFC 7662 introspection answer for the token."""
+    or the vendor's RFC 7662 introspection answer for the token.
+
+    `arguments` go to the MCP tool in place of `{}`. They are fixed catalog
+    text, such as a self-reference that the vendor documents as the caller
+    ("me"). A value never comes from a person or from the vendor, so it has
+    no template braces and no control characters."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
+    arguments: (
+        dict[
+            Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")],
+            Annotated[str, Field(pattern=r"^[^{}\x00-\x1f\x7f-\x9f]{1,64}$")],
+        ]
+        | None
+    ) = Field(default=None, min_length=1, max_length=4)
     introspection: bool = False
     account_id: (
         Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
@@ -202,6 +214,8 @@ class ConnectionIdentity(BaseModel):
             raise ValueError(
                 "identity needs exactly one of url, mcp_tool or introspection"
             )
+        if self.arguments is not None and self.mcp_tool is None:
+            raise ValueError("arguments are for an mcp_tool identity")
         if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
             self.account_id
         ):
