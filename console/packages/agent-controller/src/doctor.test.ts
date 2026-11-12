@@ -38,7 +38,7 @@ describe('doctor', () => {
   it('passes a machine that is ready', async () => {
     const checks = await runDoctor(inputs());
     expect(checks.filter((check) => check.status !== 'ok')).toEqual([]);
-    expect(formatChecks(checks)).toContain('ok    claude');
+    expect(formatChecks(checks)).toContain('OK    claude');
   });
 
   it('passes a ready Windows machine, which Console runs rather than a service', async () => {

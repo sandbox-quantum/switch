@@ -7,6 +7,7 @@ import type { ServiceState } from './service';
 import type { LocatedProvider } from './status';
 import type { Identity } from './store';
 import { type ControllerRelease, isNewer } from './update';
+import { formatStatusMark } from './format';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail';
 export type Check = { name: string; status: CheckStatus; detail: string };
@@ -232,11 +233,18 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   return checks;
 }
 
-const MARK: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
-
 export function formatChecks(checks: Check[]): string {
-  const width = Math.max(...checks.map((check) => check.name.length));
+  const width = Math.max(0, ...checks.map((check) => check.name.length));
+
   return checks
-    .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
+    .map((check) => {
+      const mark = formatStatusMark(check.status);
+
+      const markPadding = ' '.repeat(
+        4 - formatStatusMark(check.status, false).length
+      );
+
+      return `${mark}${markPadding}  ${check.name.padEnd(width)}  ${check.detail}`;
+          })
     .join('\n');
 }
