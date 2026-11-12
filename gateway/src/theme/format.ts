@@ -1,4 +1,4 @@
-/* Formatting conventions from the Hoot design system's DESIGN.md.
+/* Formatting conventions from the design system's guidelines.
  * Dates (§1), numbers (§3), empty states (§6) and identifiers (§9) are
  * prescriptive there — these helpers are the single place they're applied. */
 

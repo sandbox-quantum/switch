@@ -194,7 +194,8 @@
       "include_tags": true,
       "thresholds": {
         "critical": 1
-      }
+      },
+      "timeout_h": 1
     },
     "priority": 2
   },
@@ -330,5 +331,230 @@
       }
     },
     "priority": 4
+  },
+  {
+    "name": "[Switch] decisions are failing",
+    "type": "query alert",
+    "query": "max(last_5m):moving_rollup(default_zero(sum:switch.decision.failures{service:switch-core}.as_count()), 900, 'sum') / clamp_min(moving_rollup(default_zero(sum:switch.decision.requests{service:switch-core}.as_count()), 900, 'sum'), 10) > 0.2",
+    "message": "{{#is_alert}}More than 20% of auto-route decisions in the last 15 minutes got no usable answer, counted against at least 10 decisions so that one or two failures in a quiet room don't fire. People's untagged messages reach nobody, or the triage agent, and rooms get an \"auto-route is unavailable\" notice.\n\n**Check:** decision failures by reason and backend errors by kind. `timeout` or `unreachable` on the server default points at the decision service; on `endpoint`, at one workspace's own endpoint. The decision record logged for each message names the room.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: decisions are failing.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 0.2
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] the default decision service is unhealthy",
+    "type": "query alert",
+    "query": "max(last_5m):min:switch.health.check{service:switch-core,check:decision} < 1",
+    "message": "{{#is_alert}}The server's default decision service has failed its health check for 5 minutes. Auto-route can't pick an agent in workspaces that use the server default, so their untagged messages reach nobody, or the triage agent. switch-core itself stays in service: this check never takes a pod out.\n\n**Check:** the decision service's pod, not switch-core's: whether it runs, restarts or is ready, its logs, and the model server behind it.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: the default decision service is unhealthy.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": true,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 1
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] undecided messages are backing up",
+    "type": "query alert",
+    "query": "min(last_5m):max:switch.decision.pending.oldest_age{service:switch-core} > 60",
+    "message": "{{#is_alert}}For 5 minutes the oldest message waiting for an auto-route decision has been over a minute old. People are waiting for an answer to start, and a message still waiting at the pending limit (two minutes by default) is dropped as expired.\n\n**Check:** decision duration and failures: a slow or timing-out backend backs the queue up. If decisions look healthy, the decision sweep in switch-core's logs.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: undecided messages are backing up.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": true,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 60
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] decisions are expiring",
+    "type": "query alert",
+    "query": "sum(last_15m):default_zero(sum:switch.decision.settled{service:switch-core,outcome:expired}.as_count()) > 0",
+    "message": "{{#is_alert}}At least one untagged message waited past the pending limit (two minutes by default) without a decision and was dropped. Each one is a question nobody answered.\n\n**Check:** whether \"undecided messages are backing up\" or \"the default decision service is unhealthy\" fired too. If neither did, a switch-core restart with messages waiting is the usual cause. The decision record logged for each expired message names the room.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: decisions are expiring.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] decisions are slow",
+    "type": "query alert",
+    "query": "avg(last_30m):p95:switch.decision.duration{service:switch-core} > 120000",
+    "message": "{{#is_warning}}The slowest 5% of auto-route decisions took over 1.5 seconds, for 30 minutes. People wait longer for an answer to start; nothing is lost. A warning only: decisions have a target of under a second, so this tells you without paging.\n\n**Check:** decision duration beside model time, by backend. If model time is slow too, the model or its host is; if only duration is, the network or the backend's queue.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_warning}}{{#is_recovery}}Recovered: decisions are slow.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": true,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 120000,
+        "warning": 1500
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch] requests are failing with unhandled errors",
+    "type": "log alert",
+    "query": "logs(\"service:switch-core env:pilot \\\"Exception in ASGI application\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}A request to switch-core raised an error nothing handled. Whoever sent it (Console, an agent, a bridge) got a 500 and whatever they were doing did not happen.\n\n**Check:** the log sample below has the stack trace; Error Tracking groups repeats of the same one. A burst right after a deploy points at the release.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: requests are failing with unhandled errors.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] a switch-core pod lost its hold on its agents",
+    "type": "log alert",
+    "query": "logs(\"service:switch-core env:pilot status:warn \\\"stopped holding their lease\\\"\").index(\"*\").rollup(\"count\").last(\"10m\") > 0",
+    "message": "{{#is_alert}}A switch-core process stopped renewing its lease without shutting down (a pod shutting down in a deploy does not fire this), so the agents connected through it no longer count as connected. Their people see them go offline until they reconnect to another pod.\n\n**Check:** whether a pod restarted or was killed (OOM, node drain) at that time, and the database pool on the Saturation panels: a process that cannot reach the database cannot renew.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: a switch-core pod lost its hold on its agents.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] messages are not reaching a messaging app",
+    "type": "log alert",
+    "query": "logs(\"service:switch-core env:pilot \\\"Could not publish\\\"\").index(\"*\").rollup(\"count\").last(\"10m\") > 10",
+    "message": "{{#is_alert}}switch-core kept failing to post messages to Slack, Discord or another messaging app for 10 minutes. People there do not see what agents and others wrote in Switch.\n\n**Check:** the log names the bridge; then its platform's status page, and whether the bridge's token was revoked. One message retrying every 5 s for under a minute stays below this limit.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: messages are not reaching a messaging app.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 10
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] switch-core is logging a burst of errors",
+    "type": "log alert",
+    "query": "logs(\"service:switch-core env:pilot status:error\").index(\"*\").rollup(\"count\").last(\"15m\") > 25",
+    "message": "{{#is_alert}}switch-core logged more than 25 errors in 15 minutes, far above its usual handful. Something that is not covered by the other alerts is failing.\n\n**Check:** the pattern list on the signal board's \"Digging into error logs\" section shows which message it is.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: switch-core is logging a burst of errors.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": true,
+      "thresholds": {
+        "critical": 25
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch] agent controllers keep reconnecting",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.controllers.connections{service:switch-core,event:opened}.as_count()) > 900",
+    "message": "{{#is_alert}}Agent controllers opened more than 900 connections in 30 minutes: the reconnect storm getting worse. Pilot runs at about 570 day to day because of the reconnect loop we know of; lower this to 450 once that is fixed. While it lasts, Console can show agents as Connecting and messages to them wait for the next connection.\n\n**Check:** `event` and `reason` on `switch.controllers.connections` say how connections open and end (taken over by another pod, heartbeat lapsed); the controller log on an affected machine says what it saw. A rollout reconnects every controller once, which stays well below this limit.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent controllers keep reconnecting.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 900
+      }
+    },
+    "priority": 3
   }
 ]

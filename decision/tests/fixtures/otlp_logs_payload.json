@@ -1,0 +1,163 @@
+{
+  "_comment": "Generated from switch-core's build_logs_payload (core/switch_core/observability/otlp.py) for these inputs. The decision service's copy must produce the same payload.",
+  "resource": {
+    "service_name": "switch-decision",
+    "service_version": "0.1.0",
+    "environment": "pilot",
+    "deployment_id": "0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10",
+    "instance_id": "switch-decision-7d9f-abcd1234"
+  },
+  "records": [
+    {
+      "body": "decide backend=llamacpp model=qwen3.5-4b-q4_k_m candidates=2 choice=deploy-bot",
+      "severity_text": "INFO",
+      "severity_number": 9,
+      "time_nanos": 1700000060000000000,
+      "attributes": {
+        "logger.name": "switch_decision",
+        "logger.thread_name": "MainThread",
+        "request_id": "3f2b9c1d8e7a4b6c9d0e1f2a3b4c5d6e"
+      }
+    },
+    {
+      "body": "decide failed backend=llamacpp",
+      "severity_text": "WARN",
+      "severity_number": 13,
+      "time_nanos": 1700000061250000000,
+      "attributes": {
+        "logger.name": "switch_decision",
+        "logger.thread_name": "MainThread",
+        "request_id": "req-2",
+        "error.kind": "ModelServerError",
+        "error.message": "model server unreachable",
+        "error.stack": "Traceback (most recent call last):\nModelServerError: model server unreachable"
+      }
+    }
+  ],
+  "payload": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "deployment.environment",
+              "value": {
+                "stringValue": "pilot"
+              }
+            },
+            {
+              "key": "flint.client_id",
+              "value": {
+                "stringValue": "0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10"
+              }
+            },
+            {
+              "key": "service.instance.id",
+              "value": {
+                "stringValue": "switch-decision-7d9f-abcd1234"
+              }
+            },
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "switch-decision"
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.1.0"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "switch-decision",
+              "version": "0.1.0"
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1700000060000000000",
+                "observedTimeUnixNano": "1700000060000000000",
+                "severityNumber": 9,
+                "severityText": "INFO",
+                "body": {
+                  "stringValue": "decide backend=llamacpp model=qwen3.5-4b-q4_k_m candidates=2 choice=deploy-bot"
+                },
+                "attributes": [
+                  {
+                    "key": "logger.name",
+                    "value": {
+                      "stringValue": "switch_decision"
+                    }
+                  },
+                  {
+                    "key": "logger.thread_name",
+                    "value": {
+                      "stringValue": "MainThread"
+                    }
+                  },
+                  {
+                    "key": "request_id",
+                    "value": {
+                      "stringValue": "3f2b9c1d8e7a4b6c9d0e1f2a3b4c5d6e"
+                    }
+                  }
+                ]
+              },
+              {
+                "timeUnixNano": "1700000061250000000",
+                "observedTimeUnixNano": "1700000061250000000",
+                "severityNumber": 13,
+                "severityText": "WARN",
+                "body": {
+                  "stringValue": "decide failed backend=llamacpp"
+                },
+                "attributes": [
+                  {
+                    "key": "error.kind",
+                    "value": {
+                      "stringValue": "ModelServerError"
+                    }
+                  },
+                  {
+                    "key": "error.message",
+                    "value": {
+                      "stringValue": "model server unreachable"
+                    }
+                  },
+                  {
+                    "key": "error.stack",
+                    "value": {
+                      "stringValue": "Traceback (most recent call last):\nModelServerError: model server unreachable"
+                    }
+                  },
+                  {
+                    "key": "logger.name",
+                    "value": {
+                      "stringValue": "switch_decision"
+                    }
+                  },
+                  {
+                    "key": "logger.thread_name",
+                    "value": {
+                      "stringValue": "MainThread"
+                    }
+                  },
+                  {
+                    "key": "request_id",
+                    "value": {
+                      "stringValue": "req-2"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
