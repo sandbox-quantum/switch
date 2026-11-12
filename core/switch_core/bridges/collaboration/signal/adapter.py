@@ -39,6 +39,8 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     AgentIdentity,
     PlatformAdapter,
+    RichContent,
+    RichContentFailed,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -48,6 +50,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -73,8 +76,15 @@ WORKING_EMOJI = "👀"
 #: Signal clients send a longer body as a file; stay under it.
 MAX_MESSAGE = 2000
 
+#: Ends an edit cut short: an edit cannot grow into a second message.
+_TRUNCATED = "\n\n_… (cut: too long to edit in one Signal message)_"
+
 #: Signal marks where a mention sat in the text with this character.
 _MENTION_MARK = "￼"
+
+#: A command: `!`, a name starting with a letter, and its arguments. Anything
+#: else that starts with `!` (`!!!`, `! look`) is an ordinary message.
+_COMMAND = re.compile(r"^!([A-Za-z][\w-]*)(?:\s+(.*))?$", re.DOTALL)
 
 #: How long to wait before reopening a dropped event stream, at most.
 _MAX_BACKOFF = 30.0
@@ -329,7 +339,13 @@ class SignalAdapter(PlatformAdapter):
             raise BridgeOperationError(
                 f"signal-cli refused {method} ({response.status_code}): {response.text[:200]}"
             )
-        answer = response.json()
+        try:
+            answer = response.json()
+        except ValueError as exc:
+            raise BridgeOperationError(
+                f"signal-cli answered {method} with something that is not JSON: "
+                f"{response.text[:200]}"
+            ) from exc
         if answer.get("error"):
             error = answer["error"]
             raise SignalRpcError(
@@ -367,6 +383,16 @@ class SignalAdapter(PlatformAdapter):
             raise BridgeCredentialError(
                 "The daemon would not list its accounts. Start it without -a "
                 f"(`signal-cli daemon --http`) so it serves every account: {exc.message}"
+            ) from exc
+        except BridgeOperationError as exc:
+            raise BridgeCredentialError(
+                f"The signal-cli daemon at {config.daemon_url} refused to list its "
+                f"accounts: {exc}"
+            ) from exc
+        except httpx.TransportError as exc:
+            raise BridgeCredentialError(
+                f"The signal-cli daemon at {config.daemon_url} stopped answering while "
+                "listing its accounts. Check that it is still running."
             ) from exc
         numbers = {
             str(a.get("number")) for a in (accounts or []) if isinstance(a, dict)
@@ -550,17 +576,17 @@ class SignalAdapter(PlatformAdapter):
         channel_type: ChannelType = "channel_private" if group else "direct"
         root_id = self._quote_ref(message.get("quote"))
 
-        stripped = text.strip()
-        if stripped.startswith("!") and self._on_command is not None:
-            parts = stripped.split(None, 1)
+        attachment_items = message.get("attachments") or []
+        command = _COMMAND.match(text.strip())
+        if command and not attachment_items and self._on_command is not None:
             await self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
                     channel_type=channel_type,
                     sender_id=source,
                     sender_name=sender_name,
-                    command=parts[0].lstrip("!"),
-                    args=parts[1].strip() if len(parts) > 1 else "",
+                    command=command.group(1),
+                    args=(command.group(2) or "").strip(),
                     message_ref=ref,
                     root_id=root_id,
                 )
@@ -569,7 +595,7 @@ class SignalAdapter(PlatformAdapter):
         if self._on_message is None:
             return
         attachments, failures = await self._fetch_attachments(
-            message.get("attachments") or [], channel_id
+            attachment_items, channel_id
         )
         await self._on_message(
             InboundMessage(
@@ -634,7 +660,11 @@ class SignalAdapter(PlatformAdapter):
                     "getAttachment", {"id": item.get("id"), **self._target(channel_id)}
                 )
                 encoded = result.get("data") if isinstance(result, dict) else result
-                data = base64.b64decode(str(encoded), validate=False)
+                if not isinstance(encoded, str) or not encoded:
+                    raise BridgeOperationError(
+                        "signal-cli returned no data for the attachment"
+                    )
+                data = base64.b64decode(encoded, validate=True)
             except (BridgeOperationError, binascii.Error, httpx.TransportError) as exc:
                 failures.append(
                     AttachmentFailure(
@@ -714,13 +744,57 @@ class SignalAdapter(PlatformAdapter):
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
-        """Edit one of the account's own messages (Signal allows it for a day)."""
+        """Edit one of the account's own messages (Signal allows it for a day).
+
+        `new_content` is written as given. The agent's name is not passed
+        here, so a caller that knows it goes through `update_rich`, which puts
+        the name back at the head.
+        """
+        await self._edit(channel_id, message_ref, new_content)
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Redraw a card or a turn with the agent's name at its head again.
+
+        Every agent shares the account, so the name is part of the message: an
+        edit without it would no longer say who is speaking.
+        """
+        text = self.rich_fallback_text(content)
+        try:
+            await self._edit(channel_id, message_ref, f"**{agent_name}:** {text}")
+        except Exception as error:
+            raise RichContentFailed(
+                f"Signal could not update message {message_ref} in {channel_id}: {error}",
+                text=text,
+            ) from error
+
+    async def _edit(self, channel_id: str, message_ref: str, body: str) -> None:
+        """Replace the text of one of the account's own messages.
+
+        An edit cannot become several messages, so a body longer than one is
+        cut, and the cut is marked in the message and logged.
+        """
         timestamp, author = _parse_ref(message_ref)
         if author != self.config.account:
             return
-        text, styles = to_signal_text(
-            split_message(new_content)[0] if new_content else ""
-        )
+        pieces = split_message(body, MAX_MESSAGE - len(_TRUNCATED))
+        if len(pieces) > 1:
+            logger.warning(
+                "Signal edit of %s in %s is longer than one message (%d characters); "
+                "sending the first %d",
+                message_ref,
+                channel_id,
+                len(body),
+                len(pieces[0]),
+            )
+            body = pieces[0] + _TRUNCATED
+        text, styles = to_signal_text(body)
         params: dict[str, Any] = {"message": text, "editTimestamp": timestamp}
         if styles:
             params["textStyle"] = styles
@@ -820,7 +894,8 @@ class SignalAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "Signal conversations start on Signal: add the account to a group, or "
             "message it, and the room appears."

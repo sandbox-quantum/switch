@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -13,6 +14,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from switch_core.bridges.collaboration.adapter import RequestCard, RichContentFailed
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
@@ -21,6 +23,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
 )
 from switch_core.bridges.collaboration.platforms import PLATFORMS
+from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.signal.adapter import (
     MAX_MESSAGE,
     SignalAdapter,
@@ -29,6 +32,8 @@ from switch_core.bridges.collaboration.signal.adapter import (
     split_message,
     to_signal_text,
 )
+
+from .session_fixtures import open_request
 
 DAEMON = "http://localhost:8080"
 ACCOUNT = "+15550000001"
@@ -285,6 +290,29 @@ async def test_verify_credentials_explains_no_daemon(
         await SignalAdapter.verify_credentials(_config().model_dump())
 
 
+async def test_verify_credentials_explains_a_daemon_refusing_the_call(
+    daemon: Daemon,
+) -> None:
+    daemon.status = 500
+    with pytest.raises(BridgeCredentialError, match="refused to list its accounts"):
+        await SignalAdapter.verify_credentials(_config().model_dump())
+
+
+async def test_verify_credentials_explains_a_daemon_that_stops_answering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def check_then_drop(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/check":
+            return httpx.Response(200)
+        raise httpx.ReadError("gone", request=request)
+
+    monkeypatch.setattr(
+        SignalAdapter, "_transport", httpx.MockTransport(check_then_drop)
+    )
+    with pytest.raises(BridgeCredentialError, match="stopped answering"):
+        await SignalAdapter.verify_credentials(_config().model_dump())
+
+
 def test_classify_failure() -> None:
     request = httpx.Request("POST", DAEMON)
     assert (
@@ -395,6 +423,26 @@ async def test_bang_commands_become_commands() -> None:
     assert heard.messages == []
 
 
+@pytest.mark.parametrize("text", ["!!!", "! look", "!123", "!"])
+async def test_a_bang_that_is_not_a_command_is_a_message(text: str) -> None:
+    adapter, heard = await _started()
+    await adapter.handle_event(_received(text))
+    assert heard.commands == []
+    assert [m.content for m in heard.messages] == [text]
+
+
+async def test_a_bang_message_with_an_attachment_keeps_the_attachment(
+    daemon: Daemon,
+) -> None:
+    adapter, heard = await _started()
+    item = {"id": "a1", "filename": "shot.png", "contentType": "image/png", "size": 10}
+    await adapter.handle_event(_received("!look at this", attachments=[item]))
+    assert heard.commands == []
+    [message] = heard.messages
+    assert message.content == "!look at this"
+    assert [a.filename for a in message.attachments] == ["shot.png"]
+
+
 async def test_receipts_and_typing_are_ignored() -> None:
     adapter, heard = await _started()
     await adapter.handle_event(
@@ -474,6 +522,19 @@ async def test_oversized_or_unfetchable_attachments_are_reported(
     assert [f.filename for f in failures] == ["big.mov", "gone.pdf"]
     assert "larger" in failures[0].reason
     assert "gone" in failures[1].reason
+
+
+@pytest.mark.parametrize("returned", [None, "", "not base64!"])
+async def test_an_attachment_without_usable_data_is_reported(
+    daemon: Daemon, returned: str | None
+) -> None:
+    adapter, heard = await _started()
+    daemon.attachment = returned  # type: ignore[assignment]
+    item = {"id": "a1", "filename": "x.bin", "size": 5}
+    await adapter.handle_event(_received("file", attachments=[item]))
+    [message] = heard.messages
+    assert message.attachments == []
+    assert [f.filename for f in message.attachment_failures] == ["x.bin"]
 
 
 # ── The event stream ─────────────────────────────────────────────────────────
@@ -566,6 +627,38 @@ async def test_update_message_edits_the_accounts_own_message(daemon: Daemon) -> 
     assert params["editTimestamp"] == 1_700_000_000_123
     assert params["message"] == "now better"
     assert params["textStyle"] == ["4:6:ITALIC"]
+
+
+async def test_a_redraw_keeps_the_agents_name(daemon: Daemon) -> None:
+    adapter, _ = await _started()
+    card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+    await adapter.update_rich(ALICE, "helper", f"1700000000123:{ACCOUNT}", card, None)
+    [params] = daemon.sent()
+    assert params["editTimestamp"] == 1_700_000_000_123
+    assert params["message"].startswith("helper: ")
+    assert params["textStyle"][0] == "0:7:BOLD"
+
+
+async def test_a_redraw_signal_refuses_is_reported(daemon: Daemon) -> None:
+    adapter, _ = await _started()
+    daemon.error = {"code": -1, "message": "too old"}
+    card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+    with pytest.raises(RichContentFailed, match="too old"):
+        await adapter.update_rich(
+            ALICE, "helper", f"1700000000123:{ACCOUNT}", card, None
+        )
+
+
+async def test_an_edit_too_long_for_one_message_is_cut_visibly(
+    daemon: Daemon, caplog: pytest.LogCaptureFixture
+) -> None:
+    adapter, _ = await _started()
+    with caplog.at_level(logging.WARNING):
+        await adapter.update_message(ALICE, f"1700000000123:{ACCOUNT}", "word " * 900)
+    [params] = daemon.sent()
+    assert len(params["message"]) <= MAX_MESSAGE
+    assert params["message"].endswith("too long to edit in one Signal message)")
+    assert "longer than one message" in caplog.text
 
 
 async def test_delete_message_deletes_for_everyone(daemon: Daemon) -> None:
