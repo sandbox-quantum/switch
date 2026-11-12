@@ -158,7 +158,8 @@ class TemplateUpdates:
                     for template in official_templates(
                         self._agent_management, self._switch_buddy
                     ):
-                        await self.update_installs(tenant_id, template)
+                        if template.kind == "agent":
+                            await self.update_installs(tenant_id, template)
             except Exception:
                 logger.error(
                     "Could not update the agents of official templates in tenant %s",

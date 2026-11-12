@@ -299,10 +299,11 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
   const confirm = useShowModal('confirmActionModal');
   const me = switchServersStore.statusFor(serverId)?.user ?? null;
-  // The server says who may delete; an older server leaves it out, and the owner-or-admin guess stands in.
+  // The server says who may delete (an admin may remove an official room template from the
+  // workspace); an older server leaves it out, and the owner-or-admin guess stands in.
   const canDelete = (item: TemplateListEntry) =>
-    !item.server.official &&
-    (item.server.canManage ??
+    item.server.canManage ??
+    (!item.server.official &&
       ((meId !== null && item.server.ownerId === meId) || me?.role === 'admin'));
   const deleteTemplate = (item: TemplateListEntry) =>
     confirm({

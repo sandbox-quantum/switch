@@ -231,7 +231,8 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   // The server says what this user may do: it knows who administers the
   // workspace, which the user's global role does not tell. An older server
   // leaves the answer out, and the owner-or-admin guess stands in.
-  const canManage = !official && (loaded.server.canManage ?? (mine || me?.role === 'admin'));
+  // On an official template it means an admin may remove it from the workspace.
+  const canManage = loaded.server.canManage ?? (!official && (mine || me?.role === 'admin'));
   const canEdit =
     !official &&
     (loaded.server.canEdit ?? (canManage || loaded.server.writeVisibility === 'public'));

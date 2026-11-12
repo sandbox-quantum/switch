@@ -97,7 +97,9 @@ export default function TemplateDetailPage() {
   // a workspace admin whose global role is plain "user" may still manage
   // every template here, and an open template is edited by anyone.
   const canEdit = template.can_edit;
+  // On an official template, managing it means only removing it from the workspace.
   const canManage = template.can_manage;
+  const official = template.official;
 
   return (
     <Box>
@@ -117,20 +119,24 @@ export default function TemplateDetailPage() {
         <DocumentSection
           template={template}
           canEdit={canEdit}
-          canManage={canManage}
+          canManage={canManage && !official}
           onSaved={setTemplate}
         />
         {canManage && (
           <>
-            <Divider />
-            <TransferOwnershipSection
-              kind="template"
-              resourceId={id}
-              resourceLabel={template.name || id}
-              ownerId={template.owner_id}
-              blockedReason={null}
-              onTransferred={() => navigate(0)}
-            />
+            {!official && (
+              <>
+                <Divider />
+                <TransferOwnershipSection
+                  kind="template"
+                  resourceId={id}
+                  resourceLabel={template.name || id}
+                  ownerId={template.owner_id}
+                  blockedReason={null}
+                  onTransferred={() => navigate(0)}
+                />
+              </>
+            )}
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>
