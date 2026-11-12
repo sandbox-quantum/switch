@@ -236,6 +236,22 @@ def test_server_wide_gauges_are_read_with_max(filename: str) -> None:
             )
 
 
+@pytest.mark.parametrize(
+    "filename", ["dashboard.json", "multi-pod-dashboard.json", "signal-board.json"]
+)
+def test_no_toplist_request_carries_an_aggregator(filename: str) -> None:
+    """Datadog refuses to import a toplist whose request has `aggregator`
+    ("Invalid widget definition ... 'aggregator' was unexpected"). A toplist
+    says how to rank in its query instead: `top(<query>, 10, 'last', 'desc')`.
+    Query values keep their `aggregator`, which Datadog accepts there."""
+    board = _load(filename)
+    for chart in _charts(board["widgets"]):  # type: ignore[index]
+        if chart["type"] != "toplist":
+            continue
+        for request in chart.get("requests", []):
+            assert "aggregator" not in request, (filename, chart.get("title"))
+
+
 def _charts(widgets: list[dict]) -> list[dict]:
     """Every widget definition on a dashboard, groups opened up."""
     found = []
