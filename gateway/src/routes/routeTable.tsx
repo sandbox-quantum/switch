@@ -32,6 +32,7 @@ import {
   workspaceAdmins,
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
+import AccountPage from "../pages/account/AccountPage";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
 import AgentListPage from "../pages/agents/AgentListPage";
 import AgentsPage from "../pages/agents/AgentsPage";
@@ -254,13 +255,7 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <MachinesPage />),
   redirect("/settings/devices", CURRENT, "/machines"),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
-  settingsPage(
-    "/settings/account",
-    "workspace",
-    "Your account",
-    everyone,
-    <PlannedPage title="Your account" />,
-  ),
+  settingsPage("/settings/account", "workspace", "Your account", everyone, <AccountPage />),
 
   // Organization settings: the area admits the organization's admins, and
   // the operator to restore one; its pages beyond that are the admins' alone.

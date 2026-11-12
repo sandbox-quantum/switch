@@ -53,6 +53,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Your account in the new dashboard layout.** Behind `gateway_v2`, Settings
+  › Your account shows your display name, which you can change in place, and
+  your email, read-only. It has cards to change your password (not shown for
+  an account made through single sign-on), to sign out of this browser or of
+  every device, and to delete your account. The delete dialog says straight
+  away when deletion isn't possible yet, for example because you're the only
+  admin of a workspace or organization that has other people in it, instead
+  of after you've typed your email. A new `GET /gateway/auth/me/deletion`
+  answers with the reason `DELETE /gateway/auth/me` would give, or null.
+  Change password moves out of the account menu in the new layout.
 - **Templates have a page of their own in the new dashboard layout, and say
   how often each one is run.** Behind `gateway_v2`, Templates leaves the
   Resources tabs: the workspace's own templates and the ones that come with

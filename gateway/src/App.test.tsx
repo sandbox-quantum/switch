@@ -799,14 +799,14 @@ describe("the new layout (gateway_v2)", () => {
   });
 
   describe("the account menu", () => {
-    it("leads to your account, and leaves switching workspace to the top bar", async () => {
+    it("leads to your account, where the password changes, and leaves switching workspace to the top bar", async () => {
       mockFetch(signedInAs("member", { flags: V2, tenants: [beta] }));
       renderAt("/rooms");
       fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
       const account = await screen.findByRole("menuitem", { name: "Your account" });
       expect(account.getAttribute("href")).toBe("/settings/account");
       expect(screen.queryByText("Switch to Beta Co")).toBeNull();
-      expect(screen.getByRole("menuitem", { name: "Change password" })).toBeTruthy();
+      expect(screen.queryByRole("menuitem", { name: "Change password" })).toBeNull();
       expect(screen.getByRole("menuitem", { name: "Create organization" })).toBeTruthy();
       expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
     });

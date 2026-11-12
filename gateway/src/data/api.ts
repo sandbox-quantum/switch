@@ -1269,8 +1269,31 @@ export async function signOutEverywhere(): Promise<void> {
   await jsonRequest("/auth/sessions/revoke", "POST");
 }
 
-export async function fetchMe(): Promise<UserInfo | null> {
-  return fetchJson<UserInfo>("/auth/me");
+/** The signed-in account, as Your account shows it. */
+export interface Me extends UserInfo {
+  // False for an account made through single sign-on, which has no password
+  // of its own to change.
+  has_password: boolean;
+}
+
+export async function fetchMe(): Promise<Me> {
+  return jsonRequest<Me>("/auth/me", "GET");
+}
+
+export async function changeMyName(name: string): Promise<Me> {
+  return jsonRequest<Me>("/auth/me", "PATCH", { name });
+}
+
+/** What deleting the account would be refused with now, saying what to do
+ * first, or null when it would go ahead. */
+export async function accountDeletionRefusal(): Promise<string | null> {
+  const check = await jsonRequest<{ refusal: string | null }>("/auth/me/deletion", "GET");
+  return check.refusal;
+}
+
+/** Deletes the account everywhere, confirmed by its email typed out. */
+export async function deleteMyAccount(email: string): Promise<void> {
+  await jsonRequest("/auth/me", "DELETE", { email });
 }
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";

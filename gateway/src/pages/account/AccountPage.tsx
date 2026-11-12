@@ -1,0 +1,191 @@
+import LockOutlined from "@mui/icons-material/LockOutlined";
+import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
+import { Alert, Box, Button, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
+import { type ReactNode, useEffect, useState } from "react";
+import EditableField from "../../components/EditableField";
+import { useAuth } from "../../data/AuthContext";
+import { type Me, changeMyName, fetchMe } from "../../data/api";
+import ChangePasswordDialog from "../../layout/ChangePasswordDialog";
+import { tokenVar } from "../../theme/tokens";
+import DeleteAccountDialog from "./DeleteAccountDialog";
+
+// What `PATCH /auth/me` accepts.
+const NAME_MAX = 255;
+
+/** Your account: the signed-in person, not the workspace, and the same for
+ * every role. The display name is edited in place and the email only shown,
+ * since it is how the person signs in; under them, one card per thing to do
+ * with the account. */
+export default function AccountPage() {
+  const [me, setMe] = useState<Me | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    fetchMe()
+      .then((read) => current && setMe(read))
+      .catch((err) => current && setLoadError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  return (
+    <Box>
+      <Typography variant="h5" sx={{ mb: 1 }}>
+        Your account
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+        About you, not this workspace: the same in every workspace you're in.
+      </Typography>
+      {loadError ? (
+        <Alert severity="error">Couldn't load your account: {loadError}</Alert>
+      ) : me === null ? (
+        <CircularProgress size={24} />
+      ) : (
+        <AccountSections me={me} onRenamed={setMe} />
+      )}
+    </Box>
+  );
+}
+
+function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => void }) {
+  const { logout, logoutEverywhere, recheck } = useAuth();
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  // Kept after the message closes, so it still names them while it fades out.
+  const [renamedTo, setRenamedTo] = useState("");
+  const [noticeOpen, setNoticeOpen] = useState(false);
+
+  // The session is read again for everywhere else the name shows.
+  const rename = async (draft: string) => {
+    const renamed = await changeMyName(draft);
+    onRenamed(renamed);
+    recheck();
+    setRenamedTo(renamed.name);
+    setNoticeOpen(true);
+  };
+
+  return (
+    <>
+      <Stack spacing={2.5}>
+        <EditableField
+          label="Display name"
+          value={me.name}
+          canEdit
+          readOnlyHelper=""
+          editLabel="Change display name"
+          maxLength={NAME_MAX}
+          onSave={rename}
+        />
+        {/* The same field with no pencil, so the two look alike but for that,
+            and no caption, as the design has it: nobody can change the email
+            here, which is how the person signs in. */}
+        <EditableField
+          label="Email"
+          value={me.email}
+          canEdit={false}
+          readOnlyHelper=""
+          editLabel=""
+          maxLength={NAME_MAX}
+          onSave={() => Promise.reject(new Error("The email can't be changed here."))}
+        />
+      </Stack>
+
+      <Stack spacing={2} sx={{ mt: 4 }}>
+        {/* An account made through single sign-on has no password here. */}
+        {me.has_password && (
+          <AccountCard
+            title="Password"
+            description="Change the password you sign in with. Other devices are signed out."
+          >
+            <Button
+              variant="outlined"
+              startIcon={<LockOutlined />}
+              onClick={() => setPasswordOpen(true)}
+            >
+              Change password
+            </Button>
+          </AccountCard>
+        )}
+        <AccountCard
+          title="Sign out"
+          description="Ends this browser session, or every session you have open. Your agents keep running."
+        >
+          <Button variant="text" onClick={() => void logoutEverywhere()}>
+            Sign out of all devices
+          </Button>
+          <Button variant="outlined" startIcon={<LogoutOutlined />} onClick={() => void logout()}>
+            Sign out
+          </Button>
+        </AccountCard>
+        <AccountCard
+          title="Delete account"
+          description="Removes you from every workspace you're in, and deletes the agents you own and the connector accounts you connected."
+        >
+          <Button variant="outlined" color="error" onClick={() => setDeleteOpen(true)}>
+            Delete account
+          </Button>
+        </AccountCard>
+      </Stack>
+
+      <ChangePasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
+      <DeleteAccountDialog
+        open={deleteOpen}
+        email={me.email}
+        onClose={() => setDeleteOpen(false)}
+      />
+      <Snackbar
+        open={noticeOpen}
+        autoHideDuration={5000}
+        onClose={() => setNoticeOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Alert severity="success" onClose={() => setNoticeOpen(false)}>
+          Display name changed to {renamedTo}.
+        </Alert>
+      </Snackbar>
+    </>
+  );
+}
+
+/** One thing to do with the account: what it is on the left, its buttons on
+ * the right. */
+function AccountCard({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <Box
+      component="section"
+      aria-label={title}
+      sx={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 2,
+        p: 2,
+        border: `1px solid ${tokenVar("border")}`,
+        borderRadius: "16px",
+        backgroundColor: tokenVar("widget"),
+      }}
+    >
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+          {title}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          {description}
+        </Typography>
+      </Box>
+      <Stack direction="row" sx={{ gap: 1, flexShrink: 0 }}>
+        {children}
+      </Stack>
+    </Box>
+  );
+}

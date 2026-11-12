@@ -298,16 +298,19 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
           <ThemeModeToggle />
         </Box>
         <Divider sx={{ my: 0.5 }} />
-        <MenuItem
-          onClick={() => {
-            setAnchor(null);
-            setPasswordDialogOpen(true);
-          }}
-          sx={{ gap: 1 }}
-        >
-          <LockOutlined sx={{ fontSize: 16 }} />
-          Change password
-        </MenuItem>
+        {/* The new layout changes the password on Your account. */}
+        {layout !== "v2" && (
+          <MenuItem
+            onClick={() => {
+              setAnchor(null);
+              setPasswordDialogOpen(true);
+            }}
+            sx={{ gap: 1 }}
+          >
+            <LockOutlined sx={{ fontSize: 16 }} />
+            Change password
+          </MenuItem>
+        )}
         <MenuItem onClick={logout} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
