@@ -23,9 +23,10 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from pydantic import Field, field_validator
@@ -37,6 +38,7 @@ from switch_core.bridges.collaboration.adapter import (
     PlatformAdapter,
     RequestCard,
     RichContent,
+    RichContentFailed,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -46,6 +48,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelRetirement,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -56,6 +59,7 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +75,23 @@ DIRECT_MESSAGE_ANSWER = (
     "I only work in streams. Write in a stream Switch is in, and mention an "
     "agent there to ask it something."
 )
-# Zulip's default; the server's own figure replaces it once the queue is registered.
+# Zulip's defaults; the server's own figures replace them once the queue is registered.
 _DEFAULT_MESSAGE_LIMIT = 10_000
-# Where an agent's post goes when it starts a conversation rather than
-# answering in one: Zulip refuses a stream message without a topic.
+_DEFAULT_TOPIC_LIMIT = 60
+# Room left in a message for the agent's name at its head, so a card or a
+# turn drawn to `rich_fallback_limit` is still one message once it is named.
+_LABEL_ROOM = 200
+# What an edit too long for one message ends with: the post it edits was
+# split, and an edit reaches only its first part.
+EDIT_CUT_MARKER = "\n\n_… cut to fit one Zulip message._"
+# The topic of an agent's post that starts a conversation and says nothing to
+# name it by: Zulip refuses a stream message without a topic.
 NEW_CONVERSATION_TOPIC = "Switch"
+# How long a stream's privacy is trusted before it is asked again.
+_STREAM_TYPE_TTL_SECONDS = 300.0
+# Redirects followed to fetch an upload: a server storing files in S3
+# answers the temporary link with one, to the object.
+_MAX_DOWNLOAD_REDIRECTS = 5
 # What each work mark is drawn as. One account may hold several reactions on a
 # message, so a prompt still waiting and one being worked on are told apart.
 _ACTIVITY_EMOJI: dict[ActivityMark, str] = {"working": "eyes", "queued": "hourglass"}
@@ -91,6 +107,8 @@ _MASS_MENTION = re.compile(
     r"@_?\*\*(all|everyone|stream|channel|topic)\*\*", re.IGNORECASE
 )
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+# Zulip error codes that ask to be tried again rather than refuse for good.
+_TRANSIENT_CODES = ("RATE_LIMIT_HIT", "NOT_JSON")
 
 
 class ZulipError(Exception):
@@ -129,7 +147,15 @@ class ZulipConnectionConfig(BridgeConnectionConfig):
             raise ValueError(
                 "The server URL is the organization's address alone, with no path."
             )
-        return f"{parts.scheme}://{parts.netloc}"
+        if parts.username is not None or parts.password is not None:
+            raise ValueError(
+                "The server URL must not carry a user name or password; the bot's "
+                "email and API key go in their own fields."
+            )
+        netloc = f"[{host}]" if ":" in host else host
+        if parts.port is not None:
+            netloc = f"{netloc}:{parts.port}"
+        return f"{parts.scheme}://{netloc}"
 
 
 class ZulipAdapter(PlatformAdapter):
@@ -154,6 +180,8 @@ class ZulipAdapter(PlatformAdapter):
         self._bot_user_id: int | None = None
         self._bot_name = ""
         self._message_limit = _DEFAULT_MESSAGE_LIMIT
+        self._topic_limit = _DEFAULT_TOPIC_LIMIT
+        self._started = False
         self._listener: asyncio.Task[None] | None = None
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
@@ -161,6 +189,9 @@ class ZulipAdapter(PlatformAdapter):
         # name whoever answers a card. Safe to lose: the card then names the
         # person's Switch identity instead.
         self._names: dict[str, str] = {}
+        # Each stream's privacy and when it was read, so relaying a message
+        # does not ask Zulip about its stream every time.
+        self._stream_types: dict[str, tuple[ChannelType, float]] = {}
 
     # ── Who we are ───────────────────────────────────────────────────────────
 
@@ -208,13 +239,36 @@ class ZulipAdapter(PlatformAdapter):
     ) -> None:
         self._on_message = on_message
         self._on_command = on_command
-        me = await self._call("GET", "/api/v1/users/me")
+        try:
+            me = await self._call("GET", "/api/v1/users/me")
+        except BaseException:
+            await self._http.aclose()
+            raise
         self._bot_user_id = int(me["user_id"])
         self._bot_name = str(me["full_name"])
+        self._started = True
         if self._listening:
+            self._start_listener()
+
+    def set_listening(self, listening: bool) -> None:
+        """Before `start` as the base has it, and after it too: the listener
+        starts or stops with the change, so the bot is never left deaf by the
+        order the two were called in."""
+        super().set_listening(listening)
+        if not self._started:
+            return
+        if listening:
+            self._start_listener()
+        elif self._listener is not None:
+            self._listener.cancel()
+            self._listener = None
+
+    def _start_listener(self) -> None:
+        if self._listener is None or self._listener.done():
             self._listener = asyncio.create_task(self._listen())
 
     async def stop(self) -> None:
+        self._started = False
         if self._listener is not None:
             self._listener.cancel()
             try:
@@ -234,6 +288,12 @@ class ZulipAdapter(PlatformAdapter):
         read once it is relayed, on Zulip's side, so this needs no state of
         its own and holds across pods and restarts. One heard both ways is
         dropped by its `message_ref`, Zulip's own message id.
+
+        A queue is used only once the backlog has been relayed through it, so
+        a backlog cut short by a failure Zulip may not repeat (the server out
+        of reach, a rate limit) is relayed again, from a new queue, rather
+        than left unread for good. A message that fails for any other reason
+        is logged and left unread, and the rest are relayed past it.
         """
         queue_id: str | None = None
         last_event_id = -1
@@ -248,25 +308,24 @@ class ZulipAdapter(PlatformAdapter):
                             "apply_markdown": "false",
                         },
                     )
-                    queue_id = str(registered["queue_id"])
-                    last_event_id = int(registered["last_event_id"])
                     self._message_limit = int(
                         registered.get("max_message_length", _DEFAULT_MESSAGE_LIMIT)
                     )
+                    self._topic_limit = int(
+                        registered.get("max_topic_length", _DEFAULT_TOPIC_LIMIT)
+                    )
                     await self._relay_unread()
+                    queue_id = str(registered["queue_id"])
+                    last_event_id = int(registered["last_event_id"])
                 answer = await self._call(
                     "GET",
                     "/api/v1/events",
                     params={"queue_id": queue_id, "last_event_id": last_event_id},
                     timeout=_POLL_TIMEOUT,
                 )
-                relayed: list[int] = []
-                for event in answer.get("events", []):
-                    last_event_id = max(last_event_id, int(event["id"]))
-                    if event.get("type") == "message":
-                        await self._relay(event["message"], event.get("flags", []))
-                        relayed.append(int(event["message"]["id"]))
-                await self._mark_read(relayed)
+                last_event_id = await self._relay_events(
+                    answer.get("events", []), last_event_id
+                )
             except asyncio.CancelledError:
                 raise
             except ZulipError as exc:
@@ -279,18 +338,43 @@ class ZulipAdapter(PlatformAdapter):
                 logger.warning("Zulip could not be reached, asking again: %s", exc)
                 await asyncio.sleep(_RETRY_SECONDS)
             except Exception:
-                # One bad event must not end the bridge's hearing.
-                logger.exception("A Zulip event could not be relayed")
+                logger.exception("The Zulip event queue failed, asking again")
                 await asyncio.sleep(_RETRY_SECONDS)
 
+    async def _relay_events(
+        self, events: list[dict[str, Any]], last_event_id: int
+    ) -> int:
+        """Relay one poll's events, marking each relayed message read.
+
+        Answers the id of the last event dealt with. A failure worth trying
+        again stops there, so the next poll asks Zulip for that event again.
+        """
+        relayed: list[int] = []
+        try:
+            for event in events:
+                if event.get("type") == "message":
+                    message = event["message"]
+                    if await self._relay_one(message, event.get("flags", [])):
+                        relayed.append(int(message["id"]))
+                last_event_id = max(last_event_id, int(event["id"]))
+        finally:
+            await self._mark_read(relayed)
+        return last_event_id
+
     async def _relay_unread(self) -> None:
-        """Relay, oldest first, what reached the bot while it was not listening."""
+        """Relay, oldest first, what reached the bot while it was not listening.
+
+        Each page starts after the last message of the one before, so a
+        message left unread because it failed is not read back forever.
+        """
+        anchor = "first_unread"
         while True:
             answer = await self._call(
                 "GET",
                 "/api/v1/messages",
                 params={
-                    "anchor": "first_unread",
+                    "anchor": anchor,
+                    "include_anchor": json.dumps(anchor == "first_unread"),
                     "num_before": "0",
                     "num_after": str(_UNREAD_PAGE),
                     "apply_markdown": "false",
@@ -298,18 +382,46 @@ class ZulipAdapter(PlatformAdapter):
                 },
             )
             messages = answer.get("messages", [])
-            for message in messages:
-                await self._relay(message, message.get("flags", []))
-            await self._mark_read([int(message["id"]) for message in messages])
+            relayed: list[int] = []
+            try:
+                for message in messages:
+                    if await self._relay_one(message, message.get("flags", [])):
+                        relayed.append(int(message["id"]))
+            finally:
+                await self._mark_read(relayed)
             if len(messages) < _UNREAD_PAGE:
                 return
+            anchor = str(messages[-1]["id"])
+
+    async def _relay_one(self, message: dict[str, Any], flags: list[str]) -> bool:
+        """Relay one message: True once it is dealt with and can be marked read.
+
+        A failure Zulip may not repeat is raised, for the caller to come back
+        to the message. Any other is logged and the message is left unread,
+        so one bad message does not hold up those after it.
+        """
+        try:
+            await self._relay(message, flags)
+        except Exception as exc:
+            if _transient(exc):
+                raise
+            logger.exception(
+                "Zulip message %s could not be relayed; it is left unread",
+                message.get("id"),
+            )
+            return False
+        return True
 
     async def _answer_direct_message(self, sender_id: int) -> None:
         """Tell someone who wrote to the bot directly where Switch listens.
 
         A room is a stream, so a direct message has no room to reach; it is
-        answered rather than dropped, so the sender is not left waiting.
+        answered rather than dropped, so the sender is not left waiting. Not
+        to another bot, which could answer back and keep the two talking.
         """
+        sender = await self._call("GET", f"/api/v1/users/{sender_id}")
+        if sender["user"].get("is_bot"):
+            return
         await self._call(
             "POST",
             "/api/v1/messages",
@@ -335,10 +447,12 @@ class ZulipAdapter(PlatformAdapter):
             await self._answer_direct_message(int(message["sender_id"]))
             return
         stream_id = str(message["stream_id"])
-        root = await self._topic_root(stream_id, str(message["subject"]))
+        root, channel_type = await asyncio.gather(
+            self._topic_root(stream_id, str(message["subject"])),
+            self._stream_type(stream_id),
+        )
         message_id = str(message["id"])
         root_id = None if root == message_id else root
-        channel_type = await self.get_channel_type(stream_id)
         channel_name = str(message.get("display_recipient") or "") or None
         self._names[str(message["sender_id"])] = str(message["sender_full_name"])
         raw = str(message["content"])
@@ -388,39 +502,64 @@ class ZulipAdapter(PlatformAdapter):
         One too large to relay, or that cannot be fetched, is reported rather
         than dropped, so the room says what it is missing.
         """
+        links = _UPLOAD_LINK.findall(content)
+        if not links:
+            return [], []
         attachments: list[Attachment] = []
         failures: list[AttachmentFailure] = []
-        for name, path in _UPLOAD_LINK.findall(content):
-            filename = name or path.rsplit("/", 1)[-1]
-            try:
-                grant = await self._call("GET", f"/api/v1/user_uploads/{path}")
-                response = await self._http.get(str(grant["url"]))
-                response.raise_for_status()
-            except (ZulipError, httpx.HTTPError) as exc:
-                failures.append(
-                    AttachmentFailure(
-                        filename=filename, reason=f"Zulip did not hand it over: {exc}"
+        async with _download_client(self.outbound_policy) as download:
+            for name, path in links:
+                filename = name or path.rsplit("/", 1)[-1]
+                try:
+                    grant = await self._call("GET", f"/api/v1/user_uploads/{path}")
+                    fetched = await self._download(
+                        download, urljoin(self._config.server_url, str(grant["url"]))
                     )
-                )
-                continue
-            if len(response.content) > self._max_attachment_bytes:
-                failures.append(
-                    AttachmentFailure(
-                        filename=filename,
-                        reason=f"larger than the {self._max_attachment_bytes // (1024 * 1024)} MiB Switch relays",
+                except (ZulipError, httpx.HTTPError, ValueError) as exc:
+                    failures.append(
+                        AttachmentFailure(
+                            filename=filename,
+                            reason=f"Zulip did not hand it over: {exc}",
+                        )
                     )
+                    continue
+                if fetched is None:
+                    failures.append(
+                        AttachmentFailure(
+                            filename=filename,
+                            reason=f"larger than the {self._max_attachment_bytes // (1024 * 1024)} MiB Switch relays",
+                        )
+                    )
+                    continue
+                data, mimetype = fetched
+                attachments.append(
+                    Attachment(filename=filename, mimetype=mimetype, data=data)
                 )
-                continue
-            attachments.append(
-                Attachment(
-                    filename=filename,
-                    mimetype=response.headers.get(
-                        "content-type", "application/octet-stream"
-                    ),
-                    data=response.content,
-                )
-            )
         return attachments, failures
+
+    async def _download(
+        self, client: httpx.AsyncClient, url: str
+    ) -> tuple[bytes, str] | None:
+        """A file's bytes and type, or None once it outgrows what Switch relays.
+
+        The size is enforced while reading, so an oversize file is not pulled
+        down whole first. The link Zulip grants is temporary and needs no
+        credentials, so none are sent with it, nor to wherever it redirects.
+        """
+        async with client.stream("GET", url) as response:
+            response.raise_for_status()
+            declared = response.headers.get("content-length")
+            if declared is not None and int(declared) > self._max_attachment_bytes:
+                return None
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > self._max_attachment_bytes:
+                    return None
+                chunks.append(chunk)
+            mimetype = response.headers.get("content-type", "application/octet-stream")
+        return b"".join(chunks), mimetype
 
     def _mentions_bot(self, content: str) -> bool:
         return any(name == self._bot_name for name in _MENTION.findall(content))
@@ -469,18 +608,19 @@ class ZulipAdapter(PlatformAdapter):
 
         The reference returned is the first part's, so an edit or a delete of
         the post reaches the part that carries the name.
+
+        A post that starts a conversation gets a topic of its own, named after
+        its first line, so it is the root of its own thread: in one shared
+        topic every such post would be read back as replies to the first.
         """
         topic = (
             await self._topic_of(thread_root_id)
             if thread_root_id is not None
-            else NEW_CONVERSATION_TOPIC
+            else _new_topic(content, self._topic_limit)
         )
-        agent = await self.agent_rendering(sender_name)
-        body = self._render_outbound(content)
-        if not room_wide_mention:
-            body = self.defuse_mass_mentions(body)
+        body = await self._labelled(sender_name, content, room_wide_mention)
         first: str | None = None
-        for part in _split(f"**{agent.body_label}:** {body}", self._message_limit):
+        for part in _split(body, self._message_limit):
             sent = await self._call(
                 "POST",
                 "/api/v1/messages",
@@ -559,14 +699,68 @@ class ZulipAdapter(PlatformAdapter):
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
+        await self._edit(
+            message_ref,
+            self.defuse_mass_mentions(self._render_outbound(new_content)),
+        )
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Redraw a card or a turn with the agent's name at its head again.
+
+        One bot posts for every agent, so the name is part of the message: an
+        edit without it would read as the bot's own words, or another agent's.
+        """
+        text = self.rich_fallback_text(content)
+        try:
+            await self._edit(
+                message_ref,
+                await self._labelled(agent_name, text, room_wide_mention=False),
+            )
+        except Exception as error:
+            raise RichContentFailed(
+                f"Zulip could not update message {message_ref} in stream "
+                f"{channel_id}: {error}",
+                text=text,
+            ) from error
+
+    async def _labelled(
+        self, agent_name: str, content: str, room_wide_mention: bool
+    ) -> str:
+        """`content` as the agent says it: its name at the head, and a mass
+        mention defused unless the post is meant for the whole room."""
+        agent = await self.agent_rendering(agent_name)
+        body = self._render_outbound(content)
+        if not room_wide_mention:
+            body = self.defuse_mass_mentions(body)
+        return f"**{agent.body_label}:** {body}"
+
+    async def _edit(self, message_ref: str, content: str) -> None:
+        """Rewrite a message, cut visibly where it outgrows one message.
+
+        An edit reaches one message, and a post too long for one was split,
+        so what does not fit is cut with a note saying so rather than dropped
+        without one.
+        """
+        if len(content) > self._message_limit:
+            logger.warning(
+                "An edit to Zulip message %s is %d characters, over the %d one "
+                "message holds; it is cut to fit",
+                message_ref,
+                len(content),
+                self._message_limit,
+            )
+            content = (
+                content[: self._message_limit - len(EDIT_CUT_MARKER)] + EDIT_CUT_MARKER
+            )
         await self._call(
-            "PATCH",
-            f"/api/v1/messages/{message_ref}",
-            data={
-                "content": _split(
-                    self._render_outbound(new_content), self._message_limit
-                )[0]
-            },
+            "PATCH", f"/api/v1/messages/{message_ref}", data={"content": content}
         )
 
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
@@ -579,7 +773,7 @@ class ZulipAdapter(PlatformAdapter):
         return None
 
     def rich_fallback_limit(self) -> int:
-        return self._message_limit
+        return self._message_limit - _LABEL_ROOM
 
     def rich_fallback_text(self, content: RichContent) -> str:
         """The base's text, with whoever answered a card named as Zulip names them.
@@ -607,19 +801,25 @@ class ZulipAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
-        await self._call(
-            "POST",
-            "/api/v1/users/me/subscriptions",
-            data={
-                "subscriptions": json.dumps([{"name": name, "description": topic}]),
-                "invite_only": json.dumps(channel_type == "channel_private"),
-            },
-        )
-        found = await self._call(
-            "GET", "/api/v1/get_stream_id", params={"stream": name}
-        )
-        return str(found["stream_id"])
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
+        try:
+            await self._call(
+                "POST",
+                "/api/v1/users/me/subscriptions",
+                data={
+                    "subscriptions": json.dumps([{"name": name, "description": topic}]),
+                    "invite_only": json.dumps(channel_type == "channel_private"),
+                },
+            )
+            found = await self._call(
+                "GET", "/api/v1/get_stream_id", params={"stream": name}
+            )
+        except ZulipError as exc:
+            raise BridgeOperationError(
+                f"Zulip would not create the stream {name!r}: {exc.msg}"
+            ) from exc
+        return CreatedChannel(id=str(found["stream_id"]), name=name)
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         """Unsubscribe the bot from the stream, which stays with its people."""
@@ -638,9 +838,22 @@ class ZulipAdapter(PlatformAdapter):
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         stream = await self._call("GET", f"/api/v1/streams/{channel_id}")
-        return (
+        channel_type: ChannelType = (
             "channel_private" if stream["stream"]["invite_only"] else "channel_public"
         )
+        self._stream_types[channel_id] = (channel_type, time.monotonic())
+        return channel_type
+
+    async def _stream_type(self, channel_id: str) -> ChannelType:
+        """`get_channel_type`, trusted for a few minutes: a stream's privacy
+        rarely changes, and relaying a message should not ask every time."""
+        cached = self._stream_types.get(channel_id)
+        if (
+            cached is not None
+            and time.monotonic() - cached[1] < _STREAM_TYPE_TTL_SECONDS
+        ):
+            return cached[0]
+        return await self.get_channel_type(channel_id)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -745,6 +958,33 @@ def _client(config: ZulipConnectionConfig) -> httpx.AsyncClient:
         auth=(config.bot_email, config.api_key),
         timeout=httpx.Timeout(30.0),
     )
+
+
+def _download_client(policy: OutboundPolicy) -> httpx.AsyncClient:
+    """A client for an upload's temporary link: no credentials, and every hop
+    of a redirect held to the outbound policy."""
+    return guarded_async_client(
+        policy,
+        follow_redirects=True,
+        max_redirects=_MAX_DOWNLOAD_REDIRECTS,
+        timeout=httpx.Timeout(30.0, read=120.0),
+    )
+
+
+def _transient(exc: BaseException) -> bool:
+    """Whether a failure may not happen again, so the work is worth repeating."""
+    if isinstance(exc, httpx.HTTPError):
+        return True
+    return isinstance(exc, ZulipError) and exc.code in _TRANSIENT_CODES
+
+
+def _new_topic(content: str, limit: int) -> str:
+    """A topic for a post that starts a conversation: its first line, plain."""
+    for line in content.splitlines():
+        words = " ".join(re.sub(r"[*_`#>~|\[\]]", "", line).split())
+        if words:
+            return words if len(words) <= limit else words[: limit - 1].rstrip() + "…"
+    return NEW_CONVERSATION_TOPIC
 
 
 async def _call(

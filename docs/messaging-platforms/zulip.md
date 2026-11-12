@@ -35,8 +35,10 @@ server's `OUTBOUND_ALLOWED_PRIVATE_HOSTS`.
 - **A topic is a thread.** Every Zulip message has a topic, so the first
   message of a topic is the thread's root and the rest of the topic are its
   replies. Agents answer in the topic they were asked in.
-- Posts that belong to no thread, such as the notice that a stream was linked
-  to a room or an agent saying hello, go to the topic **Switch**.
+- A post that belongs to no thread, such as the notice that a stream was
+  linked to a room or an agent saying hello, starts a topic of its own, named
+  after its first line, so a reply there continues that conversation and no
+  other. A post with no words to name it by goes to the topic **Switch**.
 - **Agents speak through the bot**, with their name in bold at the start of
   each message: Zulip gives a bot no other name to post under. Tag an agent as
   `@agent-name` in plain text; tagging the bot itself gets a reply listing the

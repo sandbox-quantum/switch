@@ -6,7 +6,9 @@ built against one; ids, names and keys are made up.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs
@@ -19,6 +21,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     PlatformAdapter,
     RequestCard,
+    RichContentFailed,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
@@ -31,11 +34,13 @@ from switch_core.bridges.collaboration.session.renderers.neutral import request_
 from switch_core.bridges.collaboration.zulip import adapter as zulip
 from switch_core.bridges.collaboration.zulip.adapter import (
     DIRECT_MESSAGE_ANSWER,
+    EDIT_CUT_MARKER,
     NEW_CONVERSATION_TOPIC,
     ZulipAdapter,
     ZulipConnectionConfig,
     ZulipError,
 )
+from switch_core.outbound import OutboundPolicy
 
 from .session_fixtures import open_request
 
@@ -95,7 +100,13 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Zulip:
             transport=httpx.MockTransport(fake),
         )
 
+    def download_client(policy: OutboundPolicy) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(fake), follow_redirects=True
+        )
+
     monkeypatch.setattr(zulip, "_client", client)
+    monkeypatch.setattr(zulip, "_download_client", download_client)
     fake.on(
         "GET",
         "/api/v1/users/me",
@@ -107,6 +118,11 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Zulip:
         lambda r: _ok(
             stream={"stream_id": STREAM_ID, "name": "ops", "invite_only": False}
         ),
+    )
+    fake.on(
+        "GET",
+        f"/api/v1/users/{PERSON_ID}",
+        lambda r: _ok(user={"user_id": PERSON_ID, "is_bot": False}),
     )
     return fake
 
@@ -126,6 +142,7 @@ async def _started(server: Zulip) -> tuple[ZulipAdapter, list[Any]]:
 
     adapter = ZulipAdapter(config=ZulipConnectionConfig.model_validate(CONFIG))
     adapter.set_listening(False)
+    adapter.set_outbound_policy(OutboundPolicy.parse(""))
     await adapter.start(hear, hear, ignore, ignore, ignore)
     return adapter, heard
 
@@ -172,6 +189,20 @@ def test_a_server_url_with_a_path_is_refused() -> None:
         ZulipConnectionConfig.model_validate(
             {**CONFIG, "server_url": f"{SERVER}/api/v1"}
         )
+
+
+def test_a_server_url_carrying_a_password_is_refused() -> None:
+    with pytest.raises(ValidationError, match="user name or password"):
+        ZulipConnectionConfig.model_validate(
+            {**CONFIG, "server_url": "https://user:secret@chat.example.com"}
+        )
+
+
+def test_a_server_urls_port_is_kept() -> None:
+    config = ZulipConnectionConfig.model_validate(
+        {**CONFIG, "server_url": "https://chat.example.com:8443"}
+    )
+    assert config.server_url == "https://chat.example.com:8443"
 
 
 def test_the_server_url_is_what_the_outbound_policy_checks() -> None:
@@ -311,6 +342,35 @@ async def test_a_direct_message_is_answered_with_where_to_write(
     }
 
 
+async def test_a_direct_message_from_another_bot_is_not_answered(
+    server: Zulip,
+) -> None:
+    server.on(
+        "GET",
+        "/api/v1/users/44",
+        lambda r: _ok(user={"user_id": 44, "is_bot": True}),
+    )
+    adapter, heard = await _started(server)
+
+    await adapter._relay(_message(type="private", sender_id=44), [])
+
+    assert heard == []
+    assert server.sent("POST", "/api/v1/messages") == []
+
+
+async def test_a_streams_privacy_is_asked_once_for_many_messages(
+    server: Zulip,
+) -> None:
+    server.on("GET", "/api/v1/messages", _topic_rooted_at(12))
+    adapter, heard = await _started(server)
+
+    await adapter._relay(_message(id=15), [])
+    await adapter._relay(_message(id=16), [])
+
+    assert len(heard) == 2
+    assert len(server.sent("GET", f"/api/v1/streams/{STREAM_ID}")) == 1
+
+
 async def test_what_arrived_while_not_listening_is_relayed_and_marked_read(
     server: Zulip,
 ) -> None:
@@ -328,6 +388,138 @@ async def test_what_arrived_while_not_listening_is_relayed_and_marked_read(
     assert [m.message_ref for m in heard] == ["21", "22"]
     [marked] = server.sent("POST", "/api/v1/messages/flags")
     assert _form(marked) == {"messages": "[21, 22]", "op": "add", "flag": "read"}
+
+
+def _topics(broken: str) -> Handler:
+    """Topic roots for every topic but `broken`, which has lost its messages."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        narrow = json.loads(request.url.params["narrow"])
+        if {"operator": "topic", "operand": broken} in narrow:
+            return _ok(messages=[])
+        return _ok(messages=[{"id": 1, "subject": "deploys"}])
+
+    return answer
+
+
+def _event(event_id: int, **fields: Any) -> dict[str, Any]:
+    return {"id": event_id, "type": "message", "message": _message(**fields)}
+
+
+async def test_a_message_that_fails_is_left_unread_and_the_rest_are_marked_read(
+    server: Zulip,
+) -> None:
+    server.on("GET", "/api/v1/messages", _topics(broken="gone"))
+    server.on("POST", "/api/v1/messages/flags", lambda r: _ok())
+    adapter, heard = await _started(server)
+
+    last = await adapter._relay_events(
+        [_event(5, id=50), _event(6, id=60, subject="gone"), _event(7, id=70)], 4
+    )
+
+    assert last == 7
+    assert [m.message_ref for m in heard] == ["50", "70"]
+    [marked] = server.sent("POST", "/api/v1/messages/flags")
+    assert _form(marked)["messages"] == "[50, 70]"
+
+
+async def test_a_message_zulip_could_not_answer_for_is_asked_for_again(
+    server: Zulip,
+) -> None:
+    def topics(request: httpx.Request) -> httpx.Response:
+        if {"operator": "topic", "operand": "flaky"} in json.loads(
+            request.url.params["narrow"]
+        ):
+            raise httpx.ConnectError("down")
+        return _ok(messages=[{"id": 1, "subject": "deploys"}])
+
+    server.on("GET", "/api/v1/messages", topics)
+    server.on("POST", "/api/v1/messages/flags", lambda r: _ok())
+    adapter, heard = await _started(server)
+
+    with pytest.raises(httpx.ConnectError):
+        await adapter._relay_events(
+            [_event(5, id=50), _event(6, id=60, subject="flaky"), _event(7, id=70)], 4
+        )
+
+    assert [m.message_ref for m in heard] == ["50"]
+    [marked] = server.sent("POST", "/api/v1/messages/flags")
+    assert _form(marked)["messages"] == "[50]"
+
+
+async def test_a_backlog_cut_short_is_relayed_again_from_a_new_queue(
+    server: Zulip, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(zulip, "_RETRY_SECONDS", 0)
+    queues = iter(["q1", "q2"])
+    server.on(
+        "POST",
+        "/api/v1/register",
+        lambda r: _ok(queue_id=next(queues), last_event_id=-1),
+    )
+    backlog_asked = 0
+
+    def history(request: httpx.Request) -> httpx.Response:
+        nonlocal backlog_asked
+        if request.url.params.get("anchor") != "first_unread":
+            return _ok(messages=[{"id": 21, "subject": "deploys"}])
+        backlog_asked += 1
+        if backlog_asked == 1:
+            raise httpx.ConnectError("down")
+        return _ok(messages=[_message(id=21)])
+
+    polled: list[str] = []
+
+    def events(request: httpx.Request) -> httpx.Response:
+        polled.append(request.url.params["queue_id"])
+        raise asyncio.CancelledError
+
+    server.on("GET", "/api/v1/messages", history)
+    server.on("POST", "/api/v1/messages/flags", lambda r: _ok())
+    server.on("GET", "/api/v1/events", events)
+    adapter, heard = await _started(server)
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._listen()
+
+    assert len(server.sent("POST", "/api/v1/register")) == 2
+    assert [m.message_ref for m in heard] == ["21"]
+    assert polled == ["q2"]
+
+
+async def test_turning_listening_on_after_start_starts_hearing(server: Zulip) -> None:
+    server.on("POST", "/api/v1/register", lambda r: _ok(queue_id="q", last_event_id=-1))
+    server.on("GET", "/api/v1/messages", lambda r: _ok(messages=[]))
+    server.on("GET", "/api/v1/events", lambda r: _ok(events=[]))
+    adapter, _ = await _started(server)
+    assert adapter._listener is None
+
+    adapter.set_listening(True)
+    listener = adapter._listener
+    assert listener is not None
+    adapter.set_listening(False)
+    assert adapter._listener is None
+    with pytest.raises(asyncio.CancelledError):
+        await listener
+    await adapter.stop()
+
+
+async def test_a_start_that_fails_closes_its_client(server: Zulip) -> None:
+    server.on(
+        "GET",
+        "/api/v1/users/me",
+        lambda r: httpx.Response(
+            401, json={"result": "error", "code": "UNAUTHORIZED", "msg": "no"}
+        ),
+    )
+    adapter = ZulipAdapter(config=ZulipConnectionConfig.model_validate(CONFIG))
+
+    async def ignore(item: Any) -> None:
+        return None
+
+    with pytest.raises(ZulipError):
+        await adapter.start(ignore, ignore, ignore, ignore, ignore)
+    assert adapter._http.is_closed
 
 
 # ── Outbound ─────────────────────────────────────────────────────────────────
@@ -356,16 +548,24 @@ async def test_an_agent_answers_in_its_threads_topic_under_its_name(
     }
 
 
-async def test_a_post_outside_any_thread_goes_to_its_own_topic(server: Zulip) -> None:
+async def test_a_post_outside_any_thread_starts_a_topic_named_by_its_first_line(
+    server: Zulip,
+) -> None:
     server.on("POST", "/api/v1/messages", lambda r: _ok(id=31))
     adapter, _ = await _started(server)
 
-    await adapter.send_message(str(STREAM_ID), "helper", "Hello.")
+    await adapter.send_message(str(STREAM_ID), "helper", "\n**Deploy** finished\nok")
+    await adapter.send_message(str(STREAM_ID), "helper", "Nightly report")
+    await adapter.send_message(str(STREAM_ID), "helper", "x" * 80)
+    await adapter.send_message(str(STREAM_ID), "helper", "**  **")
 
-    assert (
-        _form(server.sent("POST", "/api/v1/messages")[0])["topic"]
-        == NEW_CONVERSATION_TOPIC
-    )
+    topics = [_form(r)["topic"] for r in server.sent("POST", "/api/v1/messages")]
+    assert topics == [
+        "Deploy finished",
+        "Nightly report",
+        "x" * 59 + "…",
+        NEW_CONVERSATION_TOPIC,
+    ]
 
 
 async def test_a_long_post_is_split_at_a_line_and_answers_with_its_first_part(
@@ -415,6 +615,52 @@ async def test_an_edit_and_a_delete_reach_the_message(server: Zulip) -> None:
         "content": "Deployed v3."
     }
     assert len(server.sent("DELETE", "/api/v1/messages/30")) == 1
+
+
+async def test_a_redrawn_card_keeps_the_agents_name_and_defuses_mass_mentions(
+    server: Zulip, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server.on("PATCH", "/api/v1/messages/30", lambda r: _ok())
+    adapter, _ = await _started(server)
+    card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+    monkeypatch.setattr(adapter, "rich_fallback_text", lambda content: "ping @**all**")
+
+    await adapter.update_rich(str(STREAM_ID), "helper", "30", card, None)
+
+    edited = _form(server.sent("PATCH", "/api/v1/messages/30")[0])["content"]
+    assert edited.startswith("**helper:** ")
+    assert "@**all**" not in edited
+
+
+async def test_a_redraw_zulip_refuses_is_reported(server: Zulip) -> None:
+    server.on(
+        "PATCH",
+        "/api/v1/messages/30",
+        lambda r: httpx.Response(
+            400, json={"result": "error", "code": "BAD_REQUEST", "msg": "too old"}
+        ),
+    )
+    adapter, _ = await _started(server)
+    card = RequestCard(open_request(), RequestReference(token="tok-1", handle="R7"))
+
+    with pytest.raises(RichContentFailed, match="too old"):
+        await adapter.update_rich(str(STREAM_ID), "helper", "30", card, None)
+
+
+async def test_an_edit_too_long_for_one_message_is_cut_visibly(
+    server: Zulip, caplog: pytest.LogCaptureFixture
+) -> None:
+    server.on("PATCH", "/api/v1/messages/30", lambda r: _ok())
+    adapter, _ = await _started(server)
+    adapter._message_limit = 100
+
+    with caplog.at_level(logging.WARNING):
+        await adapter.update_message(str(STREAM_ID), "30", "a" * 150)
+
+    edited = _form(server.sent("PATCH", "/api/v1/messages/30")[0])["content"]
+    assert len(edited) == 100
+    assert edited.endswith(EDIT_CUT_MARKER)
+    assert "cut to fit" in caplog.text
 
 
 async def test_people_are_added_by_user_id_and_those_refused_are_named(
@@ -570,6 +816,13 @@ async def test_a_linked_upload_is_relayed_with_the_message(server: Zulip) -> Non
         "GET",
         "/user_uploads/temporary/t1",
         lambda r: httpx.Response(
+            302, headers={"location": "https://files.example.net/obj/t1"}
+        ),
+    )
+    server.on(
+        "GET",
+        "/obj/t1",
+        lambda r: httpx.Response(
             200,
             content=b"hello",
             headers={"content-type": 'text/plain; charset="ascii"'},
@@ -588,6 +841,10 @@ async def test_a_linked_upload_is_relayed_with_the_message(server: Zulip) -> Non
         b"hello",
     )
     assert heard[0].attachment_failures == []
+    [grant] = server.sent("GET", "/user_uploads/temporary/t1")
+    assert str(grant.url) == f"{SERVER}/user_uploads/temporary/t1"
+    for download in (grant, *server.sent("GET", "/obj/t1")):
+        assert "authorization" not in download.headers
 
 
 async def test_a_linked_upload_too_large_to_relay_is_reported_not_dropped(
