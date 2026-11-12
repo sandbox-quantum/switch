@@ -233,10 +233,14 @@ def _observed_failure(error_code: str | None) -> FailureReason:
     return "needs_attention" if error_code == "machine_needs_attention" else "reported"
 
 
+# Every desired state that means the machine should be going down.
+STOPPING_STATES = frozenset({"stopped", "retained", "deleted"})
+
+
 def _stop_failure(machine: CloudMachine) -> MachineFailure | None:
     """`stop_failed` for an error observed while the machine is wanted
-    stopped."""
-    return "stop_failed" if machine.desired_state == "stopped" else None
+    stopped, retained (stopped, disk kept) or deleted."""
+    return "stop_failed" if machine.desired_state in STOPPING_STATES else None
 
 
 def _report_failure(
