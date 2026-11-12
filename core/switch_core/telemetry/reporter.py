@@ -10,7 +10,8 @@ same minute would otherwise both read "due" and both send the day's snapshot.
 
 The first pass sends the snapshot but not the room-activation events: with no
 watermark, "first interaction since then" means every room that ever went
-active, arriving at once and all dated today.
+active, arriving at once and all dated today. Nor the finished periods
+(`periods.py`): with no watermark there is no telling which were sent before.
 """
 
 from __future__ import annotations
@@ -26,10 +27,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TelemetrySnapshotWatermark
 from switch_core.telemetry.deployment import claim_milestone
+from switch_core.telemetry.periods import periods_ending_between
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.session_start import prune_session_start_claims
 from switch_core.telemetry.snapshot import (
     as_utc,
+    collect_period_counts,
     collect_usage,
     newly_active_rooms,
     summarise,
@@ -165,6 +168,35 @@ class SnapshotReporter:
                 "active in it is not reported at all — the next window starts "
                 "after it."
             )
+
+        if since is not None:
+            await self._report_periods(since=since, now=now)
+
+    async def _report_periods(self, *, since: datetime, now: datetime) -> None:
+        """One `usage_period` for every day, week and month that ended in this
+        pass's window. Contained like the rooms above, for the same reason: a
+        raise would hand the watermark back and send the snapshot again. A
+        period that fails is not reported; the next window starts after it."""
+        for period in periods_ending_between(since, now):
+            try:
+                counts = await collect_period_counts(
+                    self._session_factory, start=period.start, end=period.end
+                )
+                self._telemetry.emit_at(
+                    "usage_period",
+                    period.midpoint,
+                    period=period.kind,
+                    room_active=counts.room_active,
+                    person_identity_active=counts.person_identity_active,
+                    account_active=counts.account_active,
+                    tenant_failed_count=counts.tenant_failed_count,
+                )
+            except Exception:
+                logger.exception(
+                    "Usage period: the %s from %s could not be reported.",
+                    period.kind,
+                    period.start.date().isoformat(),
+                )
 
     async def _report_first_room_active(self, active: list) -> None:
         """The activation milestone: the first room a person actually used.

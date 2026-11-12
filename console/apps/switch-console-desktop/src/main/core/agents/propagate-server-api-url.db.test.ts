@@ -11,6 +11,8 @@ import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './swit
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
+  /** An SSH host's files, set by a test of the remote path; null fails it loud. */
+  remote: null as { files: Map<string, string>; calls: unknown[][] } | null,
 }));
 
 vi.mock('@main/db/client', () => ({
@@ -20,17 +22,48 @@ vi.mock('@main/db/client', () => ({
   },
 }));
 
-// The propagation module imports the SSH stack for the remote path. This test
-// exercises only local agents, so stub those out to keep it from loading (and
-// to fail loud if a remote write is attempted unexpectedly).
+// The propagation module imports the SSH stack for the remote path. Stub it so
+// it does not load: a test of the remote path sets `mocks.remote` to the host's
+// files, and any other test fails loud if a remote write is attempted.
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({
-  ensureSshConnected: vi.fn(() => {
-    throw new Error('remote path not expected in this test');
+  ensureSshConnected: vi.fn(async () => {
+    if (!mocks.remote) throw new Error('remote path not expected in this test');
+    return {};
   }),
 }));
-vi.mock('@main/core/fs/impl/ssh-fs', () => ({
-  SshFileSystem: class {},
-}));
+vi.mock('@main/core/fs/impl/ssh-fs', async () => {
+  const { FileSystemError, FileSystemErrorCodes } =
+    await vi.importActual<typeof import('@main/core/fs/types')>('@main/core/fs/types');
+  const host = () => {
+    if (!mocks.remote) throw new Error('remote path not expected in this test');
+    return mocks.remote;
+  };
+  return {
+    SshFileSystem: class {
+      async read(p: string) {
+        const content = host().files.get(p);
+        if (content === undefined) {
+          throw new FileSystemError(`File not found: ${p}`, FileSystemErrorCodes.NOT_FOUND);
+        }
+        return { content, truncated: false, totalSize: content.length };
+      }
+      async write(p: string, content: string) {
+        host().calls.push(['write', p]);
+        host().files.set(p, content);
+        return { success: true, bytesWritten: content.length };
+      }
+      async writeSecret(p: string, content: string) {
+        host().calls.push(['writeSecret', p]);
+        host().files.set(p, content);
+      }
+      async protectSecret(p: string, options?: { fileOnly?: boolean }) {
+        host().calls.push(['protectSecret', p, options]);
+        return host().files.has(p);
+      }
+      close() {}
+    },
+  };
+});
 vi.mock('@main/core/locations/location-transport', () => ({
   sshConnectionIdForHost: (host: string) => host,
 }));
@@ -81,6 +114,7 @@ describe('propagateServerApiUrl', () => {
   afterEach(async () => {
     fixture.close();
     mocks.db = undefined;
+    mocks.remote = null;
     await nodeFs.rm(tmpRoot, { recursive: true, force: true });
   });
 
@@ -95,6 +129,8 @@ describe('propagateServerApiUrl', () => {
         SWITCH_AGENT_ID: 'switch-agent-1',
       },
     });
+    const claudeDir = path.dirname(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH));
+    const claudeDirMode = (await nodeFs.stat(claudeDir)).mode & 0o777;
     await fixture.db.insert(locations).values({ id: 'loc-1', name: 'Local', sshHost: '', dir });
     await fixture.db.insert(agents).values({
       id: 'agent-1',
@@ -124,6 +160,13 @@ describe('propagateServerApiUrl', () => {
       SWITCH_API_TOKEN: 'secret-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
+    // It still holds a token, so it is the owner's alone; `.claude/` is Claude
+    // Code's and keeps its mode.
+    if (process.platform !== 'win32') {
+      const file = path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH);
+      expect((await nodeFs.stat(file)).mode & 0o777).toBe(0o600);
+      expect((await nodeFs.stat(claudeDir)).mode & 0o777).toBe(claudeDirMode);
+    }
 
     // DB mirror follows the file.
     const [row] = await fixture.db
@@ -133,7 +176,7 @@ describe('propagateServerApiUrl', () => {
     expect(row?.apiEndpoint).toBe('https://new-api.example.com');
   });
 
-  it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+  it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'junie'] as const)(
     'updates named %s credentials without changing another agent',
     async (providerId) => {
       const dir = path.join(tmpRoot, 'named');
@@ -169,6 +212,10 @@ describe('propagateServerApiUrl', () => {
         ...env,
         SWITCH_API_ENDPOINT: 'https://new-api.example.com',
       });
+      // Seeded with the default umask; the rewrite leaves it the owner's alone.
+      if (process.platform !== 'win32') {
+        expect((await nodeFs.stat(file)).mode & 0o777).toBe(0o600);
+      }
       expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://other-api.example.com');
     }
   );
@@ -287,5 +334,77 @@ describe('propagateServerApiUrl', () => {
     // 'pilot' has no agents -> empty result, and the 'other' agent's file is untouched.
     expect(results).toEqual([]);
     expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://other-api.example.com');
+  });
+  async function remoteAgent(id: string, switchAgentId: string): Promise<void> {
+    await fixture.db
+      .insert(locations)
+      .values({ id: `loc-${id}`, name: 'VM', sshHost: 'vm', dir: '/srv/repo' });
+    await fixture.db.insert(agents).values({
+      id,
+      locationId: `loc-${id}`,
+      name: id,
+      switchAgentId,
+      providerId: 'claude',
+      apiEndpoint: 'https://old-api.example.com',
+      workspaceId: 'ws-pilot',
+    });
+  }
+
+  it('rewrites a remote agent’s credentials through a secret write', async () => {
+    const relPath = agentSettingsRelativePath('remote-agent');
+    mocks.remote = {
+      files: new Map([
+        [
+          relPath,
+          JSON.stringify({
+            env: {
+              SWITCH_API_ENDPOINT: 'https://old-api.example.com',
+              SWITCH_API_TOKEN: 'secret-token',
+              SWITCH_AGENT_ID: 'sw-remote',
+            },
+          }),
+        ],
+      ]),
+      calls: [],
+    };
+    await remoteAgent('remote-agent', 'sw-remote');
+
+    expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
+      { agentId: 'remote-agent', location: 'remote', outcome: 'updated' },
+    ]);
+
+    expect(mocks.remote.calls).toEqual([['writeSecret', relPath]]);
+    expect(JSON.parse(mocks.remote.files.get(relPath) as string).env).toMatchObject({
+      SWITCH_API_ENDPOINT: 'https://new-api.example.com',
+      SWITCH_API_TOKEN: 'secret-token',
+    });
+  });
+
+  it('restricts a remote legacy settings file that holds a token, file only, before rewriting it', async () => {
+    mocks.remote = {
+      files: new Map([
+        [
+          SWITCH_SETTINGS_RELATIVE_PATH,
+          JSON.stringify({
+            env: {
+              SWITCH_API_ENDPOINT: 'https://old-api.example.com',
+              SWITCH_API_TOKEN: 'secret-token',
+              SWITCH_AGENT_ID: 'sw-legacy',
+            },
+          }),
+        ],
+      ]),
+      calls: [],
+    };
+    await remoteAgent('legacy-agent', 'sw-legacy');
+
+    expect(await propagateServerApiUrl('pilot', 'https://new-api.example.com')).toMatchObject([
+      { agentId: 'legacy-agent', location: 'remote', outcome: 'updated' },
+    ]);
+
+    expect(mocks.remote.calls).toEqual([
+      ['protectSecret', SWITCH_SETTINGS_RELATIVE_PATH, { fileOnly: true }],
+      ['write', SWITCH_SETTINGS_RELATIVE_PATH],
+    ]);
   });
 });

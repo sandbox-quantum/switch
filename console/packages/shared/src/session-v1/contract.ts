@@ -39,6 +39,7 @@ export type Item = {
   turnId: Id;
   revision: number;
   kind: 'user-message' | 'assistant-message' | 'tool-activity';
+  subagent?: boolean;
   status: 'in-progress' | 'completed' | 'failed' | 'declined';
   title: string;
   text: string;

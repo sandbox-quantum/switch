@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import yaml
+from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -2294,7 +2295,7 @@ async def test_provision_group_two_rooms_linked(env):
     svc = _svc(env)
     spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
 
-    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
 
     assert result.group_name == "Onboarding"
     assert [r.room_name for r in result.rooms] == ["dana lobby", "dana workroom"]
@@ -2313,6 +2314,18 @@ async def test_provision_group_two_rooms_linked(env):
         )
         assert link is not None
         assert link.label == "workroom"
+
+
+@pytest.mark.asyncio
+async def test_provision_group_needs_a_workspace_admin(env):
+    svc = _svc(env)
+    spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
+
+    with pytest.raises(PermissionError, match="workspace admin"):
+        await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+
+    async with env["session_factory"]() as session:
+        assert (await session.execute(select(RoomGroup))).scalars().all() == []
 
 
 @pytest.mark.asyncio
@@ -2336,7 +2349,7 @@ links:
     label: next
 """,
     )
-    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
 
     assert [r.room_name for r in result.rooms] == ["safe room"]
     assert result.errors[0]["room_name"] == "boom room"
@@ -2370,7 +2383,7 @@ rooms:
 """,
     )
     await svc.provision_group(
-        spec, user_id=env["user_id"], is_admin=False, creator_name="alice"
+        spec, user_id=env["user_id"], is_admin=True, creator_name="alice"
     )
     assert posted == [("A", "start A")]
 
@@ -2399,7 +2412,7 @@ rooms:
 
 @pytest.mark.asyncio
 async def test_endpoint_json_body_group(env):
-    """The /from-yaml endpoint provisions a group document."""
+    """The /from-yaml endpoint provisions a group document, for an admin."""
     import json
     from unittest.mock import AsyncMock
 
@@ -2415,7 +2428,10 @@ async def test_endpoint_json_body_group(env):
     ).encode()
 
     async with env["session_factory"]() as session:
-        result = await create_room_from_yaml(request, session, svc, user, False)
+        with pytest.raises(HTTPException) as refused:
+            await create_room_from_yaml(request, session, svc, user, False)
+        assert refused.value.status_code == 403
+        result = await create_room_from_yaml(request, session, svc, user, True)
     assert result.group_name == "Onboarding"
     assert [r.room_name for r in result.rooms] == ["frank lobby", "frank workroom"]
 
@@ -2436,7 +2452,7 @@ rooms:
       claude-code.alice: greeter
 """,
     )
-    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
     room_id = result.rooms[0].room_id
     # FakeRoomService does not seed aliases; write the row the real one would.
     async with env["session_factory"]() as session:

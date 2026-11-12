@@ -12,9 +12,11 @@
     "create_room_document",
     "create_room_from_yaml",
     "create_room_group",
+    "create_room_schedule",
     "define_role",
     "delete_role",
     "delete_room_document",
+    "delete_room_schedule",
     "delete_template",
     "edit_role",
     "get_advanced_config",
@@ -40,9 +42,11 @@
     "list_references",
     "list_roles",
     "list_room_groups",
+    "list_room_schedules",
     "list_rooms",
     "list_templates",
     "load_internal_documents",
+    "pause_room_schedule",
     "post_message",
     "read_context",
     "release_role",
@@ -58,6 +62,7 @@
     "update_agent_detail",
     "update_room",
     "update_room_document",
+    "update_room_schedule",
     "update_template"
   ],
   "gatewayRoutes": [
@@ -129,6 +134,11 @@
       "flags": [
         "service_connections"
       ]
+    },
+    {
+      "route": "DELETE /gateway/decision-settings",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "DELETE /gateway/documents/{document_id}",
@@ -258,6 +268,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/rooms/{room_id}/schedules/{schedule_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/service-connections/{service}",
       "auth": "session",
       "flags": [
@@ -273,6 +288,11 @@
     },
     {
       "route": "DELETE /gateway/templates/{template_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/tenants/{tenant_id}",
       "auth": "session",
       "flags": []
     },
@@ -297,7 +317,17 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}/retention",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/trust-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/users/{user_id}",
       "auth": "session",
       "flags": []
     },
@@ -387,6 +417,16 @@
     },
     {
       "route": "GET /gateway/auth/session",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/workos/callback",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/workos/organization",
       "auth": "session",
       "flags": []
     },
@@ -498,6 +538,11 @@
       "flags": [
         "service_connections"
       ]
+    },
+    {
+      "route": "GET /gateway/decision-settings",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "GET /gateway/docs",
@@ -661,6 +706,11 @@
       ]
     },
     {
+      "route": "GET /gateway/organizations/current/issues",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/organizations/current/members",
       "auth": "session",
       "flags": []
@@ -814,6 +864,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/{room_id}/schedules",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/{room_id}/yaml",
       "auth": "session",
       "flags": []
@@ -879,6 +934,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/counts",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/tenants/current",
       "auth": "session",
       "flags": []
@@ -894,6 +954,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/{tenant_id}/erasures",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/tenants/{tenant_id}/invitations",
       "auth": "session",
       "flags": []
@@ -905,6 +970,26 @@
     },
     {
       "route": "GET /gateway/tenants/{tenant_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/members/{user_id}/removal",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/people",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/retention",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/retention/preview",
       "auth": "session",
       "flags": []
     },
@@ -937,6 +1022,11 @@
     },
     {
       "route": "PATCH /gateway/agents/{agent_id}/options",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/auth/me",
       "auth": "session",
       "flags": []
     },
@@ -1060,6 +1150,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/auth/sessions/revoke",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/auth/signup",
       "auth": "none",
       "flags": []
@@ -1164,6 +1259,11 @@
       ]
     },
     {
+      "route": "POST /gateway/decision-settings/test",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/documents",
       "auth": "session",
       "flags": []
@@ -1256,6 +1356,11 @@
     },
     {
       "route": "POST /gateway/organizations/current/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/ownership/transfer",
       "auth": "session",
       "flags": []
     },
@@ -1365,6 +1470,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/rooms/{room_id}/schedules",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/rooms/{room_id}/sync-name",
       "auth": "session",
       "flags": []
@@ -1424,6 +1534,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/tenants/{tenant_id}/erasures",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/tenants/{tenant_id}/invitations",
       "auth": "session",
       "flags": []
@@ -1440,6 +1555,11 @@
     },
     {
       "route": "POST /gateway/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/sessions/revoke",
       "auth": "session",
       "flags": []
     },
@@ -1503,6 +1623,11 @@
       ]
     },
     {
+      "route": "PUT /gateway/decision-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/management/agents/{agent_id}",
       "auth": "session",
       "flags": [
@@ -1538,6 +1663,11 @@
       "flags": []
     },
     {
+      "route": "PUT /gateway/rooms/{room_id}/auto-route",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/rooms/{room_id}/group",
       "auth": "session",
       "flags": []
@@ -1553,6 +1683,16 @@
       "flags": []
     },
     {
+      "route": "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}/paused",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/service-connections/{service}/key",
       "auth": "session",
       "flags": [
@@ -1561,6 +1701,11 @@
     },
     {
       "route": "PUT /gateway/tenants/{tenant_id}/budgets/{budget_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/tenants/{tenant_id}/retention",
       "auth": "session",
       "flags": []
     },

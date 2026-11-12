@@ -9,7 +9,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -30,12 +30,16 @@ from mattermostdriver.exceptions import (
 from pydantic import field_validator
 from websockets.asyncio.client import ClientConnection
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivitySnapshot,
     AgentIdentity,
     AgentIdentityConflict,
+    CardRejectedError,
+    MessagePartlySent,
     PlatformAdapter,
+    RefusalKind,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -43,6 +47,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.ingress import (
     CallbackEndpoint,
     CallbackRefused,
@@ -50,9 +55,11 @@ from switch_core.bridges.collaboration.ingress import (
 from switch_core.bridges.collaboration.mattermost.callback import (
     MAX_BUTTON_LABEL,
     ActivityPress,
+    CardPress,
     InterruptPress,
     activity_action,
     answer_actions,
+    card_action,
     interrupt_action,
     read_press,
 )
@@ -62,7 +69,10 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -72,6 +82,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -92,6 +103,23 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
 )
 from switch_core.outbound import guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import (
+    ActionsProps,
+    ButtonProps,
+    CardProps,
+    ChartProps,
+    DividerProps,
+    FieldProps,
+    FieldsProps,
+    ImageProps,
+    LinkButtonProps,
+    PieChart,
+    TableProps,
+    TextProps,
+    UISpec,
+    button_action,
+    to_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +170,46 @@ _PUBLICATION_PROP = "switch_publication"
 # client.
 _ATTACHMENTS_PROP = "attachments"
 
+# Mattermost's `PostPropsMaxUserRunes`: the JSON of a post's props, in runes,
+# less the room the server keeps for its own additions.
+_MAX_PROPS = 760_000
+
+# What Mattermost answers a post it did not create with: each a 4xx, so the
+# post was not made and its text may be sent instead.
+_MATTERMOST_REFUSALS = (
+    InvalidOrMissingParameters,
+    NoAccessTokenProvided,
+    NotEnoughPermissions,
+    ResourceNotFound,
+    MethodNotAllowed,
+    ContentTooLarge,
+)
+
+# How far an attachment has got, in the order Mattermost draws its parts. A
+# part that would draw above one already there goes in a new attachment.
+_TITLE, _TEXT, _FIELDS, _IMAGE, _ACTIONS, _CLOSED = range(6)
+_TABLE_ALIGN = {"left": ":---", "center": ":---:", "right": "---:"}
+
 # How far before the recorded reservation time to start looking for a post that
 # may or may not exist. Covers ordinary clock skew between Switch and the
 # Mattermost server without widening the search into unrelated history.
 _RECOVERY_SKEW_MS = 60_000
 
 # Mattermost's own default `MaxPostSize`. Servers can raise it to 16383, and a
-# message cut to fit the default is a message that fits everywhere.
+# message cut to fit the default is a message that fits everywhere. It is also
+# what a message is split at when the server will not say its own limit.
 _MAX_POST = 4000
+
+# Ends an edited post whose text did not fit and whose remainder could not be
+# posted after it.
+_EDIT_CUT_SHORT = (
+    "_(Cut short: the rest of this edit is longer than Mattermost accepts in "
+    "one post and could not be posted after it.)_"
+)
+
+# How many reply-to-thread-root resolutions one bridge remembers. Forgetting one
+# costs a refused post and a lookup the next time that reply is threaded under.
+_MAX_THREAD_ROOTS = 1024
 
 # The values of `TeamSettings.TeammateNameDisplay` under which Mattermost puts
 # a bot's display name in the post header. Under any other value — including
@@ -172,6 +232,17 @@ _DEFINITE_REFUSALS = (
     ContentTooLarge,
     FeatureDisabled,
 )
+
+# Refusals that sending the same post again will not change.
+_REFUSED_FOR_GOOD = (MethodNotAllowed, ContentTooLarge)
+
+# Refusals that are usually final but can clear on their own: a 400 for a file
+# id not ready yet, a 403 for a bot not yet added to the channel, a 404 for a
+# post or channel not visible yet. A 401 is neither: a bot's session can be
+# signed in again, so it is left to retry with the server errors.
+_REFUSED_FOR_NOW = (InvalidOrMissingParameters, NotEnoughPermissions, ResourceNotFound)
+_STATUS_REFUSED_FOR_GOOD = frozenset({405, 413})
+_STATUS_TRANSIENT = frozenset({401, 408, 429})
 
 # How long to wait after a rate limit that names no interval of its own.
 # Matches the Slack adapter's fallback, for the same reason: long enough not to
@@ -299,6 +370,22 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
 _PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
     "switch_mattermost_press_notice", default=None
 )
+
+
+def _defuse_at(text: str) -> str:
+    """Card text that mentions nobody: Mattermost resolves `@user` and
+    `@channel` in attachment text, fields and pretext as in a message."""
+    return text.replace("@", "@" + ZERO_WIDTH_SPACE)
+
+
+def _md_url(url: str) -> str:
+    return url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+
+
+def _md_table(rows: list[list[str]], align: Sequence[str] | None) -> str:
+    head, *body = rows
+    rule = [_TABLE_ALIGN[a] for a in align] if align else ["---"] * len(head)
+    return "\n".join("| " + " | ".join(row) + " |" for row in [head, rule, *body])
 
 
 def _ephemeral(text: str) -> dict[str, Any]:
@@ -438,6 +525,50 @@ class MattermostAdapter(PlatformAdapter):
             return "platform_error"
         return None
 
+    @classmethod
+    def classify_refusal(cls, exc: BaseException) -> RefusalKind:
+        """Read the driver's error out of the chain: `RichContentFailed`
+        carries it as its cause.
+
+        "permanent" for a 405 or 413, "bounded" for any other 4xx but 401, 408
+        and 429, "transient" for everything else. `mattermostdriver` raises its
+        named exceptions without the response, so for those the status is read
+        from the class; a status it does not name arrives as the `requests`
+        error with the response still on it.
+
+        A transient failure anywhere in the chain wins: a refused thread root
+        whose post could not be looked up for the network is worth sending
+        again once the lookup can get through.
+        """
+        if isinstance(exc, RichContentThrottled):
+            return "transient"
+        kind: RefusalKind = "transient"
+        seen: BaseException | None = exc
+        while seen is not None:
+            if isinstance(
+                seen,
+                sync_requests.exceptions.ConnectionError
+                | sync_requests.exceptions.Timeout,
+            ):
+                return "transient"
+            if isinstance(seen, _REFUSED_FOR_GOOD):
+                kind = "permanent"
+            elif isinstance(seen, _REFUSED_FOR_NOW):
+                if kind != "permanent":
+                    kind = "bounded"
+            elif isinstance(seen, sync_requests.exceptions.HTTPError):
+                status = getattr(seen.response, "status_code", None)
+                if isinstance(status, int):
+                    if status in _STATUS_REFUSED_FOR_GOOD:
+                        kind = "permanent"
+                    elif 400 <= status < 500 and status not in _STATUS_TRANSIENT:
+                        if kind != "permanent":
+                            kind = "bounded"
+                    else:
+                        return "transient"
+            seen = seen.__cause__
+        return kind
+
     draws_session_activity: ClassVar[bool] = True
 
     #: A problem somebody has to act on still gets its own reply, so it
@@ -451,6 +582,9 @@ class MattermostAdapter(PlatformAdapter):
     #: carried over: it is the one that reaches the person who can do something.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@channel"
+    #: `POST /posts/ephemeral`, made as the admin the bridge connects as: the
+    #: endpoint needs `create_post_ephemeral`, which a system admin holds.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
 
     #: The status is the turn's one post, not a line beside it, so the clock
     #: advancing is not on its own worth rewriting what a reader is reading.
@@ -575,6 +709,15 @@ class MattermostAdapter(PlatformAdapter):
         self._name_display_setting: str | None = None
         self._name_display_read = False
         self._name_display_warned = False
+
+        # The server's `MaxPostSize`, read the first time a message is long
+        # enough for it to matter. Mattermost refuses a longer post outright.
+        self._max_post_size: int | None = None
+
+        # A reply's id -> the id of the thread it is in. Mattermost threads a
+        # post only under a thread's root, and Switch is sometimes handed a
+        # reply to thread under. Only lookups that found a root are kept.
+        self._thread_roots: OrderedDict[str, str] = OrderedDict()
 
         # This bridge's place on the shared callback listener, installed by the
         # lifecycle service before start. None when the adapter is running
@@ -758,6 +901,8 @@ class MattermostAdapter(PlatformAdapter):
 
         if isinstance(press, InterruptPress):
             action_id, value = INTERRUPT_ACTION, press.turn_id
+        elif isinstance(press, CardPress):
+            action_id, value = press.action_id, press.value
         else:
             action_id, value = position_action(press.position), press.token
 
@@ -769,6 +914,7 @@ class MattermostAdapter(PlatformAdapter):
                     channel_id=press.channel_id,
                     sender_id=press.user_id,
                     sender_name=name,
+                    sender_display_name=name,
                     action_id=action_id,
                     value=value,
                     message_ref=press.post_id,
@@ -933,6 +1079,32 @@ class MattermostAdapter(PlatformAdapter):
             return
         await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """An ephemeral post: shown in the channel, in the message's thread,
+        to the person who posted it and to nobody else, and gone on reload."""
+        driver = self._admin_driver
+        if self._main_loop is None or driver is None:
+            raise RuntimeError("Mattermost is not connected")
+        message = self.translate_outbound(content)
+
+        def send(root_id: str | None) -> Any:
+            post: dict[str, Any] = {"channel_id": channel_id, "message": message}
+            if root_id is not None:
+                post["root_id"] = root_id
+            return driver.posts.create_ephemeral_post(
+                {"user_id": user_id, "post": post}
+            )
+
+        await self._in_thread(driver, thread_root_id, send)
+
     # ── Messaging ────────────────────────────────────────────────────────────
 
     async def send_message(
@@ -950,7 +1122,203 @@ class MattermostAdapter(PlatformAdapter):
             if not self._admin_driver:
                 return None
             bot_driver = self._admin_driver
-        return await self._create_post(bot_driver, channel_id, content, thread_root_id)
+        return await self._create_posts(bot_driver, channel_id, content, thread_root_id)
+
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as message attachments under `fallback_text`, which stays
+        the post's message: it is what a Mattermost notification shows. A card
+        the post cannot carry, or that Mattermost refuses, raises
+        `CardRejectedError` before anything is posted, so core sends the text."""
+        attachments = self._card_attachments(channel_id, spec)
+        attachments[0]["fallback"] = self._card_text(to_text(spec))
+        props: dict[str, Any] = {_ATTACHMENTS_PROP: attachments}
+        size = len(json.dumps(props, ensure_ascii=False))
+        if size > _MAX_PROPS:
+            raise CardRejectedError(
+                f"The card is {size} characters of post props, over Mattermost's "
+                f"{_MAX_PROPS}."
+            )
+        driver = self._bot_drivers.get(sender_name) or self._admin_driver
+        if driver is None:
+            raise RuntimeError("Mattermost is not connected.")
+        try:
+            return await self._post_or_raise(
+                driver, channel_id, fallback_text, thread_root_id, props
+            )
+        except _MATTERMOST_REFUSALS as error:
+            raise CardRejectedError(str(error)) from error
+
+    def _card_text(self, text: str) -> str:
+        return self.translate_outbound(_defuse_at(text))
+
+    def _card_cell(self, text: str) -> str:
+        return self._card_text(text.replace("\n", " ")).replace("|", "\\|")
+
+    def _card_attachments(self, channel_id: str, spec: UISpec) -> list[dict[str, Any]]:
+        """The attachments a card draws as. Buttons are drawn only where a
+        press can reach this bridge; elsewhere they are listed as text."""
+        address = self._button_address()
+        text, cell = self._card_text, self._card_cell
+        attachments: list[dict[str, Any]] = []
+        buttons_drawn = 0
+        stage = _CLOSED
+
+        def at(part: int) -> dict[str, Any]:
+            nonlocal stage
+            if stage > part:
+                attachments.append({})
+            stage = part
+            return attachments[-1]
+
+        def add_text(line: str) -> None:
+            attachment = at(_TEXT)
+            attachment["text"] = (
+                f"{attachment['text']}\n\n{line}" if "text" in attachment else line
+            )
+
+        def walk(key: str) -> None:
+            nonlocal stage, buttons_drawn
+            element = spec.elements[key]
+            p = element.props
+            children = [spec.elements[c].props for c in element.children]
+            if isinstance(p, CardProps):
+                if p.title:
+                    at(_TITLE)["title"] = text(p.title)
+                if p.subtitle:
+                    add_text(f"_{text(p.subtitle)}_")
+                if p.imageUrl:
+                    at(_IMAGE)["image_url"] = p.imageUrl
+            elif isinstance(p, TextProps):
+                content = text(p.content)
+                if p.style == "bold":
+                    content = f"**{content}**"
+                elif p.style == "muted":
+                    content = f"_{content}_"
+                add_text(content)
+            elif isinstance(p, FieldsProps):
+                at(_FIELDS).setdefault("fields", []).extend(
+                    {"title": text(f.label), "value": text(f.value), "short": True}
+                    for f in children
+                    if isinstance(f, FieldProps)
+                )
+            elif isinstance(p, TableProps):
+                table = _md_table(
+                    [[cell(c) for c in row] for row in [p.headers, *p.rows]], p.align
+                )
+                add_text(table + (f"\n{text(p.caption)}" if p.caption else ""))
+            elif isinstance(p, ChartProps):
+                chart = p.chart
+                if isinstance(chart, PieChart):
+                    rows = [["", "Value"]] + [
+                        [cell(s.label), f"{s.value:g}"] for s in chart.segments
+                    ]
+                else:
+                    rows = [
+                        [
+                            cell(chart.xLabel or ""),
+                            *(cell(s.name) for s in chart.series),
+                        ]
+                    ]
+                    rows += [
+                        [cell(c), *(f"{s.values[i]:g}" for s in chart.series)]
+                        for i, c in enumerate(chart.categories)
+                    ]
+                axis = (
+                    f" ({text(chart.yLabel)})"
+                    if not isinstance(chart, PieChart) and chart.yLabel
+                    else ""
+                )
+                add_text(f"**{text(p.title)}**{axis}\n{_md_table(rows, None)}")
+            elif isinstance(p, DividerProps):
+                stage = _CLOSED
+            elif isinstance(p, ImageProps):
+                add_text(f"![{cell(p.alt).replace(']', '')}]({_md_url(p.url)})")
+            elif isinstance(p, ActionsProps):
+                links = [
+                    f"[{cell(b.label).replace(']', '')}]({_md_url(b.url)})"
+                    for b in children
+                    if isinstance(b, LinkButtonProps)
+                ]
+                if links:
+                    add_text(" · ".join(links))
+                buttons = [b for b in children if isinstance(b, ButtonProps)]
+                if buttons and address is None:
+                    add_text(" · ".join(f"**{cell(b.label)}**" for b in buttons))
+                elif buttons and address is not None:
+                    url, key = address
+                    # A row of its own, as the card groups its buttons.
+                    if stage == _ACTIONS:
+                        stage = _CLOSED
+                    actions = at(_ACTIONS).setdefault("actions", [])
+                    for b in buttons:
+                        actions.append(
+                            card_action(
+                                key,
+                                url,
+                                channel_id,
+                                f"switchui{buttons_drawn}",
+                                b.label,
+                                b.style,
+                                *button_action(b),
+                            )
+                        )
+                        buttons_drawn += 1
+            for child in element.children:
+                walk(child)
+
+        walk(spec.root)
+        return attachments or [{}]
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Take every button off the card and say under it who chose what: a
+        card takes one answer, and its links are text, not buttons."""
+        driver, loop = self._admin_driver, self._main_loop
+        ref = interaction.message_ref
+        if driver is None or loop is None or ref is None:
+            logger.warning(
+                "Cannot mark the card press in Mattermost channel %s as done: "
+                "not connected or no post, so its buttons stay pressable",
+                interaction.channel_id,
+            )
+            return
+        chosen = _defuse_at(f"✅ {interaction.sender_display_name} chose {label}")
+        try:
+            post = await loop.run_in_executor(None, driver.posts.get_post, ref)
+            props = dict(post.get("props") or {})
+            attachments = [
+                {k: v for k, v in attachment.items() if k != "actions"}
+                for attachment in props.get(_ATTACHMENTS_PROP) or []
+            ]
+            attachments = [a for a in attachments if a] or [{}]
+            attachments[-1]["footer"] = chosen
+            props[_ATTACHMENTS_PROP] = attachments
+            await loop.run_in_executor(
+                None, driver.posts.patch_post, ref, {"props": props}
+            )
+        except Exception:
+            # The press was delivered; only its mark on the card is missing.
+            logger.exception(
+                "Could not mark the card press on Mattermost post %s as done, so "
+                "its buttons stay pressable",
+                ref,
+            )
 
     async def admin_message(
         self,
@@ -987,7 +1355,7 @@ class MattermostAdapter(PlatformAdapter):
             if driver is None:
                 logger.error("No driver to post admin message in DM %s", channel_id)
                 return None
-            return await self._create_post(
+            return await self._create_posts(
                 driver, channel_id, f"_Switch:_ {content}", thread_root_id
             )
 
@@ -1003,7 +1371,7 @@ class MattermostAdapter(PlatformAdapter):
             await self._ensure_admin_bot_in_channel(channel_id)
         if driver is None:
             return None
-        return await self._create_post(driver, channel_id, content, thread_root_id)
+        return await self._create_posts(driver, channel_id, content, thread_root_id)
 
     async def send_attachment(
         self,
@@ -1056,15 +1424,13 @@ class MattermostAdapter(PlatformAdapter):
                 thread_root_id,
             )
 
-        post: dict[str, object] = {
+        post: dict[str, Any] = {
             "channel_id": channel_id,
             "message": self.translate_outbound(caption) if caption else "",
             "file_ids": file_ids,
         }
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
         try:
-            result = await loop.run_in_executor(None, driver.posts.create_post, post)
+            result = await self._create_threaded_post(driver, post, thread_root_id)
             post_id: str = result.get("id", "")
             return post_id or None
         except Exception as e:
@@ -1137,15 +1503,13 @@ class MattermostAdapter(PlatformAdapter):
                 channel_id, sender_name, files, caption, thread_root_id
             )
 
-        post: dict[str, object] = {
+        post: dict[str, Any] = {
             "channel_id": channel_id,
             "message": self.translate_outbound(caption) if caption else "",
             "file_ids": file_ids,
         }
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
         try:
-            result = await loop.run_in_executor(None, driver.posts.create_post, post)
+            result = await self._create_threaded_post(driver, post, thread_root_id)
             post_id: str = result.get("id", "")
             return post_id or None
         except Exception as e:
@@ -1156,6 +1520,111 @@ class MattermostAdapter(PlatformAdapter):
                 e,
             )
             return None
+
+    async def _create_posts(
+        self,
+        driver: Driver,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post `content` as however many posts the server's limit needs.
+
+        The parts go out in order, each in `thread_root_id`'s thread when there
+        is one. Returns the FIRST post's id: that is the one the bridge maps
+        the room event to, so a reply threads under the start of what was said
+        rather than its tail. `None` when not even the first part was taken.
+
+        Raises `MessagePartlySent` when a later part is refused, after saying
+        in the channel that the rest is missing.
+        """
+        parts = split_markdown(content, await self._post_limit(content))
+        first_id = await self._create_post(driver, channel_id, parts[0], thread_root_id)
+        if first_id is None:
+            return None
+        await self._post_rest(driver, channel_id, parts, thread_root_id, first_id)
+        return first_id
+
+    async def _post_rest(
+        self,
+        driver: Driver,
+        channel_id: str,
+        parts: list[str],
+        thread_root_id: str | None,
+        first_id: str,
+    ) -> None:
+        """Post every part after the first, which is already `first_id`.
+
+        A refused part ends the run: the channel is told how much of the
+        message it has, and `MessagePartlySent` is raised."""
+        for index, part in enumerate(parts[1:], start=1):
+            if await self._create_post(driver, channel_id, part, thread_root_id):
+                continue
+            logger.error(
+                "Only %d of %d parts of a message reached Mattermost channel %s",
+                index,
+                len(parts),
+                channel_id,
+            )
+            notice = (
+                f"_Only {index} of {len(parts)} parts of this message could be "
+                "delivered; Mattermost rejected the rest._"
+            )
+            if (
+                await self._create_post(driver, channel_id, notice, thread_root_id)
+                is None
+            ):
+                logger.error(
+                    "Could not tell Mattermost channel %s that the message %s is "
+                    "missing its last %d parts; nothing there says it is cut short",
+                    channel_id,
+                    first_id,
+                    len(parts) - index,
+                )
+            raise MessagePartlySent(
+                platform="Mattermost",
+                first_ref=first_id,
+                delivered=index,
+                total=len(parts),
+            )
+
+    async def _post_limit(self, content: str) -> int:
+        """The longest post this server accepts, asked for only when `content`
+        is longer than every server accepts.
+
+        Only an answer is kept. A read that fails splits this message at
+        `_MAX_POST` and is tried again for the next one, so a passing fault
+        does not hold every later message to the smallest limit."""
+        if len(content) <= _MAX_POST:
+            return _MAX_POST
+        if self._max_post_size is None:
+            self._max_post_size = await self._read_max_post_size()
+        return _MAX_POST if self._max_post_size is None else self._max_post_size
+
+    async def _read_max_post_size(self) -> int | None:
+        """`MaxPostSize` from the client config, which any signed-in user can
+        read; `None`, with a warning, when the server does not answer with one."""
+        try:
+            config = await self._mm_api("get", "/config/client?format=old")
+            size = int(config["MaxPostSize"])
+        except Exception as e:
+            logger.warning(
+                "Could not read MaxPostSize from the Mattermost client config "
+                "(%s); splitting this message at %d characters and asking again "
+                "for the next",
+                e,
+                _MAX_POST,
+            )
+            return None
+        if size <= 0:
+            logger.warning(
+                "Mattermost reported a MaxPostSize of %d; splitting this message "
+                "at %d characters and asking again for the next",
+                size,
+                _MAX_POST,
+            )
+            return None
+        return size
 
     async def _create_post(
         self,
@@ -1188,36 +1657,231 @@ class MattermostAdapter(PlatformAdapter):
         actually said, which is the difference between a caller that can retry
         sensibly and one that only knows it got `None`.
         """
-        loop = self._main_loop
-        if loop is None:
-            raise RuntimeError("Mattermost is not connected.")
         post: dict[str, Any] = {"channel_id": channel_id, "message": content}
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
         if props:
             post["props"] = props
-        result = await loop.run_in_executor(None, driver.posts.create_post, post)
+        result = await self._create_threaded_post(driver, post, thread_root_id)
         post_id: str = result.get("id", "")
         if not post_id:
             raise RuntimeError("Mattermost accepted the post but returned no id.")
         return post_id
 
+    async def _create_threaded_post(
+        self, driver: Driver, post: dict[str, Any], thread_root_id: str | None
+    ) -> dict[str, Any]:
+        def send(root_id: str | None) -> dict[str, Any]:
+            body = dict(post)
+            if root_id is not None:
+                body["root_id"] = root_id
+            result: dict[str, Any] = driver.posts.create_post(body)
+            return result
+
+        return await self._in_thread(driver, thread_root_id, send)
+
+    async def _in_thread[T](
+        self,
+        driver: Driver,
+        thread_root_id: str | None,
+        send: Callable[[str | None], T],
+    ) -> T:
+        """Run `send` with the root id to thread under, on the driver's thread.
+
+        Mattermost takes only a thread's root as `root_id` and refuses a reply's
+        id with a 400. Switch is handed a reply to thread under whenever what it
+        answers was itself posted in a thread, so on any 400 the reference is
+        looked up, and if it is a reply `send` is tried once more under the
+        root of its thread. The refusal's text is not consulted: Mattermost
+        translates it, and the driver keeps nothing else of the response.
+
+        A root found this way is remembered for the reference. A send under a
+        remembered root that is refused forgets it and looks the reference up
+        again, once, since the thread may have changed since.
+        """
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Mattermost is not connected.")
+        if thread_root_id is None:
+            return await loop.run_in_executor(None, send, None)
+        known_root = self._thread_root_for(thread_root_id)
+        if known_root is not None and known_root != thread_root_id:
+            try:
+                return await loop.run_in_executor(None, send, known_root)
+            except (InvalidOrMissingParameters, ResourceNotFound) as error:
+                logger.warning(
+                    "Mattermost refused %s, the remembered thread root of %s "
+                    "(%s); looking %s up again",
+                    known_root,
+                    thread_root_id,
+                    error,
+                    thread_root_id,
+                )
+                self._thread_roots.pop(thread_root_id, None)
+                refusal: InvalidOrMissingParameters | ResourceNotFound = error
+        else:
+            try:
+                return await loop.run_in_executor(None, send, thread_root_id)
+            except InvalidOrMissingParameters as error:
+                refusal = error
+        root = await self._root_of_reply(driver, thread_root_id, refusal)
+        return await loop.run_in_executor(None, send, root)
+
+    def _thread_root_for(self, thread_root_id: str | None) -> str | None:
+        """The root `thread_root_id` is known to resolve to, or itself."""
+        if thread_root_id is None:
+            return None
+        known_root = self._thread_roots.get(thread_root_id)
+        if known_root is None:
+            return thread_root_id
+        self._thread_roots.move_to_end(thread_root_id)
+        return known_root
+
+    async def _root_of_reply(
+        self,
+        driver: Driver,
+        post_id: str,
+        refusal: InvalidOrMissingParameters | ResourceNotFound,
+    ) -> str:
+        """The root of the thread `post_id` is a reply in, or `refusal` raised
+        when Mattermost cannot say it is a reply in one."""
+        loop = self._main_loop
+        assert loop is not None
+        try:
+            referenced = await loop.run_in_executor(
+                None, driver.posts.get_post, post_id
+            )
+        except Exception as lookup_error:
+            logger.warning(
+                "Mattermost refused a post threaded under %s (%s), and looking "
+                "%s up to find its thread failed: %s",
+                post_id,
+                refusal,
+                post_id,
+                lookup_error,
+            )
+            raise refusal from lookup_error
+        root = referenced.get("root_id") if isinstance(referenced, dict) else None
+        if not isinstance(root, str) or not root or root == post_id:
+            logger.warning(
+                "Mattermost refused a post threaded under %s (%s), and %s is a "
+                "thread root, so threading was not the problem",
+                post_id,
+                refusal,
+                post_id,
+            )
+            raise refusal
+        self._thread_roots[post_id] = root
+        if len(self._thread_roots) > _MAX_THREAD_ROOTS:
+            self._thread_roots.popitem(last=False)
+        return root
+
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
+        """Rewrite a post, continuing in its thread when the new text is
+        longer than one post.
+
+        The post keeps the first part, and the rest follows it in its thread
+        (the post's own, when it is a thread's root) from the bot that wrote
+        it, so the edit reads as the post went on. Where that cannot be done,
+        the post is written to as much as fits and says it was cut short.
+        Each call that runs over posts its own follow-ups.
+        """
         if not self._admin_driver or not self._main_loop:
             logger.error("Cannot update message: Mattermost client not connected")
             return
-
         try:
-            await self._main_loop.run_in_executor(
-                None,
-                self._admin_driver.posts.patch_post,
+            await self._update_post(
+                self._admin_driver,
+                self._main_loop,
+                channel_id,
                 message_ref,
-                {"message": new_content},
+                new_content,
             )
         except Exception as e:
             logger.error("Failed to update Mattermost post %s: %s", message_ref, e)
+
+    async def _update_post(
+        self,
+        admin: Driver,
+        loop: asyncio.AbstractEventLoop,
+        channel_id: str,
+        message_ref: str,
+        new_content: str,
+    ) -> None:
+        limit = await self._post_limit(new_content)
+        parts = split_markdown(new_content, limit)
+        if len(parts) == 1:
+            await self._patch_message(admin, loop, message_ref, new_content)
+            return
+
+        try:
+            post = await loop.run_in_executor(None, admin.posts.get_post, message_ref)
+        except Exception as e:
+            logger.error(
+                "Could not read Mattermost post %s to continue its %d-character "
+                "edit in its thread (%s); writing what fits and marking it cut short",
+                message_ref,
+                len(new_content),
+                e,
+            )
+            await self._patch_truncated(admin, loop, message_ref, new_content, limit)
+            return
+        driver = self._author_driver(str(post.get("user_id", "")))
+        if driver is None:
+            logger.error(
+                "Mattermost post %s was not written by a bot this bridge drives, "
+                "so the rest of its %d-character edit cannot follow it as the "
+                "same author; writing what fits and marking it cut short",
+                message_ref,
+                len(new_content),
+            )
+            await self._patch_truncated(admin, loop, message_ref, new_content, limit)
+            return
+
+        await self._patch_message(admin, loop, message_ref, parts[0])
+        thread_root_id = str(post.get("root_id") or "") or message_ref
+        try:
+            await self._post_rest(
+                driver, channel_id, parts, thread_root_id, message_ref
+            )
+        except MessagePartlySent as e:
+            logger.error(
+                "The edit of Mattermost post %s was cut short: %s", message_ref, e
+            )
+
+    def _author_driver(self, user_id: str) -> Driver | None:
+        """The driver that posts as `user_id`, when it is one of this bridge's
+        own identities."""
+        agent_name = self._bot_id_to_username.get(user_id)
+        if agent_name is not None:
+            return self._bot_drivers.get(agent_name)
+        if user_id and user_id == self._admin_bot_id:
+            return self._admin_bot_driver
+        if user_id and user_id == self._admin_user_id:
+            return self._admin_driver
+        return None
+
+    async def _patch_truncated(
+        self,
+        admin: Driver,
+        loop: asyncio.AbstractEventLoop,
+        message_ref: str,
+        content: str,
+        limit: int,
+    ) -> None:
+        """Write as much of `content` as fits, ending in a line that says the
+        rest is missing, for an edit whose remainder has nowhere to go."""
+        marker = f"\n\n{_EDIT_CUT_SHORT}"
+        head = split_markdown(content, limit - len(marker))[0]
+        await self._patch_message(admin, loop, message_ref, head + marker)
+
+    @staticmethod
+    async def _patch_message(
+        admin: Driver, loop: asyncio.AbstractEventLoop, message_ref: str, message: str
+    ) -> None:
+        await loop.run_in_executor(
+            None, admin.posts.patch_post, message_ref, {"message": message}
+        )
 
     # ── SDK session publication ──────────────────────────────────────────────
 
@@ -1986,7 +2650,8 @@ class MattermostAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Cannot create channel: Mattermost client not connected")
 
@@ -2035,7 +2700,7 @@ class MattermostAdapter(PlatformAdapter):
             channel_id = channel["id"]
 
         await self._add_default_member(channel_id)
-        return channel_id
+        return CreatedChannel(id=channel_id, name=channel.get("display_name") or name)
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         """Archive the channel: Mattermost's channel DELETE archives unless
@@ -2073,6 +2738,62 @@ class MattermostAdapter(PlatformAdapter):
                 member,
                 channel_id,
             )
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists, is in this connection's team, and — when it is
+        private — Switch's account is in it, since that account is the one that
+        adds the agents."""
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            raise RuntimeError("Mattermost client not connected")
+        try:
+            channel = await loop.run_in_executor(
+                None, driver.channels.get_channel, channel_id
+            )
+        except ResourceNotFound as error:
+            raise ChannelNotUsable(
+                f"Mattermost cannot find channel {channel_id}: {error}"
+            ) from error
+        except NotEnoughPermissions as error:
+            raise ChannelNotUsable(
+                f"Mattermost will not let Switch's account see channel "
+                f"{channel_id}: {error}"
+            ) from error
+        except sync_requests.RequestException as error:
+            # Any other refusal from Mattermost (the driver's errors are
+            # requests' HTTPError) or a failed request: the platform's, not
+            # the caller's. Anything else is a bug and propagates.
+            raise BridgeOperationError(
+                f"Mattermost would not describe channel {channel_id}: {error}"
+            ) from error
+        team_id = str(channel.get("team_id") or "")
+        if team_id and self._team_id and team_id != self._team_id:
+            raise ChannelNotUsable(
+                f"Mattermost channel {channel_id} is in another team, not this "
+                f"connection's team ({self._config.team_name})."
+            )
+        if self._to_channel_type(channel.get("type", "")) != "channel_private":
+            return
+        try:
+            await loop.run_in_executor(
+                None,
+                driver.channels.get_channel_member,
+                channel_id,
+                self._admin_user_id,
+            )
+        except (ResourceNotFound, NotEnoughPermissions) as error:
+            # Mattermost answers "not a member" with a 404, and may refuse to
+            # say with a 403. Either way the fix is the same: add the account.
+            raise ChannelNotUsable(
+                f"Switch's Mattermost account is not in private channel "
+                f"{channel_id}. Add it to the channel, then try again."
+            ) from error
+        except sync_requests.RequestException as error:
+            raise BridgeOperationError(
+                f"Mattermost would not say whether Switch's account is in "
+                f"channel {channel_id}: {error}"
+            ) from error
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._admin_driver or not self._main_loop:
@@ -2752,6 +3473,47 @@ class MattermostAdapter(PlatformAdapter):
 
     # ── WebSocket handling ───────────────────────────────────────────────────
 
+    def _first_sighting(self, post_id: str) -> bool:
+        """Whether this post is new to the bridge. Every agent's bot holds a
+        socket of its own, so a post in a channel several of them are in
+        arrives once per bot."""
+        with self._seen_lock:
+            if post_id in self._seen_post_ids:
+                return False
+            self._seen_post_ids[post_id] = None
+            if len(self._seen_post_ids) > self._seen_post_ids_max:
+                self._seen_post_ids.popitem(last=False)
+            return True
+
+    async def _handle_display_name_change(self, post: dict[str, Any]) -> None:
+        """Mattermost posts a system line into a channel whose display name
+        changed, carrying the old and the new one. The display name is what
+        a room adopted from the channel is named after, so it is what the room
+        follows. Runs on a bot's socket loop, so the bridge is handed the
+        rename on the main loop, as a message is."""
+        if not self._first_sighting(post.get("id", "")):
+            return
+        props = post.get("props") or {}
+        channel_id = str(post.get("channel_id") or "")
+        new_name = str(props.get("new_displayname") or "")
+        if not channel_id or not new_name:
+            logger.warning(
+                "Mattermost display-name change without a channel or a new "
+                "name, skipping post %s",
+                post.get("id"),
+            )
+            return
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Cannot handle a channel rename: adapter not started")
+        if self._on_channel_named is not None:
+            self._dispatch(
+                self._on_channel_named(
+                    channel_id, str(props.get("old_displayname") or ""), new_name
+                ),
+                loop,
+            )
+
     async def _ws_handler(self, event_data: str, agent_name: str) -> None:
         try:
             event = json.loads(event_data)
@@ -2779,6 +3541,9 @@ class MattermostAdapter(PlatformAdapter):
 
         user_id = post.get("user_id", "")
         post_type = post.get("type", "")
+        if post_type == "system_displayname_change":
+            await self._handle_display_name_change(post)
+            return
         if post_type:
             return
 
@@ -2786,12 +3551,8 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         post_id = post.get("id", "")
-        with self._seen_lock:
-            if post_id in self._seen_post_ids:
-                return
-            self._seen_post_ids[post_id] = None
-            if len(self._seen_post_ids) > self._seen_post_ids_max:
-                self._seen_post_ids.popitem(last=False)
+        if not self._first_sighting(post_id):
+            return
 
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")
@@ -2805,16 +3566,26 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError("Cannot handle posted event: adapter not started")
 
         ws_loop = asyncio.get_event_loop()
+        user_is_bot = False
         try:
             user = await ws_loop.run_in_executor(
                 None, self._admin_driver.users.get_user, user_id
             )
             username: str = user.get("username", user_id)
+            user_is_bot = bool(user.get("is_bot", False))
         except Exception:
             logger.exception("Failed to resolve Mattermost user %s", user_id)
             username = user_id
         props = post.get("props") or {}
-        if str(props.get("from_webhook", "")).lower() == "true":
+        from_webhook = str(props.get("from_webhook", "")).lower() == "true"
+        # An integration rather than a person: an incoming webhook, or a bot
+        # account other than the bridge's own (those never reach here).
+        sender_is_app = (
+            from_webhook
+            or user_is_bot
+            or str(props.get("from_bot", "")).lower() == "true"
+        )
+        if from_webhook:
             # An incoming webhook's post (or a custom slash command's reply)
             # carries the user id of whoever set the integration up, though
             # anyone holding its URL may have sent it. It is the integration
@@ -2874,6 +3645,7 @@ class MattermostAdapter(PlatformAdapter):
                 channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=attachment_failures,
+                sender_is_app=sender_is_app,
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]

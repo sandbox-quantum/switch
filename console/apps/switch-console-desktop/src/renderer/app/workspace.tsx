@@ -5,9 +5,14 @@ import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
 import { OnboardingIntro } from '@renderer/features/onboarding/onboarding-intro';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
+import { WorkspaceTopBar } from '@renderer/features/sidebar/workspace-top-bar';
 import { BuddyIntroDialog } from '@renderer/features/switch-buddy/buddy-intro-dialog';
 import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { FrozenBanner, frozenServer } from '@renderer/features/switch-servers/frozen-workspace';
+import {
+  GatewayCompatibilityBanner,
+  incompatibleServer,
+} from '@renderer/features/switch-servers/gateway-compatibility-banner';
 import { FROZEN } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
@@ -134,13 +139,21 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
       // A workspace whose server can't answer stays where it was, under a
       // banner, rather than filling with errors from every call that fails.
       const frozen = frozenServer(currentViewId);
+      const incompatible = frozen ? null : incompatibleServer();
       return (
         <>
           <WorkspaceLayout
             leftSidebar={<LeftSidebar />}
+            topBar={<WorkspaceTopBar />}
             mainContent={mainContent}
             persistentLayer={<RoomEmbedLayer />}
-            banner={frozen ? <FrozenBanner server={frozen} /> : null}
+            banner={
+              frozen ? (
+                <FrozenBanner server={frozen} />
+              ) : incompatible ? (
+                <GatewayCompatibilityBanner message={incompatible.message} />
+              ) : null
+            }
             contentClassName={frozen ? FROZEN : undefined}
           />
           {!frozen && <BuddyIntroDialog />}

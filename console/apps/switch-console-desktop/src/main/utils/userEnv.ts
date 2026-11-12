@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
+import { withWindowsAgyBinDir, withWindowsGitBashDir } from '@switch-console/plugins/agents';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
-import { prependWindowsPathEntry } from './windows-env';
+import { getWindowsPathEnvKey, prependWindowsPathEntry } from './windows-env';
 
 /**
  * Keys that must never be overwritten from the shell env capture.
@@ -98,6 +99,47 @@ export function ensureWindowsNpmGlobalBinInPath(
 }
 
 /**
+ * Adds the folders Windows provider installers write CLIs to without telling
+ * a running app: Google's Antigravity installer puts `agy.exe` in
+ * `%LOCALAPPDATA%\agy\bin` and adds it to the user's PATH, which an app
+ * started before the install does not see. Added last, in the same order as
+ * the agent controller adds it (`withWindowsAgyBinDir`).
+ */
+export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.env): string[] {
+  const pathKey = getWindowsPathEnvKey(env);
+  const before = env[pathKey] ?? '';
+  const after = withWindowsAgyBinDir(before, getWindowsEnvValue(env, 'LOCALAPPDATA'));
+  if (after === before) return [];
+  env[pathKey] = after;
+  return [after.split(path.win32.delimiter).at(-1)!];
+}
+
+/**
+ * Puts Git Bash on PATH for the provider CLIs that run shell commands through
+ * it (`withWindowsGitBashDir`), as the agent controller does. Returns the
+ * folder added, or null.
+ */
+export function ensureWindowsGitBashInPath(
+  env: NodeJS.ProcessEnv,
+  fileExists: (file: string) => boolean
+): string | null {
+  const pathKey = getWindowsPathEnvKey(env);
+  const before = env[pathKey] ?? '';
+  const after = withWindowsGitBashDir(
+    before,
+    {
+      localAppData: getWindowsEnvValue(env, 'LOCALAPPDATA'),
+      programFiles: getWindowsEnvValue(env, 'ProgramFiles'),
+      programFilesX86: getWindowsEnvValue(env, 'ProgramFiles(x86)'),
+    },
+    fileExists
+  );
+  if (after === before) return null;
+  env[pathKey] = after;
+  return after.split(path.win32.delimiter).at(-1)!;
+}
+
+/**
  * Spawns `$SHELL -ilc 'env'` with a 5 s timeout. On any error (timeout,
  * missing shell, restricted environment) the function logs a warning and
  * returns — the app continues with whatever `process.env` already contains.
@@ -110,6 +152,8 @@ export async function resolveUserEnv(): Promise<void> {
   if (process.platform === 'win32') {
     // Windows PATH is managed differently; no login-shell capture needed.
     ensureWindowsNpmGlobalBinInPath();
+    ensureWindowsUserBinDirsInPath();
+    ensureWindowsGitBashInPath(process.env, fs.existsSync);
     return;
   }
 

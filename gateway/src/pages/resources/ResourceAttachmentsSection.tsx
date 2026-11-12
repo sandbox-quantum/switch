@@ -1,10 +1,8 @@
 import AddIcon from "@mui/icons-material/Add";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Button,
   CircularProgress,
-  IconButton,
   Stack,
   Typography,
 } from "@mui/material";
@@ -26,19 +24,25 @@ import {
   useReferenceRooms,
   useRooms,
 } from "../../data/hooks";
+import { privateRoomsLabel } from "./privateRooms";
 
 interface Props {
   kind: "reference" | "document" | "package";
   resourceId: string;
+  // Rooms it is in that the viewer may not read, which are never named.
+  hiddenRoomsCount: number;
 }
 
-export default function ResourceAttachmentsSection({ kind, resourceId }: Props) {
+export default function ResourceAttachmentsSection({
+  kind,
+  resourceId,
+  hiddenRoomsCount,
+}: Props) {
   const refRooms = useReferenceRooms(kind === "reference" ? resourceId : undefined);
   const docRooms = useDocumentRooms(kind === "document" ? resourceId : undefined);
   const pkgRooms = usePackageRooms(kind === "package" ? resourceId : undefined);
   const { data: attached, loading, error, refetch } =
     kind === "reference" ? refRooms : kind === "document" ? docRooms : pkgRooms;
-  const { data: allRooms, loading: allLoading } = useRooms();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [error_, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -46,18 +50,6 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
   const attachedIds = useMemo(
     () => new Set((attached ?? []).map((r) => r.room_id)),
     [attached],
-  );
-  const options = useMemo<PickerOption[]>(
-    () =>
-      (allRooms ?? [])
-        .filter((r) => !attachedIds.has(r.id))
-        .map((r) => ({
-          id: r.id,
-          primary: r.name,
-          secondary: r.description || undefined,
-          search: `${r.name} ${r.description ?? ""}`.toLowerCase(),
-        })),
-    [allRooms, attachedIds],
   );
 
   const handleAttach = async (roomIds: string[]) => {
@@ -108,7 +100,7 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
       {error_ && <Alert severity="error">{error_}</Alert>}
       {loading ? (
         <CircularProgress size={20} />
-      ) : (attached ?? []).length === 0 ? (
+      ) : (attached ?? []).length === 0 && hiddenRoomsCount === 0 ? (
         <Typography variant="body2" color="text.secondary">
           Not attached to any rooms yet.
         </Typography>
@@ -130,15 +122,24 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
               <Typography variant="body2" sx={{ flexGrow: 1 }}>
                 {r.room_name}
               </Typography>
-              <IconButton
-                size="small"
-                onClick={() => handleDetach(r.room_id)}
-                disabled={busy}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {r.can_unlink && (
+                <Button
+                  size="small"
+                  onClick={() => handleDetach(r.room_id)}
+                  disabled={busy}
+                  aria-label={`Unlink from ${r.room_name}`}
+                >
+                  Unlink
+                </Button>
+              )}
             </Stack>
           ))}
+          {hiddenRoomsCount > 0 && (
+            <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 0.5 }}>
+              {(attached ?? []).length > 0 ? "Also in" : "In"}{" "}
+              {privateRoomsLabel(hiddenRoomsCount)}.
+            </Typography>
+          )}
         </Stack>
       )}
       <Button
@@ -150,16 +151,51 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
       >
         Attach to room
       </Button>
-      <SearchablePickerDialog
-        open={pickerOpen}
-        title="Attach to rooms"
-        searchPlaceholder="Search rooms…"
-        submitLabel="Attach"
-        options={options}
-        loading={allLoading}
-        onClose={() => setPickerOpen(false)}
-        onSubmit={handleAttach}
-      />
+      {pickerOpen && (
+        <RoomPicker
+          attachedIds={attachedIds}
+          onClose={() => setPickerOpen(false)}
+          onSubmit={handleAttach}
+        />
+      )}
     </Stack>
+  );
+}
+
+// Mounted only while open, so the room list loads only when someone attaches.
+// It offers the rooms the viewer may write to: attaching needs that.
+function RoomPicker({
+  attachedIds,
+  onClose,
+  onSubmit,
+}: {
+  attachedIds: Set<string>;
+  onClose: () => void;
+  onSubmit: (roomIds: string[]) => Promise<void>;
+}) {
+  const { data: rooms, loading } = useRooms();
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (rooms ?? [])
+        .filter((r) => r.can_write && !attachedIds.has(r.id))
+        .map((r) => ({
+          id: r.id,
+          primary: r.name,
+          secondary: r.description || undefined,
+          search: `${r.name} ${r.description ?? ""}`.toLowerCase(),
+        })),
+    [rooms, attachedIds],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Attach to rooms"
+      searchPlaceholder="Search rooms…"
+      submitLabel="Attach"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
   );
 }

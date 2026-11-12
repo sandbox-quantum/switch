@@ -65,6 +65,10 @@ class OutboundURLRefused(ValueError):
     """A URL names an address Switch will not connect to on a tenant's behalf."""
 
 
+class OutboundHostUnresolved(OutboundURLRefused):
+    """The host does not resolve, so there is no address to check."""
+
+
 @dataclass(frozen=True)
 class OutboundPolicy:
     allowed_hostnames: frozenset[str]
@@ -129,7 +133,9 @@ class OutboundPolicy:
                     hostname, port, type=socket.SOCK_STREAM
                 )
             except socket.gaierror as exc:
-                raise OutboundURLRefused(f"{hostname} does not resolve: {exc}") from exc
+                raise OutboundHostUnresolved(
+                    f"{hostname} does not resolve: {exc}"
+                ) from exc
             candidates = [str(info[4][0]) for info in infos]
 
         addresses: list[str] = []
@@ -208,10 +214,10 @@ class _GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
-def guarded_async_client(
-    policy: OutboundPolicy, *, verify: bool = True, **client_kwargs: Any
-) -> httpx.AsyncClient:
-    """An `httpx.AsyncClient` that can reach only what `policy` allows.
+def guarded_transport(
+    policy: OutboundPolicy, *, verify: bool = True
+) -> httpx.AsyncHTTPTransport:
+    """An httpx transport that can reach only what `policy` allows.
 
     Each connection resolves its host, checks every address and connects to a
     checked one, so redirects and re-resolution are covered as well. Proxy
@@ -234,4 +240,48 @@ def guarded_async_client(
         keepalive_expiry=limits.keepalive_expiry,
         network_backend=_GuardedNetworkBackend(policy),
     )
-    return httpx.AsyncClient(transport=transport, trust_env=False, **client_kwargs)
+    return transport
+
+
+# Each sends some or all of a client's traffic through a transport other
+# than the guarded one: its own, a mounted one, a proxy's, or the
+# environment's proxy.
+_UNGUARDED_CLIENT_OPTIONS = ("transport", "mounts", "proxy", "trust_env")
+
+
+class GuardedAsyncClient(httpx.AsyncClient):
+    """A client over `guarded_transport`. It names its policy and TLS
+    setting, so code that needs its own transport can hold it to the same."""
+
+    def __init__(
+        self, policy: OutboundPolicy, *, verify: bool, **client_kwargs: Any
+    ) -> None:
+        for option in _UNGUARDED_CLIENT_OPTIONS:
+            if option in client_kwargs:
+                raise TypeError(
+                    f"A guarded client cannot take {option}: it would send "
+                    "traffic around the outbound policy."
+                )
+        super().__init__(
+            transport=guarded_transport(policy, verify=verify),
+            trust_env=False,
+            **client_kwargs,
+        )
+        self._policy = policy
+        self._verify = verify
+
+    @property
+    def policy(self) -> OutboundPolicy:
+        return self._policy
+
+    @property
+    def verify(self) -> bool:
+        return self._verify
+
+
+def guarded_async_client(
+    policy: OutboundPolicy, *, verify: bool = True, **client_kwargs: Any
+) -> GuardedAsyncClient:
+    """An `httpx.AsyncClient` that can reach only what `policy` allows; see
+    `guarded_transport`."""
+    return GuardedAsyncClient(policy, verify=verify, **client_kwargs)

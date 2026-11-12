@@ -240,6 +240,10 @@ services:
       AGENT_MANAGEMENT_ENABLED: ${AGENT_MANAGEMENT_ENABLED:-false}
       CONTROLLER_TOKEN_SECRET: ${CONTROLLER_TOKEN_SECRET:-}
       FEATURE_FLAGS_ENABLED: ${FEATURE_FLAGS_ENABLED:-}
+      # JSON objects, so bare keys for the reason given under LOG_FORMAT
+      # below: `${VAR:-}` would hand them an empty string, which fails boot.
+      DISABLED_SERVICES:
+      SERVICE_ACCESS_PROFILES:
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
       GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}

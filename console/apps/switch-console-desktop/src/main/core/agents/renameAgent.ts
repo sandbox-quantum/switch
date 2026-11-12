@@ -103,7 +103,7 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
             `${agentSettingsRelativePath(to)} belongs to the Switch server at ${owner}; refusing to overwrite another install's credentials`
           );
         }
-        await ctx.fs.write(agentSettingsRelativePath(to), creds);
+        await ctx.fs.write(agentSettingsRelativePath(to), creds, { secret: true });
       }
       const config = await ctx.fs.read(agentConfigRelativePath(from));
       if (config !== null) await ctx.fs.write(agentConfigRelativePath(to), config);

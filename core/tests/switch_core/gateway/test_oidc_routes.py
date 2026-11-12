@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -8,6 +9,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse
@@ -18,6 +20,8 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     OidcIdentity,
+    Organization,
+    OrganizationMember,
     Tenant,
     TenantMember,
     User,
@@ -26,6 +30,11 @@ from switch_core.db.stores.user_store import OidcIdentityRaceError, UserStore
 from switch_core.gateway.auth import decode_jwt, hash_password
 from switch_core.gateway.auth_routes import auth_config
 from switch_core.gateway.dependencies import get_config
+from switch_core.organization_directory import (
+    DirectoryMembership,
+    DirectoryUnavailable,
+    LocalDirectory,
+)
 
 
 def _tenant_claim(set_cookie: str) -> str | None:
@@ -78,6 +87,177 @@ class _FakeClientNoUserinfoInToken:
         raise self._userinfo_error
 
 
+class _Directory:
+    """A directory kept outside Switch: answers `memberships`, or raises."""
+
+    def __init__(self, memberships: object) -> None:
+        self.memberships = memberships
+        self.asked: list[str] = []
+
+    async def memberships_at_sign_in(self, subject: str):
+        self.asked.append(subject)
+        if isinstance(self.memberships, Exception):
+            raise self.memberships
+        return self.memberships
+
+
+class TestSigningInWithADirectory:
+    """Under the WorkOS directory the sign-in's subject names the person
+    there; their organizations are brought into Switch, and an email match
+    never joins an existing account."""
+
+    _TOKEN = {
+        "userinfo": {
+            "email": "dana@example.com",
+            "email_verified": True,
+            "sub": "user_DANA",
+            "name": "Dana",
+        }
+    }
+
+    def _config(self) -> SwitchConfig:
+        return _config(
+            organization_directory="workos",
+            workos_api_key="sk_test_example",
+            gateway_signup_mode="invite_only",
+        )
+
+    async def test_their_organizations_are_brought_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        linked = f"org_workos_{uuid.uuid4().hex[:8]}"
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(
+                    id=organization_id,
+                    slug=organization_id,
+                    name="Acme",
+                    workos_organization_id=linked,
+                )
+            )
+            await session.commit()
+        directory = _Directory([DirectoryMembership(linked, "org_admin")])
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                config=self._config(),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=directory,  # type: ignore[arg-type]
+            )
+            user = await UserStore().get_by_email(session, "dana@example.com")
+
+        assert response.status_code == 303
+        assert directory.asked == ["user_DANA"]
+        assert user is not None
+        async with session_factory() as session:
+            member = await session.get(OrganizationMember, (organization_id, user.id))
+        assert member is not None and member.role == "org_admin"
+
+    async def test_an_unreachable_directory_does_not_stop_the_sign_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        directory = _Directory(DirectoryUnavailable("WorkOS answered 500."))
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                config=self._config(),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=directory,  # type: ignore[arg-type]
+            )
+
+        assert response.status_code == 303
+        assert "WorkOS answered 500." in caplog.text
+
+    async def test_a_failure_writing_switchs_rows_does_not_stop_the_sign_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        async def failing(*_args: object) -> None:
+            raise OperationalError("UPDATE organization_members", {}, Exception())
+
+        monkeypatch.setattr(oidc_routes, "bring_in_memberships", failing)
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                config=self._config(),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=_Directory([]),  # type: ignore[arg-type]
+            )
+
+        assert response.status_code == 303
+        [record] = [r for r in caplog.records if "may be behind" in r.message]
+        assert record.levelname == "ERROR"
+
+    async def test_an_account_with_the_same_email_is_not_joined(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            session.add(User(name="Dana", email="dana@example.com", role="user"))
+            await session.commit()
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as refused:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    config=self._config(),
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                    organization_directory=_Directory([]),  # type: ignore[arg-type]
+                )
+
+        assert refused.value.status_code == 409
+        assert "administrator" in refused.value.detail
+
+    async def test_an_issuer_other_than_the_configured_one_is_refused(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stored under another spelling of the issuer, the identity would
+        match nothing the directory looks up, so nothing is stored."""
+        token = {"userinfo": {**self._TOKEN["userinfo"], "iss": "https://idp.example/"}}
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as refused:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    config=self._config(),
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                    organization_directory=_Directory([]),  # type: ignore[arg-type]
+                )
+            stored = await UserStore().get_by_email(session, "dana@example.com")
+
+        assert refused.value.status_code == 503
+        assert stored is None
+
+
 class TestOidcCallback:
     async def test_provisions_user_and_sets_session_cookie(
         self,
@@ -101,6 +281,7 @@ class TestOidcCallback:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
 
             assert response.status_code == 303
@@ -150,6 +331,7 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 401
 
@@ -181,6 +363,7 @@ class TestOidcCallback:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
 
             assert response.status_code == 303
@@ -208,6 +391,7 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 401
 
@@ -247,6 +431,7 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 409
 
@@ -287,6 +472,7 @@ class TestOidcCallback:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             assert response.status_code == 303
 
@@ -326,6 +512,7 @@ class TestOidcCallback:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             assert first.status_code == 303
             carol = await UserStore().get_by_email(session, "carol@example.com")
@@ -351,6 +538,7 @@ class TestOidcCallback:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             assert response.status_code == 303
             linked = await UserStore().get_by_oidc_identity(
@@ -400,6 +588,7 @@ class TestOidcCallback:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             assert response.status_code == 303
 
@@ -439,10 +628,136 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=_AlwaysRacingStore(),  # type: ignore[arg-type]
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 503
             assert exc.value.headers is not None
             assert exc.value.headers.get("Retry-After") == "1"
+
+    async def test_a_first_sign_in_the_edge_marks_as_refused_creates_no_account(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token = {
+            "userinfo": {
+                "email": "far.away@example.com",
+                "email_verified": True,
+                "sub": "okta|far-away",
+                "name": "Far",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as refused:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(  # type: ignore[arg-type]
+                        session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                    ),
+                    config=_config(
+                        gateway_signup_refused_header="x-amzn-waf-signup-refused"
+                    ),
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
+                )
+            assert not session.in_transaction()
+            stored = await UserStore().get_by_email(session, "far.away@example.com")
+            identity = await UserStore().get_by_oidc_identity(
+                session, iss="https://idp.example", sub="okta|far-away"
+            )
+
+        assert refused.value.status_code == 403
+        assert refused.value.detail == (
+            "New Switch accounts are not available in your country."
+        )
+        assert stored is None
+        assert identity is None
+
+    async def test_a_verified_email_still_links_where_new_accounts_are_refused(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async with session_factory() as session:
+            existing = User(
+                name="Member",
+                email="member@example.com",
+                role="user",
+                password_hash=hash_password("pw"),
+            )
+            await UserStore().create(session, existing)
+            await session.commit()
+            existing_id = existing.id
+
+        token = {
+            "userinfo": {
+                "email": "member@example.com",
+                "email_verified": True,
+                "sub": "okta|member-abroad",
+                "name": "Member",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(  # type: ignore[arg-type]
+                    session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                ),
+                config=_config(
+                    gateway_signup_refused_header="x-amzn-waf-signup-refused"
+                ),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=LocalDirectory(),
+            )
+            assert response.status_code == 303
+            linked = await UserStore().get_by_oidc_identity(
+                session, iss="https://idp.example", sub="okta|member-abroad"
+            )
+            assert linked is not None and linked.id == existing_id
+
+    async def test_an_existing_account_signs_in_where_new_ones_are_refused(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token = {
+            "userinfo": {
+                "email": "traveller@example.com",
+                "email_verified": True,
+                "sub": "okta|traveller",
+                "name": "Traveller",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+        config = _config(gateway_signup_refused_header="x-amzn-waf-signup-refused")
+
+        async with session_factory() as session:
+            first = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}, headers={}),  # type: ignore[arg-type]
+                config=config,
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=LocalDirectory(),
+            )
+            assert first.status_code == 303
+            again = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(  # type: ignore[arg-type]
+                    session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                ),
+                config=config,
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=LocalDirectory(),
+            )
+            assert again.status_code == 303
 
     async def test_missing_email_claim_raises_401(
         self,
@@ -460,6 +775,7 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 401
 
@@ -487,6 +803,7 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 502
             assert exc.value.detail == "OIDC provider did not respond"
@@ -515,6 +832,7 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 502
             assert exc.value.detail == "OIDC provider did not respond"
@@ -545,6 +863,7 @@ class TestOidcCallback:
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
                 )
             assert exc.value.status_code == 503
             assert exc.value.detail == (
@@ -592,6 +911,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             user = await UserStore().get_by_email(session, "jit@example.com")
             assert user is not None
@@ -636,6 +956,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             memberships = await self._memberships(session, user_id)
 
@@ -675,6 +996,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             memberships = await self._memberships(session, user_id)
 
@@ -722,6 +1044,7 @@ class TestSignUpWithoutADefaultTenant:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             user = await UserStore().get_by_email(session, email)
             assert user is not None
@@ -759,6 +1082,7 @@ class TestSignUpWithoutADefaultTenant:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             identity = (
                 await session.execute(
@@ -805,6 +1129,7 @@ class TestSignUpWithoutADefaultTenant:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
 
         set_cookie = response.headers.get("set-cookie")
@@ -1085,6 +1410,7 @@ class TestLoginOptionsAndHandoff:
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
+                organization_directory=LocalDirectory(),
             )
             # No cookie in the browser: the code goes back to the app.
             assert response.headers.get("set-cookie") is None

@@ -20,6 +20,8 @@ function readOnlyFs(seed: Record<string, string>): PluginFs & { files: Map<strin
       return Promise.resolve();
     },
     delete: (p) => Promise.reject(new Error(`attach deleted from the workdir: ${p}`)),
+    protectSecret: (p) =>
+      Promise.reject(new Error(`attach changed permissions in the workdir: ${p}`)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: (dir) => {
       const prefix = `${dir}/`;

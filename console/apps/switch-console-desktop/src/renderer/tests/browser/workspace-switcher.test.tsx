@@ -416,7 +416,7 @@ describe('inviting people from the switcher', () => {
       [server('srv-1', 'Acme')],
       [
         workspace('ws-a', 'srv-1', { role: 'admin' }),
-        workspace('ws-b', 'srv-1', { role: 'owner' }),
+        workspace('ws-b', 'srv-1', { role: 'admin' }),
       ],
       'ws-a'
     );
@@ -484,7 +484,7 @@ describe('organizations in the switcher', () => {
     await openSwitcher(
       [server('srv-1', 'Cloud')],
       [
-        workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' }),
+        workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' }),
         workspace('ws-b', 'srv-1', { organization: GLOBEX }),
         workspace('ws-c', 'srv-1', { organization: ACME }),
       ],
@@ -503,7 +503,7 @@ describe('organizations in the switcher', () => {
     await openSwitcher(
       [server('srv-1', 'Cloud')],
       [
-        workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' }),
+        workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' }),
         workspace('ws-b', 'srv-1', { organization: { id: 'o-9', name: null, role: 'member' } }),
       ],
       'ws-a'
@@ -519,7 +519,7 @@ describe('organizations in the switcher', () => {
     await openSwitcher(
       [server('srv-1', 'Cloud')],
       [
-        workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' }),
+        workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' }),
         workspace('ws-b', 'srv-1', { organization: GLOBEX }),
       ],
       'ws-a'
@@ -545,7 +545,7 @@ describe('organizations in the switcher', () => {
     state.organizations.add('srv-1');
     await openSwitcher(
       [server('srv-1', 'Cloud')],
-      [workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' })],
+      [workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' })],
       'ws-a'
     );
     await settle();
@@ -558,7 +558,7 @@ describe('organizations in the switcher', () => {
     state.noAdd.add('srv-1');
     await openSwitcher(
       [server('srv-1', 'Cloud')],
-      [workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' })],
+      [workspace('ws-a', 'srv-1', { organization: ACME, role: 'admin' })],
       'ws-a'
     );
     await settle();
@@ -788,7 +788,7 @@ describe('the server switcher on a build without Switch Cloud', () => {
   it('lists servers, not workspaces, and offers no workspace actions', async () => {
     await openSwitcher(
       [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
-      [workspace('ws-a', 'srv-1', { role: 'owner' }), workspace('ws-c', 'srv-2')],
+      [workspace('ws-a', 'srv-1', { role: 'admin' }), workspace('ws-c', 'srv-2')],
       'ws-a',
       'Switch server'
     );

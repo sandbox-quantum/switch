@@ -1,14 +1,24 @@
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
+import { agentProviderIds } from '@shared/core/providers/agent-provider-registry';
 import { OverrideSettings } from './override-settings';
 import {
   migrateProviderConfigOverrides,
   migrateProviderConfigToHostDependencyStore,
 } from './provider-config-migrations';
-import { providerConfigDefaults, providerCustomConfigEntrySchema } from './schema';
+import { providerCustomConfigEntrySchema } from './schema';
+
+/**
+ * Every registered provider starts from empty defaults, so its saved settings
+ * are readable and reset has something to write. An id the catalogue does not
+ * know has none, and the store reports it as absent. Read on each call, never
+ * at import: the catalogue is installed as the main process loads its plugins.
+ */
+const providerDefaults = (): Record<string, ProviderCustomConfig> =>
+  Object.fromEntries(agentProviderIds().map((id) => [id, {}]));
 
 export const providerOverrideSettings = new OverrideSettings<ProviderCustomConfig>(
   'providerConfigs',
-  () => providerConfigDefaults as Record<string, ProviderCustomConfig>,
+  providerDefaults,
   providerCustomConfigEntrySchema,
   migrateProviderConfigOverrides
 );

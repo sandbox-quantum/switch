@@ -122,6 +122,7 @@ const {
   updateManagementController,
   fetchManagementControllers,
   giveMachineLogin,
+  recheckMachineProvider,
   fetchMachineOperation,
   fetchAgentManagementAccess,
   updateCanManageAgents,
@@ -505,7 +506,7 @@ describe('room creation', () => {
     vi.unstubAllGlobals();
   });
 
-  it('maps the bridge list, defaulting is_default and home_url when absent', async () => {
+  it('maps the bridge list, defaulting is_default, preconfigured and home_url when absent', async () => {
     // `home_url` post-dates the pinned switch-core, so a current server omits
     // it entirely — that has to read as "no link", not undefined.
     fetchMock.mockResolvedValue(
@@ -516,6 +517,7 @@ describe('room creation', () => {
           display_name: 'Mattermost',
           status: 'active',
           is_default: true,
+          preconfigured: true,
           home_url: 'mattermost://chat.example.com/switch',
           channel_creation_supported: true,
           channel_creation_enabled: true,
@@ -531,6 +533,7 @@ describe('room creation', () => {
         displayName: 'Mattermost',
         status: 'active',
         isDefault: true,
+        preconfigured: true,
         homeUrl: 'mattermost://chat.example.com/switch',
         channelCreationSupported: true,
         canCreateChannels: true,
@@ -538,6 +541,8 @@ describe('room creation', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -547,6 +552,8 @@ describe('room creation', () => {
         displayName: 'Slack',
         status: 'stopped',
         isDefault: false,
+        // Absent on a server predating the flag: unknown, not "a person connected it".
+        preconfigured: null,
         homeUrl: null,
         // Both fields post-date the pinned switch-core too, defaulting the
         // same way home_url does: absent reads as the pre-capability world,
@@ -557,6 +564,8 @@ describe('room creation', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -600,6 +609,28 @@ describe('room creation', () => {
 
     const [bridge] = await fetchBridges(SERVER);
     expect(bridge.channelIdsRefused).toBe('Rooms come from connecting a chat.');
+  });
+
+  it('carries whether a connection can make a private channel and whether it needs a linked account', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'teams',
+          display_name: 'Teams',
+          status: 'active',
+          private_channels_supported: true,
+          private_channel_needs_linked_account: true,
+        },
+        { bridge_id: 'b2', bridge_type: 'teams', display_name: 'Older', status: 'active' },
+      ]) as never
+    );
+
+    const [current, older] = await fetchBridges(SERVER);
+    expect(current.privateChannels).toBe(true);
+    expect(current.privateChannelNeedsLinkedAccount).toBe(true);
+    expect(older.privateChannels).toBeNull();
+    expect(older.privateChannelNeedsLinkedAccount).toBe(false);
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
@@ -647,7 +678,15 @@ describe('room creation', () => {
       }) as never
     );
 
-    await createRoom(SERVER, { name: 'design', description: 'd', bridgeId: null, agentIds: [] });
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: null,
+      agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
+    });
 
     expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({ bridge_id: null, internal_only: true });
   });
@@ -672,6 +711,9 @@ describe('room creation', () => {
       description: 'd',
       bridgeId: 'b1',
       agentIds: ['a1'],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     const body = bodyOf(fetchMock.mock.calls[0]);
@@ -684,6 +726,69 @@ describe('room creation', () => {
     });
     expect(body).not.toHaveProperty('internal_only');
     expect(room.ownerId).toBe('u1');
+  });
+
+  it('asks for a private channel, a group and an access level when chosen', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_private',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'new', private: true },
+      groupId: 'g1',
+      access: 'read_only',
+    });
+
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({
+      channel_type: 'channel_private',
+      group_id: 'g1',
+      read_visibility: 'public',
+      write_visibility: 'private',
+    });
+  });
+
+  it('binds an existing channel by id and leaves its type and access to the server', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: [],
+      channel: { kind: 'existing', externalChannelId: 'C123' },
+      groupId: null,
+      access: null,
+    });
+
+    const body = bodyOf(fetchMock.mock.calls[0]);
+    expect(body).toMatchObject({ external_channel_id: 'C123' });
+    expect(body).not.toHaveProperty('channel_type');
+    expect(body).not.toHaveProperty('read_visibility');
+    expect(body).not.toHaveProperty('group_id');
   });
 
   it('sends blank instructions as null rather than an empty string', async () => {
@@ -706,6 +811,9 @@ describe('room creation', () => {
       instructions: '   ',
       bridgeId: 'b1',
       agentIds: [],
+      channel: null,
+      groupId: null,
+      access: null,
     });
 
     expect(bodyOf(fetchMock.mock.calls[0]).instructions).toBeNull();
@@ -715,7 +823,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(400, '{"detail":"Bridge not running: b1"}') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 400, detail: 'Bridge not running: b1' });
   });
 
@@ -738,7 +854,15 @@ describe('room creation', () => {
     fetchMock.mockResolvedValue(errorResponse(502, '<html>bad gateway</html>') as never);
 
     await expect(
-      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+      createRoom(SERVER, {
+        name: 'x',
+        description: 'y',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel: null,
+        groupId: null,
+        access: null,
+      })
     ).rejects.toMatchObject({ status: 502, detail: undefined });
   });
 });
@@ -769,7 +893,7 @@ describe('registerKnownAgent', () => {
     // builds for it, so a default here would silently mislabel every
     // non-Claude agent (CHOO-1436).
     const registered = await registerKnownAgent(SERVER, {
-      name: 'codex-hoot',
+      name: 'codex-agent',
       description: 'Codex running in repo',
       agentType: 'codex',
       options: { channels_enabled: true, repo_dir: '/repo' },
@@ -781,7 +905,7 @@ describe('registerKnownAgent', () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
     expect(JSON.parse(init.body)).toEqual({
       agent_type: 'codex',
-      name: 'codex-hoot',
+      name: 'codex-agent',
       description: 'Codex running in repo',
       options: { channels_enabled: true, repo_dir: '/repo' },
       icon_url: null,
@@ -2524,7 +2648,7 @@ describe('organizations', () => {
     id: 't1',
     slug: 'acme',
     name: 'Acme',
-    role: 'owner',
+    role: 'admin',
     organization_id: 'o1',
     organization_role: 'org_admin',
   };
@@ -2532,7 +2656,7 @@ describe('organizations', () => {
     id: 't1',
     slug: 'acme',
     name: 'Acme',
-    role: 'owner',
+    role: 'admin',
     organizationId: 'o1',
     organizationRole: 'org_admin',
   };
@@ -2611,7 +2735,7 @@ describe('organizations', () => {
       id: 't1',
       slug: 'acme',
       name: 'Acme',
-      role: 'owner',
+      role: 'admin',
       organizationId: null,
       organizationRole: null,
     });
@@ -3308,6 +3432,100 @@ describe('agent management calls', () => {
     expect(JSON.parse(String(init.body))).toEqual({ name: 'laptop', description: null });
   });
 
+  it('reads what a machine last reported, and tolerates a report missing parts', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        {
+          id: 'controller-1',
+          name: 'box',
+          description: null,
+          kind: 'daemon',
+          state: 'offline',
+          last_seen_at: '2026-10-01T10:30:00Z',
+          revoked_at: null,
+          platform: { os: 'linux', arch: 'x64', os_version: '6.8' },
+          version: '1.0.0',
+          release: { wanted: '1.1.0', running: '1.0.0', current: false },
+          connection: {
+            connected_at: '2026-10-01T10:00:00Z',
+            disconnected_at: '2026-10-01T11:00:00Z',
+            disconnect_reason: 'socket_closed',
+          },
+          created_at: '2026-09-01T00:00:00Z',
+          status: {
+            observed_at: '2026-10-01T10:30:00Z',
+            controller: { version: '1.0.0', updated_by: 'self' },
+            machine: { disk_free_bytes: 10, disk_total_bytes: 100, sessions_running: 1 },
+            update: { target: '1.1.0', state: 'waiting_idle' },
+            providers: [
+              {
+                provider: 'claude',
+                installed: true,
+                auth: 'ok',
+                auth_source: 'sealed',
+                version: '2.1.0',
+                checked_at: '2026-10-01T10:29:00Z',
+              },
+            ],
+            agents: [
+              { agent_id: 'a1', process: 'running', attached: true, sessions: { active: 2 } },
+              { process: 'running' },
+            ],
+          },
+        },
+        {
+          id: 'controller-2',
+          name: 'new',
+          description: null,
+          kind: 'daemon',
+          state: 'unknown',
+          last_seen_at: null,
+          revoked_at: null,
+        },
+      ])
+    );
+    const [reported, fresh] = await fetchManagementControllers(SERVER);
+    expect(reported?.platform).toEqual({ os: 'linux', arch: 'x64', osVersion: '6.8' });
+    expect(reported?.connection?.disconnectReason).toBe('socket_closed');
+    expect(reported?.release?.current).toBe(false);
+    expect(reported?.report).toEqual({
+      observedAt: '2026-10-01T10:30:00Z',
+      updatedBy: 'self',
+      update: { target: '1.1.0', state: 'waiting_idle', problem: null },
+      resources: {
+        diskFreeBytes: 10,
+        diskTotalBytes: 100,
+        memFreeBytes: 0,
+        memTotalBytes: 0,
+        sessionsRunning: 1,
+        sessionsMax: 0,
+      },
+      providerChecks: [
+        {
+          provider: 'claude',
+          version: '2.1.0',
+          authSource: 'sealed',
+          checkedAt: '2026-10-01T10:29:00Z',
+        },
+      ],
+      agents: [
+        {
+          agentId: 'a1',
+          process: 'running',
+          attached: true,
+          activeSessions: 2,
+          restarts10m: 0,
+          since: null,
+          reason: null,
+          detail: null,
+        },
+      ],
+    });
+    expect(fresh?.report).toBeNull();
+    expect(fresh?.connection).toBeNull();
+    expect(fresh?.version).toBeNull();
+  });
+
   it('reads the key a machine takes logins sealed to, and gives it one', async () => {
     fetchMock.mockImplementation(async () =>
       respond(200, [
@@ -3391,6 +3609,23 @@ describe('agent management calls', () => {
     await expect(fetchMachineOperation(SERVER, 'controller-1', 'op-1')).rejects.toThrow(
       /not a list/
     );
+  });
+
+  it('asks a machine to recheck one provider as a provider.recheck operation', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { id: 'op-3', kind: 'provider.recheck', state: 'pending' })
+    );
+    expect(await recheckMachineProvider(SERVER, 'controller-1', 'codex')).toEqual({
+      operationId: 'op-3',
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/management/operations');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      controller_id: 'controller-1',
+      kind: 'provider.recheck',
+      params: { provider: 'codex' },
+    });
   });
 
   it("reads each machine's providers from its last status report, and invents none", async () => {
@@ -3855,5 +4090,31 @@ describe('fetchAgentIconChoices', () => {
       choices: ['https://example.com/a.png'],
       thirdPartyAvatarsEnabled: true,
     });
+  });
+});
+
+describe('fetchTenants', () => {
+  beforeEach(() => {
+    getSessionCookie.mockResolvedValue('switch_session=fresh');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads a workspace owner on a server from before the merge as an admin', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse([
+          { id: 't1', slug: 'acme', name: 'Acme', role: 'owner' },
+          { id: 't2', slug: 'beta', name: 'Beta', role: 'member' },
+        ])
+      )
+    );
+
+    const tenants = await fetchTenants(SERVER);
+
+    expect(tenants.map((t) => t.role)).toEqual(['admin', 'member']);
   });
 });

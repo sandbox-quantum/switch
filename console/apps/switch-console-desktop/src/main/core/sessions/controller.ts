@@ -2,6 +2,7 @@ import { provisionTriggerOf } from '@main/core/telemetry/narrow';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
 import { createRPCController } from '@shared/lib/ipc/rpc';
+import { listCliConversations } from './cli-conversations';
 import { dehydrateSession } from './operations/dehydrateSession';
 import { getSession } from './operations/getSession';
 import { hydrateSession } from './operations/hydrateSession';
@@ -17,6 +18,8 @@ export const sessionController = createRPCController({
   async createSession(params: CreateSessionParams) {
     return sessionService.createSession(params);
   },
+  /** The conversations started in Claude Code's CLI in an agent's folder that a session could continue. */
+  listCliConversations,
   async getSessions(locationId?: string) {
     return sessionService.getSessions(locationId);
   },

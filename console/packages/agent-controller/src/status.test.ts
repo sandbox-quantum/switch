@@ -1,7 +1,12 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import {
+  generateSealingKeyPair,
+  providerRuntimeIds,
+  providerUnsupportedReason,
+  sealProviderLogin,
+} from '@switch-console/agent-providers';
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -290,6 +295,9 @@ describe('providerStatusFrom', () => {
   });
 });
 
+// Every provider the controller runs is checked, whatever their number.
+const PROVIDERS = providerRuntimeIds().length;
+
 describe('ProviderStatuses', () => {
   it('checks each provider at most once per TTL, and reports changes', async () => {
     let clock = NOW;
@@ -308,19 +316,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
+    expect(changes).toBe(PROVIDERS);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (PROVIDERS - 1));
+    expect(changes).toBe(PROVIDERS);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(PROVIDERS + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -425,7 +433,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDERS - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
@@ -657,6 +665,23 @@ describe('PathProviderLocator', () => {
     });
     expect(await locator.locate('claude')).toBeNull();
     expect(await locator.locate('codex')).toBeNull();
+  });
+
+  it('finds Google’s agy for Antigravity ahead of a legacy antigravity-acp, on every OS', async () => {
+    expect(providerUnsupportedReason('antigravity', 'win32')).toBeNull();
+    const legacy = await writeNodeCli(dir, 'antigravity-acp', 'console.log("1.1.1")');
+    const locator = new PathProviderLocator(() => dir, join(dir, 'probe-home'));
+    expect(await locator.locate('antigravity')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(legacy)}$`, 'i')),
+      version: '1.1.1',
+      versionProblem: null,
+    });
+    const agy = await writeNodeCli(dir, 'agy', 'console.log("1.5.1")');
+    expect(await locator.locate('antigravity')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(agy)}$`, 'i')),
+      version: '1.5.1',
+      versionProblem: null,
+    });
   });
 
   it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {

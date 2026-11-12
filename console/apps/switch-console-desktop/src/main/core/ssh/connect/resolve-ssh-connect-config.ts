@@ -5,7 +5,9 @@
 // the source of truth. The manual-agent (no-alias hostname lookup) and
 // credential-service password paths from Switch Console are dropped.
 import { readFile } from 'node:fs/promises';
+import { getWindowsEnvValue } from '@switch-console/core/exec';
 import ssh2, { type BaseAgent, type ConnectConfig } from 'ssh2';
+import { detectWindowsOpenSshAgentPipe } from '@main/utils/shellEnv';
 import type { SshConfig } from '@shared/core/ssh/ssh';
 import {
   resolveSshConfig as defaultResolveSshConfig,
@@ -47,6 +49,24 @@ export interface SshConnectDeps {
   env: Record<string, string | undefined>;
 }
 
+/**
+ * The environment Console's own SSH connections resolve their agent from.
+ *
+ * Windows OpenSSH's agent is a named pipe and never sets `SSH_AUTH_SOCK`, so
+ * when it is unset on Windows the running agent's pipe is filled in here. It is
+ * not put in `process.env`: Git Bash, MSYS and WSL tools inherit that and
+ * expect a unix socket in `SSH_AUTH_SOCK`.
+ */
+export function sshConnectEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  detectWindowsAgentPipe: () => string | undefined
+): Record<string, string | undefined> {
+  if (platform !== 'win32' || getWindowsEnvValue(env, 'SSH_AUTH_SOCK')) return env;
+  const pipe = detectWindowsAgentPipe();
+  return pipe ? { ...env, SSH_AUTH_SOCK: pipe } : env;
+}
+
 function defaultDeps(): SshConnectDeps {
   return {
     readFile,
@@ -55,7 +75,7 @@ function defaultDeps(): SshConnectDeps {
     spawnProxyJump: (jumpSpec, destHost, destPort) =>
       defaultSpawnProxyJump(jumpSpec, destHost, destPort),
     createAgent,
-    env: process.env,
+    env: sshConnectEnv(process.env, process.platform, detectWindowsOpenSshAgentPipe),
   };
 }
 

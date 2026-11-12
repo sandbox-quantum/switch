@@ -4,7 +4,8 @@
 refresh, check a grant, issue, revoke, all counted. `FakeOAuthServer` plays
 the HTTP side of an OAuth vendor with MCP servers, for the generic OAuth/MCP
 adapter to talk to: its metadata, authorization, token, registration,
-revocation and account endpoints, and an MCP server that takes its tokens.
+revocation, introspection and account endpoints, and an MCP server that takes
+its tokens.
 """
 
 from __future__ import annotations
@@ -156,7 +157,8 @@ class FakeGoogle:
     A refresh token comes only with `access_type=offline`; access tokens live
     3,599 s; scopes come back as full URLs (`email` as `userinfo.email`); a
     refresh returns no new refresh token; revoking any token ends every token
-    of the sign-in. `unticked` are the scopes the person unticks at consent.
+    of that account, as Google revokes the whole grant. `account` is who signs
+    in next. `unticked` are the scopes the person unticks at consent.
     """
 
     def __init__(self) -> None:
@@ -171,6 +173,9 @@ class FakeGoogle:
         self.live_access: dict[str, list[str]] = {}
         self.live_refresh: dict[str, list[str]] = {}
         self.account = {"sub": "100000000000000000001", "email": "ada@example.test"}
+        self.accounts: dict[str, dict[str, str]] = {}
+        self.owners: dict[str, str] = {}
+        self.code_owners: dict[str, str] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -197,6 +202,8 @@ class FakeGoogle:
             resource=None,
         )
         self.offline[code] = query.get("access_type") == "offline"
+        self.accounts[self.account["sub"]] = dict(self.account)
+        self.code_owners[code] = self.account["sub"]
         return f"{query['redirect_uri']}?state={query['state']}&code={code}&scope=x"
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -213,20 +220,25 @@ class FakeGoogle:
             self.revoked.append(form)
             token = form.get("token", "")
             if token in self.live_refresh or token in self.live_access:
-                self.live_refresh.clear()
-                self.live_access.clear()
+                owner = self.owners[token]
+                for live in (self.live_refresh, self.live_access):
+                    for ended in [t for t in live if self.owners[t] == owner]:
+                        del live[ended]
                 return httpx.Response(200)
             return _json(400, {"error": "invalid_token"})
         if where == GOOGLE_USERINFO and request.method == "GET":
             header = request.headers.get("authorization", "")
-            if header.removeprefix("Bearer ") not in self.live_access:
+            token = header.removeprefix("Bearer ")
+            if token not in self.live_access:
                 return _json(401, {"error": "invalid_token"})
-            return _json(200, {**self.account, "email_verified": True})
+            account = self.accounts.get(self.owners[token], self.account)
+            return _json(200, {**account, "email_verified": True})
         return _json(404, {"error": "not_found"})
 
-    def _mint(self, scopes: list[str], *, refresh: bool) -> dict[str, Any]:
+    def _mint(self, scopes: list[str], *, refresh: bool, owner: str) -> dict[str, Any]:
         access = f"ya29.synthetic-{secrets.token_hex(8)}"
         self.live_access[access] = scopes
+        self.owners[access] = owner
         body: dict[str, Any] = {
             "access_token": access,
             "expires_in": 3599,
@@ -237,6 +249,7 @@ class FakeGoogle:
         if refresh:
             token = f"1//synthetic-{secrets.token_hex(8)}"
             self.live_refresh[token] = scopes
+            self.owners[token] = owner
             body["refresh_token"] = token
         return body
 
@@ -256,12 +269,23 @@ class FakeGoogle:
                 or pending.challenge != s256(form.get("code_verifier", ""))
             ):
                 return _json(400, {"error": "invalid_grant"})
-            return _json(200, self._mint(pending.scopes, refresh=self.offline[code]))
+            return _json(
+                200,
+                self._mint(
+                    pending.scopes,
+                    refresh=self.offline[code],
+                    owner=self.code_owners[code],
+                ),
+            )
         if form.get("grant_type") == "refresh_token":
-            scopes = self.live_refresh.get(form.get("refresh_token", ""))
+            refresh_token = form.get("refresh_token", "")
+            scopes = self.live_refresh.get(refresh_token)
             if scopes is None:
                 return _json(400, {"error": "invalid_grant"})
-            return _json(200, self._mint(scopes, refresh=False))
+            return _json(
+                200,
+                self._mint(scopes, refresh=False, owner=self.owners[refresh_token]),
+            )
         return _json(400, {"error": "unsupported_grant_type"})
 
 
@@ -328,6 +352,7 @@ class FakeOAuthServer:
         self.spent_refresh: set[str] = set()
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
+        self.introspections: list[dict[str, str]] = []
         self.mcp_calls: list[dict[str, Any]] = []
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
@@ -337,6 +362,7 @@ class FakeOAuthServer:
             "token_endpoint": f"{ISSUER}/token",
             "registration_endpoint": f"{ISSUER}/register",
             "revocation_endpoint": f"{ISSUER}/revoke",
+            "introspection_endpoint": f"{ISSUER}/introspect",
             "response_types_supported": ["code"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": [
@@ -345,6 +371,16 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # What introspecting a live token says beside `active`.
+        self.introspected: dict[str, Any] = {
+            "workspace_id": "ws-1",
+            "user_id": "user-1",
+            "sub": "user-1",
+        }
+        # Leaves `active` out of the introspection answer.
+        self.introspect_without_active = False
+        # Fields every token response carries beside the tokens.
+        self.token_extras: dict[str, Any] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -385,6 +421,7 @@ class FakeOAuthServer:
             "expires_in": self.lifetime,
             "refresh_token": refresh,
             "scope": " ".join(scopes),
+            **self.token_extras,
         }
 
     # ── HTTP ─────────────────────────────────────────────────────────────────
@@ -418,6 +455,8 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
+        if where == f"{ISSUER}/introspect" and request.method == "POST":
+            return self._introspect(request)
         if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
@@ -491,6 +530,26 @@ class FakeOAuthServer:
             del self.live_refresh[minted.pop("refresh_token")]
             return _json(200, minted)
         return _json(400, {"error": "unsupported_grant_type"})
+
+    def _introspect(self, request: httpx.Request) -> httpx.Response:
+        """RFC 7662: a client known as at the token endpoint asks; a token
+        that is not live is only `active: false`."""
+        form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        self.introspections.append(form)
+        if not self._client_ok(request, form):
+            return _json(401, {"error": "invalid_client"})
+        scopes = self.live_access.get(form.get("token", ""))
+        if scopes is None:
+            return _json(200, {"active": False})
+        answer = {
+            "active": True,
+            "scope": " ".join(scopes),
+            "token_type": "bearer",
+            **self.introspected,
+        }
+        if self.introspect_without_active:
+            del answer["active"]
+        return _json(200, answer)
 
     def _register(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

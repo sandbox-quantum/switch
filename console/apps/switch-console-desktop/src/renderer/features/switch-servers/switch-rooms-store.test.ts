@@ -35,7 +35,14 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: workspaces,
 }));
 vi.mock('./switch-servers-store', () => ({ switchServersStore: serversStore }));
-vi.mock('./local-server-store', () => ({ localServerStore: { isRunning: true } }));
+const localServer = vi.hoisted(() => ({
+  isRunning: true,
+  withoutPages: new Set<string>(),
+  lacksAdminPages(server: { id: string }) {
+    return this.withoutPages.has(server.id);
+  },
+}));
+vi.mock('./local-server-store', () => ({ localServerStore: localServer }));
 vi.mock('./remote-server-store', () => ({ remoteServerStore: { isRunning: () => true } }));
 
 const { SwitchRoomsStore } = await import('./switch-rooms-store');
@@ -286,6 +293,26 @@ describe('listed rooms', () => {
     await store.loadRoomNames();
 
     expect(store.workspacesNotSignedIn.map((w) => w.name)).toEqual(['Beta']);
+    expect(store.workspacesThatFailedToLoad).toEqual([]);
+    serversStore.isConnected = () => true;
+  });
+
+  it('asks for a sign-in, not a retry, once a session the server ended reads as signed out', async () => {
+    // A password change elsewhere revokes the session: the next room load is
+    // refused, then the server's status is re-checked and reads signed out.
+    // "Rooms may be out of date" with a Retry would be the wrong thing to say.
+    workspaces.activeId = 'ws-a';
+    listRooms.mockImplementation(async () => {
+      throw new Error('Switch session expired — please sign in again.');
+    });
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    expect(store.workspacesThatFailedToLoad.map((w) => w.name)).toEqual(['Alpha']);
+
+    serversStore.isConnected = (serverId: string) => serverId !== 'srv-a';
+    await store.loadRoomNames();
+
+    expect(store.workspacesNotSignedIn.map((w) => w.name)).toEqual(['Alpha']);
     expect(store.workspacesThatFailedToLoad).toEqual([]);
     serversStore.isConnected = () => true;
   });
@@ -696,5 +723,19 @@ describe('dashboard links', () => {
       'https://beta-gateway.example.com/agents/agent-1'
     );
     expect(store.gatewayAgentUrl('srv-unknown', 'agent-1')).toBeNull();
+  });
+
+  it('has no links into a server that serves no admin pages', async () => {
+    localServer.withoutPages.add('srv-a');
+    try {
+      const store = new SwitchRoomsStore();
+      await store.loadRoomNames();
+
+      expect(store.gatewayRoomUrl('room-a')).toBeNull();
+      expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBeNull();
+      expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+    } finally {
+      localServer.withoutPages.clear();
+    }
   });
 });

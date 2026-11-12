@@ -1,6 +1,8 @@
 import {
   isProviderRecheckRequest,
   PROVIDER_RECHECKED_KIND,
+  SESSION_STARTED_KIND,
+  type SessionStartedNotice,
   STOP_MESSAGE,
 } from '@switch-console/agent-providers';
 import { describe, expect, it } from 'vitest';
@@ -19,16 +21,18 @@ function harness(launch: () => Promise<ControllerLaunch> = async () => LAUNCH) {
   const phases: EmbeddedControllerPhase[] = [];
   const finals: string[] = [];
   const lines: [ControllerLogLevel, string][] = [];
+  const starts: SessionStartedNotice[] = [];
   const supervisor = new ControllerSupervisor({
     spawn,
     launch,
     onPhase: (phase) => phases.push(phase),
     onFinal: (exit) => finals.push(exit),
     onLine: (level, line) => lines.push([level, line]),
+    onSessionStarted: (notice) => starts.push(notice),
     now: () => NOW,
     backoff: { initialMs: 10, maxMs: 40, stableMs: 10_000 },
   });
-  return { supervisor, calls, phases, finals, lines };
+  return { supervisor, calls, phases, finals, lines, starts };
 }
 
 const LAUNCH: ControllerLaunch = {
@@ -70,6 +74,24 @@ describe('ControllerSupervisor', () => {
     await expect(failed).rejects.toThrow('offline');
 
     await expect(supervisor.recheckProviders(20)).rejects.toThrow(/did not answer/);
+    await supervisor.stop(1_000);
+  });
+
+  it('passes on the session starts the controller tells it of, and nothing else it sends', async () => {
+    const { supervisor, calls, starts } = harness();
+    supervisor.start();
+    await waitFor(() => calls.length === 1, 'the spawn');
+    const child = calls[0]!.child;
+    const notice: SessionStartedNotice = {
+      kind: SESSION_STARTED_KIND,
+      sessionId: 'session-1',
+      provider: 'claude',
+      startSource: 'room',
+    };
+    child.emit('message', notice);
+    child.emit('message', { ...notice, startSource: 'somewhere' });
+    child.emit('message', { kind: PROVIDER_RECHECKED_KIND, id: 'x', error: null });
+    expect(starts).toEqual([notice]);
     await supervisor.stop(1_000);
   });
 

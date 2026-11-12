@@ -195,6 +195,7 @@ GLOBAL_TABLES = frozenset(
         "telemetry_snapshot_watermark",
         "switch_core_processes",
         "ownership_leases",
+        "directory_event_cursors",
         "trust_settings",
         "service_oauth_clients",
         "schema_expand_only_revisions",
@@ -202,6 +203,14 @@ GLOBAL_TABLES = frozenset(
         "server_audit_events",
     }
 )
+
+
+# Scoped tables whose `tenant_id` deliberately carries no foreign key, so their
+# rows outlive the tenant: a workspace's audit history stays after the
+# workspace is deleted, as it stays after an account is. The policy compares
+# `tenant_id` the same as everywhere else; only the constraint is missing, and
+# `tests/switch_core/db/test_tenant_schema_catalogue.py` pins this list too.
+HISTORY_TABLES = frozenset({"audit_events"})
 
 
 class UnscopedTableError(RuntimeError):
@@ -317,13 +326,16 @@ def _tenant_column(table: Table) -> str | None:
 
     `tenants` is the one table compared on `id`, because a tenant *is* the
     boundary rather than belonging to one. Every other table qualifies by
-    carrying a `tenant_id` column whose foreign key targets `tenants.id`.
+    carrying a `tenant_id` column whose foreign key targets `tenants.id`, or,
+    for one of `HISTORY_TABLES`, a `tenant_id` column alone.
     """
     if table.name == "tenants":
         return "id"
     tenant_id_col = table.columns.get("tenant_id")
     if tenant_id_col is None:
         return None
+    if table.name in HISTORY_TABLES:
+        return "tenant_id"
     if any(
         fk.column.table.name == "tenants" and fk.column.name == "id"
         for fk in tenant_id_col.foreign_keys

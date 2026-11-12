@@ -23,14 +23,13 @@ const svgBySlug = new Map(
 // The single-colour marks draw in `currentColor`. Each takes its official brand
 // colour, except on the theme where that colour would vanish into the tile: there
 // it uses the one-colour black or white version the brand's guidelines provide.
-// Canva, Microsoft 365 and Salesforce ship their own full-colour marks, which
+// Canva, Google, Microsoft 365 and Salesforce ship their own full-colour marks, which
 // read on both themes, and need no entry.
 const MARK_COLOR: Record<string, string> = {
   github: 'text-foreground',
   notion: 'text-foreground',
   vercel: 'text-foreground',
   linear: 'text-[#5E6AD2]',
-  'google-workspace': 'text-[#4285F4]',
   asana: 'text-[#F06A6A]',
   gitlab: 'text-[#FC6D26]',
   atlassian: 'text-[#0052CC] emdark:text-foreground',

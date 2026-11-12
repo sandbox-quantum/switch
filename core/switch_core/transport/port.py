@@ -144,12 +144,14 @@ class MessageTransport(Protocol):
         caption: str | None = None,
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
+        extra_content: dict[str, object] | None = None,
     ) -> SendResult:
         """Post an event pointing at an already-uploaded `uri`.
 
         `group` marks this as one part of a multi-attachment message —
         `{"id": ..., "index": i, "total": n}` — for transports that cannot
-        carry several files on one event. `metered` is as for `send_message`.
+        carry several files on one event. `metered` and `extra_content` are as
+        for `send_message`.
         """
         ...
 

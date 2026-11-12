@@ -94,6 +94,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
+from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -104,7 +105,7 @@ from switch_core.connections.app_credentials import ConnectorApps
 from switch_core.connections.app_signals import ConnectorAppSignals
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
@@ -114,6 +115,7 @@ from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
+    app_connect_args,
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
@@ -175,10 +177,20 @@ from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
-from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.db.tenant_lookup import (
+    all_tenant_ids,
+    tenants_with_pending_decisions,
+)
+from switch_core.decision.pending_gauge import PendingDecisionGauge
+from switch_core.decision.setup import build_decision_client
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
-from switch_core.delivery.router import GROUP_SWEEP_SECONDS, MessageRouter
+from switch_core.delivery.router import (
+    DECISION_SWEEP_SECONDS,
+    GROUP_SWEEP_SECONDS,
+    MessageRouter,
+    sweep_pending_decisions,
+)
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
@@ -187,12 +199,14 @@ from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
+from switch_core.members_service import MembersService
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
     Observability,
     RuntimeProbes,
     start_observability,
 )
+from switch_core.observability.metrics import metrics
 from switch_core.observability.pool import (
     WaitTimedQueuePool,
     install_hold_timer,
@@ -200,13 +214,20 @@ from switch_core.observability.pool import (
     pool_stats,
 )
 from switch_core.observability.query import instrument_queries
+from switch_core.organization_access import AccessRevocation
+from switch_core.organization_directory import LocalDirectory, OrganizationDirectory
+from switch_core.organization_mirror import MirrorDependencies
 from switch_core.outbound import guarded_async_client
 from switch_core.ownership import Ownership
 from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.retention.audit_history import check_purge_privilege
+from switch_core.retention.erasure import ErasureService, erasure_loop
+from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
+from switch_core.room_schedules import own_room_schedules
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
@@ -229,6 +250,9 @@ from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
+from switch_core.workos_directory import WorkOSDirectory
+from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
+from switch_core.workos_sign_in import WorkOSOrganizationSignIn
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +363,36 @@ async def _attachment_group_sweep_loop(
                     logger.exception(
                         "Attachment group sweep failed for tenant %s", tenant_id
                     )
+
+
+async def _decision_sweep_loop(
+    session_factory: async_sessionmaker[AsyncSession],
+    router: MessageRouter,
+    concurrency: int,
+    pending_gauge: PendingDecisionGauge,
+) -> None:
+    """Decide the messages waiting for the decision service: the process that
+    wrote one starts at once, and this is what decides one whose process
+    stopped first, or that a restart left behind. Every process runs it; each
+    message is claimed by one. Only tenants with a message waiting are
+    visited, `concurrency` at a time. Each pass first samples the waiting
+    queue for the operator's metrics (`decision/pending_gauge.py`)."""
+    with no_tenant():
+        while True:
+            await asyncio.sleep(DECISION_SWEEP_SECONDS)
+            try:
+                tenants = await tenants_with_pending_decisions(session_factory)
+            except Exception:
+                logger.exception("Decision sweep failed")
+                continue
+            try:
+                await pending_gauge.sample(session_factory, tenants)
+            except Exception:
+                logger.exception(
+                    "Could not sample the decision queue; its gauges go quiet "
+                    "until a sample succeeds"
+                )
+            await sweep_pending_decisions(tenants, router.decide_pending, concurrency)
 
 
 async def _recheck_agent_rooms(
@@ -519,6 +573,27 @@ async def _drain_telemetry(
             logger.warning("Telemetry HTTP client did not close.", exc_info=True)
 
 
+def _organization_directory(
+    config: SwitchConfig, http: httpx.AsyncClient
+) -> OrganizationDirectory:
+    """The directory `ORGANIZATION_DIRECTORY` names (`organization_directory.py`)."""
+    if config.organization_directory == "local":
+        return LocalDirectory()
+    # `_validate_organization_directory` has refused a missing key or
+    # sign-in already.
+    assert config.workos_api_key is not None
+    assert config.gateway_oidc_issuer_url is not None
+    return WorkOSDirectory(
+        http,
+        config.workos_api_key,
+        config.workos_api_url,
+        config.gateway_oidc_issuer_url,
+        MembersService(http, config.members_service_url)
+        if config.members_service_url
+        else None,
+    )
+
+
 async def _close_by(
     closing: Coroutine[object, object, None], deadline: float, what: str
 ) -> None:
@@ -535,27 +610,29 @@ async def _close_by(
         )
 
 
+async def _stop_tasks(*tasks: asyncio.Task[None]) -> None:
+    """Cancel `tasks` and wait until each has stopped, so nothing they were in
+    the middle of still runs against what is closed next. A task that had
+    already failed is logged, not raised: shutdown goes on."""
+    for task in tasks:
+        task.cancel()
+    for task, outcome in zip(
+        tasks, await asyncio.gather(*tasks, return_exceptions=True), strict=True
+    ):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "Background task %s had failed before shutdown",
+                task.get_name(),
+                exc_info=outcome,
+            )
+
+
 async def _snapshot_loop(reporter: SnapshotReporter) -> None:
     # `no_tenant` for the reason every other long-lived task does it: the
     # snapshot binds each tenant in turn as it counts, and must not inherit
     # whichever one happened to be bound when the task was created.
     with no_tenant():
         await reporter.run_forever()
-
-
-class _QuietPollFilter(logging.Filter):
-    _SUPPRESSED = [
-        "/events?timeout=",
-        "/room-history?",
-        "/agents/",
-    ]
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(p in msg for p in self._SUPPRESSED)
-
-
-logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
 
 
 async def _prepare_database(config: SwitchConfig) -> None:
@@ -639,6 +716,28 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
+async def _audit_history_sessions(
+    config: SwitchConfig,
+    engine: AsyncEngine,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession]]:
+    """The sessions the retention pass purges deleted workspaces' audit history
+    on: the schema owner's, where configured, since the runtime role may not
+    delete audit rows; the runtime ones otherwise. Says at startup, as an
+    error, when the chosen role cannot (`retention/audit_history.py`).
+
+    Returns the owner's engine, for the caller to dispose of, or None."""
+    owner_url = config.owner_database_url
+    if owner_url is None:
+        await check_purge_privilege(engine, owner=False)
+        return None, session_factory
+    owner_engine = create_async_engine(
+        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
+    )
+    await check_purge_privilege(owner_engine, owner=True)
+    return owner_engine, create_session_factory(owner_engine)
+
+
 async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
@@ -661,6 +760,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
     install_hold_timer(engine)
+    history_engine, history_sessions = await _audit_history_sessions(
+        config, engine, session_factory
+    )
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -801,6 +903,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     trust_client, trust_http = build_trust_client(session_factory, config)
     trust_signals = TrustSettingsSignals(client=trust_client, bus=signal_bus)
 
+    # ── Decision routing (off unless the decision_routing flag is on) ────────
+    # Built either way, so workspace admins can set up and test a backend; only
+    # the router's copy is withheld with the flag off.
+    decision_client = build_decision_client(config, session_factory, telemetry)
+
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
@@ -887,6 +994,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             agent_store=agent_store,
             room_role_store=room_role_store,
         ),
+        decisions=decision_client if config.decision_routing_enabled else None,
+        decision_max_age_seconds=config.decision_pending_max_age_seconds,
     )
 
     MembershipSignals(invites=invites, bus=signal_bus, router=router)
@@ -953,6 +1062,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
+    # Room schedules post from whichever process owns them (`room_schedules.py`).
+    own_room_schedules(ownership, session_factory, client_lifecycle)
     # Every process runs each tenant's admin actor, so the process that wrote
     # a message posts the heads-up it owes (`clients/mention_warnings.py`).
     router.use_admin(
@@ -965,6 +1076,28 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             None,
         )
     )
+
+    async def post_decision_notice(
+        tenant_id: str, transport_room_id: str, body: str
+    ) -> None:
+        admin = next(
+            (
+                client
+                for client in client_lifecycle.get_by_type("admin", tenant_id)
+                if isinstance(client, SystemActor)
+            ),
+            None,
+        )
+        if admin is None:
+            raise RuntimeError(f"No admin client is running for tenant {tenant_id}")
+        await admin.send_admin(
+            transport_room_id,
+            body,
+            message_type=AdminMessageType.AUTO_ROUTE_UNAVAILABLE,
+            thread_root_id=None,
+        )
+
+    router.use_notices(post_decision_notice)
 
     # ── Collaboration bridge lifecycle ───────────────────────────────────────
     collab_lifecycle = CollaborationBridgeLifecycleService(
@@ -1027,6 +1160,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         external_user_store=external_user_store,
         document_store=document_store,
         reference_store=reference_store,
+        package_store=package_store,
         agent_session_store=agent_session_store,
         room_service=room_service,
         user_store=user_store,
@@ -1035,6 +1169,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         connections=connections,
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
+        decision_availability=decision_client.availability,
     )
 
     # ── Agent management (off unless the agent_management flag is on) ─────────
@@ -1101,6 +1236,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
+    connections.set_ended_elsewhere_listener(protocol.api_key_cache.invalidate_agent)
 
     # ── Messaging app installs ──────────────────────────────────────────────
     # Registration is the feature flag. An installer exists for a platform when
@@ -1205,6 +1341,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         group_chats_enabled=config.group_chats_enabled,
         buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
+        trust_client=trust_client,
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
@@ -1212,6 +1349,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
+    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
     room_service.on_room_changed(chat_service.room_changed)
 
@@ -1225,18 +1363,16 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
     )
-    connector_apps = ConnectorApps(
-        catalog=CATALOG,
-        config=config,
-        environ=os.environ,
+    connector_apps = _connector_apps(
+        config,
         session_factory=session_factory,
-        store=ServiceAppCredentialStore(config.keyring),
         http=service_http,
         registration=service_registration,
     )
     await connector_apps.load()
 
     # ── Gateway app ───────────────────────────────────────────────────────────
+    organization_directory = _organization_directory(config, service_http)
     gateway_app = create_gateway_app(
         agent_store=agent_store,
         room_store=room_store,
@@ -1253,6 +1389,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
         organization_store=organization_store,
+        organization_directory=organization_directory,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,
@@ -1356,6 +1493,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
+        bridges_crashed=collab_lifecycle.crashed,
+        bridges_started=collab_lifecycle.started_names,
         consumers_running=client_lifecycle.running_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
@@ -1365,9 +1504,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Lifespan ──────────────────────────────────────────────────────────────
     original_lifespan = agent_bridge_app.router.lifespan_context
 
-    # A service is issued only where this server is set up for it, as its
-    # catalog entry's adapter says (`connections/registry.py`). Without any,
-    # the broker's upkeep still revokes and prunes whatever records exist.
     # With `organization_connector_apps` on, a workspace whose organization
     # saved its own app goes through that one (`connections/organization_apps.py`).
     organization_apps = (
@@ -1378,28 +1514,31 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         if config.organization_connector_apps_enabled
         else None
     )
-    service_broker = ServiceBroker(
+    service_broker = _service_broker(
+        config,
+        connector_apps,
+        organization_apps,
         session_factory=session_factory,
-        keyring=config.keyring,
-        catalog=CATALOG,
-        adapters=build_adapters(
-            CATALOG,
-            github_app=connector_apps.github_app(),
-            oauth_clients=connector_apps.oauth_clients(),
-            http=service_http,
-            registration=service_registration,
-        ),
-        organization_apps=organization_apps,
-        disabled=config.disabled_services,
-        store=ServiceConnectionStore(),
-        token_retention=timedelta(days=config.service_token_retention_days),
-        workspace_services=WorkspaceServiceStore(),
-        workspace_gate=config.service_connections_enabled,
-        public_url=config.gateway_public_url,
+        http=service_http,
+        registration=service_registration,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
     gateway_app.state.organization_apps = organization_apps
+    if config.members_service_url:
+        # Checked set together, under the WorkOS directory
+        # (`_validate_organization_directory`).
+        assert config.workos_api_key is not None
+        assert config.workos_client_id is not None
+        assert config.workos_redirect_url is not None
+        gateway_app.state.workos_sign_in = WorkOSOrganizationSignIn(
+            service_http,
+            config.workos_api_key,
+            config.workos_api_url,
+            config.workos_client_id,
+            config.workos_redirect_url,
+        )
+    gateway_app.state.decision_client = decision_client
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,
@@ -1411,6 +1550,29 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
     protocol.install_service = install_service
+    if isinstance(organization_directory, WorkOSDirectory):
+        # Checked present with the directory (`_validate_organization_directory`).
+        assert config.gateway_oidc_issuer_url is not None
+        own_workos_mirror(
+            ownership,
+            WorkOSMirror(
+                session_factory,
+                organization_directory,
+                MirrorDependencies(
+                    revocation=AccessRevocation(
+                        agent_store=agent_store,
+                        api_key_store=api_key_store,
+                        broker=service_broker,
+                        protocol=protocol,
+                        sign_in_flows=gateway_app.state.sign_in_flows,
+                    ),
+                    organization_store=organization_store,
+                    user_store=user_store,
+                ),
+                OwnershipLeaseStore(),
+                config.gateway_oidc_issuer_url,
+            ),
+        )
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
@@ -1430,6 +1592,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 session_factory=session_factory,
                 probes=probes,
                 process_id=process_id,
+                optional_checks=[
+                    check
+                    for check in (decision_client.health_check(),)
+                    if check is not None
+                ],
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
@@ -1439,6 +1606,20 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
+            decision_task = None
+            if config.decision_routing_enabled:
+                pending_gauge = PendingDecisionGauge(
+                    sweep_seconds=DECISION_SWEEP_SECONDS
+                )
+                metrics().register_observer(pending_gauge.readings)
+                decision_task = asyncio.create_task(
+                    _decision_sweep_loop(
+                        session_factory,
+                        router,
+                        config.decision_sweep_concurrency,
+                        pending_gauge,
+                    )
+                )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
@@ -1469,6 +1650,15 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if management is not None
                 else None
             )
+            data_retention_task = asyncio.create_task(
+                retention_loop(session_factory, history_sessions)
+            )
+            erasure_task = asyncio.create_task(
+                erasure_loop(
+                    session_factory,
+                    ErasureService(session_factory, client_lifecycle, collab_lifecycle),
+                )
+            )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -1487,9 +1677,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 sweep_task.cancel()
                 retention_task.cancel()
                 attachment_group_task.cancel()
+                if decision_task is not None:
+                    decision_task.cancel()
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
+                await _stop_tasks(data_retention_task, erasure_task)
+                if history_engine is not None:
+                    await history_engine.dispose()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()
@@ -1520,6 +1715,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
                 await trust_http.aclose()
+                await decision_client.aclose()
                 await observability.aclose()
                 # So a probe during teardown gets a 503 rather than the last
                 # cached answer, which may still say ready.
@@ -1615,6 +1811,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         "Switch is running on http://%s:%d", config.server_host, config.server_port
     )
 
+    # Before the server takes a connection or a session report, either of
+    # which can report a milestone this settles.
+    await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
     # The funnel's first step, and only for a deployment with an install date.
     await telemetry.emit_milestone("deployment_installed")
@@ -1722,6 +1921,11 @@ async def _seed_admin_user(
     user_store: UserStore,
     config: SwitchConfig,
 ) -> None:
+    if config.gateway_admin_password and not config.gateway_password_login_enabled:
+        logger.warning(
+            "GATEWAY_ADMIN_PASSWORD is set but password login is disabled, so "
+            "it signs nobody in; it can be removed."
+        )
     # Tenant zero by name, not by fallback. The admin `User` row is global
     # (db/models.py) and the lookup below spans every tenant either way, but
     # `UserStore.create` also writes a `tenant_members` row, and which tenant
@@ -1747,22 +1951,34 @@ async def _seed_admin_user(
                 logger.warning(
                     "Admin user %s had no tenant membership and could not have "
                     "signed in; joined it to tenant %s.",
-                    config.gateway_admin_email,
+                    existing.id,
                     TENANT_ZERO_ID,
                 )
             else:
-                logger.info("Admin user already exists: %s", config.gateway_admin_email)
+                logger.info("Admin user already exists: %s", existing.id)
+            if existing.password_hash is None and config.gateway_admin_password:
+                existing.password_hash = hash_password(config.gateway_admin_password)
+                await session.commit()
+                logger.warning(
+                    "Admin user %s was seeded without a password; set it from "
+                    "GATEWAY_ADMIN_PASSWORD.",
+                    existing.id,
+                )
             return
 
         admin = User(
             name="Admin",
             email=config.gateway_admin_email,
             role="admin",
-            password_hash=hash_password(config.gateway_admin_password),
+            password_hash=(
+                hash_password(config.gateway_admin_password)
+                if config.gateway_admin_password
+                else None
+            ),
         )
         await user_store.create(session, admin)
         await session.commit()
-        logger.info("Seeded admin user: %s", config.gateway_admin_email)
+        logger.info("Seeded admin user: %s", admin.id)
 
 
 async def _seed_agent_registration_bootstrap_key(
@@ -1811,8 +2027,8 @@ async def _seed_agent_registration_bootstrap_key(
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
             raise RuntimeError(
-                "Cannot seed agent-registration bootstrap key: admin user "
-                f"{config.gateway_admin_email} not found"
+                "Cannot seed agent-registration bootstrap key: no user has "
+                "the GATEWAY_ADMIN_EMAIL address"
             )
         admin_id = admin.id
         bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
@@ -1839,13 +2055,13 @@ async def _seed_agent_registration_bootstrap_key(
             )
     if admin_owned_agents:
         logger.warning(
-            "%d agent(s) are owned by the admin user (%s) and carry "
+            "%d agent(s) are owned by the admin user (id %s) and carry "
             "admin-equivalent authority over every room and resource in "
             "this deployment, not just their own: %s. If any were "
             "registered through AGENT_REGISTRATION_TOKEN, reassign or "
             "re-register them under a non-admin owner.",
             len(admin_owned_agents),
-            config.gateway_admin_email,
+            admin_id,
             ", ".join(admin_owned_agents),
         )
 
@@ -2147,6 +2363,64 @@ async def _bootstrap_key_tenant(
     if legacy_holders:
         return legacy_holders[0]
     return TENANT_ZERO_ID
+
+
+def _connector_apps(
+    config: SwitchConfig,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    http: httpx.AsyncClient,
+    registration: ClientRegistration,
+) -> ConnectorApps:
+    """Each connector's app, over the catalog as this server offers it: an
+    entry may reach less here (`SERVICE_ACCESS_PROFILES`). Not yet loaded."""
+    return ConnectorApps(
+        catalog=with_access_profiles(CATALOG, config.service_access_profiles),
+        config=config,
+        environ=os.environ,
+        session_factory=session_factory,
+        store=ServiceAppCredentialStore(config.keyring),
+        http=http,
+        registration=registration,
+    )
+
+
+def _service_broker(
+    config: SwitchConfig,
+    connector_apps: ConnectorApps,
+    organization_apps: OrganizationApps | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    http: httpx.AsyncClient,
+    registration: ClientRegistration,
+) -> ServiceBroker:
+    """The broker over the catalog `connector_apps` holds, so the server's
+    adapters and every organization's ask for the same scopes.
+
+    A service is issued only where this server is set up for it, as its
+    catalog entry's adapter says (`connections/registry.py`). Without any,
+    the broker's upkeep still revokes and prunes whatever records exist.
+    """
+    catalog = connector_apps.catalog
+    return ServiceBroker(
+        session_factory=session_factory,
+        keyring=config.keyring,
+        catalog=catalog,
+        adapters=build_adapters(
+            catalog,
+            github_app=connector_apps.github_app(),
+            oauth_clients=connector_apps.oauth_clients(),
+            http=http,
+            registration=registration,
+        ),
+        organization_apps=organization_apps,
+        disabled=config.disabled_services,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=config.service_token_retention_days),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=config.service_connections_enabled,
+        public_url=config.gateway_public_url,
+    )
 
 
 def _distributed_teams_app(

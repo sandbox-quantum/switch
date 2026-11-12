@@ -30,6 +30,9 @@ interface AccessSelectProps {
   /** Helper text per level, where the shared wording does not fit the
    * resource (a template is used, not attached). */
   helpers?: Partial<Record<AccessLevel, string>>;
+  /** Option labels per level, where the shared ones do not fit (a private
+   * room is seen by those taking part in it, not "only me"). */
+  optionLabels?: Partial<Record<AccessLevel, string>>;
   sx?: SxProps<Theme>;
 }
 
@@ -41,6 +44,7 @@ export function AccessSelect({
   disabled,
   label = "Access",
   helpers,
+  optionLabels,
   sx,
 }: AccessSelectProps) {
   return (
@@ -55,7 +59,7 @@ export function AccessSelect({
     >
       {ACCESS_LEVELS.map((lvl) => (
         <MenuItem key={lvl} value={lvl}>
-          {ACCESS_META[lvl].optionLabel}
+          {optionLabels?.[lvl] ?? ACCESS_META[lvl].optionLabel}
         </MenuItem>
       ))}
     </TextField>

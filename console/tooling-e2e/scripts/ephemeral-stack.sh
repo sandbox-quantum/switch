@@ -7,6 +7,7 @@
 #   just e2e-provider             the provider lane, on a headless agent controller
 #   just e2e-browser              the browser lane: the gateway UI in headless Chromium
 #   just e2e-agentic              the agentic lane: scenario files, a driver and a judge model
+#   just e2e-explore              the explore lane: Bombadil drives the gateway UI at random
 #   just e2e-fast --keep          leave the stack running afterwards
 #   just e2e-fast -- <vitest args> pass arguments through to vitest
 #
@@ -20,9 +21,10 @@
 # own .env is never read or written, so this cannot rotate a developer's live
 # secrets or pick up a stale value from them.
 #
-# The browser lane also builds the gateway UI from gateway/ and serves it with
-# `vite preview` on :4173, whose proxy sends its /gateway requests to :8000 as
-# nginx does in a deployment, and installs Playwright's Chromium.
+# The browser and explore lanes also build the gateway UI from gateway/ and
+# serve it with `vite preview` on :4173, whose proxy sends its /gateway requests
+# to :8000 as nginx does in a deployment, and install Playwright's Chromium.
+# SWITCH_E2E_EXPLORE_TIME_LIMIT sets how long the explore lane explores (5m).
 #
 # Ports 4173, 5432, 8000, 8065 and 8081 must be free: stop a local stack first.
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
@@ -236,7 +238,7 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
 fi
 
 BROWSER_ENV=()
-if [ "$LANE" = browser ]; then
+if [ "$LANE" = browser ] || [ "$LANE" = explore ]; then
   echo "Building the gateway UI…"
   (cd "$REPO/gateway" && npm ci --no-audit --no-fund && npm run build) >"$OUT/gateway-build.log" 2>&1 \
     || { echo "gateway UI build failed; see $OUT/gateway-build.log" >&2; exit 1; }
@@ -283,5 +285,6 @@ if [ "$status" != 0 ]; then
   echo "The $LANE lane failed. switch-core log: $OUT/switch-core.log" >&2
   [ "$NEEDS_CONTROLLER" = 1 ] && echo "Agent controller log: $OUT/controller.log" >&2
   [ "$LANE" = browser ] && echo "Screenshots of failed pages: $OUT/screenshots" >&2
+  [ "$LANE" = explore ] && echo "The explorer's trace: pnpm --dir $HARNESS exec bombadil browser inspect $OUT/explore" >&2
 fi
 exit "$status"

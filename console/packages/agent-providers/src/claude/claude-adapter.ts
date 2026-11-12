@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync } from 'node:fs';
-import { access, readdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { getSessionMessages, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type {
   CanUseTool,
   EffortLevel,
@@ -24,6 +23,7 @@ import {
   resolveWindowsCommandPath,
 } from '@switch-console/shared/windows-spawn';
 import type {
+  ConversationHistoryTurn,
   ModelSelection,
   ProviderAdapter,
   ProviderCapabilities,
@@ -45,11 +45,13 @@ import type {
   ProviderRuntimeEvent,
   TokenUsage,
   TurnOutcome,
+  UsageLimit,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
 import { spawnProvider, stopProvider } from '../provider-process';
 import { CumulativeUsage, mergeUsage } from '../usage';
+import { historyFromClaudeMessages } from './claude-history';
 import {
   approvalContent,
   isRecord,
@@ -57,14 +59,19 @@ import {
   outcomeForResult,
   parseAskUserQuestionInput,
   PERMISSION_MODE_BY_RUNTIME_MODE,
+  rateLimitErrorText,
+  rejectedLimit,
   requestTypeForTool,
+  resultHitUsageLimit,
   resultMessageText,
   textFromToolResultContent,
   toMcpServerConfig,
   toolNameForItem,
   toolTitle,
   truncate,
+  usageLimitNotice,
 } from './claude-mapping';
+import { claudeConfigDir, configDirSessionStore, savedConversationPath } from './cli-conversations';
 
 const PROVIDER = 'claude';
 const ASK_USER_QUESTION = 'AskUserQuestion';
@@ -141,6 +148,8 @@ export interface ClaudeAdapterOptions {
     nativeSessionId: string,
     env: Record<string, string>
   ) => Promise<boolean>;
+  /** Test seam: the SDK's reader of a saved conversation. */
+  sessionMessages?: typeof getSessionMessages;
 }
 
 /**
@@ -153,24 +162,7 @@ async function claudeConversationSaved(
   nativeSessionId: string,
   env: Record<string, string>
 ): Promise<boolean> {
-  const configDir = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), '.claude');
-  let projects: string[];
-  try {
-    projects = await readdir(join(configDir, 'projects'));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-  for (const project of projects) {
-    try {
-      await access(join(configDir, 'projects', project, `${nativeSessionId}.jsonl`));
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
-    }
-  }
-  return false;
+  return (await savedConversationPath(claudeConfigDir(env), nativeSessionId)) !== null;
 }
 
 type EventBody<T extends ProviderRuntimeEvent = ProviderRuntimeEvent> =
@@ -192,6 +184,12 @@ interface ActiveTurn {
   turnId: string;
   /** Message uuids this turn is still waiting on a `result` for. */
   outstanding: Set<string>;
+  /** The CLI's notice, in its usage-limit wording, when it stopped this turn at the limit. */
+  usageLimitNotice: string | null;
+  /** The text of a message the CLI flagged `rate_limit` in this turn. */
+  rateLimitText: string | null;
+  /** The limit the CLI last reported as rejected in this turn. */
+  rejectedLimit: UsageLimit | null;
 }
 
 interface TextBlockState {
@@ -237,6 +235,7 @@ interface SessionState {
    * the session is still at work after the turn ends.
    */
   subagentTasks: Map<string, { backgrounded: boolean }>;
+  childActivity: Map<string, { turnId: string; item: ProviderItem; resultSeen: boolean }>;
 }
 
 /** Task types that are agents doing work, rather than shells or tool calls. */
@@ -379,26 +378,34 @@ function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): stri
 /**
  * The settings a session adds to the person's own Claude Code settings.
  *
- * The tools of the servers the host registers are allowed outright. `canUseTool`
- * allows them too, but Claude Code's auto mode, when it is the person's
- * default, asks its classifier before `canUseTool` is ever reached, and the
- * classifier refuses a Switch tool that hands out access as a permission grant,
- * whatever Switch itself allows. An allow rule is settled before the classifier.
+ * The tools of the servers the host registers, other than connectors, are
+ * allowed outright. `canUseTool` allows them too, but Claude Code's auto mode,
+ * when it is the person's default, asks its classifier before `canUseTool` is
+ * ever reached, and the classifier refuses a Switch tool that hands out access
+ * as a permission grant, whatever Switch itself allows. An allow rule is
+ * settled before the classifier.
+ *
+ * Connectors get no rule here: an allow rule would settle their calls before
+ * the classifier and `canUseTool`, so they would skip the approval the runtime
+ * mode asks for. Their tools follow the runtime mode instead (see
+ * `PERMISSION_MODE_BY_RUNTIME_MODE`): full access runs them, auto lets the
+ * classifier decide, and the other modes ask the person.
  *
  * The connector plugin Switch used to ship would add a second Switch server with
  * its own connection; it is kept off for installs that still have it.
  */
 function sessionSettings(
-  mcpServers: Record<string, McpServerConfig>
+  mcpServers: Record<string, McpServerConfig>,
+  connectorMcpServers: readonly string[]
 ): { settings: Record<string, unknown> } | Record<string, never> {
-  const names = Object.keys(mcpServers);
-  if (names.length === 0) return {};
+  const connectorSet = new Set(connectorMcpServers);
+  const names = Object.keys(mcpServers).filter((name) => !connectorSet.has(name));
+  const hasSwitch = Boolean(mcpServers.switch);
+  if (names.length === 0 && !hasSwitch) return {};
   return {
     settings: {
-      ...(mcpServers.switch
-        ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
-        : {}),
-      permissions: { allow: names.map((name) => `mcp__${name}`) },
+      ...(hasSwitch ? { enabledPlugins: { 'switch-connector@switch-plugins': false } } : {}),
+      ...(names.length > 0 ? { permissions: { allow: names.map((name) => `mcp__${name}`) } } : {}),
     },
   };
 }
@@ -428,12 +435,14 @@ export class ClaudeAdapter implements ProviderAdapter {
   private readonly savedConversationExists: NonNullable<
     ClaudeAdapterOptions['savedConversationExists']
   >;
+  private readonly sessionMessages: typeof getSessionMessages;
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.executablePath = options.claudeExecutablePath;
     this.logger = options.logger;
     this.queryFn = options.query ?? sdkQuery;
     this.savedConversationExists = options.savedConversationExists ?? claudeConversationSaved;
+    this.sessionMessages = options.sessionMessages ?? getSessionMessages;
   }
 
   subscribe(listener: (event: ProviderRuntimeEvent) => void): () => void {
@@ -489,7 +498,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       permissionMode,
       strictMcpConfig: false,
-      ...sessionSettings(mcpServers),
+      ...sessionSettings(mcpServers, input.connectorMcpServers),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
@@ -556,6 +565,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       usage: new CumulativeUsage(),
       unreportedUsage: [],
       subagentTasks: new Map(),
+      childActivity: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -603,13 +613,41 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (session.turn) {
       session.turn.outstanding.add(uuid);
     } else {
-      session.turn = { turnId: input.turnId, outstanding: new Set([uuid]) };
+      session.turn = {
+        turnId: input.turnId,
+        outstanding: new Set([uuid]),
+        usageLimitNotice: null,
+        rateLimitText: null,
+        rejectedLimit: null,
+      };
       this.emit(session, { type: 'session.state.changed', status: 'running' });
       this.emit(session, { type: 'turn.started', turnId: input.turnId });
     }
 
     session.input.push(message);
     return { turnId: input.turnId, ...(steeredInto ? { steeredInto } : {}) };
+  }
+
+  /**
+   * Read from Claude Code's saved transcript, the way its own `/resume` reads
+   * it, in the config directory `env` gives Claude Code: through a store over
+   * that directory, so this process's own environment, which the host's other
+   * work shares, is left alone. A conversation with nothing in it is an error
+   * rather than an empty history: it is either not there or not one a person
+   * had.
+   */
+  async conversationHistory(
+    nativeSessionId: string,
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<ConversationHistoryTurn[]> {
+    const messages = await this.sessionMessages(nativeSessionId, {
+      dir: cwd,
+      sessionStore: configDirSessionStore(claudeConfigDir(env)),
+    });
+    if (messages.length === 0)
+      throw new Error(`Claude Code has no saved conversation ${nativeSessionId} to show.`);
+    return historyFromClaudeMessages(messages);
   }
 
   async interruptTurn(sessionId: string): Promise<void> {
@@ -842,9 +880,20 @@ export class ClaudeAdapter implements ProviderAdapter {
       case 'stream_event':
         this.handleStreamEvent(session, message.event, message.parent_tool_use_id);
         return;
-      case 'assistant':
+      case 'assistant': {
+        const turn = session.turn;
+        if (turn && message.parent_tool_use_id === null) {
+          turn.usageLimitNotice = usageLimitNotice(message) ?? turn.usageLimitNotice;
+          turn.rateLimitText = rateLimitErrorText(message) ?? turn.rateLimitText;
+        }
         this.handleAssistantMessage(session, message.message, message.parent_tool_use_id);
         return;
+      }
+      case 'rate_limit_event': {
+        const limit = rejectedLimit(message.rate_limit_info);
+        if (limit !== null && session.turn) session.turn.rejectedLimit = limit;
+        return;
+      }
       case 'user':
         this.handleToolResults(session, message.message.content);
         return;
@@ -863,6 +912,7 @@ export class ClaudeAdapter implements ProviderAdapter {
    */
   private trackSubagentTasks(session: SessionState, message: SDKMessage): void {
     const tasks = session.subagentTasks;
+    this.reportChildTask(session, message);
     if (message.type === 'result') {
       // A foreground task blocks the turn it runs in, so none outlives it.
       for (const [taskId, task] of tasks) if (!task.backgrounded) tasks.delete(taskId);
@@ -898,6 +948,49 @@ export class ClaudeAdapter implements ProviderAdapter {
       default:
         return;
     }
+  }
+
+  private reportChildTask(session: SessionState, message: SDKMessage): void {
+    if (message.type !== 'system') return;
+    if (message.subtype === 'task_started') {
+      if (!isSubagentTask(message) || !session.turn) return;
+      const prior = message.tool_use_id ? session.toolItems.get(message.tool_use_id) : undefined;
+      const child = {
+        turnId: session.turn.turnId,
+        item: {
+          ...prior,
+          id: message.tool_use_id ?? message.task_id,
+          type: 'subagent' as const,
+          status: 'in_progress' as const,
+          title: truncate(message.description),
+          toolName: message.subagent_type ?? prior?.toolName,
+        },
+        resultSeen: message.tool_use_id === undefined,
+      };
+      session.childActivity.set(message.task_id, child);
+      this.emit(session, { type: 'item.updated', turnId: child.turnId, item: child.item });
+      return;
+    }
+    if (message.subtype !== 'task_updated' && message.subtype !== 'task_notification') return;
+    const child = session.childActivity.get(message.task_id);
+    if (!child) return;
+    const status = message.subtype === 'task_updated' ? message.patch.status : message.status;
+    if (message.subtype === 'task_updated' && message.patch.description)
+      child.item = { ...child.item, title: truncate(message.patch.description) };
+    const ended =
+      status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped';
+    // A subagent stopped or killed ended on purpose: declined, not failed.
+    if (ended)
+      child.item = {
+        ...child.item,
+        status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'declined',
+      };
+    this.emit(session, {
+      type: ended ? 'item.completed' : 'item.updated',
+      turnId: child.turnId,
+      item: child.item,
+    });
+    if (ended && child.resultSeen) session.childActivity.delete(message.task_id);
   }
 
   private handleStreamEvent(
@@ -1007,7 +1100,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         });
         return;
       }
-      if (block.type !== 'tool_use') return;
+      // A subagent's own steps stay with the subagent: only its card shows.
+      if (block.type !== 'tool_use' || parentToolUseId !== null) return;
       const id = block.id;
       const name = block.name;
       if (typeof id !== 'string' || typeof name !== 'string') return;
@@ -1041,6 +1135,18 @@ export class ClaudeAdapter implements ProviderAdapter {
       const started = session.toolItems.get(toolUseId);
       if (!started) continue;
       session.toolItems.delete(toolUseId);
+      const child = [...session.childActivity.values()].find(
+        (child) => child.item.id === toolUseId
+      );
+      if (child) {
+        child.resultSeen = true;
+        if (child.item.status !== 'in_progress') {
+          for (const [taskId, entry] of session.childActivity)
+            if (entry === child) session.childActivity.delete(taskId);
+        }
+        // A background tool result acknowledges the launch, not child completion.
+        continue;
+      }
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
       const text = textFromToolResultContent(block.content);
       this.emit(session, {
@@ -1081,7 +1187,16 @@ export class ClaudeAdapter implements ProviderAdapter {
     const single = result.user_message_uuid;
     if (consumed.length === 0 && single !== undefined) consumed.push(single);
 
-    const outcome = outcomeForResult(result);
+    const resultOutcome = outcomeForResult(result);
+    const rejected = turn.rejectedLimit !== null;
+    const notice =
+      turn.usageLimitNotice ??
+      (rejected && turn.rateLimitText !== null
+        ? turn.rateLimitText || 'The provider usage limit was reached.'
+        : null);
+    const limited =
+      resultOutcome !== 'interrupted' && (notice !== null || resultHitUsageLimit(result, rejected));
+    const outcome: TurnOutcome = limited ? 'error' : resultOutcome;
     if (consumed.length === 0) {
       turn.outstanding.clear();
     } else {
@@ -1097,7 +1212,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.textBlocks.clear();
     session.streamedMessageIds.clear();
     session.streamMessageId = null;
-    const message = turnStatusMessage(result, outcome);
+    const usageLimit: UsageLimit | null = limited
+      ? { resetsAt: turn.rejectedLimit?.resetsAt ?? null }
+      : null;
+    const message = (limited ? notice : null) ?? turnStatusMessage(result, outcome);
     if (outcome === 'error') {
       this.emit(session, { type: 'runtime.error', message: message ?? 'Claude turn failed.' });
     }
@@ -1106,6 +1224,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       turnId: turn.turnId,
       outcome,
       ...(message ? { message } : {}),
+      ...(usageLimit ? { usageLimit } : {}),
       usage: this.takeUsage(session),
       raw: { source: 'claude', payload: result },
     });

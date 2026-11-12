@@ -27,6 +27,7 @@ async def _sync(chats: _Harness, room_id: str, user: User) -> str:
             CollaborationBridgeStore(),
             None,  # type: ignore[arg-type]
             None,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
             user,
             False,
         )
@@ -35,7 +36,9 @@ async def _sync(chats: _Harness, room_id: str, user: User) -> str:
 async def test_the_owner_takes_the_channel_name_and_others_may_not(
     chats: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def detail(_session: AsyncSession, room: Room, *_args: Any) -> str:
+    async def detail(
+        _session: AsyncSession, room: Room, *_args: Any, **_kwargs: Any
+    ) -> str:
         return room.name
 
     monkeypatch.setattr(rooms_module, "_build_room_detail", detail)

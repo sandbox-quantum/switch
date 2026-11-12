@@ -172,7 +172,7 @@ function messageFor(result: Exclude<UpdateBridgeResult, { kind: 'updated' }>): s
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Replacing a token requires an owner or admin of this workspace.';
+      return 'Replacing a token requires an admin of this workspace.';
     case 'invalid':
     case 'error':
       return result.message;

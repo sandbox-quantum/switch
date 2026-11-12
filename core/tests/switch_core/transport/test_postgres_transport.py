@@ -24,6 +24,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.admin_messages import SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
@@ -410,10 +411,51 @@ class TestTheParticipantMessageObserver:
                 room_id=room_id,
                 sender_client_id=client_id,
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
         ]
+
+    async def test_an_app_post_and_its_files_say_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The bridge's mark rides on the message and on a file sent alone, so
+        an integration's post is told from a person's whichever it is."""
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        recorder = _Recorder()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            actor_role="human",
+            message_observer=recorder,
+        )
+        marker = {SENDER_IS_APP_MARKER: True}
+
+        await transport.send_message(
+            transport_room_id,
+            "deploy finished",
+            sender_name="ci",
+            metered=True,
+            extra_content=marker,
+        )
+        await transport.send_media(
+            transport_room_id,
+            "switch-media://log",
+            "build.log",
+            "text/plain",
+            3,
+            sender_name="ci",
+            metered=True,
+            msgtype="m.file",
+            extra_content=marker,
+        )
+
+        assert [m.sender_is_app for m in recorder.seen] == [True, True]
+        assert [m.has_attachment for m in recorder.seen] == [False, True]
 
     async def test_a_reply_in_a_thread_says_so(
         self, session_factory: async_sessionmaker[AsyncSession]

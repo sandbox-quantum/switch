@@ -5,6 +5,7 @@ import { ALL_COMMAND_DEFS, type CommandId } from '@shared/commands';
 import { ONBOARDING_STEP_IDS } from '@shared/core/onboarding/checklist';
 import { ADD_SERVER_CHOICES, ADD_SERVER_STEPS } from '@shared/core/switch-servers/add-server-steps';
 import { VIEW_IDS } from '@shared/core/views/view-ids';
+import { noteBuddyStep } from './activation';
 import type { TelemetryEventMap, TelemetryEventName } from './events';
 import { telemetryService, trackEvent } from './telemetry-service';
 
@@ -83,7 +84,24 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'intro_opened',
       'intro_dismissed',
     ]),
-    provider: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity', 'none']),
+    provider: z.enum([
+      'claude',
+      'codex',
+      'opencode',
+      'cursor',
+      'antigravity',
+      'deepseek-harness',
+      'pi',
+      'copilot',
+      'kiro',
+      'mistral-vibe',
+      'goose',
+      'qwen',
+      'droid',
+      'cline',
+      'junie',
+      'none',
+    ]),
   }),
   buddy_message_sent: z.object({ nth: z.enum(['1', '2', '3', '4', '5', '6+']) }),
   renderer_crashed: z.object({}),
@@ -246,6 +264,8 @@ export function trackFromRenderer(request: RendererTelemetryRequest): void {
   }
 
   const properties = parsed.data as TelemetryEventMap[RendererTelemetryEvent];
+  if (request.name === 'buddy_step')
+    noteBuddyStep((properties as TelemetryEventMap['buddy_step']).action);
   if (!ONCE_PER_INSTALL.has(request.name)) {
     trackEvent(request.name, properties);
     return;

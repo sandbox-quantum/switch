@@ -46,7 +46,7 @@ export default function EditMachineDialog({
   const trimmedDescription = description.trim();
   const nameError =
     trimmedName.length === 0
-      ? "A machine needs a name."
+      ? "A device needs a name."
       : trimmedName.length > MAX_MACHINE_NAME
         ? `At most ${MAX_MACHINE_NAME} characters.`
         : null;
@@ -100,7 +100,7 @@ export default function EditMachineDialog({
             error={descriptionError !== null}
             helperText={
               descriptionError ??
-              "What the machine is for. Agents you allow to manage agents see it when they pick a machine."
+              "What the device is for. Agents you allow to manage agents see it when they pick a device."
             }
             multiline
             minRows={2}

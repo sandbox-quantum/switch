@@ -45,6 +45,10 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
+import {
+  ambiguousBundledBridgeMessage,
+  bundledMattermostBridge,
+} from '@shared/core/switch-servers/bundled-bridge';
 import type {
   LinkedIdentity,
   PendingIdentity,
@@ -71,7 +75,7 @@ import { administersWorkspaceInScope } from './workspace-admin';
 
 /**
  * The messaging apps bridged to a server, which account in each one is the
- * signed-in user, and — for a workspace owner or admin — the way to connect another
+ * signed-in user, and — for a workspace admin — the way to connect another
  * (CHOO-1784, CHOO-2137).
  *
  * One row per app: its name with the account you have claimed on it underneath,
@@ -111,9 +115,16 @@ const WAITING_EXPLANATION =
 export const MessagingAppsCard = observer(function MessagingAppsCard({
   serverId,
   className,
+  personal = false,
 }: {
   serverId: string;
   className?: string;
+  /**
+   * Only your own accounts in each app, for Settings: linking and unlinking
+   * them. The workspace's side — connecting an app, its token, its defaults —
+   * is for its admins, in Admin and the workspace settings.
+   */
+  personal?: boolean;
 }) {
   const queryClient = useQueryClient();
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
@@ -122,7 +133,8 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectChat = useShowModal('connectChatModal');
   const showRequireLinkConfirmation = useShowModal('requireLinkConfirmationModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const isAdmin = administersWorkspaceInScope(serverId);
+  const administers = administersWorkspaceInScope(serverId);
+  const isAdmin = administers && !personal;
   const flags = useFeatureFlags(serverId);
   // With chats on, Switch Console's own chats and rooms need no messaging app.
   const chatsWithoutApp = flags.agent_chats || flags.group_chats;
@@ -137,6 +149,23 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
 
   const bridges = useMemo(() => orderBridges(bridgesQuery.data ?? []), [bridgesQuery.data]);
+  // Only the bundled Mattermost has those generated credentials; a Mattermost
+  // the user connected themselves beside it does not.
+  const bundledChoice = useMemo(
+    () => (isManaged ? bundledMattermostBridge(bridges) : null),
+    [isManaged, bridges]
+  );
+  const bundledBridgeId = bundledChoice?.kind === 'bundled' ? bundledChoice.bridge.id : null;
+  const ambiguousBundledIds =
+    bundledChoice?.kind === 'ambiguous' ? bundledChoice.bridgeIds.join(',') : null;
+  useEffect(() => {
+    if (ambiguousBundledIds !== null) {
+      log.warn(
+        `Not showing the bundled Mattermost sign-in. ${ambiguousBundledBridgeMessage(ambiguousBundledIds.split(','))}`,
+        { serverId }
+      );
+    }
+  }, [ambiguousBundledIds, serverId]);
 
   // Which platforms the signed-in user may connect another chat on. Asked only
   // once there is a connection whose chats arrive that way, which also keeps
@@ -370,10 +399,12 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
           {chatsWithoutApp
-            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : 'An owner or admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
+            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
             : isAdmin
               ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-              : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
+              : administers
+                ? 'No messaging app is connected. Connect one from Admin.'
+                : 'No messaging app is connected. An admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
@@ -404,8 +435,9 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                       }
                     : null
                 }
-                showBundledSignIn={isManaged && bridge.type === 'mattermost'}
+                showBundledSignIn={bridge.id === bundledBridgeId}
                 isAdmin={isAdmin}
+                personal={personal}
                 savingChannelCreation={savingBridgeId === bridge.id}
                 onToggleChannelCreation={(enabled) =>
                   void handleToggleChannelCreation(bridge, enabled)
@@ -506,6 +538,7 @@ export function MessagingAppRow({
   olderLinks,
   showBundledSignIn,
   isAdmin,
+  personal = false,
   savingChannelCreation,
   onToggleChannelCreation,
   onConnectChat,
@@ -529,6 +562,8 @@ export function MessagingAppRow({
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
   showBundledSignIn: boolean;
   isAdmin: boolean;
+  /** Only your own side of the app, as Settings shows it: no workspace settings in the menu. */
+  personal?: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
   /** Set on a connection whose chats are connected one at a time, for a user
@@ -658,7 +693,7 @@ export function MessagingAppRow({
   const channelsLockedReason = !bridge.channelCreationSupported
     ? `${platform} cannot create channels from Switch. Make the chat in the app and add the bot to it.`
     : !isAdmin
-      ? 'Only an owner or admin of this workspace can change this.'
+      ? 'Only an admin of this workspace can change this.'
       : null;
 
   return (
@@ -835,27 +870,30 @@ export function MessagingAppRow({
               </>
             )}
 
-            <DropdownMenuSeparator />
-            {/* "Off" and "this platform has no such thing" are different claims,
+            {!personal && (
+              <>
+                <DropdownMenuSeparator />
+                {/* "Off" and "this platform has no such thing" are different claims,
               and an unticked box makes them look the same (CHOO-2137). A
               platform that cannot do it at all gets a plain disabled line
               saying so, never an unchecked box. */}
-            {bridge.channelCreationSupported ? (
-              <DropdownMenuCheckboxItem
-                checked={bridge.canCreateChannels}
-                disabled={!isAdmin || savingChannelCreation}
-                onCheckedChange={(next) => onToggleChannelCreation(next)}
-              >
-                Create channels on {platform}
-              </DropdownMenuCheckboxItem>
-            ) : (
-              <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
+                {bridge.channelCreationSupported ? (
+                  <DropdownMenuCheckboxItem
+                    checked={bridge.canCreateChannels}
+                    disabled={!isAdmin || savingChannelCreation}
+                    onCheckedChange={(next) => onToggleChannelCreation(next)}
+                  >
+                    Create channels on {platform}
+                  </DropdownMenuCheckboxItem>
+                ) : (
+                  <DropdownMenuItem disabled>Channels not supported on {platform}</DropdownMenuItem>
+                )}
+                {channelsLockedReason !== null && (
+                  <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
+                )}
+              </>
             )}
-            {channelsLockedReason !== null && (
-              <p className="px-2 py-1 text-xs text-foreground-muted">{channelsLockedReason}</p>
-            )}
-
-            {bridge.receivesWebhooks && (
+            {!personal && bridge.receivesWebhooks && (
               <>
                 <DropdownMenuSeparator />
                 {/* The address the platform delivers this connection's events
@@ -991,7 +1029,7 @@ function messageForUpdate(result: { kind: string; message?: string }): string {
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'This requires an owner or admin of this workspace.';
+      return 'This requires an admin of this workspace.';
     default:
       return result.message ?? 'The server rejected the change.';
   }

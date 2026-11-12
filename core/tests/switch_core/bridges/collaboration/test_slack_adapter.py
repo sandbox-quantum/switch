@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
+from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
+from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
+    InboundCommand,
+    InboundMessage,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -711,6 +717,19 @@ def test_admin_message_posts_as_app_in_thread() -> None:
     assert "icon_url" not in call
 
 
+def test_admin_message_renders_markdown_as_mrkdwn() -> None:
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(adapter.admin_message("C123", _no_agents_notice(None)))
+
+    text = fake.calls[0]["text"]
+    assert "**" not in text
+    assert "*To add an agent*" in text
+    assert "`!invite-agent @agent-name`" in text
+
+
 # ── Outbound mention resolution ──────────────────────────────────────────────
 
 
@@ -732,13 +751,18 @@ def test_outbound_unknown_mention_left_as_plain_text() -> None:
 class _FakeDMWebClient:
     """Records conversations_create / conversations_invite kwargs."""
 
-    def __init__(self, invite_error: str | None = None) -> None:
+    def __init__(
+        self, invite_error: str | None = None, taken: frozenset[str] = frozenset()
+    ) -> None:
         self.creates: list[dict[str, Any]] = []
         self.invites: list[dict[str, Any]] = []
         self._invite_error = invite_error
+        self._taken = taken
 
     async def conversations_create(self, **kwargs: Any) -> dict[str, Any]:
         self.creates.append(kwargs)
+        if kwargs["name"] in self._taken:
+            raise SlackApiError("name_taken", response={"error": "name_taken"})
         return {"channel": {"id": "C-DM"}}
 
     async def conversations_invite(self, **kwargs: Any) -> dict[str, Any]:
@@ -757,7 +781,7 @@ def test_create_dm_channel_makes_private_channel_and_invites_user() -> None:
 
     channel_id = _run(
         adapter.create_dm_channel(
-            agent_name="agent.bot",
+            agent_name="Order Planner",
             user_name="doe.jane",
             user_external_id="U123",
         )
@@ -765,11 +789,26 @@ def test_create_dm_channel_makes_private_channel_and_invites_user() -> None:
 
     assert channel_id == "C-DM"
     assert len(fake.creates) == 1
-    # A private channel, named dm-<user>-<agent> with non-slug chars dashed.
+    # A private channel, named <agent>-<user> with non-slug runs dashed.
     assert fake.creates[0]["is_private"] is True
-    assert fake.creates[0]["name"] == "dm-doe-jane-agent-bot"
+    assert fake.creates[0]["name"] == "order-planner-doe-jane"
     # The single user is invited to the freshly created channel.
     assert fake.invites == [{"channel": "C-DM", "users": "U123"}]
+
+
+def test_create_dm_channel_suffixes_a_taken_name() -> None:
+    adapter = _adapter()
+    fake = _FakeDMWebClient(taken=frozenset({"buddy-raul"}))
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(
+        adapter.create_dm_channel(
+            agent_name="buddy", user_name="raul", user_external_id="U1"
+        )
+    )
+
+    assert [create["name"] for create in fake.creates][0] == "buddy-raul"
+    assert re.fullmatch(r"buddy-raul-[0-9a-f]{8}", fake.creates[1]["name"])
 
 
 def test_create_dm_channel_tolerates_already_in_channel() -> None:
@@ -801,6 +840,147 @@ def test_create_dm_channel_raises_on_real_invite_failure() -> None:
     except SlackApiError:
         raised = True
     assert raised
+
+
+# ── Channel creation ─────────────────────────────────────────────────────────
+
+
+class _FakeCreateWebClient:
+    """Answers conversations_create with the refusals queued in `errors`, one
+    per call, then with success."""
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        self.names: list[str] = []
+        self._errors = list(errors)
+
+    async def conversations_create(self, **kwargs: Any) -> dict[str, Any]:
+        self.names.append(kwargs["name"])
+        if self._errors:
+            body = self._errors.pop(0)
+            raise SlackApiError(body["error"], response=body)
+        return {"channel": {"id": "C-NEW", "name": kwargs["name"]}}
+
+    async def conversations_setTopic(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": True}
+
+
+def test_create_channel_retries_a_taken_name_with_a_suffix() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "name_taken"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    created = _run(adapter.create_channel("Payments", "topic"))
+
+    assert fake.names[0] == "payments"
+    assert re.fullmatch(r"payments-[0-9a-f]{8}", fake.names[1])
+    assert created.id == "C-NEW"
+    assert created.name == fake.names[1]
+
+
+def test_create_channel_missing_scope_is_not_retried_and_names_the_scope() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient(
+        [{"ok": False, "error": "missing_scope", "needed": "groups:write"}]
+    )
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _run(
+            adapter.create_channel("Payments", "topic", channel_type="channel_private")
+        )
+
+    assert fake.names == ["payments"]
+    assert "missing_scope" in str(raised.value)
+    assert "groups:write" in str(raised.value)
+    assert isinstance(raised.value.__cause__, SlackApiError)
+
+
+def test_create_channel_invalid_name_is_the_callers_to_fix() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "invalid_name_required"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="invalid_name_required"):
+        _run(adapter.create_channel("!!!", "topic"))
+
+    assert len(fake.names) == 1
+
+
+def test_create_channel_taken_twice_reports_the_second_refusal() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient(
+        [{"ok": False, "error": "name_taken"}, {"ok": False, "error": "name_taken"}]
+    )
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="name_taken"):
+        _run(adapter.create_channel("Payments", "topic"))
+
+    assert len(fake.names) == 2
+
+
+def test_create_dm_channel_missing_scope_is_not_retried() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient(
+        [{"ok": False, "error": "missing_scope", "needed": "groups:write"}]
+    )
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="groups:write"):
+        _run(
+            adapter.create_dm_channel(
+                agent_name="a", user_name="u", user_external_id="U1"
+            )
+        )
+
+    assert fake.names == ["a-u"]
+
+
+def test_create_channel_with_a_revoked_token_says_to_reconnect() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "token_revoked"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="Reconnect the Slack bridge"):
+        _run(adapter.create_channel("Payments", "topic"))
+
+    assert len(fake.names) == 1
+
+
+def test_create_dm_channel_with_names_that_slug_to_nothing_still_has_a_name() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([])
+    fake.conversations_invite = _accept_invite  # type: ignore[attr-defined]
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    channel_id = _run(
+        adapter.create_dm_channel(
+            agent_name="助手", user_name="Żółć", user_external_id="U1"
+        )
+    )
+
+    assert channel_id == "C-NEW"
+    assert fake.names == ["dm"]
+
+
+def test_create_dm_channel_invalid_name_is_not_blamed_on_a_room_name() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "invalid_name_specials"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _run(
+            adapter.create_dm_channel(
+                agent_name="a", user_name="u", user_external_id="U1"
+            )
+        )
+
+    assert "invalid_name_specials" in str(raised.value)
+    assert "room name" not in str(raised.value)
+
+
+async def _accept_invite(**kwargs: Any) -> dict[str, Any]:
+    return {"ok": True}
 
 
 # ── Slash commands ───────────────────────────────────────────────────────────
@@ -975,6 +1155,111 @@ def test_translate_inbound_shows_a_channel_wide_mention_as_the_word(
 def test_translate_inbound_leaves_a_user_group_to_its_own_rule() -> None:
     # `<!subteam^…>` shares the `<!` prefix and must not be read as a page.
     assert _adapter().translate_inbound("<!subteam^S123|@ops> hi") == "@ops hi"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "is `if a &lt; b &amp;&amp; b &gt; c` right?",
+            "is `if a < b && b > c` right?",
+        ),
+        ("cat log.txt &gt; out.txt", "cat log.txt > out.txt"),
+        ("List&lt;String&gt; and x -&gt; y", "List<String> and x -> y"),
+        ("R&amp;D and Q&amp;A", "R&D and Q&A"),
+        ("```\nfoo &amp;&amp; bar\n```", "```\nfoo && bar\n```"),
+    ],
+)
+def test_translate_inbound_decodes_slack_entities(raw: str, expected: str) -> None:
+    assert _adapter().translate_inbound(raw) == expected
+
+
+def test_translate_inbound_decodes_once() -> None:
+    # A person who types `&lt;` literally is sent `&amp;lt;`.
+    assert _adapter().translate_inbound("write &amp;lt; for <") == "write &lt; for <"
+
+
+def test_translate_inbound_leaves_other_entities_alone() -> None:
+    # Slack escapes only `&`, `<` and `>`, so anything else is what was typed.
+    assert (
+        _adapter().translate_inbound("&quot;hi&quot; &#39;") == "&quot;hi&quot; &#39;"
+    )
+
+
+def test_translate_inbound_a_typed_angle_bracket_is_not_markup() -> None:
+    adapter = _adapter()
+    adapter._user_cache["U999"] = SlackUser(name="worker", display_name="Worker")
+    assert (
+        adapter.translate_inbound("&lt;@U999&gt; and &lt;https://example.com&gt;")
+        == "<@U999> and <https://example.com>"
+    )
+
+
+def test_translate_inbound_decodes_a_link_url() -> None:
+    assert (
+        _adapter().translate_inbound("<https://example.com/?a=1&amp;b=2|search>")
+        == "[search](https://example.com/?a=1&b=2)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("see <#C0123ABCD|general>", "see #general"),
+        ("see <#C0123ABCD|>", "see #ops-room"),
+        ("see <#C0123ABCD>", "see #ops-room"),
+        ("see <#C9999>", "see #C9999"),
+    ],
+)
+def test_translate_inbound_shows_a_channel_link_as_its_name(
+    raw: str, expected: str
+) -> None:
+    adapter = _adapter()
+    adapter._channel_name_cache["C0123ABCD"] = "ops-room"
+    assert adapter.translate_inbound(raw) == expected
+
+
+def test_typed_command_args_are_decoded_once_end_to_end() -> None:
+    # The adapter hands the core arguments it has not decoded; the core's own
+    # `translate_inbound` then decodes them once.
+    adapter = _adapter()
+    adapter._user_cache["U1"] = SlackUser(name="jane", display_name="Jane")
+    adapter._user_cache["U999"] = SlackUser(name="worker", display_name="Worker")
+    adapter._channel_name_cache["C123"] = "general"
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "channel": "C123",
+                "ts": "100.1",
+                "user": "U1",
+                "text": "!assign <@U999> a &lt; b &amp;lt;",
+                "channel_type": "channel",
+            }
+        )
+    )
+
+    assert adapter.translate_inbound(commands[0].args) == "@worker a < b &lt;"
+
+
+def test_slash_command_args_are_decoded_once_end_to_end() -> None:
+    adapter = _adapter()
+    adapter._web_client = _FakeSlashWebClient()  # type: ignore[assignment]
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_slash_command(
+            {
+                "command": "/assign",
+                "text": "@worker a &lt; b &amp;lt;",
+                "channel_id": "C123",
+                "user_id": "U123",
+            }
+        )
+    )
+
+    assert adapter.translate_inbound(commands[0].args) == "@worker a < b &lt;"
 
 
 def test_slash_command_without_channel_is_ignored() -> None:

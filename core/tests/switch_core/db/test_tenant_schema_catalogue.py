@@ -33,6 +33,7 @@ import switch_core.db.models  # noqa: F401
 from switch_core.db.base import Base
 from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
+    HISTORY_TABLES,
     organization_scoped_tables,
     scoped_tables,
     unscoped_tables,
@@ -121,6 +122,9 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # once: a process holds work for every tenant at once, and the row
             # names only which process runs which id.
             "ownership_leases",
+            # How far the directory mirror has read a directory's events: one
+            # row per directory, whose events reach every organization.
+            "directory_event_cursors",
             # Switch Trust's one guardrails policy for the whole deployment.
             # A policy that varied per tenant would be a new scoped table.
             "trust_settings",
@@ -139,6 +143,13 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # apps: no tenant owns them, so `audit_events` cannot hold them.
             "server_audit_events",
         }
+
+    async def test_the_history_tables_are_exactly_these(self) -> None:
+        """Scoped, but with no foreign key to `tenants`, so their rows outlive
+        a deleted workspace. Pinned for the same reason as the list above."""
+        assert set(HISTORY_TABLES) == {"audit_events"}
+        assert scoped_tables(Base.metadata)["audit_events"] == "tenant_id"
+        assert not Base.metadata.tables["audit_events"].c.tenant_id.foreign_keys
 
     async def test_scoped_is_everything_else(self) -> None:
         scoped = _scoped_tables()

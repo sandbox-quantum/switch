@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  IMPORTED_TURN_PREFIX,
   SessionReplica,
   commandSchema,
   eventBytes,
+  hasOwnActivity,
   serverEventSchema,
 } from '@switch-console/shared/session-v1';
 import type {
@@ -20,10 +22,15 @@ import type {
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { ProviderConversationUnavailableError } from '../adapter';
-import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
-import type { TokenUsage, TurnOutcome, UserInputAnswers } from '../events';
+import type {
+  ConversationHistoryTurn,
+  ProviderAdapter,
+  ProviderSessionStartInput,
+  TurnAttachment,
+} from '../adapter';
+import type { TokenUsage, TurnOutcome, UsageLimit, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
-import { ChatProjector } from '../session-v1/chat-projector';
+import { ChatProjector, ITEM_PART_CHARACTERS, itemParts } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
@@ -60,6 +67,12 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   /** The host posts this turn's reply to its room itself: decided once, before posting. */
   z.object({ type: z.literal('room-reply'), commandId: z.string() }),
 ]);
+/**
+ * The notices that end a continued conversation's import, either way. Read
+ * back from the event journal rather than recorded in the inbox, whose
+ * records an older host could not read.
+ */
+const HISTORY_SETTLED = new Set(['HISTORY_IMPORTED', 'HISTORY_UNAVAILABLE']);
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
@@ -76,6 +89,12 @@ export type HostSessionStart = {
   replyToRoom?: (reply: RoomReply) => Promise<void>;
   /** Service tokens to scrub from every event before it is recorded; none when absent. */
   redactions?: Redactions;
+  /**
+   * The session continues a native conversation started outside Switch, so
+   * its transcript starts with that conversation's turns, and a conversation
+   * that cannot be resumed is never quietly replaced by a new one.
+   */
+  importHistory?: boolean;
   /**
    * Told each time the provider asks to run a connector's tool, before the
    * request is published, so a notice it raises comes ahead of the card.
@@ -108,7 +127,15 @@ export class HostedSession {
   private readonly finished = new Set<string>();
   private readonly cancelled = new Set<string>();
   private readonly roomReplies = new Set<string>();
+  private historyImported = false;
   private readonly postedTurns = new Set<string>();
+  /** Turns in which the agent did something through a Switch tool other than read. */
+  private readonly actedTurns = new Set<string>();
+  /**
+   * Turns started by a room message nobody tagged, which Switch routed here
+   * or following the conversation brought here.
+   */
+  private readonly unaskedTurns = new Set<string>();
   /** Turns whose posts to the room were refused, with the last refusal. */
   private readonly failedPosts = new Map<string, string>();
   private readonly usage = new Map<string, TokenUsage[]>();
@@ -170,6 +197,8 @@ export class HostedSession {
         this.replica = new SessionReplica(prior);
       }
       this.replica.apply(event);
+      if (event.body.type === 'notice' && HISTORY_SETTLED.has(event.body.code))
+        this.historyImported = true;
     }
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
@@ -197,6 +226,7 @@ export class HostedSession {
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
     }
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
+    this.projector.restore(this.replica.snapshot().items);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
       this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
@@ -299,7 +329,8 @@ export class HostedSession {
           return host;
         }
         // A session whose provider never opened a conversation (its first
-        // start failed) has nothing to resume: it starts one below.
+        // start failed) has nothing to resume: it starts one below. One that
+        // continues a conversation resumes the copy it was started with.
         if (!host.nativeId && host.providerAnswered())
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
@@ -310,6 +341,16 @@ export class HostedSession {
         host.replica = new SessionReplica(next);
       }
       await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
+      if (config.importHistory) {
+        // Without the copy to resume, starting would open a new conversation
+        // in place of the one this session was made to continue.
+        const continued = config.input.resume?.nativeSessionId;
+        if (!continued)
+          throw new Error(
+            'This session continues a conversation started outside Switch, but no copy of it was recorded to resume.'
+          );
+        if (!host.historyImported) await host.importHistory(continued);
+      }
       const native = await host.startProvider({
         ...config.input,
         ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
@@ -338,8 +379,12 @@ export class HostedSession {
         await host.eventSerial;
         // Nothing the provider said is lost when it never answered (a session
         // whose turns all failed while its CLI was signed out, say): start a
-        // new conversation rather than ask.
-        if (!host.providerAnswered()) {
+        // new conversation rather than ask. The copy of a conversation this
+        // session was started to continue was answered before Switch had it;
+        // a fresh one it started since was not.
+        const resuming = host.nativeId ?? config.input.resume?.nativeSessionId;
+        const copy = config.importHistory ? config.input.resume?.nativeSessionId : undefined;
+        if (!host.providerAnswered() && (copy === undefined || resuming !== copy)) {
           try {
             await host.startFresh();
             return host;
@@ -358,13 +403,16 @@ export class HostedSession {
     }
   }
 
-  /** Whether the provider has ever answered in this session. */
+  /**
+   * Whether the provider has ever answered in this session. Turns copied in
+   * from a conversation this session continues are not its own answers.
+   */
   private providerAnswered(): boolean {
     const snapshot = this.replica.snapshot();
-    return (
-      snapshot.items.some((item) => item.kind === 'assistant-message') ||
-      snapshot.turns.some((turn) => turn.status === 'completed')
-    );
+    return hasOwnActivity({
+      items: snapshot.items.filter((item) => item.kind === 'assistant-message'),
+      turns: snapshot.turns.filter((turn) => turn.status === 'completed'),
+    });
   }
 
   /** Start a new provider conversation in place of one that cannot be resumed. */
@@ -392,6 +440,135 @@ export class HostedSession {
       message:
         'Started a new provider conversation: the earlier one was never saved by the provider, so there was nothing to resume.',
     });
+  }
+
+  /**
+   * Publishes the earlier turns of the native conversation this session
+   * continues, ahead of any of its own: the most recent ones, up to
+   * {@link HISTORY_ITEM_LIMIT} items, a batch to a journal write, under ids
+   * marked as imported (`IMPORTED_TURN_PREFIX`). Settled by the notice that
+   * ends it. An import a crash cut short runs again on the next start and
+   * publishes only what it had not; an item the conversation itself repeats
+   * is published once.
+   *
+   * A conversation that cannot be read, or whose turns cannot be recorded, is
+   * said in the transcript, once, and does not stop the session: resuming is
+   * what decides whether the conversation is there, and asks before replacing
+   * it.
+   */
+  private async importHistory(nativeSessionId: string): Promise<void> {
+    let turns: ConversationHistoryTurn[];
+    try {
+      if (!this.adapter.conversationHistory)
+        throw new Error(`${this.config.session.provider} cannot read its saved conversations.`);
+      turns = await this.adapter.conversationHistory(
+        nativeSessionId,
+        this.config.input.cwd,
+        this.config.input.env
+      );
+    } catch (error) {
+      await this.historyUnavailable(error);
+      return;
+    }
+    const shown = recentTurns(turns, HISTORY_ITEM_LIMIT);
+    // What an import a crash cut short already published stays as it was, and
+    // an id the conversation repeats is published the first time only:
+    // published again it could differ (a token scrubbed since, or another
+    // entry's text), and two versions of one revision are a conflict the
+    // transcript refuses.
+    const present = this.replica.snapshot();
+    const publishedTurns = new Set(present.turns.map((turn) => turn.turnId));
+    const publishedItems = new Set(present.items.map((item) => item.itemId));
+    const bodies: HostBody[] = [];
+    let shortened = false;
+    for (const turn of shown) {
+      const turnId = `${IMPORTED_TURN_PREFIX}${turn.turnId}`;
+      if (!publishedTurns.has(turnId)) {
+        publishedTurns.add(turnId);
+        bodies.push({ type: 'turn.upsert', turnId, status: 'completed', commandId: null });
+      }
+      for (const item of turn.items) {
+        // Scrubbed whole before it is cut, as the chat projector does, so no
+        // part carries a token in pieces that the scrub of each part would miss.
+        const scrubbed = this.config.redactions
+          ? this.config.redactions.text(item.text)
+          : item.text;
+        const characters = Array.from(scrubbed);
+        if (characters.length > HISTORY_TEXT_LIMIT) shortened = true;
+        const text =
+          characters.length > HISTORY_TEXT_LIMIT
+            ? `${characters.slice(0, HISTORY_TEXT_LIMIT - 1).join('')}…`
+            : scrubbed;
+        const title = this.config.redactions ? this.config.redactions.text(item.title) : item.title;
+        const parts = itemParts(
+          {
+            itemId: `${IMPORTED_TURN_PREFIX}${item.itemId}`,
+            turnId,
+            revision: 1,
+            kind: item.kind,
+            status: item.status,
+            title: Array.from(title).slice(0, ITEM_PART_CHARACTERS).join(''),
+            text: '',
+            attachments: [],
+            origin: null,
+          },
+          text,
+          1
+        );
+        for (const part of parts) {
+          if (publishedItems.has(part.itemId)) continue;
+          publishedItems.add(part.itemId);
+          bodies.push({ type: 'item.upsert', item: part });
+        }
+      }
+    }
+    const total = turns.reduce((count, turn) => count + turn.items.length, 0);
+    const kept = shown.reduce((count, turn) => count + turn.items.length, 0);
+    try {
+      // Batched to spare a flush to disk per event, and bounded in bytes too,
+      // so no one write is larger than a single event could already make it.
+      let batch: HostBody[] = [];
+      let batchBytes = 0;
+      for (const body of bodies) {
+        const bytes = Buffer.byteLength(JSON.stringify(body));
+        if (
+          batch.length &&
+          (batch.length >= HISTORY_BATCH || batchBytes + bytes > HISTORY_BATCH_BYTES)
+        ) {
+          await this.publishBatch(batch);
+          batch = [];
+          batchBytes = 0;
+        }
+        batch.push(body);
+        batchBytes += bytes;
+      }
+      if (batch.length) await this.publishBatch(batch);
+      await this.publish({
+        type: 'notice',
+        level: 'info',
+        code: 'HISTORY_IMPORTED',
+        message: `${kept < total ? `Above are the last ${kept} of the ${total} messages and tool calls in the conversation this session continues; the earlier ones are not shown here.` : 'Above is the conversation this session continues.'} It was copied when the session started, and the agent has all of it. The original is unchanged.${shortened ? ' Long messages are cut short here.' : ''}`,
+      });
+    } catch (error) {
+      await this.historyUnavailable(error);
+      return;
+    }
+    this.historyImported = true;
+  }
+
+  /**
+   * Says in the transcript why the earlier turns of the conversation this
+   * session continues are not shown, or not all of them, and settles the
+   * import so it is said once.
+   */
+  private async historyUnavailable(error: unknown): Promise<void> {
+    await this.publish({
+      type: 'notice',
+      level: 'warning',
+      code: 'HISTORY_UNAVAILABLE',
+      message: `Could not show the earlier turns of the conversation this session continues: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    this.historyImported = true;
   }
 
   private async startProvider(input: ProviderSessionStartInput) {
@@ -584,11 +761,27 @@ export class HostedSession {
   }
 
   /**
-   * The agent posted to a room, through one of the Switch tools: the running
-   * turn has answered, so the host has nothing to post for it.
+   * The agent did something through a Switch tool (posted, or acted in some
+   * other way): the running turn has answered, so the host has nothing to
+   * post for it.
    */
+  agentActedInSwitch(): void {
+    if (this.activeTurn) this.actedTurns.add(this.activeTurn);
+  }
+
+  /** The agent's post to a room landed: a refused post earlier in the turn is not reported. */
   agentPostedToRoom(): void {
     if (this.activeTurn) this.postedTurns.add(this.activeTurn);
+  }
+
+  /**
+   * `commandId` carries a room message nobody tagged, which Switch routed to
+   * this agent or following the conversation brought to it: the agent may
+   * rightly stay silent on it, so a turn it finishes without posting tells
+   * the room nothing.
+   */
+  unaskedRoomTurn(commandId: string): void {
+    this.unaskedTurns.add(commandId);
   }
 
   /** A post to the room in the running turn was refused: why, the last one kept. */
@@ -1118,18 +1311,26 @@ export class HostedSession {
         code: 'TURN_FAILED',
         message: String(error),
       });
-      await this.replyIfUnposted(command.commandId, 'error', String(error));
+      await this.replyIfUnposted(command.commandId, 'error', String(error), null);
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
     }
   }
 
   /**
-   * Tells the room when a turn a room message started failed without the
-   * agent posting anywhere — a provider that ended on a quota or sign-in
-   * error — since the room would otherwise hear nothing about it. A turn that
-   * simply ended without a post says nothing (`unpostedReply`), and one the
-   * host cut short on purpose (stopping, parking, a reset) is left alone.
+   * Tells the room when a turn a room message started ended without the agent
+   * doing anything in Switch — a provider that failed on a quota or sign-in
+   * error, or an agent that finished with its answer, or a usage-limit
+   * notice, only in its final text — since the room would otherwise hear
+   * nothing about it (`unpostedReply`). A failed turn says so whenever no
+   * post landed. A turn that finished after the agent acted through a Switch
+   * tool says nothing, nor does one someone stopped, nor one that finished on
+   * a message nobody tagged (Switch routed it here, or
+   * following the conversation did), which the agent may rightly leave
+   * alone; one the host cut short on purpose (stopping, parking, a reset) is
+   * left alone too. A turn the provider stopped at its usage limit is told
+   * even when the agent had posted: the room would otherwise read that post
+   * as the agent's last word on the task.
    *
    * Decided once per turn and recorded before the post, so a restart never
    * posts it twice. The post runs beside the session; one that fails is
@@ -1138,13 +1339,17 @@ export class HostedSession {
   private async replyIfUnposted(
     turnId: string,
     outcome: TurnOutcome,
-    detail: string | null
+    detail: string | null,
+    usageLimit: UsageLimit | null
   ): Promise<void> {
     const posted = this.postedTurns.delete(turnId);
+    const acted = this.actedTurns.delete(turnId);
+    const unasked = this.unaskedTurns.delete(turnId);
     const failedPost = this.failedPosts.get(turnId) ?? null;
     this.failedPosts.delete(turnId);
     const reply = this.config.replyToRoom;
-    if (!reply || posted || this.shuttingDown || this.stopped || this.resetting) return;
+    if (!reply || this.shuttingDown || this.stopped || this.resetting) return;
+    if (posted && usageLimit === null) return;
     if (this.roomReplies.has(turnId)) return;
     const origin = this.commands.get(turnId)?.origin;
     if (!origin?.roomId || !origin.messageId) return;
@@ -1152,7 +1357,13 @@ export class HostedSession {
     // A turn whose every post was refused ended in silence as far as the room
     // could tell: it is told that, once, unless the turn failed and says so already.
     const body =
-      unpostedReply(outcome, detail) ?? (failedPost !== null ? postFailedReply(failedPost) : null);
+      usageLimit !== null
+        ? usageLimitReply(usageLimit, detail)
+        : failedPost !== null && outcome !== 'error'
+          ? postFailedReply(failedPost)
+          : (acted || unasked) && outcome === 'completed'
+            ? null
+            : unpostedReply(outcome, detail);
     if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
@@ -1163,7 +1374,10 @@ export class HostedSession {
             type: 'notice',
             level: 'info',
             code: 'ROOM_REPLY_POSTED',
-            message: `The turn ended without the agent posting to room ${roomId}, so the host posted there for it.`,
+            message:
+              usageLimit !== null
+                ? `The provider stopped the turn at its usage limit, so the host told room ${roomId}.`
+                : `The turn ended without the agent posting to room ${roomId}, so the host posted there for it.`,
           }),
         async (error: unknown) => {
           const reason = error instanceof Error ? error.message : String(error);
@@ -1298,7 +1512,12 @@ export class HostedSession {
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
-      await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
+      await this.replyIfUnposted(
+        event.turnId,
+        event.outcome,
+        event.message ?? null,
+        event.usageLimit ?? null
+      );
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
       void this.refreshContext().catch((error: unknown) => this.fail(error));
@@ -1368,23 +1587,33 @@ export class HostedSession {
     return bodies.reduce((tail, body) => tail.then(() => this.publish(body)), Promise.resolve());
   }
   private publish(body: ServerEvent['body']): Promise<void> {
+    return this.publishBatch([body]);
+  }
+  /** Publishes events in order, recorded with one write to the journal. */
+  private publishBatch(bodies: ServerEvent['body'][]): Promise<void> {
     const pending = this.publishing.then(async () => {
-      const event: ServerEvent = {
-        contractVersion: 1,
-        eventId: randomUUID(),
-        sessionId: this.config.session.sessionId,
-        sequence: this.events.records.length + 1,
-        occurredAt: new Date().toISOString(),
-        // Scrubbed here, once: the journal, Console's view and the activity
-        // rows Switch shows on the bridges are all made from what is recorded.
-        body: this.config.redactions ? this.config.redactions.value(body) : body,
-      };
-      if (eventBytes(event) > 64 * 1024)
-        throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');
-      serverEventSchema.parse(event);
-      await this.events.append(event);
-      this.replica.apply(event);
-      for (const listener of this.listeners) listener(event);
+      const occurredAt = new Date().toISOString();
+      const events = bodies.map((body, index) => {
+        const event: ServerEvent = {
+          contractVersion: 1,
+          eventId: randomUUID(),
+          sessionId: this.config.session.sessionId,
+          sequence: this.events.records.length + 1 + index,
+          occurredAt,
+          // Scrubbed here, once: the journal, Console's view and the activity
+          // rows Switch shows on the bridges are all made from what is recorded.
+          body: this.config.redactions ? this.config.redactions.value(body) : body,
+        };
+        if (eventBytes(event) > 64 * 1024)
+          throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');
+        serverEventSchema.parse(event);
+        return event;
+      });
+      await this.events.appendAll(events);
+      for (const event of events) {
+        this.replica.apply(event);
+        for (const listener of this.listeners) listener(event);
+      }
     });
     this.publishing = pending.catch(() => {});
     return pending;
@@ -1430,14 +1659,47 @@ export class HostedSession {
   }
 }
 
+/** How many items of a continued conversation's earlier turns a transcript starts with. */
+const HISTORY_ITEM_LIMIT = 500;
+/** How much of one imported item's text is shown; the agent still has all of it. */
+const HISTORY_TEXT_LIMIT = 4 * ITEM_PART_CHARACTERS;
+/** How many of a continued conversation's events are recorded with one journal write. */
+const HISTORY_BATCH = 100;
+/** And how much: no larger than one event may be, so no write is larger than one could be already. */
+const HISTORY_BATCH_BYTES = 64 * 1024;
+
 /**
- * What the host posts for a room turn that ended without the agent posting:
- * only that it failed, and why, so a crash is not silent. A turn that
- * finished, or that someone stopped, posts nothing: the agent chose not to
- * answer, and its final text was never meant for the room.
+ * The most recent turns that together hold no more than `limit` items, oldest
+ * first. A latest turn larger than that on its own keeps its last `limit`.
+ */
+export function recentTurns(
+  turns: ConversationHistoryTurn[],
+  limit: number
+): ConversationHistoryTurn[] {
+  const kept: ConversationHistoryTurn[] = [];
+  let items = 0;
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index]!;
+    if (items + turn.items.length > limit) {
+      if (kept.length === 0) kept.push({ ...turn, items: turn.items.slice(-limit) });
+      break;
+    }
+    kept.push(turn);
+    items += turn.items.length;
+  }
+  return kept.reverse();
+}
+
+/**
+ * What the host posts for a room turn that ended without the agent doing
+ * anything in Switch. A failed turn says why, so a crash is not silent. A
+ * finished one says only that: its final text was never screened for the
+ * room, so none of it is posted. A turn someone stopped posts nothing: they
+ * know why it ended.
  */
 export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
-  if (outcome !== 'error') return null;
+  if (outcome === 'interrupted') return null;
+  if (outcome === 'completed') return 'I finished without replying.';
   const hint = REQUEST_TOO_LARGE.test(detail ?? '')
     ? 'Use !reset to start a fresh session, then send your message again. '
     : '';
@@ -1447,6 +1709,23 @@ export function unpostedReply(outcome: TurnOutcome, detail: string | null): stri
 
 const REQUEST_TOO_LARGE =
   /exceeds [\d.]+ ?MB limit|request_too_large|request too large|prompt is too long/i;
+
+/**
+ * What the host posts for a turn the provider stopped at the account's usage
+ * limit: that the agent stopped, when it can carry on if the provider said in
+ * a form the adapter reads, and the provider's own notice, which often names
+ * the reset time in the account's local time.
+ */
+export function usageLimitReply(limit: UsageLimit, detail: string | null): string {
+  const resets = limit.resetsAt === null ? '' : ` It resets at ${formatResetTime(limit.resetsAt)}.`;
+  const notice = detail?.trim() ? `\n\nThe provider said: ${cap(detail.trim(), 1000)}` : '';
+  return `I stopped before finishing: my provider's usage limit was reached.${resets} Address me again after it resets to continue.${notice}`;
+}
+
+function formatResetTime(epochMs: number): string {
+  const iso = new Date(epochMs).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
 
 /** What the host posts for a turn whose every post to the room was refused. */
 export function postFailedReply(reason: string): string {

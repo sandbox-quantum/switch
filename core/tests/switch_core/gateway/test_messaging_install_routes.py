@@ -106,7 +106,9 @@ class _Service:
         return next(i.platform for i in self.installs if i.id == install_id)
 
     async def disconnect(self, *, tenant_id: str, install_id: str) -> SimpleNamespace:
+        """Ended, a chat lets go of its room, as `chat_rooms` then says."""
         self.disconnected.append(install_id)
+        self.rooms.pop(install_id, None)
         return next(i for i in self.installs if i.id == install_id)
 
 
@@ -336,3 +338,65 @@ class TestPrivateRooms:
         with tenant_scope(_TENANT):
             await disconnect_install("t1", _Session(), service, _user(), True)  # type: ignore[arg-type]
         assert service.disconnected == ["t1"]
+
+
+class TestWhatTheCallerMayDisconnect:
+    """Each listed install says whether the caller may disconnect it, by the
+    rule `disconnect_install` enforces."""
+
+    @pytest.mark.parametrize(
+        ("rooms", "admin", "expected"),
+        [
+            # A chat whose room the caller may change; an OAuth install is an
+            # admin's alone.
+            ({"t1": _room()}, False, {"t1": True}),
+            ({"t1": _room()}, True, {"s1": True, "t1": True}),
+            # Readable, but not theirs to change.
+            ({"t1": _room(write="private")}, False, {"t1": False}),
+            # Its room is gone, so it is the tenant's admins' again.
+            ({}, False, {"t1": False}),
+            ({}, True, {"s1": True, "t1": True}),
+        ],
+    )
+    async def test_each_install_says_whether_the_caller_may_disconnect_it(
+        self,
+        rooms: dict[str, SimpleNamespace],
+        admin: bool,
+        expected: dict[str, bool],
+    ) -> None:
+        listed = await list_installs(
+            _Session(),  # type: ignore[arg-type]
+            _Service(rooms=rooms),  # type: ignore[arg-type]
+            _user(),
+            admin,
+        )
+        assert {i.id: i.can_disconnect for i in listed.installs} == expected
+
+    async def test_an_ended_install_says_so_by_its_status_not_its_flag(self) -> None:
+        """Disconnecting it again answers it as it is, so the flag stays the
+        rule the route enforces."""
+        ended = _install("s1", "slack")
+        ended.status = "disconnected"
+        listed = await list_installs(
+            _Session(),  # type: ignore[arg-type]
+            _Service(installs=[ended]),  # type: ignore[arg-type]
+            _user(),
+            True,
+        )
+        assert [(i.status, i.can_disconnect) for i in listed.installs] == [
+            ("disconnected", True)
+        ]
+
+    @pytest.mark.parametrize(("admin", "expected"), [(False, False), (True, True)])
+    async def test_a_disconnected_chat_is_an_admins_once_its_room_is_let_go(
+        self, admin: bool, expected: bool
+    ) -> None:
+        with tenant_scope(_TENANT):
+            ended = await disconnect_install(
+                "t1",
+                _Session(),  # type: ignore[arg-type]
+                _Service(),  # type: ignore[arg-type]
+                _user(),
+                admin,
+            )
+        assert ended.can_disconnect is expected

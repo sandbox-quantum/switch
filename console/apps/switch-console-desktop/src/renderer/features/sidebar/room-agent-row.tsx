@@ -28,6 +28,7 @@ import { AgentStatusSlot } from './agent-status-slot';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
 import { MigrationProblemIndicator } from './migration-problem-indicator';
 import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
+import { mayChangeRoomMembers } from './sidebar-room-grouping';
 import { depthIndent, roomAgentGroupKey } from './sidebar-store';
 
 /**
@@ -211,12 +212,14 @@ export const RoomAgentRow = observer(function RoomAgentRow({
           )}
         </SidebarMenuRow>
       </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem variant="destructive" onClick={removeFromRoom}>
-          <DoorOpen className="size-4" />
-          Remove from this room
-        </ContextMenuItem>
-      </ContextMenuContent>
+      {mayChangeRoomMembers(roomId) && (
+        <ContextMenuContent>
+          <ContextMenuItem variant="destructive" onClick={removeFromRoom}>
+            <DoorOpen className="size-4" />
+            Remove from this room
+          </ContextMenuItem>
+        </ContextMenuContent>
+      )}
     </ContextMenu>
   );
 });

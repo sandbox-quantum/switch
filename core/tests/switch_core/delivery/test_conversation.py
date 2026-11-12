@@ -473,6 +473,43 @@ class TestFollowUpsOff:
         assert await world.route("helper", reply) == THREAD
 
 
+# ── A room routing by decision ──────────────────────────────────────────────
+
+
+class TestAutoRouteOn:
+    """Automatic routing switches the thread follow-up off, and nothing
+    else: the decision service, which sees the whole thread, decides thread
+    replies instead."""
+
+    async def test_no_thread_follow_up(self, world: World) -> None:
+        answer = await world.post("helper", "It starts the stack", at=0)
+        reply = await world.post(
+            "alice", "why two database roles?", at=30, thread=answer
+        )
+
+        decision = await world.decide("helper", reply, auto_route_on=True)
+        assert decision.route is None
+        assert decision.reason == (
+            "thread follow-ups are off while automatic routing is on"
+        )
+        assert await world.route("helper", reply) == THREAD
+
+    async def test_the_channel_follow_up_still_applies(self, world: World) -> None:
+        await world.post("alice", "@helper first", at=0)
+        await world.post("helper", "answer", at=20)
+        follow_up = await world.post("alice", "and then?", at=40)
+
+        assert await world.route("helper", follow_up, auto_route_on=True) == CHANNEL
+
+    async def test_the_main_agent_still_gets_thread_replies(self, world: World) -> None:
+        await world.assign("helper")
+        answer = await world.post("reviewer", "One nit", at=0)
+        reply = await world.post("alice", "which nit?", at=30, thread=answer)
+
+        assert await world.route("helper", reply, auto_route_on=True) == MAIN
+        assert await world.route("reviewer", reply, auto_route_on=True) is None
+
+
 # ── Fixes from review ───────────────────────────────────────────────────────
 
 

@@ -3,11 +3,9 @@ import { ArrowUpCircle, Power, ShieldCheck } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
-import { AdminFrame, adminGroupsInScope } from '@renderer/features/admin/admin-frame';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -31,11 +29,7 @@ import {
   stopManagedServer,
 } from './managed-server-actions';
 import { WorkingSpinner } from './managed-server-dot';
-import {
-  type ManagedServerState,
-  isFrozenServer,
-  managedServerState,
-} from './managed-server-state';
+import { type ManagedServerState, managedServerState } from './managed-server-state';
 import { managedTelemetryNotice } from './managed-telemetry-notice';
 import { remoteServerStore } from './remote-server-store';
 import { serverIcon } from './server-icon';
@@ -115,32 +109,22 @@ const ManagedServerMainPanel = observer(function ManagedServerMainPanel() {
       </div>
     );
   }
-  return <ManagedServerInAdmin server={server} />;
-});
-
-/**
- * The page as the Admin menu's Status entry. While the server can't answer
- * the menu holds only this entry: the rest need the server, and the way to
- * start it is all that stays live.
- */
-const ManagedServerInAdmin = observer(function ManagedServerInAdmin({
-  server,
-}: {
-  server: SwitchServer;
-}) {
-  const serviceConnections = useFeatureFlags(server.id).service_connections;
-  const groups = adminGroupsInScope(server.id, serviceConnections && !isFrozenServer(server));
   return (
-    <AdminFrame serverId={server.id} groups={groups} active="status">
-      <ManagedServerPage server={server} />
-    </AdminFrame>
+    <div className="relative z-10 flex min-h-0 flex-1 overflow-auto bg-background">
+      <div className="mx-auto w-full max-w-[880px] px-8">
+        <ManagedServerPage server={server} />
+      </div>
+    </div>
   );
 });
 
-const ManagedServerPage = observer(function ManagedServerPage({
+export const ManagedServerPage = observer(function ManagedServerPage({
   server,
+  embedded = false,
 }: {
   server: SwitchServer;
+  /** Set inside another page, Settings' System status, which pads it already. */
+  embedded?: boolean;
 }) {
   const sshHost = server.managementKind === 'remote' ? server.sshHost : null;
   const confirm = useSharedActionConfirm(sshHost);
@@ -240,7 +224,7 @@ const ManagedServerPage = observer(function ManagedServerPage({
   });
 
   return (
-    <div className="min-w-0 pt-10 pb-10">
+    <div className={embedded ? 'min-w-0' : 'min-w-0 pt-10 pb-10'}>
       <div className="w-full max-w-[720px] space-y-[18px]">
         <header className="flex items-center gap-3">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--fill)]">

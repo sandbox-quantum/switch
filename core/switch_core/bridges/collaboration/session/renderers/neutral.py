@@ -14,8 +14,7 @@ Four renderings live here:
   activity presentation of its own.
 - `turn_status` — the compact one a platform edits in place while a turn runs:
   where the turn got to, how long it has been going, what it is doing now, how
-  the tool calls went, and one link to the Console. One message, edited, never
-  a second one.
+  the tool calls went. One message, edited, never a second one.
 - `activity_log` — the calls behind that status and what the agent said while
   making them, one to a line. Not part of the status and not posted beside it:
   what a platform draws where it has somewhere to put a list, which on Discord
@@ -65,6 +64,7 @@ from . import (
     turn_state,
     unanswerable,
 )
+from .subagents import is_tool_call, subagent_lines
 
 _CONSOLE = "Open in Switch Console"
 
@@ -245,6 +245,13 @@ def turn_summary(
         hint = f"\nCancel: {escape(cancel_command)}"
         if len(state) + len(hint) <= limit:
             state += hint
+    children = subagent_lines(
+        items, fit=lambda text, size: _fit(text, size, escape=escape)
+    )
+    for line in children:
+        if len(state) + len(line) + 1 > limit:
+            break
+        state += f"\n{line}"
     said = [item for item in items if item.kind == "assistant-message"]
     if not said:
         return _truncate(state, limit)
@@ -322,7 +329,14 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
-    did = [item for item in items if item.kind == "tool-activity"]
+    for line in subagent_lines(
+        items, fit=lambda text, size: _fit(text, size, escape=escape)
+    ):
+        if spent + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        spent += len(line) + 1
+    did = [item for item in items if is_tool_call(item)]
     for line in _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail
     ):
@@ -410,7 +424,10 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
-    line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
+    marker = (
+        "Subagent" if item.kind == "tool-activity" and item.subagent else _TOOL_MARKER
+    )
+    line = f"{marker} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
     return line

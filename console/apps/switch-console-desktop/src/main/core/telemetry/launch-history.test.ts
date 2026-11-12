@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   readFails: false,
   isCanary: false,
   databaseExisted: true,
+  handedOver: false,
 }));
 
 vi.mock('./telemetry-service', () => ({ trackEvent: h.trackEvent }));
@@ -24,6 +25,9 @@ vi.mock('@main/db/client', () => ({
   },
 }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: h.warn } }));
+vi.mock('@main/core/updates/pending-install', () => ({
+  pendingInstall: { take: async () => h.handedOver },
+}));
 vi.mock('@main/db/kv', () => ({
   KV: class {
     private values = new Map<string, unknown>();
@@ -69,8 +73,8 @@ describe('which kind of launch this is', () => {
 
 describe('canary and stable, which share one database', () => {
   it('do not read a switch between them as an upgrade', async () => {
-    const launch = (channel: 'canary' | 'stable', version: string) =>
-      recordLaunch({ version, channel, databaseExisted: true });
+    const launch = async (channel: 'canary' | 'stable', version: string) =>
+      (await recordLaunch({ version, channel, databaseExisted: true })).kind;
 
     expect(await launch('stable', '1.4.0')).toBe('updated');
     expect(await launch('canary', '1.5.0-canary.2')).toBe('updated');
@@ -90,6 +94,7 @@ describe('reporting a launch at boot', () => {
     h.trackEvent.mockClear();
     h.warn.mockClear();
     h.readFails = false;
+    h.handedOver = false;
     launches = await import('./launch-history');
   });
 
@@ -106,6 +111,50 @@ describe('reporting a launch at boot', () => {
     expect(h.trackEvent.mock.calls).toEqual([
       ['app_launched', { install_kind: 'new' }],
       ['app_launched', { install_kind: 'same' }],
+    ]);
+  });
+
+  const launchAt = (version: string) => async () => ({
+    version,
+    channel: 'stable' as const,
+    databaseExisted: true,
+  });
+
+  it('reports an upgrade as installed, with the version it came from', async () => {
+    h.handedOver = true;
+
+    await launches.reportLaunch(launchAt('0.40.1'));
+    await launches.reportLaunch(launchAt('0.41.0'));
+
+    expect(h.trackEvent.mock.calls).toEqual([
+      // A database with no launch record predates the tracking: an upgrade from
+      // a version nobody wrote down.
+      ['app_launched', { install_kind: 'updated' }],
+      ['update_installed', { from_version: 'unknown', trigger: 'restart_button' }],
+      ['app_launched', { install_kind: 'updated' }],
+      ['update_installed', { from_version: '0.40.1', trigger: 'restart_button' }],
+    ]);
+  });
+
+  it('says other for an update nobody pressed Restart for', async () => {
+    await launches.reportLaunch(launchAt('0.40.1'));
+    h.trackEvent.mockClear();
+
+    await launches.reportLaunch(launchAt('0.41.0-canary.2'));
+
+    expect(h.trackEvent.mock.calls).toEqual([
+      ['app_launched', { install_kind: 'updated' }],
+      ['update_installed', { from_version: '0.40.1', trigger: 'other' }],
+    ]);
+  });
+
+  it('reports no install on a new install or a relaunch', async () => {
+    await launches.reportLaunch(firstLaunch);
+    await launches.reportLaunch(firstLaunch);
+
+    expect(h.trackEvent.mock.calls.map(([event]) => event)).toEqual([
+      'app_launched',
+      'app_launched',
     ]);
   });
 
@@ -141,6 +190,7 @@ describe('asking for this launch’s kind', () => {
     vi.resetModules();
     h.warn.mockClear();
     h.readFails = false;
+    h.handedOver = false;
     launches = await import('./launch-history');
   });
 

@@ -52,6 +52,7 @@ from tests.switch_core.bridges.collaboration.test_lifecycle_tenant_binding impor
     _StubAdapter,
     _StubConfig,
 )
+from tests.telemetry_records import declared
 
 
 class _RecordingSink:
@@ -80,6 +81,7 @@ def _service_with_telemetry(
         version=None,
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
         session_factory=session_factory,
         installed_at=installed_at,
     )
@@ -128,7 +130,7 @@ async def _bridge_connected_events(sink: _RecordingSink) -> list[dict[str, Any]]
     for record in sink.sent:
         if record.name != "switch_core.bridge_connected":
             continue
-        properties = dict(record.properties)
+        properties = declared(record)
         duration = properties.pop("duration_ms")
         assert isinstance(duration, int | float) and not isinstance(duration, bool)
         assert duration >= 0, "a connect cannot take less than no time"

@@ -19,7 +19,7 @@ const claudeLikePlugin = { behavior: { mcp: {} } } as unknown as Plugin;
 const WD = '/home/agent/repo';
 
 /** The profile filename stem is the `--profile` value; assert they agree. */
-const PROFILE_STEM = /^codex-hoot-[a-z0-9]+$/;
+const PROFILE_STEM = /^codex-agent-[a-z0-9]+$/;
 
 const SPECIALIZED = { model: 'gpt-5.6-terra' };
 
@@ -36,6 +36,9 @@ function memoryFs(): PluginFs & { files: Map<string, string> } {
     async delete(p) {
       files.delete(p);
     },
+    async protectSecret(p) {
+      return files.has(p);
+    },
     async exists(p) {
       return files.has(p);
     },
@@ -48,7 +51,7 @@ function memoryFs(): PluginFs & { files: Map<string, string> } {
 describe('resolveAgentLaunchProfile', () => {
   it('returns a Codex profile keyed on the (dir, slug)', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       specialization: SPECIALIZED,
     });
@@ -61,7 +64,7 @@ describe('resolveAgentLaunchProfile', () => {
 
   it('registers no MCP server — the session host supplies that', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       specialization: SPECIALIZED,
     })!;
@@ -72,12 +75,12 @@ describe('resolveAgentLaunchProfile', () => {
 
   it('gives two agents that share a name in different dirs distinct profiles', () => {
     const a = resolveAgentLaunchProfile(codexPlugin, {
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: '/dir/one',
       specialization: SPECIALIZED,
     })!;
     const b = resolveAgentLaunchProfile(codexPlugin, {
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: '/dir/two',
       specialization: SPECIALIZED,
     })!;
@@ -87,7 +90,7 @@ describe('resolveAgentLaunchProfile', () => {
 
   it('folds per-agent specialization into the one profile file', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       specialization: { model: 'gpt-5.6-terra', effort: 'high', instructions: 'be terse' },
     })!;
@@ -102,7 +105,7 @@ describe('resolveAgentLaunchProfile', () => {
 
   it('keeps the system prompt out of the argv the SSH paths re-quote', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       specialization: { instructions: 'be terse\n$(whoami) "quoted"' },
     })!;
@@ -148,7 +151,7 @@ describe('prepareAgentLaunchProfile', () => {
     const { args } = await prepareAgentLaunchProfile(codexPlugin, {
       homeFs: fs,
       homeDir: HOME,
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       specialization: SPECIALIZED,
     });
@@ -161,7 +164,7 @@ describe('prepareAgentLaunchProfile', () => {
     const { args } = await prepareAgentLaunchProfile(codexPlugin, {
       homeFs: fs,
       homeDir: HOME,
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       specialization: { instructions: 'be terse' },
     });
@@ -207,7 +210,7 @@ describe('prepareAgentLaunchProfile', () => {
     const { env } = await prepareAgentLaunchProfile(opencodePlugin, {
       homeFs: fs,
       homeDir: HOME,
-      slug: 'oc-hoot',
+      slug: 'oc-agent',
       workingDir: WD,
       specialization: { model: 'anthropic/claude-sonnet-4-5', instructions: 'be terse' },
     });

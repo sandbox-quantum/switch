@@ -7,6 +7,7 @@ import {
 } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { pipeline } from 'node:stream/promises';
+import { type OwedSessionStart, reportedStartSource } from '@switch-console/agent-providers';
 import { isRevoked, PROTOCOL_HEADER } from './api';
 import { errorMessage, type Logger } from './log';
 import type { Forwarder } from './relay';
@@ -53,6 +54,8 @@ const ERROR_BODY_BYTES = 64 * 1024;
 
 /** An agent operation, `POST /agents/{agent}/ops/{operation}`, which the socket can carry. */
 const OPERATION = /^\/agents\/([^/?]+)\/ops\/([^/?]+)$/;
+/** A session host's report that its session started (`host/session-start.ts`). */
+const SESSION_STARTED = /^\/agent-sessions\/([^/?]+)\/started$/;
 
 export type UpstreamAuth = {
   /** The controller's current access token. */
@@ -73,6 +76,12 @@ export class UpstreamForwarder implements Forwarder {
       log: Logger;
       /** Carries the agents' operations on the controller's socket, when it takes them. */
       calls?: SocketCalls;
+      /** A session host's start report that Switch took. */
+      sessionStarted: (started: {
+        agentId: string;
+        sessionId: string;
+        startSource: OwedSessionStart;
+      }) => void;
     }
   ) {}
 
@@ -157,7 +166,10 @@ export class UpstreamForwarder implements Forwarder {
         res.end(text);
         return;
       }
-      res.writeHead(upstream.statusCode ?? 502, responseHeaders(upstream.headers, true));
+      const status = upstream.statusCode ?? 502;
+      if (method === 'POST' && status >= 200 && status < 300 && buffered !== null)
+        this.noticeStart(target, buffered);
+      res.writeHead(status, responseHeaders(upstream.headers, true));
       try {
         await pipeline(upstream, res);
       } catch (error) {
@@ -167,6 +179,32 @@ export class UpstreamForwarder implements Forwarder {
         });
       }
       return;
+    }
+  }
+
+  /** Passes on a session start Switch took, when this was the host's report of one. */
+  private noticeStart(target: { agentId: string; path: string }, body: Buffer): void {
+    const route = SESSION_STARTED.exec(new URL(target.path, 'http://relay.invalid').pathname);
+    if (!route) return;
+    let sessionId: string;
+    let startSource: OwedSessionStart | null;
+    try {
+      sessionId = decodeURIComponent(route[1]!);
+      startSource = reportedStartSource(
+        (JSON.parse(body.toString('utf8')) as { start_source?: unknown }).start_source
+      );
+    } catch {
+      return;
+    }
+    if (startSource === null) return;
+    try {
+      this.deps.sessionStarted({ agentId: target.agentId, sessionId, startSource });
+    } catch (error) {
+      // Passing the start on is a courtesy to whoever runs this controller;
+      // the report itself reached Switch, and its answer still goes back.
+      this.deps.log.warn('Could not pass on a session start', {
+        error: errorMessage(error),
+      });
     }
   }
 

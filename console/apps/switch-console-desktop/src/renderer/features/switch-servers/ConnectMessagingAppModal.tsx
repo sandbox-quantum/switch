@@ -334,8 +334,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
               {server && !isAdmin && (
                 <p className="text-xs text-destructive">
-                  Connecting a messaging app requires an owner or admin of this workspace. You are a
-                  member without admin rights, so the server would reject this.
+                  Connecting a messaging app requires an admin of this workspace. You are a member
+                  without admin rights, so the server would reject this.
                 </p>
               )}
 
@@ -609,7 +609,7 @@ function messageFor(result: Exclude<CreateBridgeResult, { kind: 'created' }>): s
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Connecting a messaging app requires an owner or admin of this workspace.';
+      return 'Connecting a messaging app requires an admin of this workspace.';
     case 'invalid':
       // The gateway validated the credentials against the platform's own config
       // model, so its wording is more specific than anything we could invent.

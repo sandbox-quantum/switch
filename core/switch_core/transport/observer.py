@@ -25,6 +25,9 @@ class ParticipantMessage:
     sender_client_id: str
     #: The writer's `ActorRole`: `human`, `agent`, `system` or `bridge`.
     sender_role: str
+    #: The bridge marked the post as an integration's, not a person's
+    #: (`SENDER_IS_APP_MARKER`). Only ever true for a `human` writer.
+    sender_is_app: bool
     has_attachment: bool
     in_thread: bool
 

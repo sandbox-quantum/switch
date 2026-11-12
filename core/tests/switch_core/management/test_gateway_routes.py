@@ -488,8 +488,20 @@ class TestManagedAgents:
             "opencode",
             "cursor",
             "antigravity",
+            "deepseek-harness",
+            "pi",
+            "copilot",
+            "kiro",
+            "mistral-vibe",
+            "goose",
+            "qwen",
+            "droid",
+            "cline",
+            "junie",
         }
         assert providers["cursor"] == {"fields": []}
+        assert providers["kiro"] == {"fields": []}
+        assert providers["droid"] == {"fields": []}
         effort = next(
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
@@ -514,6 +526,16 @@ class TestManagedAgents:
             "opencode",
             "antigravity",
             "cursor",
+            "deepseek-harness",
+            "pi",
+            "copilot",
+            "kiro",
+            "mistral-vibe",
+            "goose",
+            "qwen",
+            "droid",
+            "cline",
+            "junie",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:
@@ -1111,3 +1133,49 @@ class TestMachineNameAndDescription:
         assert response.status_code == 422, response.text
         assert response.json()["error"]["code"] == "validation_error"
         assert listed.json()[0]["name"] == "laptop"
+
+
+class TestWhatTheOwnerMayDo:
+    async def test_each_machine_and_managed_agent_says_what_its_owner_may_do(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        cookies = cookies_for(ada)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, ada, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+
+            [machine] = (
+                await client.get("/gateway/management/controllers", cookies=cookies)
+            ).json()
+            [listed] = (
+                await client.get("/gateway/management/agents", cookies=cookies)
+            ).json()
+            single = (
+                await client.get(
+                    f"/gateway/management/agents/{agent_id}", cookies=cookies
+                )
+            ).json()
+            await client.delete(
+                f"/gateway/management/controllers/{controller.controller_id}",
+                cookies=cookies,
+            )
+            [revoked] = (
+                await client.get("/gateway/management/controllers", cookies=cookies)
+            ).json()
+
+        assert (created.json()["can_edit"], created.json()["can_delete"]) == (
+            True,
+            True,
+        )
+        assert (machine["can_edit"], machine["can_remove"]) == (True, True)
+        assert (listed["can_edit"], listed["can_delete"]) == (True, True)
+        assert (single["can_edit"], single["can_delete"]) == (True, True)
+        # Still the caller's to rename and remove: removing it again does
+        # nothing, which its `revoked_at` says.
+        assert revoked["revoked_at"] is not None
+        assert (revoked["can_edit"], revoked["can_remove"]) == (True, True)

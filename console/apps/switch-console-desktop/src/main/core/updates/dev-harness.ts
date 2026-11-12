@@ -16,6 +16,8 @@ export const FAKE_UPDATE_DURATION_ENV_VAR = 'SWITCHDASH_FAKE_UPDATE_MS';
 export const FAKE_UPDATE_SCENARIOS = [
   /** Check finds an update; download succeeds; install rolls back (dev cannot restart). */
   'available',
+  /** Check finds an update; download succeeds; the install fails. */
+  'install-error',
   /** Check finds an update; the download fails part-way. */
   'download-error',
   /** The check itself fails. */

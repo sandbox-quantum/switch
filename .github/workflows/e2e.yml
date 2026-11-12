@@ -11,6 +11,8 @@ name: E2E
 #                          model plays the human, another judges the result
 #                browser   the gateway UI in headless Chromium, built from this
 #                          checkout
+#                explore   the same gateway UI, driven at random by Bombadil
+#                          against the properties in its specification
 #
 # Runs against the deployed environments are not here: they live with the
 # deployment configuration, which checks out this harness at the commit the
@@ -50,7 +52,7 @@ on:
     inputs:
       lane:
         type: choice
-        options: [fast, provider, browser, agentic]
+        options: [fast, provider, browser, agentic, explore]
         default: fast
       agent_type:
         description: Provider for the provider lane
@@ -64,7 +66,7 @@ permissions:
 jobs:
   run:
     name: ${{ inputs.lane }} lane
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     environment: ${{ (inputs.lane == 'provider' || inputs.lane == 'agentic') && 'e2e-provider' || '' }}
     outputs:
@@ -85,7 +87,7 @@ jobs:
         env:
           AGENT_TYPE: ${{ inputs.agent_type }}
         run: |
-          case "$LANE" in fast|provider|browser|agentic) ;; *) echo "::error::Unknown lane '$LANE'."; exit 1 ;; esac
+          case "$LANE" in fast|provider|browser|agentic|explore) ;; *) echo "::error::Unknown lane '$LANE'."; exit 1 ;; esac
           case "$LANE" in provider|agentic) REAL_SESSION=1 ;; *) REAL_SESSION=0 ;; esac
           if [ "$REAL_SESSION" = 1 ] && [ "$AGENT_TYPE" != claude-code ]; then
             echo "::error::CI has credentials for claude-code only, not '$AGENT_TYPE'."; exit 1
@@ -114,7 +116,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
-        if: ${{ inputs.lane == 'browser' }}
+        if: ${{ inputs.lane == 'browser' || inputs.lane == 'explore' }}
         working-directory: console/tooling-e2e
         run: pnpm exec playwright install --with-deps chromium
 
@@ -146,6 +148,8 @@ jobs:
           SWITCH_E2E_DRIVER_MODEL: claude-sonnet-5
           SWITCH_E2E_JUDGE_MODEL: claude-sonnet-5
           SWITCH_E2E_AGENTIC_BUDGET_USD: '2'
+          # How long the explore lane explores.
+          SWITCH_E2E_EXPLORE_TIME_LIMIT: 10m
         run: console/tooling-e2e/scripts/ephemeral-stack.sh
 
       - name: Summarise the run

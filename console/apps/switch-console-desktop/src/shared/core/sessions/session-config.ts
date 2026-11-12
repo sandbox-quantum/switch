@@ -20,6 +20,10 @@ const initialPromptDeliverySchema = z.object({
 
 export type InitialPromptDelivery = z.infer<typeof initialPromptDeliverySchema>;
 
+const cliConversationSchema = z.object({ nativeSessionId: z.string(), title: z.string() });
+
+export type ContinuedCliConversation = z.infer<typeof cliConversationSchema>;
+
 const sessionConfigV0Schema = z.object({
   autoApprove: z.boolean().optional(),
   autoMode: z.boolean().optional(),
@@ -30,6 +34,9 @@ const sessionConfigV0Schema = z.object({
   /** Delivery state of `initialPrompt`, so a relaunch can tell "never submitted"
    *  from "already delivered" instead of guessing from the launch result. */
   initialPromptDelivery: initialPromptDeliverySchema.optional(),
+  /** The conversation started in Claude Code's own CLI that this session continues;
+   *  `providerSessionId` is the copy of it the session runs. */
+  cliConversation: cliConversationSchema.optional(),
 });
 
 export const sessionConfig = defineVersionedSchema().unversioned(sessionConfigV0Schema).build();

@@ -1,7 +1,7 @@
 import { toast } from 'sonner';
 import type { AdminSection } from '@renderer/features/admin/admin-sections';
 import { isAgentSection } from '@renderer/features/managed-agents/agent-sections';
-import type { SettingsPageTab } from '@renderer/features/settings/components/SettingsPage';
+import { resolveSettingsTab } from '@renderer/features/settings/settings-tabs';
 import { findBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
@@ -27,7 +27,7 @@ export async function openConsoleLink(raw: string): Promise<void> {
   const { link } = parsed;
   if (link.page === 'settings') {
     appState.navigation.navigate('settings', {
-      tab: (link.tab ?? 'general') as SettingsPageTab,
+      tab: resolveSettingsTab(link.tab),
     });
     return;
   }
@@ -85,7 +85,7 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       return;
     case 'agents/new':
       navigation.navigate('serverAgents', { serverId });
-      showModal('addAgentModal', { entryPoint: 'link' });
+      showModal('addAgentModal', { entryPoint: 'link', machine: null });
       return;
     case 'agent':
       await openAgent(serverId, link.id!, link.tab);
@@ -112,7 +112,13 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       navigation.navigate('templateDetail', { serverId, templateId: link.id! });
       return;
     case 'messaging-apps/connect':
-      navigation.navigate('server', { serverId });
+      // Connecting an app is the workspace admins'; anyone else can only link
+      // their own account, which Settings does.
+      if (!administersWorkspaceInScope(serverId)) {
+        navigation.navigate('settings', { tab: 'messaging-apps' });
+        return;
+      }
+      navigation.navigate('admin', { serverId, section: 'messaging-apps' });
       showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       return;
     case 'connections':
@@ -155,8 +161,9 @@ function openServerSettings(serverId: string): void {
 }
 
 /**
- * Admin is for the workspace's admins, and for whoever runs the server, who
- * finds its Status page there; anyone else lands on the home and is told why.
+ * Admin is for the workspace's admins. Whoever runs the server without
+ * administering it is looking for its status, and is sent there; anyone else
+ * lands on the home and is told why.
  */
 function openAdmin(serverId: string, tab: string | null): void {
   if (!administersWorkspaceInScope(serverId)) {
@@ -166,7 +173,7 @@ function openAdmin(serverId: string, tab: string | null): void {
     }
     appState.navigation.navigate('server', { serverId });
     toast.error('Admin is for workspace admins', {
-      description: 'Ask an owner or admin of this workspace to change these.',
+      description: 'Ask an admin of this workspace to change these.',
     });
     return;
   }

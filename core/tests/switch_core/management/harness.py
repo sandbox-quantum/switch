@@ -343,7 +343,13 @@ async def add_member(
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
     return {
         "switch_auth": create_jwt(
-            user.id, user.email, user.role, TEST_KEYRING, tenant_id
+            user.id,
+            user.email,
+            user.role,
+            TEST_KEYRING,
+            tenant_id,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
     }
 
@@ -721,3 +727,102 @@ async def beat(
         error = controller_routes._connection_refusal(exc)
         return Answer(error.status_code, error.body())
     return Answer(200, {"agents": agents})
+
+
+class ControllerSocket:
+    """The controller's socket to one process, through the agent bridge's app
+    and its bearer middleware, driven in the test's own event loop: the route
+    runs as it does in the server, pings included, against this process's
+    presence and database."""
+
+    def __init__(
+        self,
+        harness: Harness,
+        controller: EnrolledController,
+        opened: dict[str, Any],
+    ) -> None:
+        self._to_server: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._from_server: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._to_server.put_nowait({"type": "websocket.connect"})
+        path = f"/v1/controllers/{controller.controller_id}/connection/ws"
+        query = (
+            f"connection_id={opened['connection_id']}&generation={opened['generation']}"
+        )
+        scope = {
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "scheme": "ws",
+            "server": ("test", 80),
+            "client": ("127.0.0.1", 1),
+            "root_path": "",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": query.encode(),
+            "headers": [(b"host", b"test")]
+            + [
+                (name.lower().encode(), value.encode())
+                for name, value in controller.headers.items()
+            ],
+            "subprotocols": [],
+            "state": {},
+        }
+        self.served = asyncio.create_task(
+            harness.app(scope, self._to_server.get, self._from_server.put)
+        )
+
+    async def _frame(self) -> dict[str, Any]:
+        while True:
+            message = await self._from_server.get()
+            if message["type"] == "websocket.close":
+                raise AssertionError(
+                    f"the server closed the socket ({message.get('code')})"
+                )
+            if message["type"] == "websocket.send":
+                return dict(json.loads(message["text"]))
+
+    async def until(self, event: str, timeout: float = 3.0) -> dict[str, Any]:
+        """The data of the next frame of this kind, the others skipped."""
+
+        async def read() -> dict[str, Any]:
+            while True:
+                frame = await self._frame()
+                if frame["event"] == event:
+                    return dict(frame["data"])
+
+        return await asyncio.wait_for(read(), timeout)
+
+    async def hold(self, seconds: float) -> list[str]:
+        """Read the socket for `seconds`, answering every ping with a pong as
+        a controller does. Returns the other frames' events."""
+        seen: list[str] = []
+
+        async def read() -> None:
+            while True:
+                frame = await self._frame()
+                if frame["event"] == "ping":
+                    self._to_server.put_nowait(
+                        {
+                            "type": "websocket.receive",
+                            "text": json.dumps({"type": "pong", "cursors": {}}),
+                        }
+                    )
+                else:
+                    seen.append(frame["event"])
+
+        try:
+            await asyncio.wait_for(read(), seconds)
+        except TimeoutError:
+            pass
+        return seen
+
+    async def go(self, timeout: float = 3.0) -> None:
+        """The controller closes its socket. Returns once the server has let
+        it go."""
+        self._to_server.put_nowait({"type": "websocket.disconnect", "code": 1000})
+        try:
+            await asyncio.wait_for(self.served, timeout)
+        except TimeoutError:
+            raise AssertionError(
+                f"the server still held the socket {timeout} s after it closed"
+            ) from None

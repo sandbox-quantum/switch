@@ -8,10 +8,11 @@
     "test": "vitest run",
     "test:e2e": "vitest run",
     "cleanup": "node --experimental-strip-types src/cleanup.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/explore/spec"
   },
   "devDependencies": {
-    "playwright": "1.60.0",
+    "@antithesishq/bombadil": "0.7.10",
+    "playwright": "1.65.0",
     "typescript": "^5.9.2",
     "vitest": "^5.0.1",
     "yaml": "2.9.0"

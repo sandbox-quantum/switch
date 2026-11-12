@@ -400,8 +400,8 @@ class TestAttachToRoomIsIdempotent:
             )
             await session.commit()
 
-            await store.attach_to_room(session, room.id, ref.id)
-            await store.attach_to_room(session, room.id, ref.id)
+            assert await store.attach_to_room(session, room.id, ref.id) is True
+            assert await store.attach_to_room(session, room.id, ref.id) is False
             await session.commit()
 
             count = await session.scalar(

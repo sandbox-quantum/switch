@@ -45,53 +45,63 @@ describe('the Admin page’s sections', () => {
   const person = {
     administers: false,
     operator: false,
+    operatesGatewaylessServer: false,
     serviceConnections: true,
-    managed: false,
   };
 
-  it('shows the workspace switches to its admins, and the apps under Server to the operator alone', () => {
+  it('gives workspace admins its messaging apps, connector switches and decision routing', () => {
     expect(adminGroups({ ...person, administers: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
-    ]);
-    expect(adminGroups({ ...person, administers: true, operator: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
-      { scope: 'server', items: ['apps'] },
+      { scope: 'workspace', items: ['messaging-apps', 'connectors', 'decision'] },
     ]);
     expect(adminGroups(person)).toEqual([]);
   });
 
-  it('puts the status of a server this Console runs first under Server, for whoever runs it', () => {
-    expect(adminGroups({ ...person, administers: true, operator: true, managed: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
-      { scope: 'server', items: ['status', 'apps'] },
-    ]);
-    expect(adminGroups({ ...person, managed: true })).toEqual([
-      { scope: 'server', items: ['status'] },
-    ]);
+  it('hides decision routing from a member who is not the workspace’s admin', () => {
+    const member = adminGroups({ ...person, serviceConnections: false });
+    expect(member.flatMap((group) => group.items)).not.toContain('decision');
   });
 
-  it('keeps the connector sections behind service connections, but not the status', () => {
-    const off = { ...person, serviceConnections: false, administers: true, operator: true };
-    expect(adminGroups(off)).toEqual([]);
-    expect(adminGroups({ ...off, managed: true })).toEqual([
-      { scope: 'server', items: ['status'] },
+  it('gives the server’s operator Switch Trust, and connector apps only on a Switch with no gateway', () => {
+    const operator = { ...person, administers: true, operator: true };
+    expect(adminGroups(operator)).toEqual([
+      { scope: 'workspace', items: ['messaging-apps', 'connectors', 'decision'] },
+      { scope: 'server', items: ['switch-trust'] },
+    ]);
+    expect(adminGroups({ ...operator, operatesGatewaylessServer: true })[1]).toEqual({
+      scope: 'server',
+      items: ['switch-trust', 'apps'],
+    });
+  });
+
+  it('keeps only the connector sections behind service connections, not decision routing', () => {
+    expect(
+      adminGroups({
+        administers: true,
+        operator: true,
+        operatesGatewaylessServer: true,
+        serviceConnections: false,
+      })
+    ).toEqual([
+      { scope: 'workspace', items: ['messaging-apps', 'decision'] },
+      { scope: 'server', items: ['switch-trust'] },
     ]);
   });
 
   it('opens the section asked for when the person may use it, otherwise the first', () => {
-    const operator = adminGroups({ ...person, administers: true, operator: true });
+    const operator = adminGroups({
+      ...person,
+      administers: true,
+      operator: true,
+      operatesGatewaylessServer: true,
+    });
     const admin = adminGroups({ ...person, administers: true });
     expect(shownAdminSection(operator, 'apps')).toBe('apps');
-    expect(shownAdminSection(admin, 'apps')).toBe('connectors');
-    expect(shownAdminSection(admin, undefined)).toBe('connectors');
+    expect(shownAdminSection(admin, 'apps')).toBe('messaging-apps');
+    expect(shownAdminSection(admin, 'connectors')).toBe('connectors');
+    expect(shownAdminSection(admin, 'decision')).toBe('decision');
     expect(shownAdminSection([], 'connectors')).toBeNull();
-  });
-
-  it('never opens the status as one of the page’s own sections', () => {
-    const runner = adminGroups({ ...person, managed: true });
-    expect(shownAdminSection(runner, undefined)).toBeNull();
-    const operator = adminGroups({ ...person, administers: true, operator: true, managed: true });
-    expect(shownAdminSection(operator, undefined)).toBe('connectors');
+    const off = adminGroups({ ...person, administers: true, serviceConnections: false });
+    expect(shownAdminSection(off, 'connectors')).toBe('messaging-apps');
   });
 });
 

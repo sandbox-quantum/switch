@@ -22,7 +22,7 @@ async def _make_room(
         Room(transport_room_id=f"!{name}:test", name=name, description=f"{name} desc"),
     )
     if group_id is not None:
-        await rooms.set_group(session, room.id, group_id)
+        await rooms.set_group(session, room.id, group_id, acting_is_admin=True)
     return room
 
 
@@ -74,7 +74,7 @@ class TestRoomGroupStore:
             assert counts == {g.id: 1}
 
             # Clearing the group makes the room standalone.
-            await rooms.set_group(session, r.id, None)
+            await rooms.set_group(session, r.id, None, acting_is_admin=True)
             await session.commit()
             assert await store.get_room_counts(session) == {}
             refreshed = await rooms.get(session, r.id)
@@ -88,7 +88,53 @@ class TestRoomGroupStore:
             r = await _make_room(rooms, session, "room-b")
             await session.commit()
             with pytest.raises(ValueError, match="Room group not found"):
-                await rooms.set_group(session, r.id, "nope")
+                await rooms.set_group(session, r.id, "nope", acting_is_admin=True)
+
+    async def test_only_an_admin_files_a_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        rooms = Rooms()
+        async with session_factory() as session:
+            g = await store.create(
+                session, name="G", description=None, color=None, parent_group_id=None
+            )
+            r = await _make_room(rooms, session, "room-c")
+            await session.commit()
+            with pytest.raises(PermissionError, match="workspace admin"):
+                await rooms.set_group(session, r.id, g.id, acting_is_admin=False)
+            with pytest.raises(PermissionError, match="workspace admin"):
+                await rooms.set_group_bulk(session, [r.id], g.id, acting_is_admin=False)
+            refreshed = await rooms.get(session, r.id)
+            assert refreshed is not None and refreshed.group_id is None
+
+    async def test_a_non_admin_keeps_or_clears_the_current_group(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        rooms = Rooms()
+        async with session_factory() as session:
+            g = await store.create(
+                session, name="G", description=None, color=None, parent_group_id=None
+            )
+            r = await _make_room(rooms, session, "room-d", group_id=g.id)
+            await session.commit()
+
+            await rooms.set_group(session, r.id, g.id, acting_is_admin=False)
+            await rooms.set_group(session, r.id, None, acting_is_admin=False)
+            await session.commit()
+            refreshed = await rooms.get(session, r.id)
+            assert refreshed is not None and refreshed.group_id is None
+
+    async def test_a_non_admin_is_refused_before_the_group_lookup(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        rooms = Rooms()
+        async with session_factory() as session:
+            r = await _make_room(rooms, session, "room-e")
+            await session.commit()
+            with pytest.raises(PermissionError):
+                await rooms.set_group(session, r.id, "nope", acting_is_admin=False)
 
     async def test_reparent_rejects_self_and_cycles(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -286,13 +332,17 @@ class TestRoomGroupStore:
             r2 = await _make_room(rooms, session, "r2")
             await session.commit()
 
-            assigned = await rooms.set_group_bulk(session, [r1.id, r2.id], g.id)
+            assigned = await rooms.set_group_bulk(
+                session, [r1.id, r2.id], g.id, acting_is_admin=True
+            )
             await session.commit()
             assert assigned == 2
             assert await store.get_room_counts(session) == {g.id: 2}
 
             # Bulk clear (group_id=None) makes them standalone again.
-            cleared = await rooms.set_group_bulk(session, [r1.id, r2.id], None)
+            cleared = await rooms.set_group_bulk(
+                session, [r1.id, r2.id], None, acting_is_admin=True
+            )
             await session.commit()
             assert cleared == 2
             assert await store.get_room_counts(session) == {}
@@ -302,7 +352,9 @@ class TestRoomGroupStore:
     ) -> None:
         rooms = Rooms()
         async with session_factory() as session:
-            assert await rooms.set_group_bulk(session, [], None) == 0
+            assert (
+                await rooms.set_group_bulk(session, [], None, acting_is_admin=True) == 0
+            )
 
 
 async def _group(

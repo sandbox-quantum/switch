@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
@@ -50,6 +51,7 @@ from tests.switch_core.management.harness import cookies_for
 
 ORGANIZATION_APPS = "/gateway/organizations/current/connector-apps"
 CONNECTIONS = "/gateway/service-connections"
+GOOGLE_SCOPE = "https://www.googleapis.com/auth/"
 
 
 @pytest.fixture
@@ -130,12 +132,12 @@ class TestOnlyOrgAdmins:
         self, world: World, session_factory
     ) -> None:
         await _install(world)
-        owner = await _user(session_factory, "owner", member_role="owner")
+        ws_admin = await _user(session_factory, "ws-admin", member_role="admin")
         operator = await _user(session_factory, "operator", role="admin")
         async with world.harness.client() as client:
             answers = [
                 await call(cookies_for(someone))
-                for someone in (owner, operator)
+                for someone in (ws_admin, operator)
                 for call in (
                     lambda cookies: client.get(ORGANIZATION_APPS, cookies=cookies),
                     lambda cookies: client.put(
@@ -182,6 +184,20 @@ class TestOnlyOrgAdmins:
         [google] = [e for e in after.json()["apps"] if e["slug"] == GOOGLE]
         assert google["source"] == "none"
         assert google["server_app"] is True
+
+    async def test_the_scopes_listed_are_the_ones_the_server_chose(
+        self, world: World, session_factory
+    ) -> None:
+        world.catalog = with_access_profiles(CATALOG, {GOOGLE: "drive-file"})
+        await _install(world)
+        admin = await _org_admin(session_factory, "org-admin")
+        async with world.harness.client() as client:
+            listed = await client.get(ORGANIZATION_APPS, cookies=cookies_for(admin))
+        assert listed.status_code == 200, listed.text
+        [google] = [e for e in listed.json()["apps"] if e["slug"] == GOOGLE]
+        scopes = set(google["scopes"])
+        assert f"{GOOGLE_SCOPE}drive.file" in scopes
+        assert not {f"{GOOGLE_SCOPE}drive", f"{GOOGLE_SCOPE}drive.readonly"} & scopes
 
 
 class TestSaving:

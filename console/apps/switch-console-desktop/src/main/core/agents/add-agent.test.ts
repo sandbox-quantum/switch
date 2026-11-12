@@ -19,6 +19,7 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
       files.delete(p);
       return Promise.resolve();
     },
+    protectSecret: (p) => Promise.resolve(files.has(p)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: () => Promise.resolve([...files.keys()]),
   };
@@ -122,7 +123,7 @@ function params(overrides: Record<string, unknown> = {}) {
   return {
     sshHost: null,
     dir: '/repo',
-    name: 'codex-hoot',
+    name: 'codex-agent',
     providerId: 'codex' as const,
     serverId: 'srv-1',
     description: 'Codex running in repo',
@@ -200,32 +201,32 @@ describe('addAgent', () => {
     const result = await addAgent(params());
 
     expect(result.kind).toBe('created');
-    expect(await credsOf(fs, 'codex-hoot')).toEqual({
+    expect(await credsOf(fs, 'codex-agent')).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
       SWITCH_API_TOKEN: 'tok-123',
       SWITCH_AGENT_ID: 'sw-1',
     });
-    expect(await fs.read('.claude/agents/codex-hoot.md')).toBeNull();
+    expect(await fs.read('.claude/agents/codex-agent.md')).toBeNull();
   });
 
   it('writes credentials and a config file, and no provider definition', async () => {
     const fs = h.state.workdir as PluginFs;
 
-    await addAgent(params({ providerId: 'claude', name: 'cc-hoot' }));
+    await addAgent(params({ providerId: 'claude', name: 'cc-agent' }));
 
-    expect((await credsOf(fs, 'cc-hoot')).SWITCH_API_TOKEN).toBe('tok-123');
-    const config = JSON.parse((await fs.read('.switch/config/cc-hoot.json')) ?? '{}');
+    expect((await credsOf(fs, 'cc-agent')).SWITCH_API_TOKEN).toBe('tok-123');
+    const config = JSON.parse((await fs.read('.switch/config/cc-agent.json')) ?? '{}');
     expect(config.description).toBe('Codex running in repo');
     // Launch builds the definition from the config file; nothing reads this.
-    expect(await fs.read('.claude/agents/cc-hoot.md')).toBeNull();
+    expect(await fs.read('.claude/agents/cc-agent.md')).toBeNull();
   });
 
   it('records the agent’s instructions in its committed config file', async () => {
     const fs = h.state.workdir as PluginFs;
 
-    await addAgent(params({ providerId: 'claude', name: 'cc-hoot', instructions: 'Be careful.' }));
+    await addAgent(params({ providerId: 'claude', name: 'cc-agent', instructions: 'Be careful.' }));
 
-    const config = JSON.parse((await fs.read('.switch/config/cc-hoot.json')) ?? '{}');
+    const config = JSON.parse((await fs.read('.switch/config/cc-agent.json')) ?? '{}');
     expect(config.instructions).toBe('Be careful.');
   });
 
@@ -234,13 +235,13 @@ describe('addAgent', () => {
     // edit, replacing everything typed into the form.
     const fs = h.state.workdir as PluginFs;
     await fs.write(
-      '.claude/agents/cc-hoot.md',
-      '---\nname: cc-hoot\ndescription: Old\n---\n\nOld instructions.\n'
+      '.claude/agents/cc-agent.md',
+      '---\nname: cc-agent\ndescription: Old\n---\n\nOld instructions.\n'
     );
 
-    await addAgent(params({ providerId: 'claude', name: 'cc-hoot', instructions: 'New.' }));
+    await addAgent(params({ providerId: 'claude', name: 'cc-agent', instructions: 'New.' }));
 
-    const config = JSON.parse((await fs.read('.switch/config/cc-hoot.json')) ?? '{}');
+    const config = JSON.parse((await fs.read('.switch/config/cc-agent.json')) ?? '{}');
     expect(config.instructions).toBe('New.');
     expect(config.description).toBe('Codex running in repo');
   });
@@ -255,10 +256,10 @@ describe('addAgent', () => {
     await addAgent(params());
     expect(h.registerAgentIdentity).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ name: 'codex-hoot', agentType: 'codex' })
+      expect.objectContaining({ name: 'codex-agent', agentType: 'codex' })
     );
 
-    await addAgent(params({ providerId: 'claude', name: 'cc-hoot' }));
+    await addAgent(params({ providerId: 'claude', name: 'cc-agent' }));
     expect(h.registerAgentIdentity).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.objectContaining({ agentType: 'claude-code' })
@@ -281,7 +282,7 @@ describe('addAgent', () => {
     it('strips a third-party icon URL that was already chosen', async () => {
       // The new-agent form opens on a random DiceBear avatar before the server
       // is known; this is the backstop for whatever it sends regardless.
-      await addAgent(params({ iconUrl: agentAvatarUrlForName('codex-hoot') }));
+      await addAgent(params({ iconUrl: agentAvatarUrlForName('codex-agent') }));
       expect(h.registerAgentIdentity).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ iconUrl: null })
@@ -324,7 +325,7 @@ describe('addAgent', () => {
     await addAgent(params({ iconUrl: null }));
     expect(h.registerAgentIdentity).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ iconUrl: agentAvatarUrlForName('codex-hoot') })
+      expect.objectContaining({ iconUrl: agentAvatarUrlForName('codex-agent') })
     );
   });
 
@@ -341,7 +342,7 @@ describe('addAgent', () => {
     const fs = h.state.workdir as PluginFs;
 
     expect((await addAgent(params())).kind).toBe('name-conflict');
-    expect(await fs.read(agentSettingsRelativePath('codex-hoot'))).toBeNull();
+    expect(await fs.read(agentSettingsRelativePath('codex-agent'))).toBeNull();
     expect(h.createAgent).not.toHaveBeenCalled();
   });
 
@@ -357,7 +358,7 @@ describe('addAgent', () => {
         SWITCH_AGENT_ID: 'their-agent',
       },
     });
-    h.state.workdir = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: theirs });
+    h.state.workdir = fakeFs({ [agentSettingsRelativePath('codex-agent')]: theirs });
 
     const result = await addAgent(params());
 
@@ -367,7 +368,7 @@ describe('addAgent', () => {
     });
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
     expect(h.createAgent).not.toHaveBeenCalled();
-    expect(await (h.state.workdir as PluginFs).read(agentSettingsRelativePath('codex-hoot'))).toBe(
+    expect(await (h.state.workdir as PluginFs).read(agentSettingsRelativePath('codex-agent'))).toBe(
       theirs
     );
   });
@@ -384,7 +385,7 @@ describe('addAgent', () => {
         SWITCH_AGENT_ID: 'colleague-agent',
       },
     });
-    h.state.workdir = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: colleague });
+    h.state.workdir = fakeFs({ [agentSettingsRelativePath('codex-agent')]: colleague });
 
     const result = await addAgent(params());
 
@@ -392,7 +393,7 @@ describe('addAgent', () => {
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
     expect(h.createAgent).not.toHaveBeenCalled();
     // The colleague's file is intact.
-    expect(await (h.state.workdir as PluginFs).read(agentSettingsRelativePath('codex-hoot'))).toBe(
+    expect(await (h.state.workdir as PluginFs).read(agentSettingsRelativePath('codex-agent'))).toBe(
       colleague
     );
   });

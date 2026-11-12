@@ -133,18 +133,20 @@ async def _events(session_factory) -> list[OrganizationAuditEvent]:
 
 
 class TestWhoMayCall:
-    async def test_a_workspace_owner_is_refused(self, harness: Harness) -> None:
-        owner = await _person(harness.session_factory, "owner", member_role="owner")
+    async def test_a_workspace_admin_is_refused(self, harness: Harness) -> None:
+        ws_admin = await _person(
+            harness.session_factory, "ws-admin", member_role="admin"
+        )
         answers = [
-            await _call(harness, owner, "GET", ORGANIZATION),
+            await _call(harness, ws_admin, "GET", ORGANIZATION),
             await _call(
                 harness,
-                owner,
+                ws_admin,
                 "PUT",
                 f"{ORGANIZATION}/github",
                 {"enabled": False, "locked": True},
             ),
-            await _call(harness, owner, "DELETE", f"{ORGANIZATION}/github"),
+            await _call(harness, ws_admin, "DELETE", f"{ORGANIZATION}/github"),
         ]
         assert [answer.status_code for answer in answers] == [403] * 3
 

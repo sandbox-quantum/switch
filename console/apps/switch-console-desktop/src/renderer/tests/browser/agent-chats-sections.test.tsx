@@ -308,12 +308,14 @@ it('lets the room go when a section is picked or the page is left', async () => 
   root = createRoot(container);
 });
 
-it("opens a room whose platform can't be drawn here on its settings", async () => {
+it("opens a room on its conversation even where it can't be drawn here, and one with none on its settings", async () => {
   rooms.list = [room('room-1', 'design'), room('room-2', 'agents-only')];
   rooms.bridges = { 'room-1': 'slack' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
   await act(async () => root.render(<AgentChats agent={AGENT} />));
-  expect(embeddedRoom()?.textContent).toBe('Settings of room-1');
+  // The layer lays the way out to Slack over the box; the settings are not drawn in it.
+  expect(container.querySelector('[data-testid="room-configuration"]')).toBeNull();
+  expect(roomEmbedSlotStore.slot?.roomId).toBe('room-1');
 
   await act(async () => roomRow('agents-only').click());
   expect(embeddedRoom()?.textContent).toBe('Settings of room-2');

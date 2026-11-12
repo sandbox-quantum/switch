@@ -9,6 +9,7 @@ function bridge(id: string, displayName: string): RemoteBridge {
     displayName,
     status: 'active',
     isDefault: false,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,
@@ -16,6 +17,8 @@ function bridge(id: string, displayName: string): RemoteBridge {
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
+    privateChannels: null,
+    privateChannelNeedsLinkedAccount: false,
     receivesWebhooks: false,
     webhookUrl: null,
   };

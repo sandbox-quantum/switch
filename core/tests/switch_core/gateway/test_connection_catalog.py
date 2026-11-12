@@ -89,7 +89,8 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("atlassian") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
-    assert len(result) == 11
+    assert result.pop("notion") == "not_connected"
+    assert len(result) == 10
     assert set(result.values()) == {"coming_soon"}
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"
@@ -102,6 +103,7 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
         "enabled": True,
         "auth_type": "oauth",
         "status": "not_connected",
+        "can_revoke": False,
     }
 
 
@@ -124,4 +126,23 @@ async def test_catalog_reports_only_the_callers_connection(catalog_app):
     assert (
         statuses(await client.get("/gateway/provider-connections/catalog"))["github"]
         == "connected"
+    )
+
+
+async def test_only_the_callers_own_connection_may_be_revoked(catalog_app):
+    client, factory = catalog_app
+
+    def revocable(response):
+        assert response.status_code == 200, response.text
+        return {e["slug"]: e["can_revoke"] for e in response.json()["connections"]}
+
+    await link_github(factory, "other-user")
+    assert (
+        revocable(await client.get("/gateway/provider-connections/catalog"))["github"]
+        is False
+    )
+    await link_github(factory, "catalog-user")
+    assert (
+        revocable(await client.get("/gateway/provider-connections/catalog"))["github"]
+        is True
     )

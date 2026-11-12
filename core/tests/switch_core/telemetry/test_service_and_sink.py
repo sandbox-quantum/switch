@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from switch_core.observability.otlp import OtlpClient
 from switch_core.telemetry import sink as sink_module
-from switch_core.telemetry.catalogue import TelemetryCatalogueError
+from switch_core.telemetry.catalogue import (
+    CATALOGUE,
+    DEPLOYMENT_KIND_PROPERTY,
+    TelemetryCatalogueError,
+)
 from switch_core.telemetry.service import TelemetryService, emit_safely
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetryRecord
 
@@ -52,6 +57,7 @@ def _service(sink: object, *, enabled: bool = True) -> TelemetryService:
         version="1.2.3",
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
     )
 
 
@@ -114,6 +120,7 @@ class TestTagging:
             version="1.2.3",
             telemetry_environment=environment,
             telemetry_internal=False,
+            deployment_kind="self_hosted",
         )
 
         service.emit("deployment_started", tenant_count=1)
@@ -134,12 +141,55 @@ class TestTagging:
             version="1.2.3",
             telemetry_environment="prod",
             telemetry_internal=internal,
+            deployment_kind="self_hosted",
         )
 
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
 
         assert sink.sent[0].resource["flint_internal"] == sent
+
+    @pytest.mark.parametrize(
+        "kind", ["switch_cloud", "managed_by_console", "self_hosted"]
+    )
+    async def test_every_event_says_who_runs_the_deployment(self, kind: str) -> None:
+        """An event property rather than a resource attribute: the relay
+        passes event properties to Amplitude, so Switch Cloud's traffic can be
+        filtered out of, or into, any chart."""
+        sink = _RecordingSink()
+        service = TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=True,
+            client_id="deployment-uuid",
+            version="1.2.3",
+            telemetry_environment="prod",
+            telemetry_internal=False,
+            deployment_kind=kind,  # type: ignore[arg-type]
+        )
+
+        service.emit("deployment_started", tenant_count=1)
+        service.emit_at(
+            "usage_period",
+            datetime(2026, 11, 2, 12, tzinfo=UTC),
+            period="day",
+            room_active=0,
+            person_identity_active=0,
+            account_active=0,
+            tenant_failed_count=0,
+        )
+        await service.aclose()
+
+        assert [record.properties["deployment_kind"] for record in sink.sent] == [
+            kind,
+            kind,
+        ]
+
+    def test_no_event_declares_the_property_the_service_adds(self) -> None:
+        assert not [
+            event
+            for event, spec in CATALOGUE.items()
+            if DEPLOYMENT_KIND_PROPERTY in spec
+        ]
 
     async def test_an_unknown_version_is_omitted_rather_than_empty(self) -> None:
         """An absent attribute reads as "not known"; an empty string reads as a
@@ -152,6 +202,7 @@ class TestTagging:
             version=None,
             telemetry_environment="prod",
             telemetry_internal=False,
+            deployment_kind="self_hosted",
         )
 
         service.emit("deployment_started", tenant_count=1)

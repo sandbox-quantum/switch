@@ -6,12 +6,17 @@ care about neither, so both are built here at their minimum shape.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.user_store import UserStore
 
 _USER_STORE = UserStore()
+
+# The settings an agent detail reads, with service connections switched on.
+SERVICES_ON = SimpleNamespace(service_connections_enabled=True)
 
 
 async def is_admin(session: AsyncSession, user: User) -> bool:

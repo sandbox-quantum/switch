@@ -113,12 +113,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     description: 'Show or hide the left sidebar',
     category: 'View',
   },
-  closeModal: {
-    defaultHotkey: 'Escape',
-    label: 'Close Modal',
-    description: 'Close the current modal or dialog',
-    category: 'Navigation',
-  },
   deleteSelectedSessions: {
     defaultHotkey: 'Mod+Backspace',
     label: 'Delete Selected Sessions',

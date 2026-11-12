@@ -7,6 +7,7 @@ import base64
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -40,7 +41,14 @@ async def _rooms(session_factory: async_sessionmaker[AsyncSession]) -> list[str]
 
 
 def _list(session_factory: async_sessionmaker[AsyncSession], **kwargs: object):
-    protocol = SimpleNamespace(session_factory=session_factory, room_store=RoomStore())
+    # The owner administers the workspace, so every room is visible: what is
+    # under test here is the paging; who sees which room is tested in
+    # test_room_store_agent_visibility.py.
+    protocol = SimpleNamespace(
+        session_factory=session_factory,
+        room_store=RoomStore(),
+        _resolve_acting_identity=AsyncMock(return_value=(None, "owner-1", True)),
+    )
     defaults: dict[str, object] = {
         "include_archived": False,
         "name_contains": None,

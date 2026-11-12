@@ -34,6 +34,7 @@ const ACTION_ICONS: Record<UpdateActionKind, React.ComponentType<{ className?: s
   restart: RefreshCw,
   retry: RefreshCw,
   check: RefreshCw,
+  manual: ExternalLink,
 };
 
 export const UpdateCard = observer(function UpdateCard(): React.JSX.Element {
@@ -59,6 +60,9 @@ export const UpdateCard = observer(function UpdateCard(): React.JSX.Element {
         break;
       case 'check':
         void update.check();
+        break;
+      case 'manual':
+        void update.openLatest();
         break;
       default:
         break;

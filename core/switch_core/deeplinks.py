@@ -149,11 +149,15 @@ class ConsolePage:
 
     `name` is how the page is named in words, for a reader who cannot click
     through; `tabs` maps each tab the page has to its own name.
+    `former_tabs` maps tabs the page had before to the tab each became, so a
+    link an agent wrote from older instructions still reads (`formerTabs` in
+    Switch Console's catalogue).
     """
 
     name: str
     has_id: bool = False
     tabs: Mapping[str, str] = field(default_factory=dict)
+    former_tabs: Mapping[str, str] = field(default_factory=dict)
 
 
 # Switch Console's link catalogue (`CONSOLE_PAGES` in
@@ -169,7 +173,7 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
         has_id=True,
         tabs={
             "chats": "your agent's chats",
-            "connections": "your agent's connections",
+            "connections": "your agent's connectors",
             "settings": "your agent's settings",
         },
     ),
@@ -180,7 +184,7 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
         "switch-buddy's page",
         tabs={
             "chats": "switch-buddy's chats",
-            "connections": "switch-buddy's connections",
+            "connections": "switch-buddy's connectors",
             "settings": "switch-buddy's settings",
         },
     ),
@@ -199,18 +203,28 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
     "admin": ConsolePage(
         "the workspace's admin page",
         tabs={
+            "messaging-apps": "the workspace's messaging apps",
             "connectors": "the connectors the workspace offers",
+            "switch-trust": "the server's Switch Trust guardrails",
             "apps": "the apps connectors sign in through",
         },
     ),
     "settings": ConsolePage(
         "Switch Console's settings",
         tabs={
-            "general": "Switch Console's general settings",
-            "clis-models": "Switch Console's CLIs and models settings",
-            "remote-hosts": "Switch Console's remote hosts settings",
+            "preferences": "Switch Console's preferences",
+            "messaging-apps": "your messaging app accounts",
+            "clis-models": "Switch Console's agent providers",
+            "api-keys": "your API keys",
+            "devices": "your devices",
+            "remote-hosts": "the SSH hosts Switch Console reaches",
             "managed-agents": "Switch Console's managed agents settings",
-            "interface": "Switch Console's interface settings",
+            "status": "the system status",
+            "account": "your account",
+        },
+        former_tabs={
+            "general": "preferences",
+            "interface": "preferences",
         },
     ),
 }
@@ -234,7 +248,7 @@ class ConsoleLink:
     def page_name(self) -> str:
         spec = CONSOLE_PAGES[self.page]
         if self.tab is not None:
-            return spec.tabs[self.tab]
+            return spec.tabs[spec.former_tabs.get(self.tab, self.tab)]
         return spec.name
 
     @property
@@ -268,7 +282,8 @@ def parse_console_link_path(path: str, query: str) -> ConsoleLink | None:
         return None
     tabs = parse_qs(query, keep_blank_values=True).get("tab")
     tab = tabs[0] if tabs else None
-    if tab is not None and tab not in CONSOLE_PAGES[page].tabs:
+    spec = CONSOLE_PAGES[page]
+    if tab is not None and tab not in spec.tabs and tab not in spec.former_tabs:
         return None
     return ConsoleLink(page=page, id=page_id, tab=tab, query=query)
 

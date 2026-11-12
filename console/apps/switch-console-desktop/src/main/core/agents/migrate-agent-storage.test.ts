@@ -18,6 +18,7 @@ function fakeFs(seed: Record<string, string>): PluginFs {
       files.delete(p);
       return Promise.resolve();
     },
+    protectSecret: (p) => Promise.resolve(files.has(p)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: (dir) =>
       Promise.resolve(
@@ -106,7 +107,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: v
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-storage-migration-marker', () => ({
-  AGENT_STORAGE_MIGRATION_GENERATION: 3,
+  AGENT_STORAGE_MIGRATION_GENERATION: 4,
   completedAgentStorageMigrationGeneration: h.completedGeneration,
   markAgentStorageMigrationComplete: h.markComplete,
 }));
@@ -119,7 +120,7 @@ const baseAgent = {
   providerId: 'claude',
   locationId: 'loc',
   // The agent's single identity — the creds/definition stem on disk (CHOO-1440).
-  name: 'cc-hoot-main',
+  name: 'cc-agent-main',
   switchAgentId: 'sw-1',
   serverId: 'srv-1',
 };
@@ -134,14 +135,14 @@ describe('migrateAgentStorage', () => {
   it('recovers creds from a stale id-keyed neutral file, writes the name-keyed file, and removes the stale one', async () => {
     const ws = fakeFs({
       '.switch/agents/agent-id-1.json': credsJson('sw-1'),
-      '.claude/agents/cc-hoot-main.md': '# def',
+      '.claude/agents/cc-agent-main.md': '# def',
     });
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
-    expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(true);
-    const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
+    expect(await ws.exists('.switch/agents/cc-agent-main.json')).toBe(true);
+    const written = JSON.parse((await ws.read('.switch/agents/cc-agent-main.json')) as string);
     expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
     expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
     expect(await ws.exists('.switch/agents/agent-id-1.json')).toBe(false);
@@ -151,7 +152,7 @@ describe('migrateAgentStorage', () => {
     // Codex has no repoAgents behavior; the pre-rework scheme keyed its neutral
     // creds file by agent id. The migration must still collapse it onto the
     // name-keyed key-space, or the agent silently loses its (unrecoverable) token.
-    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-agent' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-1') });
     h.state.workdir = ws;
@@ -160,8 +161,8 @@ describe('migrateAgentStorage', () => {
 
     // Name-keyed file written via the unconditional neutral writer (not the
     // behavior hook, which does not exist for Codex), token preserved.
-    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
-    const written = JSON.parse((await ws.read('.switch/agents/codex-hoot.json')) as string);
+    expect(await ws.exists('.switch/agents/codex-agent.json')).toBe(true);
+    const written = JSON.parse((await ws.read('.switch/agents/codex-agent.json')) as string);
     expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
     expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
     // Stale id-keyed file removed; no definition written (no behavior).
@@ -172,27 +173,27 @@ describe('migrateAgentStorage', () => {
   it('falls back to .claude/settings.local.json when its identity matches the Claude row', async () => {
     const ws = fakeFs({
       '.claude/settings.local.json': credsJson('sw-1'),
-      '.claude/agents/cc-hoot-main.md': '# def',
+      '.claude/agents/cc-agent-main.md': '# def',
     });
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
-    const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
+    const written = JSON.parse((await ws.read('.switch/agents/cc-agent-main.json')) as string);
     expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
     expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
     expect(written.env.SWITCH_API_ENDPOINT).toBe('http://switch.example');
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it('never reads .claude/settings.local.json for a provider without repo-agents', async () => {
+  it('never adopts .claude/settings.local.json for a provider without repo-agents', async () => {
     // The shared settings file is written only by provisionAgent /
     // provisionRemoteAgent, always as the Claude "main" agent, so for any other
     // provider it is a different agent's identity and token. Adopting it would
     // make the session launch AS that agent — a silent success where launching
     // unidentified is a visible failure.
     h.state.agents = [
-      { ...baseAgent, providerId: 'codex', name: 'codex-hoot', switchAgentId: 'sw-codex' },
+      { ...baseAgent, providerId: 'codex', name: 'codex-agent', switchAgentId: 'sw-codex' },
     ];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.claude/settings.local.json': credsJson('sw-CLAUDE-MAIN') });
@@ -201,8 +202,10 @@ describe('migrateAgentStorage', () => {
 
     await migrateAgentStorage();
 
-    expect(read).not.toHaveBeenCalledWith('.claude/settings.local.json');
-    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
+    // One read, by the step that protects a token it finds there; the
+    // credential step, which would adopt it, never looks.
+    expect(read.mock.calls.filter(([p]) => p === '.claude/settings.local.json')).toHaveLength(1);
+    expect(await ws.exists('.switch/agents/codex-agent.json')).toBe(false);
   });
 
   it('does not adopt .claude/settings.local.json for a provider without repo-agents when the row has no identity to compare', async () => {
@@ -210,7 +213,7 @@ describe('migrateAgentStorage', () => {
     // behavior gate — not the identity cross-check — is what keeps the Claude
     // main agent's credentials out of this agent's file.
     h.state.agents = [
-      { ...baseAgent, providerId: 'codex', name: 'codex-hoot', switchAgentId: null },
+      { ...baseAgent, providerId: 'codex', name: 'codex-agent', switchAgentId: null },
     ];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.claude/settings.local.json': credsJson('sw-CLAUDE-MAIN') });
@@ -218,7 +221,7 @@ describe('migrateAgentStorage', () => {
 
     await migrateAgentStorage();
 
-    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
+    expect(await ws.exists('.switch/agents/codex-agent.json')).toBe(false);
   });
 
   it('skips visibly when .claude/settings.local.json names a different agent than the Claude row', async () => {
@@ -226,18 +229,18 @@ describe('migrateAgentStorage', () => {
     // shared settings file. Adopting a mismatched identity is never right.
     const ws = fakeFs({
       '.claude/settings.local.json': credsJson('sw-other'),
-      '.claude/agents/cc-hoot-main.md': '# def',
+      '.claude/agents/cc-agent-main.md': '# def',
     });
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
-    expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
+    expect(await ws.exists('.switch/agents/cc-agent-main.json')).toBe(false);
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('different Switch agent'),
       expect.objectContaining({
         agentId: 'agent-id-1',
-        agentName: 'cc-hoot-main',
+        agentName: 'cc-agent-main',
         expectedSwitchAgentId: 'sw-1',
         foundSwitchAgentId: 'sw-other',
       })
@@ -247,15 +250,18 @@ describe('migrateAgentStorage', () => {
   it('keeps a mismatched id-keyed neutral file instead of adopting or deleting it', async () => {
     // The token exists nowhere else, so a skip must not take the only copy with
     // it: without a name-keyed file the stale-file cleanup has to stay its hand.
-    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-agent' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-other') });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
-    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
+    expect(await ws.exists('.switch/agents/codex-agent.json')).toBe(false);
     expect(await ws.read('.switch/agents/agent-id-1.json')).toBe(credsJson('sw-other'));
+    // Kept, so made private: the token in it is no less live for being refused.
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/agent-id-1.json', undefined);
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('different Switch agent'),
       expect.objectContaining({ foundSwitchAgentId: 'sw-other', providerId: 'codex' })
@@ -267,8 +273,8 @@ describe('migrateAgentStorage', () => {
     // the real `writeNeutralAgentSettingsFs`, so a spy on the behavior hook
     // cannot see it re-derive and rewrite the token on every boot.
     const seed = {
-      '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
-      '.claude/agents/cc-hoot-main.md': '# def',
+      '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+      '.claude/agents/cc-agent-main.md': '# def',
     };
     const ws = fakeFs({ ...seed });
     h.state.workdir = ws;
@@ -282,16 +288,16 @@ describe('migrateAgentStorage', () => {
   });
 
   it('writes no credentials when none exist anywhere (unrecoverable token)', async () => {
-    const ws = fakeFs({ '.claude/agents/cc-hoot-main.md': '# def' });
+    const ws = fakeFs({ '.claude/agents/cc-agent-main.md': '# def' });
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
-    expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
+    expect(await ws.exists('.switch/agents/cc-agent-main.json')).toBe(false);
   });
 
   it('skips the whole pass (no workdir opened) once the current generation is latched', async () => {
-    h.completedGeneration.mockResolvedValueOnce(3);
+    h.completedGeneration.mockResolvedValueOnce(4);
     const resolveWorkdirFsFor = (await import('./agent-workdir-fs')).resolveWorkdirFsFor;
 
     await migrateAgentStorage();
@@ -307,7 +313,7 @@ describe('migrateAgentStorage', () => {
     await migrateAgentStorage();
 
     expect(h.readLaunchEnv).not.toHaveBeenCalled();
-    expect(await h.state.workdir.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
+    expect(await h.state.workdir.exists('.switch/agents/cc-agent-main.json')).toBe(false);
     expect(h.importAgentConfig).toHaveBeenCalledTimes(1);
     expect(h.markComplete).toHaveBeenCalledTimes(1);
   });
@@ -320,49 +326,210 @@ describe('migrateAgentStorage', () => {
     await migrateAgentStorage();
 
     expect(h.importAgentConfig.mock.calls[0]?.[0]).toMatchObject({
-      name: 'cc-hoot-main',
+      name: 'cc-agent-main',
       repoAgents: h.defaultRepoAgents,
       providerConfig: null,
     });
 
     vi.clearAllMocks();
-    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot', providerConfig }];
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-agent', providerConfig }];
     h.state.repoAgents = null;
 
     await migrateAgentStorage();
 
     expect(h.importAgentConfig.mock.calls[0]?.[0]).toMatchObject({
-      name: 'codex-hoot',
+      name: 'codex-agent',
       repoAgents: null,
       providerConfig,
     });
   });
 
   it('never writes a provider definition, even for an agent without one', async () => {
-    h.state.workdir = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    h.state.workdir = fakeFs({ '.switch/agents/cc-agent-main.json': credsJson('sw-1') });
 
     await migrateAgentStorage();
 
     expect(h.writeDefinition).not.toHaveBeenCalled();
-    expect(await h.state.workdir.exists('.claude/agents/cc-hoot-main.md')).toBe(false);
+    expect(await h.state.workdir.exists('.claude/agents/cc-agent-main.md')).toBe(false);
   });
 
   it('re-running for generation 2 still migrates a provider generation 1 skipped', async () => {
     h.completedGeneration.mockResolvedValueOnce(1);
-    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-agent' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-1') });
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
-    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
+    expect(await ws.exists('.switch/agents/codex-agent.json')).toBe(true);
+  });
+
+  it('re-running after generation 3 protects existing credentials without rewriting them', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-agent-main.json': credsJson('sw-1') });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    const write = vi.spyOn(ws, 'write');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    // A rewrite could undo a rename or endpoint change landing at the same
+    // moment; changing permissions alone cannot.
+    expect(protectSecret.mock.calls).toEqual([['.switch/agents/cc-agent-main.json', undefined]]);
+    expect(write).not.toHaveBeenCalled();
+    expect(await ws.read('.switch/agents/cc-agent-main.json')).toBe(credsJson('sw-1'));
+    expect(h.readLaunchEnv).not.toHaveBeenCalled();
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('protects every credential in the working directory, leaving .claude/ itself alone', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({
+      '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+      // A stale id-keyed file the credential step refused, and another agent's.
+      '.switch/agents/agent-id-1.json': credsJson('sw-other'),
+      '.switch/agents/colleague.json': credsJson('sw-2'),
+      '.switch/agents/.gitignore': '*\n',
+      '.claude/switch-subagents/legacy.settings.json': credsJson('sw-3'),
+      '.claude/settings.local.json': credsJson('sw-4'),
+    });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret.mock.calls).toEqual(
+      expect.arrayContaining([
+        ['.switch/agents/cc-agent-main.json', undefined],
+        ['.switch/agents/agent-id-1.json', undefined],
+        ['.switch/agents/colleague.json', undefined],
+        ['.claude/switch-subagents/legacy.settings.json', { fileOnly: true }],
+        ['.claude/settings.local.json', { fileOnly: true }],
+      ])
+    );
+    expect(protectSecret).toHaveBeenCalledTimes(5);
+  });
+
+  it('leaves a .claude/settings.local.json that holds no token alone', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({
+      '.claude/settings.local.json': JSON.stringify({
+        env: { SWITCH_API_ENDPOINT: 'http://switch.example', SWITCH_AGENT_ID: 'sw-1' },
+      }),
+    });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret.mock.calls).toEqual([['.switch/agents/cc-agent-main.json', undefined]]);
+  });
+
+  it('latches generation 4 for an agent with no credentials to protect', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({});
+    const write = vi.spyOn(ws, 'write');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(write).not.toHaveBeenCalled();
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a credential it is refused as done, with a warning, and protects the rest', async () => {
+    // Another account's file: no retry changes that, and an unlatched
+    // generation would re-open every working directory on every boot.
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({
+      '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+      '.switch/agents/colleague.json': credsJson('sw-2'),
+    });
+    const protectSecret = vi.spyOn(ws, 'protectSecret').mockImplementation(async (p) => {
+      if (p === '.switch/agents/colleague.json')
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      return true;
+    });
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/cc-agent-main.json', undefined);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cannot make a credentials file private'),
+      expect.objectContaining({ path: '.switch/agents/colleague.json' })
+    );
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a settings file it may not read as done too', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-agent-main.json': credsJson('sw-1') });
+    const read = ws.read.bind(ws);
+    vi.spyOn(ws, 'read').mockImplementation(async (p) => {
+      if (p === '.claude/settings.local.json')
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return read(p);
+    });
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries next boot when the credentials directory cannot be listed for a reason that may pass', async () => {
+    // A listing that failed must not read as an empty directory: the files in
+    // it would go unprotected and the generation would latch over them.
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-agent-main.json': credsJson('sw-1') });
+    const list = vi.spyOn(ws, 'list');
+    list.mockRejectedValueOnce(new Error('SSH connection is not available'));
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(list).toHaveBeenCalledWith('.switch/agents', { strict: true });
+    expect(h.markComplete).not.toHaveBeenCalled();
+  });
+
+  it('counts a credentials directory it may not list as done, still protecting the agent’s own file', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-agent-main.json': credsJson('sw-1') });
+    vi.spyOn(ws, 'list').mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    );
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/cc-agent-main.json', undefined);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cannot make a credentials file private'),
+      expect.objectContaining({ path: '.switch/agents' })
+    );
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries next boot when credentials cannot be protected for a reason that may pass', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-agent-main.json': credsJson('sw-1') });
+    vi.spyOn(ws, 'protectSecret').mockRejectedValueOnce(
+      new Error('SSH connection is not available')
+    );
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(h.markComplete).not.toHaveBeenCalled();
   });
 
   it('latches the marker after a clean pass', async () => {
     h.state.workdir = fakeFs({
-      '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
-      '.claude/agents/cc-hoot-main.md': '# def',
+      '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+      '.claude/agents/cc-agent-main.md': '# def',
     });
 
     await migrateAgentStorage();
@@ -372,8 +539,8 @@ describe('migrateAgentStorage', () => {
 
   it('does not latch the marker when an agent migration throws', async () => {
     h.state.workdir = fakeFs({
-      '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
-      '.claude/agents/cc-hoot-main.md': '# def',
+      '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+      '.claude/agents/cc-agent-main.md': '# def',
     });
     h.importAgentConfig.mockRejectedValueOnce(new Error('host unreachable'));
 

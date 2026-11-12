@@ -1,7 +1,11 @@
-from sqlalchemy import and_, delete, func, insert, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Document, Room, room_documents
+from switch_core.db.models import Document, Room, package_documents, room_documents
+from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 
 class DocumentStore:
@@ -12,6 +16,19 @@ class DocumentStore:
 
     async def get(self, session: AsyncSession, document_id: str) -> Document | None:
         return await session.get(Document, document_id)
+
+    async def get_for_update(
+        self, session: AsyncSession, document_id: str
+    ) -> Document | None:
+        """Load the row locked until the transaction ends, for a caller that
+        checks it and then writes it.
+
+        ``populate_existing`` refreshes a copy already in the session, so the
+        check sees the committed row rather than an earlier read of it.
+        """
+        return await session.get(
+            Document, document_id, with_for_update=True, populate_existing=True
+        )
 
     async def get_many(
         self, session: AsyncSession, document_ids: list[str]
@@ -68,6 +85,16 @@ class DocumentStore:
         return doc
 
     async def delete(self, session: AsyncSession, document_id: str) -> list[str]:
+        """Delete a document, taking it out of every room and package it is
+        in. Returns the list of room_ids it was attached to.
+
+        Package membership has no cascade, so it is removed here: without it a
+        packaged document cannot be deleted at all."""
+        await session.execute(
+            delete(package_documents).where(
+                package_documents.c.document_id == document_id
+            )
+        )
         room_id_result = await session.execute(
             select(room_documents.c.room_id).where(
                 room_documents.c.document_id == document_id
@@ -85,11 +112,18 @@ class DocumentStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, document_id: str
-    ) -> None:
-        await session.execute(
-            insert(room_documents).values(room_id=room_id, document_id=document_id)
+    ) -> bool:
+        """Attach a document to a room, saying whether it was attached now.
+        Idempotent, as attaching a reference is."""
+        result = await session.execute(
+            pg_insert(room_documents)
+            .values(room_id=room_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_documents.c.room_id, room_documents.c.document_id]
+            )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
@@ -155,27 +189,48 @@ class DocumentStore:
         return result.first() is not None
 
     async def get_attached_counts(
-        self, session: AsyncSession, document_ids: list[str]
-    ) -> dict[str, int]:
+        self,
+        session: AsyncSession,
+        document_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+    ) -> dict[str, AttachedRooms]:
+        """How many rooms each is attached to: every one, and those the reader
+        may read."""
         if not document_ids:
             return {}
         result = await session.execute(
             select(
                 room_documents.c.document_id,
                 func.count(room_documents.c.room_id),
+                func.count(room_documents.c.room_id).filter(
+                    readable_by(reader_id, is_admin=reader_is_admin)
+                ),
             )
+            .join(Room, Room.id == room_documents.c.room_id)
             .where(room_documents.c.document_id.in_(document_ids))
             .group_by(room_documents.c.document_id)
         )
-        counts = {did: int(c) for did, c in result.all()}
-        return {did: counts.get(did, 0) for did in document_ids}
+        counts = {
+            rid: AttachedRooms(every=int(every), readable=int(readable))
+            for rid, every, readable in result.all()
+        }
+        return {rid: counts.get(rid, AttachedRooms(0, 0)) for rid in document_ids}
 
     async def list_rooms_for_document(
-        self, session: AsyncSession, document_id: str
+        self,
+        session: AsyncSession,
+        document_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[tuple[str, str]]:
+        """The rooms it is attached to, of those the reader may read."""
         result = await session.execute(
             select(Room.id, Room.name)
             .join(room_documents, Room.id == room_documents.c.room_id)
             .where(room_documents.c.document_id == document_id)
+            .where(readable_by(reader_id, is_admin=reader_is_admin))
         )
         return [(rid, name) for rid, name in result.all()]

@@ -44,19 +44,31 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
-from switch_core.db.stores.external_user_store import CodeNotAccepted, NoSuchLink
+from switch_core.db.stores.external_user_store import (
+    CodeNotAccepted,
+    ExternalUserStore,
+    NoSuchLink,
+)
+from switch_core.db.stores.room_store import auto_route_fallback_in
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
 )
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.room import (
+    AutoRouteRefused,
+    auto_route_state,
+    room_agent,
+    set_auto_route_fallback,
+    set_auto_route_on,
+)
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
@@ -314,13 +326,16 @@ def room_control_frame(
     thread_id: str | None,
     surface: str,
     requester_name: str,
+    direct: bool,
+    target_message_id: str | None,
     turn_id: str | None = None,
-    target_message_id: str | None = None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
     Beside the contract command it names who asked, as the room knows them,
-    so the session can answer that person once the control has applied.
+    so the session can answer that person once the control has applied, and
+    whether the room is a direct chat, where a reset is meant to leave the
+    session with none of the conversation.
     `session_id` is None for a controller-backed agent, whose controller
     picks the session from the room. `target_message_id` is the message a
     `retry` runs again, and None for every other control.
@@ -354,6 +369,7 @@ def room_control_frame(
         body=body,
     )
     frame["requesterName"] = requester_name
+    frame["direct"] = direct
     return frame
 
 
@@ -517,7 +533,7 @@ async def _retry_refusal(
         if message is None:
             return "Could not retry: that message is not in this room."
         if message.sender_id != event.user_id and not await _manages_room(
-            client, session, room_id, event.user_id
+            client, session, room_id, event.user_id, "retry"
         ):
             return (
                 "Could not retry: only whoever sent that message, or someone who "
@@ -535,11 +551,20 @@ async def _retry_refusal(
 
 
 async def _manages_room(
-    client: AgentRecipient, session: AsyncSession, room_id: str, sender: str
+    client: AgentRecipient,
+    session: AsyncSession,
+    room_id: str,
+    sender: str,
+    command: str,
+    *,
+    resolver: AddressingResolver | None = None,
 ) -> bool:
     """Whether the Switch user behind `sender` owns the room or administers
-    the tenant."""
-    principal = await client._addressing.resolve_sender(session, sender)
+    the tenant. `command` names the chat command in the admin audit record.
+    `resolver` resolves the sender; an agent's own recipient has one, and the
+    Switch app's command consumer passes `_command_resolver(host)`."""
+    resolve = resolver if resolver is not None else client._addressing
+    principal = await resolve.resolve_sender(session, sender)
     if principal is None or principal.kind != "user":
         return False
     room = await session.get(Room, room_id)
@@ -555,7 +580,7 @@ async def _manages_room(
             user,
             target_type="room",
             target_id=room_id,
-            details={"event": "chat_command", "command": "retry"},
+            details={"event": "chat_command", "command": command},
         ):
             return True
     return False
@@ -620,7 +645,7 @@ async def _decide_control_command(
     # which routes the command to the one working in this room. Switch does not
     # know which session that is, so the frame names none.
     controller_backed = client._connections.controllers.is_bound(agent.id)
-    placed = client._connections.session_in_room(agent.id, meta.room_id)
+    placed = client._connections.live_session_in_room(agent.id, meta.room_id)
     if placed is not None or controller_backed:
         if not event.message_id:
             return say(
@@ -646,6 +671,7 @@ async def _decide_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
             turn_id=turn_id,
+            direct=meta.channel_type == "direct",
             target_message_id=target,
         )
 
@@ -667,7 +693,6 @@ async def _decide_control_command(
     if level == "unsupported":
         return say(texts.unsupported)
 
-    deeplink: str | None = None
     role: str | None = None
     if level == "session_dependent":
         async with client.session_factory() as session:
@@ -698,18 +723,12 @@ async def _decide_control_command(
             return say(texts.no_live_session)
         if not caps.get(command):
             return say(texts.no_session)
-        deeplink = runtime.deeplink_url if runtime else None
 
     args = event.args
     if command in ("reset", "compact"):
         args = role or ""
 
-    # Mirror the runtime "working" surface: link back to the session in
-    # Switch Console when we know its deeplink.
-    body = (
-        f"{texts.ack} ([Open in Switch Console]({deeplink}))" if deeplink else texts.ack
-    )
-    decision = say(body)
+    decision = say(texts.ack)
     return ControlDecision(
         queued=CommandPayload(
             command=command,
@@ -903,7 +922,7 @@ async def _cmd_list_room_agents(
 
 
 _FOLLOW_THE_CONVERSATION_OFF = (
-    "Following the conversation isn't switched on for this Switch server, so "
+    "Following the conversation isn't switched on in Switch, so "
     "`!follow-ups` and `!assign-agent` have no effect here. Agents only get "
     "messages that mention them."
 )
@@ -965,6 +984,175 @@ async def _cmd_follow_ups(
         enabled = await client._room_store.follow_ups_enabled(session, meta.room_id)
 
     await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
+
+
+_AUTO_ROUTE_FLAG_OFF = (
+    "Automatic routing isn't switched on in Switch, so "
+    "`!auto-route` has no effect here. Agents only get messages that mention "
+    "them, follow-ups, or every message when they are the room's assigned agent."
+)
+_AUTO_ROUTE_ON = (
+    "Automatic routing is **on** in this room. When a message tags nobody and "
+    "no follow-up or assigned agent picks it up, Switch asks a decision service "
+    "which agent should answer and sends the message to that agent, or to "
+    "nobody. Replies in a thread are decided the same way, rather than going to "
+    "the agent that spoke there last. Turn it off with `!auto-route off`."
+)
+_AUTO_ROUTE_OFF = (
+    "Automatic routing is **off** in this room. A message that tags nobody "
+    "reaches an agent only as a follow-up or through an assigned agent. Turn it "
+    "on with `!auto-route on`."
+)
+_AUTO_ROUTE_FALLBACK_REFUSED = (
+    "Only the room's owner or a workspace admin can name or clear the room's "
+    "triage agent. Nothing was changed. Anyone who can post here can still turn "
+    "auto-route on or off with `!auto-route on` or `!auto-route off`."
+)
+_AUTO_ROUTE_USAGE = (
+    "Usage: `!auto-route on`, `!auto-route off`, `!auto-route` to see which it "
+    "is, or `!auto-route fallback @agent` / `!auto-route fallback off` to name "
+    "or clear the room's triage agent."
+)
+
+
+async def _cmd_auto_route(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    host = cast("CommandConsumer", client)
+    availability = host._decision_availability
+    if not availability.enabled:
+        await _reply(client, room, event, _AUTO_ROUTE_FLAG_OFF)
+        return
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    words = event.args.split()
+    choice = words[0].lower() if words else ""
+    if choice == "fallback":
+        await _auto_route_fallback(client, room, event, meta.room_id, words[1:])
+        return
+    if choice not in ("", "on", "off") or len(words) > 1:
+        await _reply(client, room, event, _AUTO_ROUTE_USAGE)
+        return
+
+    async with client.session_factory() as session:
+        row = await session.get(Room, meta.room_id)
+        if row is None:
+            await _reply(client, room, event, "Room not found.")
+            return
+        if choice:
+            try:
+                await set_auto_route_on(
+                    session, availability, client._room_store, row, choice == "on"
+                )
+            except AutoRouteRefused as refused:
+                await _reply(client, room, event, f"{refused} Nothing was changed.")
+                return
+            await session.commit()
+            await session.refresh(row)
+        state = await auto_route_state(session, availability, row)
+        fallback = (
+            await client._agent_store.get(session, state.fallback_agent)
+            if state.fallback_agent is not None
+            else None
+        )
+
+    body = _AUTO_ROUTE_ON if state.on else _AUTO_ROUTE_OFF
+    if state.on and fallback is not None:
+        body += (
+            f" While the decision service is failing, those messages go to "
+            f"**{_label(fallback)}**, the room's triage agent."
+        )
+    if state.on and not state.available:
+        body += f" It can't act right now: {state.reason}"
+    await _reply(client, room, event, body)
+
+
+async def _auto_route_fallback(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    room_id: str,
+    args: list[str],
+) -> None:
+    """`!auto-route fallback [@agent|off]`: show, name or clear the room's
+    triage agent, which gets what auto-route could not decide because the
+    decision service failed."""
+    async with client.session_factory() as session:
+        row = await session.get(Room, room_id)
+        if row is None:
+            await _reply(client, room, event, "Room not found.")
+            return
+        if not args:
+            current = auto_route_fallback_in(row.metadata_)
+            agent = (
+                await client._agent_store.get(session, current)
+                if current is not None
+                else None
+            )
+            await _reply(
+                client,
+                room,
+                event,
+                f"While the decision service is failing, messages auto-route "
+                f"could not decide go to **{_label(agent)}**. Clear it with "
+                "`!auto-route fallback off`."
+                if current is not None
+                else "This room has no triage agent: while the decision service "
+                "is failing, messages auto-route could not decide go to nobody. "
+                "Name one with `!auto-route fallback @agent`.",
+            )
+            return
+        if len(args) > 1:
+            await _reply(client, room, event, _AUTO_ROUTE_USAGE)
+            return
+        host = cast("CommandConsumer", client)
+        if not await _manages_room(
+            client,
+            session,
+            room_id,
+            event.user_id,
+            "auto-route fallback",
+            resolver=_command_resolver(host),
+        ):
+            await _reply(client, room, event, _AUTO_ROUTE_FALLBACK_REFUSED)
+            return
+        handle = args[0]
+        target: Agent | None = None
+        if handle.lower() != "off":
+            target = await room_agent(session, room_id, handle)
+            if target is None:
+                await _reply(
+                    client,
+                    room,
+                    event,
+                    f"No agent named `{handle.removeprefix('@')}` in this room. "
+                    "Run `!list-agents`.",
+                )
+                return
+        try:
+            await set_auto_route_fallback(session, client._room_store, row, target)
+        except AutoRouteRefused as refused:
+            await _reply(client, room, event, f"{refused} Nothing was changed.")
+            return
+        await session.commit()
+
+    await _reply(
+        client,
+        room,
+        event,
+        f"**{_label(target)}** is now this room's triage agent: while the "
+        "decision service is failing, messages auto-route could not decide go "
+        "to it, marked as a fallback."
+        if target is not None
+        else "This room no longer has a triage agent: while the decision "
+        "service is failing, messages auto-route could not decide go to nobody.",
+    )
 
 
 async def _cmd_assign_agent(
@@ -1372,6 +1560,19 @@ async def _cmd_remove_agent(
     await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
 
 
+def _command_resolver(host: CommandConsumer) -> AddressingResolver:
+    """Who sent a command, for the Switch app's command consumer, which has
+    no addressing resolver of its own (an agent's recipient does)."""
+    return AddressingResolver(
+        room_store=host._room_store,
+        room_role_store=host._room_role_store,
+        client_store=host.client_store,
+        agent_store=host._agent_store,
+        external_user_store=host._external_user_store,
+        live_connection_ids=host._connections.live_connection_ids,
+    )
+
+
 async def _may_remove_agent(
     host: CommandConsumer,
     session: AsyncSession,
@@ -1384,14 +1585,7 @@ async def _may_remove_agent(
     Anyone the agent would take instructions from may; so may a workspace
     admin, and an agent that manages agents for the target's owner.
     """
-    resolver = AddressingResolver(
-        room_store=host._room_store,
-        room_role_store=host._room_role_store,
-        client_store=host.client_store,
-        agent_store=host._agent_store,
-        external_user_store=host._external_user_store,
-        live_connection_ids=host._connections.live_connection_ids,
-    )
+    resolver = _command_resolver(host)
     decision = await resolver.permitted(
         session, agent=target, room_id=room_id, sender=event.user_id
     )
@@ -1512,88 +1706,94 @@ async def _manage_authority(
 async def _cmd_link_account(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
-    """Confirm a link to a Switch user with the code Console showed (CHOO-3881).
+    """Confirm a link to a Switch user with the code Console showed (CHOO-3881)."""
+    host = cast("CommandConsumer", client)
+    async with host.session_factory() as session:
+        account = await _sender_account(host, session, event)
+    reply = await link_account_reply(
+        host.session_factory,
+        host._external_user_store,
+        host._user_store,
+        account,
+        event.args or "",
+    )
+    await _reply(host, room, event, reply)
+
+
+async def link_account_reply(
+    session_factory: async_sessionmaker[AsyncSession],
+    external_user_store: ExternalUserStore,
+    user_store: UserStore,
+    account: ExternalUser | None,
+    args: str,
+) -> str:
+    """Redeem a `link-account` code for `account` and say what happened.
 
     Only the Switch user was shown the code, and the platform says which
     account posted it, so a match proves one person holds both. A code posted
     from any other account matches nothing, which is why posting it in a busy
-    channel gives nothing away.
+    channel gives nothing away. The collaboration bridge calls this directly
+    for a channel that is not a Switch room, so linking never creates one.
     """
-    host = cast("CommandConsumer", client)
-    code = (event.args or "").strip()
+    code = args.strip()
     if not code:
-        await _reply(
-            host,
-            room,
-            event,
+        return (
             "Usage: `!link-account CODE`, with the code Switch Console showed "
-            "you when you linked this account.",
+            "you when you linked this account."
         )
-        return
-
-    # Replies wait until the session has closed: a rejected code may have
-    # locked the request it was checked against, and nobody should wait on
-    # that while a reply is written.
-    refusal: str | None = None
-    async with host.session_factory() as session:
-        account = await _sender_account(host, session, event)
-        if account is None:
-            refusal = (
-                "⚠️ Only a chat account can confirm a link to itself, by posting "
-                "the code from that account."
+    if account is None:
+        return (
+            "⚠️ Only a chat account can confirm a link to itself, by posting "
+            "the code from that account."
+        )
+    # The reply is written by the caller after this session has closed: a
+    # rejected code may have locked the request it was checked against, and
+    # nobody should wait on that while a reply is written.
+    async with session_factory() as session:
+        try:
+            request = await external_user_store.redeem_link_code(
+                session, account, code, user_store
             )
-        else:
-            try:
-                request = await host._external_user_store.redeem_link_code(
-                    session, account, code, host._user_store
-                )
-            except CodeNotAccepted:
-                refusal = (
-                    "⚠️ That code doesn't match a link waiting for this account, "
-                    "or it has expired. Get a new code in Switch Console, and post "
-                    "it from the account you're linking."
-                )
-            else:
-                user_id = request.user_id
-                linked = await host._user_store.get(session, user_id)
-                bridge = await session.get(CollaborationBridge, account.bridge_id)
-                # Both are held by foreign keys from the rows just written.
-                if linked is None or bridge is None:
-                    raise RuntimeError(
-                        f"Confirmed a link for user {user_id} on bridge "
-                        f"{account.bridge_id}, but could not read either back"
-                    )
-                name, platform = linked.name, bridge.display_name
-                username = account.external_username
-                await record_audit_event(
-                    session,
-                    tenant_id=account.tenant_id,
-                    actor_user_id=user_id,
-                    action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
-                    target_type="external_user",
-                    target_id=account.id,
-                    details={
-                        "bridge_id": account.bridge_id,
-                        "user_id": user_id,
-                        "by": "code",
-                    },
-                )
-                await session.commit()
-    if refusal is not None:
-        await _reply(host, room, event, refusal)
-        return
+        except CodeNotAccepted:
+            return (
+                "⚠️ That code doesn't match a link waiting for this account, "
+                "or it has expired. Get a new code in Switch Console, and post "
+                "it from the account you're linking."
+            )
+        user_id = request.user_id
+        linked = await user_store.get(session, user_id)
+        bridge = await session.get(CollaborationBridge, account.bridge_id)
+        # Both are held by foreign keys from the rows just written.
+        if linked is None or bridge is None:
+            raise RuntimeError(
+                f"Confirmed a link for user {user_id} on bridge "
+                f"{account.bridge_id}, but could not read either back"
+            )
+        name, platform = linked.name, bridge.display_name
+        username = account.external_username
+        await record_audit_event(
+            session,
+            tenant_id=account.tenant_id,
+            actor_user_id=user_id,
+            action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
+            target_type="external_user",
+            target_id=account.id,
+            details={
+                "bridge_id": account.bridge_id,
+                "user_id": user_id,
+                "by": "code",
+            },
+        )
+        await session.commit()
 
     # Names the Switch user, so whoever posted it sees who the account is now
     # recognised as, and how to take that back if it is not them. "The way you
     # ran this" because platforms differ in how a command reaches Switch: typed
     # with `!`, as a slash command, or with the app mentioned.
-    await _reply(
-        host,
-        room,
-        event,
+    return (
         f"✅ Linked this {platform} account ({username}) to Switch user "
         f"**{name}**. If that isn't you, run `unlink-account {name}` the way "
-        "you ran this command.",
+        "you ran this command."
     )
 
 
@@ -1911,17 +2111,10 @@ def _format_status_lines(
     agents: list[Agent],
     statuses: dict[str, AgentStatus],
     runtime_states: dict[str, str],
-    deeplinks: dict[str, str],
 ) -> str:
     """Render the !status summary: one line per agent (sorted by the name it is
     shown under) with its presence emoji + label, runtime state (if any),
-    agent_type, and a Switch Console deeplink to its session
-    when one is known.
-
-    The deeplink is shown only for an agent whose session is LIVE in this room:
-    the stored link is per (agent, room) and survives a room switch, so once the
-    session moves away it would point at a session no longer here. Gating on
-    LIVE keeps the link from going stale when an agent hops rooms."""
+    and agent_type."""
     lines = ["**Agent status in this room:**"]
     for agent in sorted(agents, key=lambda a: (a.display_name or a.name).lower()):
         status = statuses.get(agent.id, AgentStatus.NO_SESSION)
@@ -1931,11 +2124,7 @@ def _format_status_lines(
         head = f"{emoji} **{name}** — {label}"
         if runtime is not None:
             head += f" · {runtime}"
-        parts = [head, agent.agent_type]
-        deeplink = deeplinks.get(agent.id)
-        if deeplink and status == AgentStatus.LIVE:
-            parts.append(f"[Open in Switch Console]({deeplink})")
-        lines.append("- " + " · ".join(parts))
+        lines.append(f"- {head} · {agent.agent_type}")
     return "\n".join(lines)
 
 
@@ -1969,15 +2158,12 @@ async def _cmd_status(
         )
         runtime_rows = await AgentRuntimeStateStore().get_by_room(session, meta.room_id)
         runtime_states = {row.agent_id: row.state for row in runtime_rows}
-        deeplinks = {
-            row.agent_id: row.deeplink_url for row in runtime_rows if row.deeplink_url
-        }
 
     await _reply(
         client,
         room,
         event,
-        _format_status_lines(agents, statuses, runtime_states, deeplinks),
+        _format_status_lines(agents, statuses, runtime_states),
     )
 
 
@@ -2372,6 +2558,18 @@ COMMANDS: list[Command] = [
         "an @. Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
         _cmd_follow_ups,
         args_spec=(CommandArg("state", "on or off", required=False),),
+        admin_owned=True,
+    ),
+    Command(
+        "auto-route",
+        "Let Switch pick the agent to answer messages that tag nobody, using a "
+        "decision service. Usage: `!auto-route on`, `!auto-route off`, "
+        "`!auto-route`, or `!auto-route fallback @agent|off` for the agent that "
+        "gets them while the decision service is failing.",
+        _cmd_auto_route,
+        args_spec=(
+            CommandArg("state", "on, off, or fallback @agent|off", required=False),
+        ),
         admin_owned=True,
     ),
     Command(

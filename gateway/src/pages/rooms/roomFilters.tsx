@@ -142,7 +142,7 @@ export function RoomFilters({
   }, [rooms]);
 
   return (
-    <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+    <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mb: 2, alignItems: "flex-end" }}>
       <TextField
         size="small"
         placeholder="Search rooms..."
@@ -217,7 +217,7 @@ export function RoomFilters({
         <TextField
           size="small"
           select
-          label="Connected User"
+          label="Connected user"
           value={state.userFilter}
           onChange={(e) => state.setUserFilter(e.target.value)}
           sx={{ width: 200 }}
