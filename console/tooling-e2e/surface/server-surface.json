@@ -180,6 +180,11 @@
       ]
     },
     {
+      "route": "DELETE /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/organizations/current/members/{user_id}",
       "auth": "session",
       "flags": []
@@ -711,6 +716,11 @@
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "GET /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "GET /gateway/organizations/current/issues",
@@ -1672,6 +1682,11 @@
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "PUT /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "PUT /gateway/organizations/current/services/{service}",

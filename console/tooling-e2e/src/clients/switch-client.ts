@@ -562,6 +562,20 @@ export class SwitchClient {
     return this.gateway("GET", "/organizations/current/issues");
   }
 
+  /** `GET /gateway/organizations/current/guardrails` — the Switch Trust policy the organization connected; organization admin only. */
+  async organizationGuardrails(): Promise<{
+    connected: boolean;
+    policy_id: string | null;
+    policy_name: string | null;
+  }> {
+    return this.gateway("GET", "/organizations/current/guardrails");
+  }
+
+  /** `DELETE /gateway/organizations/current/guardrails` — disconnect the organization's Switch Trust policy. */
+  async disconnectOrganizationGuardrails(): Promise<{ connected: boolean }> {
+    return this.gateway("DELETE", "/organizations/current/guardrails");
+  }
+
   /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
   async currentOrganization(): Promise<{
     id: string;

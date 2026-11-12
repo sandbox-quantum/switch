@@ -16,6 +16,7 @@ from switch_core.trust.client import (
     DynamicTrustClient,
     GuardrailBlockedError,
     GuardrailsCheckError,
+    GuardrailsRefusedError,
     HttpTrustClient,
     NullTrustClient,
     TrustCheckResult,
@@ -29,26 +30,43 @@ from switch_core.trust.client import (
 @dataclass
 class _FakeRow:
     endpoint: str
-    policy_id: str | None
-    api_key_encrypted: str | None
+    policy_id: str
+    api_key_encrypted: str
 
 
 class _FakeStore:
+    """Workspace `tenant-1` in organization `org-1`, which holds `row`, unless
+    a test arranges others."""
+
     def __init__(self, row: _FakeRow | None) -> None:
-        self.row = row
+        self.organizations: dict[str, str | None] = {"tenant-1": "org-1"}
+        self.rows: dict[str, _FakeRow | None] = {"org-1": row}
         self.reads = 0
+        self.lookups = 0
         # Run as a read happens, for a change that lands while it is made.
         self.during_read: Callable[[], None] | None = None
         self.fail_next = False
 
-    async def get(self, session: object) -> _FakeRow | None:
+    @property
+    def row(self) -> _FakeRow | None:
+        return self.rows["org-1"]
+
+    @row.setter
+    def row(self, row: _FakeRow | None) -> None:
+        self.rows["org-1"] = row
+
+    async def organization_of(self, session: object, tenant_id: str) -> str | None:
+        self.lookups += 1
+        return self.organizations[tenant_id]
+
+    async def get(self, session: object, organization_id: str) -> _FakeRow | None:
         self.reads += 1
         if self.during_read is not None:
             self.during_read()
         if self.fail_next:
             self.fail_next = False
             raise RuntimeError("the pool timed out")
-        return self.row
+        return self.rows.get(organization_id)
 
 
 class _FakeSession:
@@ -87,6 +105,12 @@ def _dynamic_client(
     )
 
 
+async def _check(client: DynamicTrustClient, tenant_id: str = "tenant-1"):
+    return await client.check(
+        tenant_id=tenant_id, role="user", content="hi", room_id="room-1"
+    )
+
+
 def _unreachable(request: httpx.Request) -> httpx.Response:
     raise AssertionError("no request should be made")
 
@@ -94,19 +118,7 @@ def _unreachable(request: httpx.Request) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_dynamic_client_behaves_like_null_with_no_row() -> None:
     client = _dynamic_client(None, _unreachable)
-    result = await client.check(role="user", content="hi", room_id="room-1")
-    assert result.outcome == "ok"
-
-
-@pytest.mark.asyncio
-async def test_dynamic_client_behaves_like_null_when_policy_id_is_missing() -> None:
-    row = _FakeRow(
-        endpoint="https://trust.example",
-        policy_id=None,
-        api_key_encrypted="enc:k",
-    )
-    client = _dynamic_client(row, _unreachable)
-    result = await client.check(role="user", content="hi", room_id="room-1")
+    result = await _check(client)
     assert result.outcome == "ok"
 
 
@@ -126,12 +138,56 @@ async def test_dynamic_client_checks_against_the_current_row() -> None:
         api_key_encrypted="enc:k",
     )
     client = _dynamic_client(row, handler)
-    result = await client.check(role="user", content="hi", room_id="room-1")
+    result = await _check(client)
 
     assert seen["key"] == "k"
     assert seen["policy"] == "pol_123"
     assert seen["url"] == "https://trust.example/guardrails/check"
     assert result.outcome == "ok"
+
+
+@pytest.mark.asyncio
+async def test_each_workspace_is_checked_against_its_own_organizations_policy() -> None:
+    policies: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        policies.append(request.headers.get("x-guardrails-policy-id"))
+        return _ok(request)
+
+    store = _FakeStore(_ROW)
+    store.organizations.update({"tenant-2": "org-2", "tenant-3": "org-3"})
+    store.rows.update(
+        {
+            "org-2": _FakeRow(
+                endpoint="https://trust.example",
+                policy_id="pol_other",
+                api_key_encrypted="enc:k2",
+            ),
+            "org-3": None,
+        }
+    )
+    client = _dynamic_client(None, handler, store=store)
+
+    results = [await _check(client, tenant) for tenant in ("tenant-1", "tenant-2")]
+    unchecked = await _check(client, "tenant-3")
+
+    assert policies == ["pol_123", "pol_other"]
+    assert [result.outcome for result in results] == ["ok", "ok"]
+    assert unchecked.policy_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_in_no_organization_is_not_checked_and_asked_about_once() -> (
+    None
+):
+    store = _FakeStore(None)
+    store.organizations["tenant-orphan"] = None
+    client = _dynamic_client(None, _unreachable, store=store)
+
+    for _ in range(2):
+        result = await _check(client, "tenant-orphan")
+
+    assert (result.outcome, store.lookups, store.reads) == ("ok", 1, 0)
 
 
 @pytest.mark.asyncio
@@ -147,9 +203,11 @@ async def test_dynamic_client_turns_an_undecryptable_key_into_a_check_error() ->
     client = _dynamic_client(row, _unreachable, keyring=_UndecryptableKeyring())
 
     with pytest.raises(GuardrailsCheckError):
-        await client.check(role="user", content="hi", room_id="room-1")
+        await _check(client)
 
-    result = await check_message(client, role="user", content="hi", room_id="room-1")
+    result = await check_message(
+        client, tenant_id="tenant-1", role="user", content="hi", room_id="room-1"
+    )
     assert result.outcome == "errored"
 
 
@@ -179,9 +237,9 @@ async def test_dynamic_client_reads_the_settings_once_for_many_checks() -> None:
     client = _dynamic_client(None, _ok, store=store)
 
     for _ in range(3):
-        await client.check(role="user", content="hi", room_id="room-1")
+        await _check(client)
 
-    assert store.reads == 1
+    assert (store.lookups, store.reads) == (1, 1)
 
 
 @pytest.mark.asyncio
@@ -195,13 +253,38 @@ async def test_settings_forgotten_are_read_before_the_next_check() -> None:
 
     store = _FakeStore(None)
     client = _dynamic_client(None, handler, store=store)
-    await client.check(role="user", content="hi", room_id="room-1")
+    await _check(client)
     store.row = _ROW
 
-    client.forget()
-    await client.check(role="user", content="hi", room_id="room-1")
+    client.forget("org-1")
+    await _check(client)
 
     assert (policies, store.reads) == (["pol_123"], 2)
+
+
+@pytest.mark.asyncio
+async def test_forgetting_another_organizations_settings_keeps_these() -> None:
+    store = _FakeStore(_ROW)
+    client = _dynamic_client(None, _ok, store=store)
+    await _check(client)
+
+    client.forget("org-2")
+    await _check(client)
+
+    assert store.reads == 1
+
+
+@pytest.mark.asyncio
+async def test_forgetting_every_organizations_settings_reads_them_again() -> None:
+    """As after this process may have missed a change."""
+    store = _FakeStore(_ROW)
+    client = _dynamic_client(None, _ok, store=store)
+    await _check(client)
+
+    client.forget_all()
+    await _check(client)
+
+    assert (store.lookups, store.reads) == (1, 2)
 
 
 @pytest.mark.asyncio
@@ -209,11 +292,24 @@ async def test_settings_read_while_they_changed_are_not_kept() -> None:
     """The read may have seen the row from before the change."""
     store = _FakeStore(_ROW)
     client = _dynamic_client(None, _ok, store=store)
-    store.during_read = client.forget
-    await client.check(role="user", content="hi", room_id="room-1")
+    store.during_read = lambda: client.forget("org-1")
+    await _check(client)
     store.during_read = None
 
-    await client.check(role="user", content="hi", room_id="room-1")
+    await _check(client)
+
+    assert store.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_settings_read_while_everything_was_forgotten_are_not_kept() -> None:
+    store = _FakeStore(_ROW)
+    client = _dynamic_client(None, _ok, store=store)
+    store.during_read = client.forget_all
+    await _check(client)
+    store.during_read = None
+
+    await _check(client)
 
     assert store.reads == 2
 
@@ -224,8 +320,8 @@ async def test_settings_older_than_the_most_kept_are_read_again() -> None:
     store = _FakeStore(_ROW)
     client = _dynamic_client(None, _ok, store=store, max_age_seconds=0.0)
 
-    await client.check(role="user", content="hi", room_id="room-1")
-    await client.check(role="user", content="hi", room_id="room-1")
+    await _check(client)
+    await _check(client)
 
     assert store.reads == 2
 
@@ -236,9 +332,9 @@ async def test_a_failed_read_is_read_again_by_the_next_check() -> None:
     client = _dynamic_client(None, _ok, store=store)
     store.fail_next = True
     with pytest.raises(GuardrailsCheckError):
-        await client.check(role="user", content="hi", room_id="room-1")
+        await _check(client)
 
-    result = await client.check(role="user", content="hi", room_id="room-1")
+    result = await _check(client)
 
     assert (result.outcome, store.reads) == ("ok", 2)
 
@@ -362,15 +458,17 @@ async def test_a_network_failure_raises():
 @pytest.mark.asyncio
 async def test_null_client_always_allows():
     result = await NullTrustClient().check(
-        role="user", content="anything", room_id="room-1"
+        tenant_id="tenant-1", role="user", content="anything", room_id="room-1"
     )
     assert result.blocked is False
 
 
 @pytest.mark.asyncio
 async def test_check_message_fails_open_on_error():
-    client = _client(lambda request: httpx.Response(500, text="boom"))
-    result = await check_message(client, role="user", content="hi", room_id="room-1")
+    client = _dynamic_client(_ROW, lambda request: httpx.Response(500, text="boom"))
+    result = await check_message(
+        client, tenant_id="tenant-1", role="user", content="hi", room_id="room-1"
+    )
     assert result == TrustCheckResult(
         outcome="errored", policy_id=None, policy_name=None
     )
@@ -378,15 +476,26 @@ async def test_check_message_fails_open_on_error():
 
 @pytest.mark.asyncio
 async def test_check_message_passes_through_a_block():
-    client = _client(
+    client = _dynamic_client(
+        _ROW,
         lambda request: httpx.Response(
             200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_BLOCKED"}
-        )
+        ),
     )
     result = await check_message(
-        client, role="assistant", content="hi", room_id="room-1"
+        client, tenant_id="tenant-1", role="assistant", content="hi", room_id="room-1"
     )
     assert result.blocked is True
+
+
+@pytest.mark.asyncio
+async def test_an_error_status_is_told_apart_from_no_answer():
+    """So connecting a policy can say Switch Trust refused it rather than
+    couldn't be reached (`gateway/organization_guardrails.py`)."""
+    client = _client(lambda request: httpx.Response(401, text="bad key"))
+    with pytest.raises(GuardrailsRefusedError) as raised:
+        await client.check(role="user", content="hi", room_id="room-1")
+    assert raised.value.status_code == 401
 
 
 def test_guardrail_blocked_error_names_the_categories():
@@ -500,24 +609,22 @@ def test_trust_annotation_is_none_for_ok_blocked_and_redacted():
 
 
 @pytest.mark.asyncio
-async def test_is_active_follows_the_settings_row() -> None:
+async def test_is_active_follows_the_organizations_settings() -> None:
     complete = _FakeRow(
         endpoint="https://trust.example", policy_id="pol_1", api_key_encrypted="enc:k"
     )
-    no_key = _FakeRow(
-        endpoint="https://trust.example", policy_id="pol_1", api_key_encrypted=None
-    )
-    assert await _dynamic_client(complete, _unreachable).is_active() is True
-    assert await _dynamic_client(no_key, _unreachable).is_active() is False
-    assert await _dynamic_client(None, _unreachable).is_active() is False
-    assert await NullTrustClient().is_active() is False
+    assert await _dynamic_client(complete, _unreachable).is_active("tenant-1") is True
+    assert await _dynamic_client(None, _unreachable).is_active("tenant-1") is False
+    assert await NullTrustClient().is_active("tenant-1") is False
 
 
 class _UnreadableSettingsClient:
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         raise GuardrailsCheckError("database unavailable")
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         raise AssertionError("not called")
 
 
@@ -525,4 +632,4 @@ class _UnreadableSettingsClient:
 async def test_trust_is_active_checks_anyway_when_settings_cannot_be_read() -> None:
     # Failing towards checking: each check then fails open with its visible
     # "could not check" note, instead of the message skipping Switch Trust.
-    assert await trust_is_active(_UnreadableSettingsClient()) is True  # type: ignore[arg-type]
+    assert await trust_is_active(_UnreadableSettingsClient(), "tenant-1") is True  # type: ignore[arg-type]

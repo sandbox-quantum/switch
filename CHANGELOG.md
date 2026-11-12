@@ -219,6 +219,16 @@ version of their own to them without also giving them a release of their own.
   each connector's `category` and `description`.
 
 #### Changed
+- **Switch Trust guardrails are set per organization instead of once for
+  the whole server.** Each organization's admins connect its own policy, with
+  a policy ID and an API key, under Organization settings › Guardrails. Switch
+  Trust checks the policy before it is saved, and the dashboard shows its name,
+  ID and key ending. Every message in an organization's workspaces is checked
+  against that organization's policy, or not at all when it has none. On
+  upgrade, the policy the server had is copied into every existing
+  organization, so nothing checked before goes unchecked; a new organization
+  starts with none. The operator's server-wide setting is gone:
+  `/gateway/trust-settings` answers 410 saying where the setting went.
 - **The morning report's graph explains itself.** `daily_report.py` draws the
   graph of the day itself instead of taking a Datadog snapshot, with a title,
   the time span, labelled axes, a legend and a caption on how to read it, so
@@ -3343,6 +3353,11 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Admin › Switch Trust points to the organization's guardrails on a server
+  that sets them per organization.** Such a server no longer has a
+  server-wide policy to edit, so the form gives way to its note and a button
+  that opens Organization settings › Guardrails in the dashboard. Servers that
+  still have the server-wide setting keep the form.
 - **The Connector apps page lists the scopes to give an app** for a vendor
   that has no setup steps of its own, such as GitLab. The warning before
   switching apps says tokens already handed to agents stay valid until they

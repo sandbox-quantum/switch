@@ -376,6 +376,17 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/organizations/current/services/{service}": delete(
         f"{G}/organizations/current/services/{{organization_service}}", org_admin()
     ),
+    "GET /gateway/organizations/current/guardrails": get(
+        f"{G}/organizations/current/guardrails", org_admin()
+    ),
+    "PUT /gateway/organizations/current/guardrails": put(
+        f"{G}/organizations/current/guardrails",
+        org_admin(),
+        json={"policy_id": "pol_example", "api_key": "example-key"},
+    ),
+    "DELETE /gateway/organizations/current/guardrails": delete(
+        f"{G}/organizations/current/guardrails", org_admin()
+    ),
     "GET /gateway/organizations/current/connector-apps": get(
         f"{G}/organizations/current/connector-apps", org_admin()
     ),
@@ -428,13 +439,22 @@ ROUTES: dict[str, Case] = {
         SELF,
         why="Signing yourself out of every device.",
     ),
-    "GET /gateway/trust-settings": get(f"{G}/trust-settings", operator()),
+    "GET /gateway/trust-settings": get(
+        f"{G}/trust-settings",
+        operator(ok=410),
+        why="Gone: guardrails are set per organization; still the operator's.",
+    ),
     "PUT /gateway/trust-settings": put(
         f"{G}/trust-settings",
-        operator(),
+        operator(ok=410),
         json={"endpoint": "https://trust.example.invalid", "policy_id": None},
+        why="Gone: guardrails are set per organization; still the operator's.",
     ),
-    "DELETE /gateway/trust-settings": delete(f"{G}/trust-settings", operator()),
+    "DELETE /gateway/trust-settings": delete(
+        f"{G}/trust-settings",
+        operator(ok=410),
+        why="Gone: guardrails are set per organization; still the operator's.",
+    ),
     "GET /gateway/connector-apps": get(f"{G}/connector-apps", operator()),
     "PUT /gateway/connector-apps/{service}": put(
         f"{G}/connector-apps/github",

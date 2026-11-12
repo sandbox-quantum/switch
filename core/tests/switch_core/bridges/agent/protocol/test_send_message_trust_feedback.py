@@ -30,7 +30,9 @@ _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high")
 
 
 class _ContentTrustClient:
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         if "forbidden" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
         if "nothing-to-cut" in content:

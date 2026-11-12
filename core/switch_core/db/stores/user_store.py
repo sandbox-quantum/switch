@@ -697,6 +697,26 @@ class UserStore:
             or 0
         )
 
+    async def admin_names(self, session: AsyncSession, tenant: Tenant) -> list[str]:
+        """The names of `tenant`'s admins by membership, sorted, leaving out
+        its organization's `org_admin`s, who administer it without needing
+        to be named."""
+        query = (
+            select(User.name)
+            .join(TenantMember, TenantMember.user_id == User.id)
+            .where(TenantMember.tenant_id == tenant.id, TenantMember.role == "admin")
+        )
+        if tenant.organization_id is not None:
+            query = query.where(
+                User.id.not_in(
+                    select(OrganizationMember.user_id).where(
+                        OrganizationMember.organization_id == tenant.organization_id,
+                        OrganizationMember.role == ORGANIZATION_ADMIN_ROLE,
+                    )
+                )
+            )
+        return sorted((await session.scalars(query)).all(), key=str.casefold)
+
     async def lock_admins(self, session: AsyncSession) -> int:
         """How many `admin` memberships the session's bound tenant has, with
         each of those rows locked until the transaction ends.

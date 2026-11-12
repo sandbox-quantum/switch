@@ -1,117 +1,48 @@
-"""Switch Trust's one server-global settings row — deployment-operator only.
+"""The routes that set the one Switch Trust policy for the whole server, which
+each organization now sets for itself (`gateway/organization_guardrails.py`).
 
-Not tenant-scoped: `require_admin` (`users.role == "admin"`), not
-`require_tenant_admin`, gates every route here, since one guardrails policy
-covers the whole deployment rather than one tenant's traffic.
+Kept, answering 410 with where the setting went, for a Switch Console from
+before the change: it shows the answer's message instead of a form that would
+save nothing. Still the operator's alone, as they were.
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Annotated
+from typing import Annotated, NoReturn
 
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException
 
-from switch_core.config import SwitchConfig
-from switch_core.db.models import TrustSettings, User
-from switch_core.db.stores.trust_settings_store import TrustSettingsStore
+from switch_core.db.models import User
 from switch_core.gateway.auth import require_admin
-from switch_core.gateway.dependencies import (
-    get_config,
-    get_session,
-    trust_settings_changed,
-)
-from switch_core.gateway.schemas import (
-    TrustSettingsResponse,
-    TrustSettingsUpdateRequest,
-)
-from switch_core.keys import UndecryptableError
 
 router = APIRouter()
 
-logger = logging.getLogger(__name__)
+SET_PER_ORGANIZATION = (
+    "Guardrails are set for each organization now, by its organization "
+    "admins, under Organization settings › Guardrails in the Switch dashboard."
+)
 
-# Matches the previous env-var default (`SwitchConfig.switch_trust_endpoint`,
-# since removed) — shown until an operator saves their own.
-DEFAULT_TRUST_ENDPOINT = "https://api.switchagents.ai"
 
-
-def _to_response(
-    settings: TrustSettings | None, config: SwitchConfig
-) -> TrustSettingsResponse:
-    if settings is None:
-        return TrustSettingsResponse(
-            endpoint=DEFAULT_TRUST_ENDPOINT,
-            policy_id=None,
-            has_api_key=False,
-            api_key_last4=None,
-            enabled=False,
-        )
-    api_key_last4 = None
-    if settings.api_key_encrypted:
-        try:
-            api_key_last4 = config.keyring.decrypt(settings.api_key_encrypted)[-4:]
-        except UndecryptableError:
-            # A key encrypted under one since dropped from SECRET_KEYS. Report
-            # it as configured but unreadable rather than 500ing — an operator
-            # has to be able to load this page to save a replacement key, the
-            # only way out of this state.
-            logger.warning(
-                "Stored Switch Trust API key is not decryptable under any "
-                "current key; reporting it as configured but unreadable."
-            )
-    return TrustSettingsResponse(
-        endpoint=settings.endpoint,
-        policy_id=settings.policy_id,
-        has_api_key=settings.api_key_encrypted is not None,
-        api_key_last4=api_key_last4,
-        enabled=bool(settings.policy_id and settings.api_key_encrypted),
-    )
+def _gone() -> NoReturn:
+    raise HTTPException(status_code=410, detail=SET_PER_ORGANIZATION)
 
 
 @router.get("/trust-settings")
 async def get_trust_settings(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
     _admin: Annotated[User, Depends(require_admin)],
-) -> TrustSettingsResponse:
-    settings = await TrustSettingsStore().get(session)
-    return _to_response(settings, config)
+) -> None:
+    _gone()
 
 
 @router.put("/trust-settings")
 async def update_trust_settings(
-    req: TrustSettingsUpdateRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
     _admin: Annotated[User, Depends(require_admin)],
-) -> TrustSettingsResponse:
-    """`req.api_key` omitted leaves whatever key is already stored untouched,
-    so changing the endpoint or policy id doesn't force re-entering it — enforced
-    by `TrustSettingsStore.upsert` itself, not a read here, so two admins saving
-    at once can't have one drop the other's key."""
-    api_key_encrypted = (
-        config.keyring.encrypt(req.api_key) if req.api_key is not None else None
-    )
-    settings = await TrustSettingsStore().upsert(
-        session,
-        endpoint=req.endpoint,
-        policy_id=req.policy_id,
-        api_key_encrypted=api_key_encrypted,
-    )
-    await session.commit()
-    trust_settings_changed()
-    return _to_response(settings, config)
+) -> None:
+    _gone()
 
 
 @router.delete("/trust-settings")
 async def delete_trust_settings(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
     _admin: Annotated[User, Depends(require_admin)],
-) -> TrustSettingsResponse:
-    await TrustSettingsStore().clear(session)
-    await session.commit()
-    trust_settings_changed()
-    return _to_response(None, config)
+) -> None:
+    _gone()

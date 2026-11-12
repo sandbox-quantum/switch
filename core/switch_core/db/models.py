@@ -2862,12 +2862,12 @@ class DirectoryEventCursor(Base):
 
 
 class TrustSettings(Base):
-    """Server-global Switch Trust guardrails configuration — one row.
+    """The Switch Trust policy the whole server was checked against before
+    each organization had its own (`OrganizationTrustSettings`).
 
-    No row, or one with ``policy_id``/``api_key_encrypted`` unset, means the
-    check is off (see ``switch_core.trust.client.DynamicTrustClient``). ``id``
-    is a fixed constant (``db/stores/trust_settings_store.py``) rather than a
-    generated key, since there is exactly one row by construction.
+    Nothing reads it now. Migration `b7d24e9c1f53` copied it into every
+    organization, and it is kept, unread, only for a release from before that
+    still running beside this one during an upgrade; a later release drops it.
     """
 
     __tablename__ = "trust_settings"
@@ -2876,6 +2876,44 @@ class TrustSettings(Base):
     endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     policy_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class OrganizationTrustSettings(OrganizationScoped, Base):
+    """The Switch Trust policy every message in an organization's workspaces
+    is checked against (`trust/client.py`). A row is a connected policy; an
+    organization with none is not checked.
+
+    `policy_name` is what Switch Trust called the policy in its answer to the
+    check made when it was connected, and None when it gave no name. `endpoint`
+    is Switch Trust's address: the default for a policy connected here, and
+    whatever the server's own setting named for one copied from it.
+    `updated_by` is cleared when that account is deleted, as on
+    `OrganizationAppCredential`; the organization's audit log keeps who
+    connected it.
+    """
+
+    __tablename__ = "organization_trust_settings"
+    __table_args__ = (PrimaryKeyConstraint("organization_id"),)
+
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_id: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_organization_trust_settings_updated_by",
+        ),
+        nullable=True,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -91,6 +91,8 @@ class OrganizationAuditAction(StrEnum):
     CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
     SERVICE_SET = "organization.service_set"
     SERVICE_CLEARED = "organization.service_cleared"
+    GUARDRAILS_CONNECTED = "organization.guardrails_connected"
+    GUARDRAILS_DISCONNECTED = "organization.guardrails_disconnected"
     # Changes made in a directory kept outside Switch, brought in at sign-in,
     # from its events or by the daily check (`details.source`).
     MEMBER_ADDED_FROM_DIRECTORY = "organization.member_added_from_directory"

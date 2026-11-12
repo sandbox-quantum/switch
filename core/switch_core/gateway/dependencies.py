@@ -37,6 +37,7 @@ from switch_core.organization_directory import OrganizationDirectory
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
+from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.user_changes import LocalUserChanges
 
 _state: dict[str, Any] = {}
@@ -69,7 +70,8 @@ def init_dependencies(
     invite_mailer: InviteMailer | None,
     user_changes: LocalUserChanges,
     config: SwitchConfig,
-    trust_settings_changed: Callable[[], None] | None = None,
+    trust_settings_changed: Callable[[str], None] | None = None,
+    trust_connection_check: TrustConnectionCheck | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
     _state["room_store"] = room_store
@@ -97,6 +99,7 @@ def init_dependencies(
     _state["user_changes"] = user_changes
     _state["config"] = config
     _state["trust_settings_changed"] = trust_settings_changed
+    _state["trust_connection_check"] = trust_connection_check
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -251,13 +254,20 @@ def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
 
 
-def trust_settings_changed() -> None:
-    """Tell every process the Switch Trust settings changed, once the change
-    has committed (`trust/signals.py`). Nothing is wired to hear it in a route
-    test."""
+def trust_settings_changed(organization_id: str) -> None:
+    """Tell every process the organization's Switch Trust settings changed,
+    once the change has committed (`trust/signals.py`). Nothing is wired to
+    hear it in a route test."""
     changed = _state.get("trust_settings_changed")
     if changed is not None:
-        changed()
+        changed(organization_id)
+
+
+def get_trust_connection_check() -> TrustConnectionCheck:
+    check = _state.get("trust_connection_check")
+    if check is None:
+        raise RuntimeError("No Switch Trust connection check was wired in")
+    return check  # type: ignore[no-any-return]
 
 
 def get_protocol() -> AgentCore:

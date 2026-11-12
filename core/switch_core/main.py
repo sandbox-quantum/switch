@@ -248,6 +248,7 @@ from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
@@ -1412,6 +1413,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         connector_apps=connector_apps,
         config=config,
         trust_settings_changed=trust_signals.changed,
+        trust_connection_check=TrustConnectionCheck(
+            client=trust_http, timeout_seconds=config.switch_trust_timeout_seconds
+        ),
     )
 
     register_platforms(collab_lifecycle, config.feature_flags)

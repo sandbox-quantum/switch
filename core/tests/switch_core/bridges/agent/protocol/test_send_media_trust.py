@@ -28,10 +28,12 @@ class _ContentTrustClient:
         self._active = active
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return self._active
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)

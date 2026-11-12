@@ -7,8 +7,9 @@ import type { FastScenario } from './scenario.ts';
  * it: a new user, in the default workspace, creates an organization and lands
  * in its first workspace, adds a second, and sees both, in an organization
  * listed beside those they were already in, with nothing left for its admin
- * to fix, and each new workspace counted with its one user and no agents. A
- * plain member of the default workspace may not add one there.
+ * to fix, no Switch Trust policy connected, and each new workspace counted
+ * with its one user and no agents. A plain member of the default workspace
+ * may not add one there, or read its organization's guardrails.
  *
  * Users and workspaces cannot be deleted, so this runs only on a stack thrown
  * away after the run.
@@ -21,6 +22,8 @@ export const organizations: FastScenario = {
       'POST /gateway/organizations',
       'GET /gateway/organizations/current',
       'GET /gateway/organizations/current/issues',
+      'GET /gateway/organizations/current/guardrails',
+      'DELETE /gateway/organizations/current/guardrails',
       'GET /gateway/organizations/current/workspaces',
       'POST /gateway/organizations/current/workspaces',
       'GET /gateway/tenants/counts',
@@ -62,6 +65,14 @@ export const organizations: FastScenario = {
       expect(error.status, 'a member adding a workspace').toBe(403);
     }
 
+    try {
+      await member.organizationGuardrails();
+      throw new Error("a member read the organization's guardrails");
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      expect(error.status, "a member reading the organization's guardrails").toBe(403);
+    }
+
     const { organization, workspace } = await founder.createOrganization(names.name('org'));
     expect(organization.role).toBe('org_admin');
     expect(workspace).toMatchObject({
@@ -84,6 +95,15 @@ export const organizations: FastScenario = {
     expect(workspaces.map((row) => row.id)).not.toContain(defaultWorkspace);
 
     expect(await founder.organizationIssues(), 'nothing to fix in a new organization').toEqual([]);
+
+    expect(
+      await founder.organizationGuardrails(),
+      'a new organization starts with no Switch Trust policy'
+    ).toMatchObject({ connected: false, policy_id: null });
+    expect(
+      await founder.disconnectOrganizationGuardrails(),
+      'disconnecting none changes nothing'
+    ).toMatchObject({ connected: false });
 
     const counts = await founder.workspaceCounts();
     for (const id of [workspace.id, second.id]) {

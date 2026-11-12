@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import Attachment, InboundMessage
@@ -28,10 +29,12 @@ class _ContentTrustClient:
         self._active = active
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return self._active
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
@@ -117,6 +120,7 @@ def _bridge(trust_client: object) -> SimpleNamespace:
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _trust_client=trust_client,
+        _room_tenant=AsyncMock(return_value="tenant-1"),
         human_actor=human_actor,
         recorded=recorded,
     )

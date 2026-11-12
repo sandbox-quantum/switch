@@ -17,6 +17,7 @@ read back by its `org_admin`s. See `docs/design/organizations-v1.md`.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, NamedTuple
@@ -47,9 +48,11 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
@@ -72,6 +75,7 @@ from switch_core.gateway.dependencies import (
     get_organization_directory,
     get_organization_store,
     get_protocol,
+    get_room_store,
     get_session,
     get_session_factory,
     get_system_session,
@@ -86,6 +90,7 @@ from switch_core.gateway.schemas import (
     OrganizationMemberDetail,
     OrganizationMemberUpdateRequest,
     OrganizationSummary,
+    OrganizationWorkspaceResponse,
     TenantMembershipResponse,
     WorkspaceCreateRequest,
 )
@@ -120,6 +125,8 @@ from switch_core.organization_issues import (
 from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _member_detail(
@@ -334,22 +341,49 @@ async def list_organization_workspaces(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
-) -> list[TenantMembershipResponse]:
+) -> list[OrganizationWorkspaceResponse]:
     """The organization's workspaces the caller may enter, and their role in
     each: every one for an `org_admin`, their own for a member, and every one
-    for the platform operator, who may enter any."""
+    for the platform operator, who may enter any. Each with what the
+    Workspaces page shows of it: when it was made, its counts, and its admins
+    by membership."""
     organization_id = await _current_organization_id(session)
     # Let go of the request's connection while each workspace is read on a
     # session of its own.
     await session.commit()
-    return await organization_workspaces_bindable_by(
+    workspaces = await organization_workspaces_bindable_by(
         session_factory,
         user_store,
         user.id,
         organization_id,
         is_operator=user.role == "admin",
     )
+    described: list[OrganizationWorkspaceResponse] = []
+    for workspace in workspaces:
+        async with tenant_session(session_factory, workspace.id) as bound:
+            tenant = await bound.get(Tenant, workspace.id)
+            if tenant is None:
+                logger.warning(
+                    "Workspace %s of organization %s was gone by the time it "
+                    "was described",
+                    workspace.id,
+                    organization_id,
+                )
+                continue
+            described.append(
+                OrganizationWorkspaceResponse(
+                    **workspace.model_dump(),
+                    created_at=str(tenant.created_at),
+                    users=await user_store.count_people(bound, tenant),
+                    agents=await agent_store.count(bound),
+                    rooms=await room_store.count(bound),
+                    admins=await user_store.admin_names(bound, tenant),
+                )
+            )
+    return described
 
 
 @router.post("/organizations/current/workspaces", status_code=201)
@@ -409,7 +443,7 @@ async def create_organization_workspace(
     )
 
 
-def _made_from(access: _OrganizationAccess) -> dict[str, object]:
+def made_from(access: _OrganizationAccess) -> dict[str, object]:
     """Where an organization change was made: the workspace the request was
     bound to, and whether the platform operator made it on the operator flag
     alone."""
@@ -841,7 +875,7 @@ async def update_organization_member_role(
             details={
                 "from": member.role,
                 "to": req.role,
-                **_made_from(access),
+                **made_from(access),
             },
         )
     member.role = req.role
@@ -988,7 +1022,7 @@ async def remove_organization_member(
         action=OrganizationAuditAction.MEMBER_REMOVED,
         target_type="user",
         target_id=user_id,
-        details={"role": role, **_made_from(access)},
+        details={"role": role, **made_from(access)},
     )
     await session.commit()
     if user_id == user.id:

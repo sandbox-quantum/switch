@@ -1190,6 +1190,20 @@ class TenantMembershipResponse(BaseModel):
     organization_id: str | None
 
 
+class OrganizationWorkspaceResponse(TenantMembershipResponse):
+    """One of the organization's workspaces, as its Workspaces page lists it:
+    when it was made, how many people, agents and rooms it has, each counted
+    as its own list counts them, and the names of its admins by membership.
+    The organization's `org_admin`s administer every workspace and are not
+    among them."""
+
+    created_at: str
+    users: int
+    agents: int
+    rooms: int
+    admins: list[str]
+
+
 class WorkspaceCountsResponse(BaseModel):
     """How many people and agents one workspace the caller may enter has, as
     its members list and agents list show them. The body of
@@ -2291,68 +2305,31 @@ class DecisionTestResponse(BaseModel):
     error: DecisionTestError | None
 
 
-class TrustSettingsResponse(BaseModel):
-    """Switch Trust's one server-global settings row. The API key itself is
-    never returned — `has_api_key`/`api_key_last4` only confirm one is set,
-    the way the stored secret is surfaced everywhere else in the gateway."""
+class OrganizationGuardrailsResponse(BaseModel):
+    """The Switch Trust policy the organization connected, as its admins see
+    it: never the API key, only its last four characters, None when it can't
+    be read. `policy_name` is Switch Trust's name for the policy when it gave
+    one; `policy_url` where Switch Trust shows it, when Switch knows."""
 
-    endpoint: str
+    connected: bool
     policy_id: str | None
-    has_api_key: bool
+    policy_name: str | None
+    policy_url: str | None
     api_key_last4: str | None
-    enabled: bool
+    connected_by_name: str | None
+    connected_at: str | None
 
 
-class TrustSettingsUpdateRequest(BaseModel):
-    """`api_key` omitted (or null) leaves whatever key is already stored
-    untouched, so changing the endpoint or policy id doesn't force re-entering
-    the secret. Use `DELETE /trust-settings` to turn Switch Trust off.
+class OrganizationGuardrailsConnectRequest(BaseModel):
+    """A policy and its API key, both from Switch Trust. Switch Trust's
+    address is not asked for: it is Switch's own."""
 
-    No `timeout_seconds` here: unlike the rest of Switch Trust's settings,
-    the check timeout is fixed at deploy time (`SwitchConfig.
-    switch_trust_timeout_seconds`), not admin-editable."""
-
-    endpoint: str
-    policy_id: str | None
-    api_key: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_endpoint(self) -> TrustSettingsUpdateRequest:
-        value = self.endpoint
-        if value != value.strip():
-            raise ValueError("endpoint has leading or trailing whitespace")
-        parts = urlsplit(value)
-        if parts.scheme not in ("http", "https"):
-            raise ValueError("endpoint must be an http(s) URL")
-        if not parts.netloc:
-            raise ValueError("endpoint must include a host")
-        if parts.path.strip("/"):
-            raise ValueError(
-                "endpoint is the service's base URL — /guardrails/check is "
-                "appended to it, so it must have no path of its own"
-            )
-        if parts.query or parts.fragment:
-            raise ValueError(
-                "endpoint must be a bare base URL: a query or fragment is "
-                "dropped when /guardrails/check is appended, so it would "
-                "silently never be sent"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_api_key(self) -> TrustSettingsUpdateRequest:
-        if self.api_key is not None and not self.api_key.strip():
-            raise ValueError(
-                "api_key must not be blank; omit it to leave the stored key "
-                "unchanged, or use DELETE /trust-settings to turn Switch "
-                "Trust off"
-            )
-        return self
-
-    @field_validator("policy_id")
-    @classmethod
-    def _blank_policy_id_is_unset(cls, value: str | None) -> str | None:
-        return value.strip() if value and value.strip() else None
+    policy_id: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+    ]
+    api_key: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)
+    ]
 
 
 # ── Feature flags ────────────────────────────────────────────────────────────

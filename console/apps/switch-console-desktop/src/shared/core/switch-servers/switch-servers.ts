@@ -938,6 +938,9 @@ export type TrustSettings = {
  * non-operator gets `forbidden` rather than an empty form. */
 export type FetchTrustSettingsResult =
   | { kind: 'loaded'; settings: TrustSettings }
+  /** A server that has each organization set its own policy, which no longer
+   * has one for the whole server; `message` is its word on where it went. */
+  | { kind: 'moved'; message: string }
   | { kind: 'unauthenticated' }
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string };
