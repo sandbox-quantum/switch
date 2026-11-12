@@ -1548,6 +1548,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         signals=purge_signals,
         controller_removed=controller_removal_publisher(purge_signals),
         admin_email=config.gateway_admin_email,
+        sign_in_issuer=config.gateway_oidc_issuer_url,
     )
     gateway_app.state.organization_apps = organization_apps
     if config.members_service_url:

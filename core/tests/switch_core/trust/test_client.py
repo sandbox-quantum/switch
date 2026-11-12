@@ -19,6 +19,7 @@ from switch_core.trust.client import (
     HttpTrustClient,
     NullTrustClient,
     TrustCheckResult,
+    TrustDeletionError,
     TrustFinding,
     check_message,
     trust_annotation,
@@ -526,3 +527,50 @@ async def test_trust_is_active_checks_anyway_when_settings_cannot_be_read() -> N
     # Failing towards checking: each check then fails open with its visible
     # "could not check" note, instead of the message skipping Switch Trust.
     assert await trust_is_active(_UnreadableSettingsClient()) is True  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_session_sends_the_room_id_with_the_check_credentials():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(204)
+
+    await _client(handler).delete_session("room/1")
+
+    (request,) = seen
+    assert request.method == "DELETE"
+    assert str(request.url) == "https://trust.example/guardrails/sessions/room%2F1"
+    assert request.headers["x-flintai-api-key"] == "k"
+    assert request.headers["x-guardrails-policy-id"] == "pol_123"
+    assert request.headers["x-agent-session-id"] == "room/1"
+
+
+@pytest.mark.asyncio
+async def test_a_session_trust_never_held_counts_as_deleted():
+    await _client(lambda request: httpx.Response(404)).delete_session("room-1")
+
+
+@pytest.mark.asyncio
+async def test_a_refused_deletion_raises():
+    with pytest.raises(TrustDeletionError, match="500"):
+        await _client(lambda request: httpx.Response(500, text="down")).delete_session(
+            "room-1"
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_deletion_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(TrustDeletionError):
+        await _client(handler).delete_session("room-1")
+
+
+@pytest.mark.asyncio
+async def test_no_session_eraser_without_settings_and_one_with_them():
+    assert await _dynamic_client(None, _unreachable).session_eraser() is None
+    eraser = await _dynamic_client(_ROW, _unreachable).session_eraser()
+    assert isinstance(eraser, HttpTrustClient)

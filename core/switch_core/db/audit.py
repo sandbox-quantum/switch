@@ -135,6 +135,10 @@ class ServerAuditAction(StrEnum):
     # The purge deleted the organization's own rows, after its workspaces.
     # Each account it deleted, or failed to, is recorded on its own.
     ORGANIZATION_PURGED = "organization.purged"
+    # What a run of the purge did at WorkOS, or that it could not (no API
+    # key), and what it had Switch Trust delete (`accounts/purge_elsewhere.py`).
+    ORGANIZATION_PURGE_WORKOS = "organization.purge_workos"
+    ORGANIZATION_PURGE_TRUST = "organization.purge_trust"
     # WorkOS refused where the directory mirror had got to in its events, and
     # the mirror started again from now, with a full check of every linked
     # organization.
