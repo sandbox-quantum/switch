@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.stores.trust_settings_store import TrustSettingsStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.trust_settings import DEFAULT_TRUST_ENDPOINT
 from switch_core.gateway.workspace_guardrails import router
+from switch_core.trust.workspace_policy import DEFAULT_TRUST_ENDPOINT
 from tests.switch_core.gateway.test_api_keys_hash_only import TEST_KEYRING
 from tests.switch_core.management.harness import add_member, cookies_for
 
