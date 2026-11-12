@@ -199,6 +199,7 @@ def _room_templates() -> tuple[OfficialTemplate, ...]:
                 description=entry["description"],
                 kind="room",
                 content=path.read_text(encoding="utf-8"),
+                run_blocked_reason=None,
                 removable=True,
             )
         )

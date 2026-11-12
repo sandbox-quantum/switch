@@ -631,7 +631,9 @@ class TestRunCounts:
     ) -> None:
         client = _client(session_factory, users["bob"])
         (official,) = [
-            t for t in (await client.get("/templates")).json() if t["official"]
+            t
+            for t in (await client.get("/templates")).json()
+            if t["official"] and t["kind"] == "agent"
         ]
         assert (official["run_count"], official["run_blocked_reason"]) == (0, None)
 
@@ -639,7 +641,9 @@ class TestRunCounts:
         assert recorded.status_code == 201, recorded.text
 
         (official,) = [
-            t for t in (await client.get("/templates")).json() if t["official"]
+            t
+            for t in (await client.get("/templates")).json()
+            if t["official"] and t["kind"] == "agent"
         ]
         assert official["run_count"] == 1
 

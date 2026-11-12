@@ -155,7 +155,11 @@ def test_only_switch_buddy_tells_a_person_not_to_run_it():
         "Switch Console sets up your switch-buddy for you."
     )
     for agent_management in (False, True):
-        (expert,) = official_templates(agent_management, switch_buddy=False)
+        (expert,) = [
+            t
+            for t in official_templates(agent_management, switch_buddy=False)
+            if t.kind == "agent"
+        ]
         assert expert.run_blocked_reason is None
 
 
