@@ -3122,6 +3122,7 @@ class MattermostAdapter(PlatformAdapter):
             user_id
             for user_id in ids
             if user_id != self._admin_user_id
+            and user_id != self._admin_bot_id
             and user_id not in self._bridge_bot_ids
             and user_id not in self._bot_id_to_username
         ]
@@ -3970,6 +3971,7 @@ class MattermostAdapter(PlatformAdapter):
             user_id in self._bridge_bot_ids
             or user_id in self._bot_id_to_username
             or user_id == self._admin_user_id
+            or user_id == self._admin_bot_id
         ):
             return
         loop = self._main_loop
@@ -4042,7 +4044,14 @@ class MattermostAdapter(PlatformAdapter):
             self._dispatch(coro, loop)  # type: ignore[arg-type]
             return
 
-        if user_id == self._admin_user_id:
+        if (
+            user_id == self._admin_user_id
+            or user_id == self._admin_bot_id
+            or user_id in self._bridge_bot_ids
+        ):
+            # Switch's own accounts: the admin, and the bot it posts its
+            # notices as, which it adds to a channel the first time it
+            # answers there. Neither is a person joining.
             return
 
         if not self._on_user_joined:

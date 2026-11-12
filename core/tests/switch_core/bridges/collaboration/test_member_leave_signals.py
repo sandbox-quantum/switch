@@ -9,6 +9,7 @@ Telegram's is covered with its adapter's other service messages.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.collaboration.mattermost.adapter import (
@@ -371,3 +372,32 @@ async def test_the_core_ignores_a_channel_with_no_room_or_a_stranger() -> None:
     )
 
     assert core._room_service.calls == []
+
+
+def test_mattermost_the_notice_bot_being_added_is_not_a_person_joining() -> None:
+    """Switch adds the bot it posts notices as to a channel the first time it
+    answers there; filed as a person, it counted as in the room."""
+    adapter = _mattermost()
+    adapter._admin_bot_id = "u-notice"
+    adapter._admin_driver = SimpleNamespace(  # type: ignore[assignment]
+        channels=SimpleNamespace(get_channel=lambda _id: {"type": "O"}),
+        users=_Users(),
+    )
+    joined: list[Any] = []
+
+    async def on_user_joined(join: Any) -> None:
+        joined.append(join)
+
+    adapter._on_user_joined = on_user_joined
+
+    async def go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter._handle_user_added(
+            {"data": {"user_id": "u-notice"}, "broadcast": {"channel_id": "ch-1"}}
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(go())
+
+    assert joined == []
