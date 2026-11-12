@@ -1495,7 +1495,19 @@ async def patch_room_agent(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "configure")
+    # An agent's own owner may change its settings here, as they may remove
+    # it; otherwise it takes the room's owner or an admin.
+    agent = await session.get(Agent, agent_id)
+    readable = await authorize_room(session, room_store, room_id, principal, "read")
+    await ensure_room_action(
+        session,
+        room_store,
+        readable,
+        principal,
+        "agent_settings",
+        owns_target=agent is not None and owns(principal, agent.owner_id),
+    )
+    await session.commit()
     try:
         await room_service.set_join_event_listeners(
             room_id, {agent_id: req.receives_join_events}

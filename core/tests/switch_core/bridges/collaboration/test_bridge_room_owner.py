@@ -3,7 +3,8 @@
 The platform account that added the app owns it through the Switch user who
 linked that account. Otherwise nobody owns it, and only workspace admins may
 change it: the platform didn't say who, nobody linked the account, or more than
-one person did and nobody can tell which of them it was.
+one person did and nobody can tell which of them it was. Only people still in
+the bridge's workspace count.
 """
 
 from __future__ import annotations
@@ -15,29 +16,39 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Client,
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
+    TenantMember,
     User,
 )
 from switch_core.db.stores.external_user_store import ExternalUserStore
 
 
-async def _user(session: AsyncSession, name: str) -> str:
+async def _user(
+    session: AsyncSession, name: str, tenant_id: str, *, member: bool
+) -> str:
     user = User(
         name=name, email=f"{name}-{uuid.uuid4().hex[:6]}@example.invalid", role="user"
     )
     session.add(user)
     await session.flush()
+    if member:
+        session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role="member"))
+        await session.flush()
     return user.id
 
 
 async def _bridge_with_account(
-    session_factory: async_sessionmaker[AsyncSession], claimed_by: list[str]
+    session_factory: async_sessionmaker[AsyncSession],
+    claimed_by: list[str],
+    former_members: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     """A Slack bridge and one of its accounts, `UALICE`, linked by `claimed_by`
-    (Switch user names). Returns the bridge id and the first claimant's id."""
+    (Switch user names). Those in `former_members` have left the bridge's
+    workspace. Returns the bridge id and the first claimant's id."""
     async with session_factory() as session:
         consumer = Client(
             transport_user_id=f"@ws-{uuid.uuid4().hex[:6]}:test",
@@ -66,7 +77,9 @@ async def _bridge_with_account(
         await session.flush()
         first: str | None = None
         for name in claimed_by:
-            user_id = await _user(session, name)
+            user_id = await _user(
+                session, name, bridge.tenant_id, member=name not in former_members
+            )
             first = first or user_id
             session.add(ExternalUserClaim(external_user_id=account.id, user_id=user_id))
         await session.commit()
@@ -80,6 +93,7 @@ def _core(
     core._session_factory = session_factory  # type: ignore[assignment]
     core._external_user_store = ExternalUserStore()
     core._bridge_id = bridge_id
+    core._bridge_tenant_id = TENANT_ZERO_ID
     return core
 
 
@@ -117,3 +131,29 @@ class TestTheRoomsOwner:
         )
 
         assert owner is None
+
+    async def test_a_former_member_does_not_own_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bridge_id, _ = await _bridge_with_account(
+            session_factory, ["alice"], former_members=("alice",)
+        )
+
+        owner = await _core(session_factory, bridge_id)._owner_from_platform_account(
+            "UALICE"
+        )
+
+        assert owner is None
+
+    async def test_a_former_members_claim_does_not_block_the_current_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bridge_id, alice_old = await _bridge_with_account(
+            session_factory, ["alice-old", "alice"], former_members=("alice-old",)
+        )
+
+        owner = await _core(session_factory, bridge_id)._owner_from_platform_account(
+            "UALICE"
+        )
+
+        assert owner is not None and owner != alice_old

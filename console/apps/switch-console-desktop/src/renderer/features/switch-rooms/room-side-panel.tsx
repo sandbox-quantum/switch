@@ -69,6 +69,8 @@ type RosterControls = {
   /** Whether the agent is told when someone joins, and the way to change it; null where it cannot be. */
   joinEvents: {
     listening: (agentId: string) => boolean;
+    /** Whether this viewer may change it for this agent. */
+    canSet: (agentId: string) => boolean;
     set: (agentId: string, on: boolean) => Promise<void>;
   } | null;
 };
@@ -197,8 +199,26 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         : null;
     const peopleNote =
       permissions.canAddPeople && !inviteability.canInvite ? inviteability.reason : null;
+    // The room's owner or an admin, or the agent's own owner, may change
+    // whether it hears joins.
+    const joinEvents: RosterControls['joinEvents'] = {
+      listening: (agentId) => room.joinEventListeners.includes(agentId),
+      canSet: (agentId) =>
+        permissions.canWrite || (viewerId !== null && ownerOf.get(agentId) === viewerId),
+      set: async (agentId, on) => {
+        queryClient.setQueryData(
+          roomDetailKey(workspaceId, roomId),
+          await rpc.workspaces.setRoomAgentJoinEvents({
+            workspaceId,
+            roomId,
+            agentId,
+            receivesJoinEvents: on,
+          })
+        );
+      },
+    };
     if (!permissions.canWrite) {
-      controls = { ...NO_CONTROLS, addAgents, addPeople, peopleNote, removeAgent };
+      controls = { ...NO_CONTROLS, addAgents, addPeople, peopleNote, removeAgent, joinEvents };
     } else {
       controls = {
         addAgents,
@@ -207,20 +227,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         removeAgent,
         // Switch only knows the people it saw or added; it cannot take them out of a channel.
         removePerson: () => null,
-        joinEvents: {
-          listening: (agentId) => room.joinEventListeners.includes(agentId),
-          set: async (agentId, on) => {
-            queryClient.setQueryData(
-              roomDetailKey(workspaceId, roomId),
-              await rpc.workspaces.setRoomAgentJoinEvents({
-                workspaceId,
-                roomId,
-                agentId,
-                receivesJoinEvents: on,
-              })
-            );
-          },
-        },
+        joinEvents,
       };
     }
   }
@@ -413,7 +420,7 @@ const AgentRow = observer(function AgentRow({
     setBusy(true);
     void act(action, fallback).finally(() => setBusy(false));
   };
-  const { joinEvents } = controls;
+  const joinEvents = controls.joinEvents?.canSet(agentId) ? controls.joinEvents : null;
   const removeAgent = controls.removeAgent(agentId);
   const menu =
     removeAgent || joinEvents ? (

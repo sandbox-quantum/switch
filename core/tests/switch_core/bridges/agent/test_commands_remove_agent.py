@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_remove_agent
 from switch_core.db.models import Room
@@ -22,6 +23,7 @@ def _agent(
     *,
     owner_id: str | None,
     can_manage_agents: bool = False,
+    open_to_anyone: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=agent_id,
@@ -29,6 +31,9 @@ def _agent(
         display_name=None,
         owner_id=owner_id,
         can_manage_agents=can_manage_agents,
+        addressing_policy=(
+            None if open_to_anyone else owner_and_owner_agents_policy().model_dump()
+        ),
     )
 
 
@@ -53,6 +58,7 @@ class _Harness:
         room_agent_ids: list[str],
         admins: set[str] = frozenset(),  # type: ignore[assignment]
         aliases: dict[str, str] | None = None,
+        channel_type: str = "channel_public",
     ) -> None:
         self.posted: list[str] = []
         self.removed: list[tuple[str, list[str]]] = []
@@ -62,7 +68,7 @@ class _Harness:
             owner_id=_CAROL,
             read_visibility="public",
             write_visibility="public",
-            channel_type="channel_public",
+            channel_type=channel_type,
         )
 
         @asynccontextmanager
@@ -323,3 +329,70 @@ class TestRemoveAgentCommand:
         await h.run("")
         assert h.removed == []
         assert "Usage" in h.posted[0]
+
+
+class TestInsideADirectOrGroupConversation:
+    """The command is posted in the conversation, so the platform fixing its
+    members doesn't stop it."""
+
+    @pytest.mark.parametrize("channel_type", ["direct", "group"])
+    async def test_the_agents_owner_removes_it(
+        self, monkeypatch: pytest.MonkeyPatch, channel_type: str
+    ) -> None:
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_person(_ALICE),
+            agents={"a1": _TARGET},
+            room_agent_ids=["a1"],
+            channel_type=channel_type,
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]
+
+    async def test_the_rooms_owner_removes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_person(_CAROL),
+            agents={"a1": _TARGET},
+            room_agent_ids=["a1"],
+            channel_type="group",
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]
+
+
+class TestAnAgentOpenToOthers:
+    async def test_does_not_use_its_owners_room_owner_rights(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The room owner's agent takes requests from anyone, so whoever asked
+        it could otherwise remove other people's agents with her rights."""
+        helper = _agent("h1", "carol-helper", owner_id=_CAROL, open_to_anyone=True)
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_agent_sender(helper),
+            agents={"a1": _TARGET, "h1": helper},
+            room_agent_ids=["a1", "h1"],
+        )
+        await h.run("@alice-agent")
+        assert h.removed == []
+        assert "takes requests from people other than its owner" in h.posted[0]
+
+    async def test_the_owners_closed_agent_still_does(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        helper = _agent("h1", "carol-helper", owner_id=_CAROL)
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_agent_sender(helper),
+            agents={"a1": _TARGET, "h1": helper},
+            room_agent_ids=["a1", "h1"],
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]

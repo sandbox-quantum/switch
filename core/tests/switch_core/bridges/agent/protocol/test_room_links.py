@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
@@ -51,7 +52,11 @@ class _FakeAgentStore:
     the room's links."""
 
     async def get(self, session: Any, agent_id: str) -> Any:
-        return SimpleNamespace(id=agent_id, owner_id="u-alice")
+        return SimpleNamespace(
+            id=agent_id,
+            owner_id="u-alice",
+            addressing_policy=owner_and_owner_agents_policy().model_dump(),
+        )
 
 
 class _FakeRoomStore:

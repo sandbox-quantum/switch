@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import AgentStatus
@@ -119,7 +120,15 @@ class _FakeAgentStore:
         self._agents = agents
 
     async def get(self, session: Any, agent_id: str) -> Any:
-        return self._agents.get(agent_id)
+        agent = self._agents.get(agent_id)
+        if agent is not None and not hasattr(agent, "addressing_policy"):
+            # Takes requests from its owner and their agents only, so it acts
+            # with its owner's rights on the room.
+            agent.addressing_policy = _OWNERS_ONLY
+        return agent
+
+
+_OWNERS_ONLY = owner_and_owner_agents_policy().model_dump()
 
 
 class _FakeBridgeStore:

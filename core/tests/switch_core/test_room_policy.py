@@ -62,6 +62,7 @@ MATRIX = [
     ("unlink", OWN, OWN),
     ("delete_document", OWN, OWN),
     ("set_alias", OWN, OWN),
+    ("agent_settings", OWN, OWN),
 ]
 
 
@@ -84,6 +85,10 @@ class TestOwnThings:
     def test_owner_of_an_agent_may_remove_and_alias_it(self) -> None:
         assert allows(BYSTANDER, PUBLIC, "remove_member", owns_target=True)
         assert allows(MEMBER, PRIVATE, "set_alias", owns_target=True)
+
+    def test_owner_of_an_agent_may_change_its_settings(self) -> None:
+        assert allows(BYSTANDER, PUBLIC, "agent_settings", owns_target=True)
+        assert not allows(MEMBER, PUBLIC, "agent_settings", owns_target=False)
 
     def test_creator_may_delete_their_document(self) -> None:
         assert allows(BYSTANDER, PRIVATE, "delete_document", owns_target=True)
@@ -126,6 +131,49 @@ class TestFixedMembership:
         room = _room(visibility="private", channel="direct")
         assert allows(OWNER, room, "configure")
         assert allows(MEMBER, room, "attach")
+
+    @pytest.mark.parametrize("channel", ["direct", "group"])
+    def test_a_command_from_inside_follows_the_table(self, channel) -> None:
+        """A chat command posted in the conversation is from inside it."""
+        room = _room(visibility="private", channel=channel)
+        assert allows(OWNER, room, "remove_member", from_inside=True)
+        assert allows(MEMBER, room, "remove_member", owns_target=True, from_inside=True)
+        assert not allows(MEMBER, room, "remove_member", from_inside=True)
+
+
+class TestAgentOpenToOthers:
+    """An agent that takes requests from people other than its owner gets the
+    "in the room" tier at most, whatever its owner may do."""
+
+    @staticmethod
+    def _open(caller: RoomCaller) -> RoomCaller:
+        return RoomCaller(caller.principal, caller.in_room, owner_rights=False)
+
+    @pytest.mark.parametrize("action", ["configure", "archive", "remove_member"])
+    def test_cannot_use_its_owners_room_owner_or_admin_rights(self, action) -> None:
+        for caller in (OWNER, ADMIN):
+            decision = decide(self._open(caller), PUBLIC, action, owns_target=False)
+            assert not decision.allowed
+            assert "takes requests from people other than its owner" in (
+                decision.reason or ""
+            )
+
+    def test_still_adds_when_its_owner_is_in_the_room(self) -> None:
+        assert allows(self._open(OWNER), PRIVATE, "add_agent")
+        assert allows(self._open(OWNER), PRIVATE, "read")
+
+    def test_still_acts_on_its_owners_own_things(self) -> None:
+        assert allows(self._open(MEMBER), PUBLIC, "remove_member", owns_target=True)
+
+    def test_an_admins_open_agent_sees_only_what_others_see(self) -> None:
+        open_admin = RoomCaller(Principal("u-admin", True), False, owner_rights=False)
+        assert not allows(open_admin, PRIVATE, "read")
+        assert allows(open_admin, PUBLIC, "read")
+
+
+def test_an_unknown_action_is_refused_not_raised() -> None:
+    decision = decide(OWNER, PUBLIC, "write", owns_target=False)  # type: ignore[arg-type]
+    assert not decision.allowed
 
 
 class TestReasons:

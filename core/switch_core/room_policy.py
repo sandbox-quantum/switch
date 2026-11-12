@@ -16,7 +16,9 @@ Three tiers, from narrowest to widest:
   the room's read visibility is public.
 
 An agent acts with its owner's rights: the surface builds the `RoomCaller`
-from the owner, never from the agent.
+from the owner, never from the agent. An agent that takes requests from people
+other than its owner gets the "in the room" tier at most: whoever may address
+it could otherwise change the room with its owner's rights.
 
 Two cross-cutting exceptions sit on top of the table:
 
@@ -25,7 +27,8 @@ Two cross-cutting exceptions sit on top of the table:
   room's tier would say. You may unlink a resource you own if you are also in
   the room.
 - **Fixed membership.** Who is in a direct or group conversation is fixed by
-  its platform, so nobody adds or removes its members from outside it.
+  its platform, so nobody adds or removes its members from outside it. A chat
+  command posted in the conversation is from inside it.
 
 A room's write visibility no longer grants anything here: changing a room is
 the owner tier's, and adding to it is the "in the room" tier's.
@@ -65,6 +68,7 @@ RoomAction = Literal[
     "unlink",
     "delete_document",
     "set_alias",
+    "agent_settings",
 ]
 
 # What each action needs. This is the matrix the room permissions proposal
@@ -87,11 +91,13 @@ RULES: dict[RoomAction, Tier] = {
     "unlink": Tier.OWNER,
     "delete_document": Tier.OWNER,
     "set_alias": Tier.OWNER,
+    # An agent's settings in this room, such as whether it hears joins.
+    "agent_settings": Tier.OWNER,
 }
 
 # Actions where owning the thing acted on is enough on its own.
 _OWN_THING_SUFFICES: frozenset[RoomAction] = frozenset(
-    {"remove_member", "set_alias", "delete_document"}
+    {"remove_member", "set_alias", "delete_document", "agent_settings"}
 )
 
 # Actions where owning the thing acted on is enough if you are in the room.
@@ -115,11 +121,13 @@ _VERBS: dict[RoomAction, str] = {
     "unlink": "unlink resources from this room",
     "delete_document": "delete this room's documents",
     "set_alias": "set or remove aliases in this room",
+    "agent_settings": "change an agent's settings in this room",
 }
 
 _OWN_THING_HINT: dict[RoomAction, str] = {
     "remove_member": ", or the agent's own owner for their agent",
     "set_alias": ", or the agent's own owner for their agent",
+    "agent_settings": ", or the agent's own owner for their agent",
     "delete_document": ", or the document's creator",
     "unlink": ", or the resource's owner if they are in the room",
 }
@@ -147,10 +155,15 @@ class RoomCaller:
     owns. `in_room` is whether that person takes part in the room (the room
     store's `involves`), or for a chat poster, that they posted in its
     channel.
+
+    `owner_rights` is False for an agent that takes requests from people
+    other than its owner: it then gets the "in the room" tier at most, even
+    when its owner owns the room or is an admin.
     """
 
     principal: Principal
     in_room: bool
+    owner_rights: bool = True
 
 
 @dataclass(frozen=True)
@@ -172,7 +185,7 @@ def is_room_owner(principal: Principal, room: RoomFacts) -> bool:
 
 
 def _meets(caller: RoomCaller, room: RoomFacts, tier: Tier) -> bool:
-    if is_room_owner(caller.principal, room):
+    if caller.owner_rights and is_room_owner(caller.principal, room):
         return True
     if tier is Tier.OWNER:
         return False
@@ -185,6 +198,12 @@ def _meets(caller: RoomCaller, room: RoomFacts, tier: Tier) -> bool:
 
 _ALLOWED = RoomDecision(True, None)
 
+_OPEN_AGENT_REFUSAL = (
+    "This agent takes requests from people other than its owner, so it can't "
+    "use its owner's rights to change this room. Ask the room's owner, or "
+    "change it yourself."
+)
+
 
 def decide(
     caller: RoomCaller,
@@ -192,26 +211,40 @@ def decide(
     action: RoomAction,
     *,
     owns_target: bool,
+    from_inside: bool = False,
 ) -> RoomDecision:
     """Whether `caller` may do `action` to `room`, and if not, why.
 
     `owns_target` is whether the caller owns the thing acted on: the agent
     being removed or aliased, the document being deleted, the resource being
     unlinked. Pass False for actions on the room itself.
+
+    `from_inside` is True for a chat command posted in the room's own
+    conversation, which may change a direct or group conversation's members.
     """
-    if action in _MEMBERSHIP_ACTIONS and room.channel_type in FIXED_MEMBERSHIP:
+    tier = RULES.get(action)
+    if tier is None:
+        # An action this table doesn't name: refuse it rather than fail.
+        return RoomDecision(False, "Switch doesn't know that room action.")
+    if (
+        not from_inside
+        and action in _MEMBERSHIP_ACTIONS
+        and room.channel_type in FIXED_MEMBERSHIP
+    ):
         return RoomDecision(
             False,
             "Who is in a direct or group conversation is set by its platform, "
             "so its members can't be changed from Switch.",
         )
-    if _meets(caller, room, RULES[action]):
+    if _meets(caller, room, tier):
         return _ALLOWED
     if owns_target and action in _OWN_THING_SUFFICES:
         return _ALLOWED
     if owns_target and action in _OWN_THING_IN_ROOM_SUFFICES and caller.in_room:
         return _ALLOWED
-    return RoomDecision(False, _refusal(RULES[action], action))
+    if not caller.owner_rights and is_room_owner(caller.principal, room):
+        return RoomDecision(False, _OPEN_AGENT_REFUSAL)
+    return RoomDecision(False, _refusal(tier, action))
 
 
 def _refusal(tier: Tier, action: RoomAction) -> str:
@@ -232,9 +265,12 @@ def allows(
     action: RoomAction,
     *,
     owns_target: bool = False,
+    from_inside: bool = False,
 ) -> bool:
     """`decide`, as a yes or no."""
-    return decide(caller, room, action, owns_target=owns_target).allowed
+    return decide(
+        caller, room, action, owns_target=owns_target, from_inside=from_inside
+    ).allowed
 
 
 def require(
@@ -243,8 +279,11 @@ def require(
     action: RoomAction,
     *,
     owns_target: bool = False,
+    from_inside: bool = False,
 ) -> None:
     """Raise `RoomPermissionError` with the reason unless `decide` allows it."""
-    decision = decide(caller, room, action, owns_target=owns_target)
+    decision = decide(
+        caller, room, action, owns_target=owns_target, from_inside=from_inside
+    )
     if not decision.allowed:
         raise RoomPermissionError(decision.reason)

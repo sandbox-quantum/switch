@@ -27,6 +27,7 @@ from switch_core.agent_display_name import (
     agent_label_with_identifier,
     normalise_display_name,
 )
+from switch_core.agent_exposure import others_can_address
 from switch_core.agent_icon import (
     drop_third_party_avatar,
     generated_icon_url,
@@ -3588,24 +3589,28 @@ class AgentCore:
 
         The agent acts as its owner. Its owner is in the room when they take
         part in it (`RoomStore.involves`, which counts an agent of theirs in
-        it); an agent nobody owns is in the rooms it is itself in.
+        it); an agent nobody owns is in the rooms it is itself in. An agent
+        that takes requests from people other than its owner gets the "in the
+        room" tier at most (`others_can_address`): otherwise anyone who may
+        address it could change the room with its owner's rights.
         `owns_target` is whether the owner owns the thing acted on. Raises
         ValueError if the room is missing and `RoomPermissionError`, with the
         reason, if the owner may not.
         """
-        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+        agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
             session, agent_id
         )
         room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
         principal = Principal(owner_id, owner_is_admin)
-        outside = RoomCaller(principal, in_room=False)
+        owner_rights = not await others_can_address(session, agent)
+        outside = RoomCaller(principal, in_room=False, owner_rights=owner_rights)
         if room_policy.allows(outside, room, action, owns_target=owns_target):
             return room
         in_room = await self._acts_in_room(session, agent_id, owner_id, room_id)
         room_policy.require(
-            RoomCaller(principal, in_room=in_room),
+            RoomCaller(principal, in_room=in_room, owner_rights=owner_rights),
             room,
             action,
             owns_target=owns_target,

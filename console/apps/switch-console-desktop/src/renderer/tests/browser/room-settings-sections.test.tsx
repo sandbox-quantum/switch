@@ -304,6 +304,23 @@ describe('room settings for someone who may write to the room', () => {
     expect(items.some((item) => /Remove from room/.test(item.textContent ?? ''))).toBe(true);
   });
 
+  it('lets someone change their own agent’s join notification in a room they may not otherwise change', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    agentOwner.value = 'u-me';
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')];
+    expect(items.some((item) => /when someone joins/.test(item.textContent ?? ''))).toBe(true);
+  });
+
   it('offers no removing of someone else’s agent to someone who may not change the room', async () => {
     permissions.value = {
       canWrite: false,

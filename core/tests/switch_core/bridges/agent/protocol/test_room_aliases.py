@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.aliases import AliasError
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -170,14 +171,14 @@ _AGENTS = {
         name="claude-code.alice",
         owner_id="u-alice",
         can_manage_agents=False,
-        addressing_policy=None,
+        addressing_policy=owner_and_owner_agents_policy().model_dump(),
     ),
     "a2": SimpleNamespace(
         id="a2",
         name="moderator",
         owner_id="u-bob",
         can_manage_agents=False,
-        addressing_policy=None,
+        addressing_policy=owner_and_owner_agents_policy().model_dump(),
     ),
 }
 

@@ -504,8 +504,10 @@ an agent of theirs is in it) may add to it: bring in agents and people, attach
 resources, write room documents. Everyone else may only read a room they can
 see. You may take out or alias yourself, or another agent of your owner's
 that takes requests from you (or any of theirs if you can manage agents), and
-unlink a resource your owner owns from a room they take part in. A refusal says which
-of these it was; relay it rather than retrying.
+unlink a resource your owner owns from a room they take part in. If people
+other than your owner may address you, you don't get your owner's room-owner
+or admin rights: you may add to a room your owner takes part in, but not
+change it. A refusal says which of these it was; relay it rather than retrying.
 
 ### Inspecting the instance
 

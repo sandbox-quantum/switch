@@ -1764,18 +1764,31 @@ class CollaborationCore:
         """The Switch user who linked the platform account `external_user_id`,
         to own a room that account brought Switch into. None when the platform
         did not say who, nobody has linked the account, or more than one
-        person has, since then nobody can tell which of them it was."""
+        person has, since then nobody can tell which of them it was.
+
+        Only claimants who still belong to the bridge's workspace count: a
+        former member who linked the account doesn't own a room in a
+        workspace they've left."""
         if external_user_id is None:
             return None
-        async with self._session_factory() as session:
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
             account = await self._external_user_store.get_by_external_id(
                 session, self._bridge_id, external_user_id
             )
             if account is None:
                 return None
-            claimants = await self._external_user_store.claimant_ids(
-                session, account.id
-            )
+            claimants = [
+                user_id
+                for user_id in await self._external_user_store.claimant_ids(
+                    session, account.id
+                )
+                if await UserStore().effective_tenant_role(
+                    session, self._bridge_tenant_id, user_id
+                )
+                is not None
+            ]
         return claimants[0] if len(claimants) == 1 else None
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:

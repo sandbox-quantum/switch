@@ -863,7 +863,8 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                !canWrite || working
+                // The room's owner or an admin, or the agent's own owner.
+                !(canWrite || ownAgentIds.has(id)) || working
                   ? undefined
                   : (next) => handleToggleJoinEvents(id, next)
               }

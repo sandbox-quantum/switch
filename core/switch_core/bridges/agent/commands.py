@@ -15,6 +15,7 @@ from switch_core.agent_display_name import (
     agent_label_with_identifier,
     label_after_rename,
 )
+from switch_core.agent_exposure import others_can_address
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
@@ -1604,9 +1605,19 @@ async def _room_decision(
     elif sender is not None and sender.on_behalf_of:
         user_ids = [sender.on_behalf_of]
 
+    # An agent that takes requests from people other than its owner doesn't
+    # get its owner's room-owner or admin rights: whoever may address it
+    # could otherwise use them.
+    owner_rights = True
+    acting: Agent | None = None
+    if sender is not None and sender.kind == "agent":
+        acting = await host._agent_store.get(session, sender.id)
+        owner_rights = acting is not None and not await others_can_address(
+            session, acting
+        )
+
     owns_as_agent = False
     if sender is not None and sender.kind == "agent" and target is not None:
-        acting = await host._agent_store.get(session, sender.id)
         owns_as_agent = (
             acting is not None
             and acting.owner_id is not None
@@ -1630,18 +1641,20 @@ async def _room_decision(
         return principal.id == target.owner_id
 
     def decide(principal: Principal) -> RoomDecision:
+        # Posted in the room's own conversation, so from inside it.
         return room_policy.decide(
-            RoomCaller(principal, in_room=True),
+            RoomCaller(principal, in_room=True, owner_rights=owner_rights),
             row,
             action,
             owns_target=owns(principal),
+            from_inside=True,
         )
 
     for user_id in user_ids:
         decision = decide(Principal(user_id, False))
         if decision.allowed:
             return decision
-    for user_id in user_ids:
+    for user_id in user_ids if owner_rights else []:
         user = await session.get(User, user_id)
         if user is not None and await administers_on_record(
             session,
