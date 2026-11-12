@@ -36,10 +36,19 @@ import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import { amendedRoomText } from './room-prompt';
 import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
+  z.object({
+    type: z.literal('amended'),
+    commandId: z.string(),
+    editId: z.string(),
+    revision: z.number().int().positive().safe(),
+    text: z.string(),
+    itemRevision: z.number().int().positive(),
+  }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
   z.object({
     type: z.literal('finished'),
@@ -122,6 +131,10 @@ export class HostedSession {
   private readonly projector: ChatProjector;
   private replica: SessionReplica;
   private readonly commands = new Map<string, Command>();
+  private readonly amendments = new Map<
+    string,
+    Extract<z.infer<typeof hostInboxRecordSchema>, { type: 'amended' }>
+  >();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
@@ -200,6 +213,7 @@ export class HostedSession {
     }
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
+      if (record.type === 'amended') this.amendments.set(record.commandId, record);
       if (record.type === 'dispatched') this.dispatched.add(record.commandId);
       if (record.type === 'finished') {
         this.finished.add(record.commandId);
@@ -266,6 +280,7 @@ export class HostedSession {
       }
       const recovered = events.records.length > 0;
       if (recovered) {
+        for (const amendment of host.amendments.values()) await host.publishAmendment(amendment);
         const snapshot = host.replica.snapshot();
         for (const request of snapshot.requests)
           if (request.state === 'open' || request.state === 'submitting')
@@ -881,6 +896,71 @@ export class HostedSession {
     return true;
   }
 
+  private async publishAmendment(
+    amendment: Extract<z.infer<typeof hostInboxRecordSchema>, { type: 'amended' }>
+  ): Promise<void> {
+    const item = this.snapshot().items.find(
+      (item) => item.itemId === `user-${amendment.commandId}`
+    );
+    if (item && item.revision < amendment.itemRevision)
+      await this.publish({
+        type: 'item.upsert',
+        item: { ...item, revision: amendment.itemRevision, text: amendment.text },
+      });
+  }
+
+  amendRoomMessage(
+    commandId: string,
+    revision: number,
+    editId: string,
+    body: string
+  ): Promise<void> {
+    const result = this.serial.then(async () => {
+      const previous = this.amendments.get(commandId);
+      // Equal provider timestamps have no temporal order; use a stable source-id tie-break.
+      if (
+        previous &&
+        (previous.revision > revision ||
+          (previous.revision === revision && previous.editId >= editId))
+      ) {
+        await this.publishAmendment(previous);
+        return;
+      }
+      const index = this.queue.findIndex((command) => command.commandId === commandId);
+      if (index < 0) {
+        await this.notice(
+          'A room message was edited after it left the queue; its turn was not changed.'
+        );
+        return;
+      }
+      const command = this.queue[index];
+      if (!command || command.body.type !== 'message.send' || !command.origin?.messageId) return;
+      const text = amendedRoomText(command.body.text, body);
+      const effective = { ...command, body: { ...command.body, text } };
+      if (eventBytes(effective) > 60 * 1024) {
+        await this.notice(
+          'The queued message edit exceeded the host size limit and was not applied.'
+        );
+        return;
+      }
+      const item = this.snapshot().items.find((item) => item.itemId === `user-${commandId}`);
+      const amendment = {
+        type: 'amended' as const,
+        commandId,
+        editId,
+        revision,
+        text,
+        itemRevision: (item?.revision ?? 1) + 1,
+      };
+      await this.inbox.append(amendment);
+      this.amendments.set(commandId, amendment);
+      this.queue[index] = effective;
+      await this.publishAmendment(amendment);
+    });
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
   command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
     const result = this.serial.then(() => this.accept(command));
@@ -917,7 +997,12 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    const amendment = this.amendments.get(original.commandId);
+    return {
+      ...command,
+      origin: original.origin,
+      body: amendment ? { ...original.body, text: amendment.text } : original.body,
+    };
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -1236,10 +1321,18 @@ export class HostedSession {
   }
 
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
-    const command = this.queue.shift();
+    const claim = this.serial.then(() => {
+      if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
+      const queued = this.queue.shift();
+      if (queued?.body.type === 'message.send') this.activeTurn = queued.commandId;
+      return queued;
+    });
+    this.serial = claim.then(
+      () => {},
+      () => {}
+    );
+    const command = await claim;
     if (!command || command.body.type !== 'message.send') return;
-    this.activeTurn = command.commandId;
     try {
       const attachments = command.body.attachments.length
         ? await this.config.stageAttachments!(command.body.attachments)

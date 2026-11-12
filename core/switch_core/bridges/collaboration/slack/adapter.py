@@ -3788,6 +3788,50 @@ class SlackAdapter(PlatformAdapter):
             )
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
+        if event.get("subtype") == "message_changed":
+            message = event.get("message")
+            if not isinstance(message, dict):
+                return
+            edited = message.get("edited")
+            if not isinstance(edited, dict):
+                return
+            stamp = edited.get("ts")
+            if not isinstance(stamp, str) or not re.fullmatch(
+                r"[0-9]+\.[0-9]{6}", stamp
+            ):
+                return
+            sender = message.get("user")
+            channel = event.get("channel")
+            original = message.get("ts")
+            body = message.get("text")
+            if (
+                not isinstance(sender, str)
+                or not sender
+                or sender == self._bot_user_id
+                or message.get("bot_id")
+                or not isinstance(channel, str)
+                or not channel
+                or not isinstance(original, str)
+                or not original
+                or not isinstance(body, str)
+            ):
+                return
+            if self._on_message:
+                user = await self._resolve_user_name(sender)
+                await self._on_message(
+                    InboundMessage(
+                        channel_id=channel,
+                        channel_type=self._to_channel_type(
+                            str(event.get("channel_type", ""))
+                        ),
+                        sender_id=sender,
+                        sender_name=user.name,
+                        content=body,
+                        message_ref=f"{channel}:{original}",
+                        edit_revision=int(stamp.replace(".", "")),
+                    )
+                )
+            return
         # Skip only our own posts (loop prevention). Messages from third-party
         # apps/bots carry a bot_id too, but we still bridge those — only the
         # bridge's own bot (matched on user id or bot_id) is dropped.

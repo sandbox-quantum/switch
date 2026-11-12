@@ -364,6 +364,30 @@ def test_message_changed_subtype_is_skipped() -> None:
     assert captured == []
 
 
+def test_message_changed_delivers_an_edit_of_the_original() -> None:
+    adapter = _adapter()
+    adapter._user_cache["U1"] = SlackUser(name="alice", display_name="Alice")
+    captured = _capture_messages(adapter)
+    _run(
+        adapter._handle_message_event(
+            {
+                "subtype": "message_changed",
+                "channel": "C123",
+                "message": {
+                    "user": "U1",
+                    "ts": "400.000001",
+                    "text": "corrected request",
+                    "edited": {"ts": "500.000002"},
+                },
+            }
+        )
+    )
+    [message] = captured
+    assert message.message_ref == "C123:400.000001"
+    assert message.content == "corrected request"
+    assert message.edit_revision == 500000002
+
+
 def test_third_party_bot_message_is_bridged() -> None:
     adapter = _adapter()
     adapter._bot_user_id = "UBOT"

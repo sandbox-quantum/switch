@@ -56,6 +56,7 @@ export type {
   AttachmentRef,
   CommandPayload,
   MessagePayload,
+  MessageEditPayload,
   RoomJoinPayload,
   SwitchCredentials,
 } from './types';

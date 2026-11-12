@@ -1304,3 +1304,7 @@ Every Switch tool you call in normal operation, one line each.
 - `update_room_schedule` — change one you set up.
 - `pause_room_schedule` — pause or resume one you set up.
 - `delete_room_schedule` — delete one you set up.
+
+### Corrections to queued room messages
+
+Slack and Mattermost message edits can update a turn while it is still queued. Once the host takes the turn, an edit does not steer or restart it. Room history retains the original message; this feature does not rewrite `read_context` results. Restarted hosts retain the amended transcript but follow the existing rule of interrupting queued turns rather than automatically resending them.

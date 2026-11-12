@@ -56,6 +56,7 @@ from switch_core.delivery import router as router_module
 from switch_core.delivery.addressing import ADDRESSING_DENIED_MESSAGE
 from switch_core.delivery.router import MessageRouter
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.transport.derived_ids import writes_derived_from
 from switch_core.transport.postgres import new_event_id
 from tests.routing import (
     Process,
@@ -706,3 +707,76 @@ def _message(room: Room, sender: Client, body: str) -> Message:
         body=body,
         content={"body": body, "msgtype": "m.text"},
     )
+
+
+@pytest.mark.parametrize(
+    "deliveries", [1, 2], ids=["single", "duplicate-across-processes"]
+)
+async def test_message_edit_preserves_original_and_recipients(
+    session_factory: SessionFactory, deliveries: int, statement_counts: StatementCounts
+) -> None:
+    here, there = process_on(session_factory), process_on(session_factory)
+    room = await make_room(session_factory)
+    alice = await make_person(session_factory, "alice")
+    await add_member(session_factory, room, alice)
+    agents = []
+    for name in ("helper", "reviewer", "unrelated"):
+        agent, client = await make_agent(session_factory, name)
+        await add_member(session_factory, room, client, agent=agent)
+        _go_live(here, agent.id)
+        agents.append(agent)
+    original_id = await here.say(
+        room, "@helper @reviewer original request", sender=alice
+    )
+    await here.idle()
+    original = next(
+        row
+        for row in await _messages(session_factory, room)
+        if row.transport_event_id == original_id
+    )
+    original_content = dict(original.content)
+    replacement = {
+        "m.relates_to": {"rel_type": "m.replace", "event_id": original_id},
+        "m.new_content": {"body": "@unrelated corrected request"},
+        "revision": 123456,
+    }
+
+    async def deliver(process: Process) -> str:
+        with writes_derived_from(alice.id, "platform-edit-123456"):
+            result = await process.transport(alice).send_event(
+                room.transport_room_id, "com.switch.message_edit", replacement
+            )
+        return result.event_id
+
+    with statement_counts.scope("edit recipients") as scope:
+        edit_ids = await asyncio.gather(
+            *(deliver(p) for p in (here, there)[:deliveries])
+        )
+    lookups = [
+        sql
+        for sql in scope.statements
+        if "JOIN agents ON" in sql and "agent_events.message_key =" in sql
+    ]
+    assert lookups
+    assert all("agent_events.agent_id IN (" in sql for sql in lookups)
+    await here.idle()
+    await there.idle()
+    assert len(set(edit_ids)) == 1
+    rows = await _messages(session_factory, room)
+    unchanged = next(row for row in rows if row.transport_event_id == original_id)
+    assert unchanged.body == "@helper @reviewer original request"
+    assert unchanged.content == original_content
+    assert unchanged.seq == original.seq
+    edits = [row for row in rows if row.event_type == "com.switch.message_edit"]
+    assert len(edits) == 1
+    assert edits[0].content == replacement
+    assert edits[0].seq > original.seq
+    for agent in agents[:2]:
+        events = await own_events(session_factory, agent.id)
+        assert [event.type for event in events] == ["message", "message_edit"]
+        edit = events[1]
+        assert edit.message_key == edit_ids[0]
+        assert edit.room_seq == edits[0].seq
+        assert edit.payload["payload"]["message_id"] == original_id
+        assert edit.payload["payload"]["body"] == "@unrelated corrected request"
+    assert await own_events(session_factory, agents[2].id) == []

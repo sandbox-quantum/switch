@@ -12,6 +12,7 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
+import { roomCommand, roomMessageSchema } from './room-prompt';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import {
   HostedSession,
@@ -2342,4 +2343,83 @@ describe('retrying a room message', () => {
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
+});
+
+it.each(['dispatch', 'restart'])('preserves a queued room edit across %s', async (mode) => {
+  const { host, adapter, emit, root } = await start('claude');
+  await host.command(message('busy'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  const queued = roomCommand({
+    agentId: 'agent',
+    sessionId: 'session',
+    epoch: 'epoch',
+    roomId: 'room',
+    message: roomMessageSchema.parse({
+      type: 'message',
+      payload: {
+        sender: 'alice',
+        sender_name: 'Alice',
+        message_id: 'original',
+        body: 'old request',
+      },
+    }),
+    surface: 'switch-web',
+    attachments: [],
+    preface: 'Keep this context.',
+    firstOfConversation: false,
+  });
+  await host.command(queued);
+  await host.amendRoomMessage(queued.commandId, 123456, 'edit-1', 'corrected request');
+  await host.amendRoomMessage(queued.commandId, 123456, 'edit-1', 'duplicate request');
+  await host.amendRoomMessage(queued.commandId, 123455, 'older-edit', 'stale request');
+  // The accepted command remains an idempotent receipt, not the amended prompt.
+  await expect(host.command(structuredClone(queued))).resolves.toMatchObject({ status: 'applied' });
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+  expect(
+    host.snapshot().items.find((item) => item.itemId === `user-${queued.commandId}`)
+  ).toMatchObject({ revision: 2, text: expect.stringContaining('corrected request') });
+
+  if (mode === 'restart') {
+    await host.shutdown();
+    const recovered = setup('claude');
+    const next = await startHost(root, recovered.config, recovered.adapter);
+    hosts.push(next);
+    expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+    expect(
+      next.snapshot().items.find((item) => item.itemId === `user-${queued.commandId}`)
+    ).toMatchObject({ revision: 2, text: expect.stringContaining('corrected request') });
+    await next.command({
+      ...message('retry-edited'),
+      epoch: next.snapshot().session.epoch,
+      origin: { ...queued.origin, messageId: null },
+      body: { type: 'message.retry', messageId: 'original' },
+    });
+    await until(() => expect(recovered.adapter.sendTurn).toHaveBeenCalledOnce());
+    expect(vi.mocked(recovered.adapter.sendTurn).mock.calls[0]![0].text).toContain(
+      'corrected request'
+    );
+    return;
+  }
+
+  emit({ type: 'turn.completed', turnId: 'busy', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  await host.amendRoomMessage(queued.commandId, 123457, 'late-edit', 'too late');
+  expect(
+    host.snapshot().items.find((item) => item.itemId === `user-${queued.commandId}`)
+  ).toMatchObject({ revision: 2, text: expect.stringContaining('corrected request') });
+  expect(vi.mocked(adapter.sendTurn).mock.calls[1]?.[0]).toMatchObject({
+    turnId: queued.commandId,
+    text: expect.stringContaining('corrected request'),
+  });
+  const sent = vi.mocked(adapter.sendTurn).mock.calls[1]![0].text;
+  expect(sent).toContain('Keep this context.');
+  expect(sent).not.toContain('old request');
+  emit({ type: 'turn.completed', turnId: queued.commandId, outcome: 'completed', usage: [] });
+  await until(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === queued.commandId)?.status).toBe(
+      'completed'
+    )
+  );
+  await host.barrier();
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
 });

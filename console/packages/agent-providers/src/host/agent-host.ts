@@ -23,6 +23,7 @@ import {
 import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './ownership-lock';
 import { SessionPlacements } from './placements';
 import { roomInputId } from './room-inbox';
+import { roomEditSchema, roomMessageSchema } from './room-prompt';
 import {
   SessionHostFailedError,
   type SessionRequest,
@@ -1258,7 +1259,49 @@ export async function runAgentHost(
       for (const [roomId, waiting] of [...held]) {
         while (waiting.events.length) {
           const { spawning, ...event } = waiting.events[0]!;
-          if (!(await admit(event, spawning || spawn, true))) break;
+          const amendment = roomEditSchema.safeParse(event.event);
+          if (amendment.success) {
+            // Keep folded edits durable until the host acknowledges their original.
+            if (
+              assignments
+                .pending()
+                .some(
+                  (entry) =>
+                    entry.roomId === roomId && entry.messageId === amendment.data.payload.message_id
+                )
+            )
+              break;
+            await assignments.released(event, null);
+            waiting.events.shift();
+            continue;
+          }
+          const original = roomMessageSchema.safeParse(event.event);
+          let latest: z.infer<typeof roomEditSchema>['payload'] | undefined;
+          if (original.success) {
+            for (const heldEvent of waiting.events) {
+              const edit = roomEditSchema.safeParse(heldEvent.event);
+              if (!edit.success || edit.data.payload.message_id !== event.messageId) continue;
+              const candidate = edit.data.payload;
+              if (
+                !latest ||
+                candidate.revision > latest.revision ||
+                (candidate.revision === latest.revision && candidate.edit_id > latest.edit_id)
+              )
+                latest = candidate;
+            }
+          }
+          // Fold before the first handoff: a newly started host can dispatch immediately.
+          const effective =
+            original.success && latest
+              ? {
+                  ...event,
+                  event: {
+                    ...original.data,
+                    payload: { ...original.data.payload, body: latest.body },
+                  },
+                }
+              : event;
+          if (!(await admit(effective, spawning || spawn, true))) break;
           waiting.events.shift();
         }
         if (!waiting.events.length) {
@@ -1414,6 +1457,25 @@ export async function runAgentHost(
           // Asked again here as well as on the timer: the answer a held room is
           // waiting for is written by a session that is doing other work, and
           // an event arriving is the cheapest evidence that time has passed.
+          if (event.type === 'message_edit') {
+            const edit = roomEditSchema.safeParse(assignment.event);
+            if (!edit.success) return;
+            const original = held
+              .get(assignment.roomId)
+              ?.events.some(
+                (entry) =>
+                  entry.messageId === edit.data.payload.message_id &&
+                  roomMessageSchema.safeParse(entry.event).success
+              );
+            if (original) {
+              await hold(assignment, false, false);
+              await resolveHeld();
+            } else {
+              // Without a held original or an existing session, the edit has no work to amend.
+              await admit(assignment, false, false);
+            }
+            return;
+          }
           if (held.size) await resolveHeld();
           if (held.has(assignment.roomId)) return hold(assignment, spawning, false);
           if (!(await admit(assignment, spawning, false))) await hold(assignment, spawning, false);

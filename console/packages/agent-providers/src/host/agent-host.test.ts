@@ -5,7 +5,11 @@ import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
-import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
+import type {
+  AgentBridgeEvent,
+  MessagePayload,
+  SwitchEventStreamDeps,
+} from '@sandboxaq/switch-agent-runtime';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   MAX_HOST_RESTARTS,
@@ -523,7 +527,10 @@ async function settled(root: string): Promise<boolean> {
   return (await AgentHostAssignments.open(root)).pending().length === 0;
 }
 
-const addressed = (sequence: number, roomId: string): AgentBridgeEvent => ({
+const addressed = (
+  sequence: number,
+  roomId: string
+): AgentBridgeEvent & { payload: MessagePayload } => ({
   type: 'message',
   room_id: roomId,
   sequence,
@@ -2708,5 +2715,67 @@ it('tells the room once a session keeps not taking a message, instead of startin
     abort.abort();
     await run;
     vi.useRealTimers();
+  }
+});
+
+it('applies an edit to a held original before handing it to an available session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-held-edit-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const hosts = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const original = addressed(1, 'room');
+    await streams[0]!.onEvent!(original);
+    await streams[0]!.onEvent!({
+      ...original,
+      type: 'message_edit',
+      sequence: 2,
+      payload: {
+        ...original.payload,
+        message_id: 'message-1',
+        body: 'Run the corrected check',
+        edit_id: 'edit-1',
+        revision: 10,
+      },
+    });
+    expect((await AgentHostAssignments.open(root)).pending()).toMatchObject([
+      { messageId: 'message-1' },
+      { messageId: 'edit:edit-1', spawning: false },
+    ]);
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+    await writeFlags(root, { enabled: true, spawn: true });
+    await eventually(() => hosts.requests.some(({ request }) => request.type === 'room'));
+    await eventually(() => settled(root));
+    const journal = await AgentHostAssignments.open(root);
+    expect(journal.pending()).toEqual([]);
+    expect(journal.sessions()).toHaveLength(1);
+    const roomRequests = hosts.requests.filter(({ request }) => request.type === 'room');
+    expect(roomRequests).toHaveLength(1);
+    expect(roomRequests[0]!.request).toMatchObject({
+      type: 'room',
+      handoff: {
+        messageId: 'message-1',
+        event: {
+          type: 'message',
+          payload: { message_id: 'message-1', body: 'Run the corrected check' },
+        },
+      },
+    });
+  } finally {
+    abort.abort();
+    await run;
   }
 });

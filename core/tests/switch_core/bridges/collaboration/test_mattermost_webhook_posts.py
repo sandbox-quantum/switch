@@ -13,6 +13,8 @@ import asyncio
 import json
 from typing import Any
 
+import pytest
+
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -52,13 +54,15 @@ def _adapter() -> tuple[MattermostAdapter, list[Any]]:
     return adapter, received
 
 
-def _deliver(adapter: MattermostAdapter, post: dict[str, Any]) -> None:
+def _deliver(
+    adapter: MattermostAdapter, post: dict[str, Any], *, event_type: str = "posted"
+) -> None:
     loop = asyncio.new_event_loop()
     dispatched: list[Any] = []
     adapter._main_loop = loop
     adapter._dispatch = lambda coro, _loop: dispatched.append(coro)  # type: ignore[method-assign]
     event = {
-        "event": "posted",
+        "event": event_type,
         "data": {"post": json.dumps(post), "channel_type": "O"},
     }
     try:
@@ -151,3 +155,25 @@ def test_a_post_mattermost_marks_from_a_bot_is_an_apps() -> None:
     [message] = received
     assert isinstance(message, InboundMessage)
     assert message.sender_is_app is True
+
+
+@pytest.mark.parametrize("from_webhook", [False, True])
+def test_an_edit_is_a_message_and_keeps_its_sender_identity(from_webhook: bool) -> None:
+    adapter, received = _adapter()
+    post = _post("!status corrected", from_webhook=str(from_webhook).lower())
+    original = {**post, "message": "original request"}
+    _deliver(adapter, original)
+    _deliver(adapter, original)
+    assert len(received) == 1
+    post["edit_at"] = 123456
+    _deliver(adapter, post, event_type="post_edited")
+
+    [original_message, message] = received
+    assert original_message.content == "original request"
+    assert original_message.edit_revision is None
+    assert isinstance(message, InboundMessage)
+    assert message.message_ref == post["id"]
+    assert message.content == "!status corrected"
+    assert message.edit_revision == 123456000
+    assert message.sender_is_app is from_webhook
+    assert message.sender_id == (f"webhook:{_CREATOR}" if from_webhook else _CREATOR)

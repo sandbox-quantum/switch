@@ -1155,9 +1155,61 @@ class CollaborationCore:
             msg.channel_id, _LOBBY_DEPRECATION_NOTICE, thread_root_id
         )
 
+    async def _handle_inbound_edit(self, msg: InboundMessage) -> None:
+        room_ids = self._channel_to_room.get(msg.channel_id)
+        if room_ids is None or await self._is_registered_agent(msg.sender_name):
+            return
+        original = await self._event_for_external_post(msg.message_ref)
+        if original is None:
+            return
+        room_id, transport_room_id = room_ids
+        actor = await self._ensure_human_in_room(
+            external_user_id=msg.sender_id,
+            external_username=msg.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if actor is None:
+            return
+        text = self._adapter.translate_inbound(msg.content)
+        check = await check_message(
+            self._trust_client, role="user", content=text, room_id=room_id
+        )
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            await self._post_trust_notice(
+                msg,
+                "Your edit was blocked by Switch Trust.",
+                AdminMessageType.TRUST_BLOCKED,
+            )
+            return
+        if check.redacted_content is not None:
+            text = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            text = f"{text}\n\n{annotation}"
+        source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
+        digest = hashlib.sha256(msg.content.encode()).hexdigest()
+        with writes_derived_from(
+            actor.client_id, f"{source}:edit:{msg.edit_revision}:{digest}"
+        ):
+            await actor.send_event(
+                transport_room_id,
+                "com.switch.message_edit",
+                {
+                    "m.relates_to": {"rel_type": "m.replace", "event_id": original},
+                    "m.new_content": {"body": text},
+                    "revision": msg.edit_revision,
+                },
+            )
+
     async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
         """Write a platform message into its room as its sender, and return
         the event it became, or None when it was not relayed."""
+        if msg.edit_revision is not None:
+            await self._handle_inbound_edit(msg)
+            return None
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
             msg.channel_id,

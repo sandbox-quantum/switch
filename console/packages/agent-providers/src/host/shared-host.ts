@@ -21,6 +21,8 @@ import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomCommandId,
+  roomEditSchema,
   roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
@@ -888,6 +890,17 @@ export async function runSharedHost(
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
       for (const event of inbox.pending()) {
+        const edit = roomEditSchema.safeParse(event.event);
+        if (edit.success) {
+          await host!.amendRoomMessage(
+            roomCommandId(agentId, event.roomId, edit.data.payload.message_id),
+            edit.data.payload.revision,
+            edit.data.payload.edit_id,
+            edit.data.payload.body
+          );
+          await inbox.acknowledge(event);
+          continue;
+        }
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
           await host!.notice(

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import select
@@ -141,6 +142,92 @@ def _sorted(
 
 
 class TestAfterTheCommit:
+    @pytest.mark.parametrize("writer_announces", [False, True])
+    async def test_message_edit_announces_and_rings_after_commit(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        writer_announces: bool,
+    ) -> None:
+        original_process = process_on(session_factory)
+        room, louisa, agent = await _room_with_an_agent(
+            session_factory, original_process
+        )
+        original_id = await original_process.say(
+            room, "@member original", sender=louisa
+        )
+        await original_process.idle()
+        after_seq, after_event = await _positions(session_factory, room, agent)
+        announcer = Announcer(session_factory) if writer_announces else None
+        process = process_on(session_factory, announcer=announcer)
+        ring = Mock(wraps=process.router.services.event_buffer.ring)
+        monkeypatch.setattr(process.router.services.event_buffer, "ring", ring)
+        announce = Mock(wraps=announcer.announce) if announcer is not None else None
+        if announcer is not None:
+            monkeypatch.setattr(announcer, "announce", announce)
+            await announcer.start()
+        try:
+            async with heard(postgres_url) as announcements:
+                async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+                    routed = await process.router.store(
+                        session,
+                        tenant_id=TENANT_ZERO_ID,
+                        room_id=room.id,
+                        transport_room_id=room.transport_room_id,
+                        message=message_row(
+                            room_id=room.id,
+                            event_id="$edited",
+                            sender_id=louisa.transport_user_id,
+                            sender_client_id=louisa.id,
+                            sender_name=louisa.display_name,
+                            event_type="com.switch.message_edit",
+                            content={
+                                "m.relates_to": {
+                                    "rel_type": "m.replace",
+                                    "event_id": original_id,
+                                },
+                                "m.new_content": {"body": "@member corrected"},
+                                "revision": 123456,
+                            },
+                            client_txn_id=None,
+                        ),
+                        attachments=[],
+                    )
+                    assert routed is not None
+                    ring.assert_not_called()
+                    if announce is not None:
+                        announce.assert_not_called()
+                    await session.commit()
+                edits = await own_events(session_factory, agent.id)
+                edit = edits[-1]
+                assert edit.type == "message_edit"
+                assert routed._stored == [(agent.id, edit.seq)]
+                routed.committed()
+                ring.assert_called_once_with(agent.id, edit.seq)
+                if announce is not None:
+                    assert announce.call_count == 2
+                if announcer is not None:
+                    await announcer.stop()
+            written = await _written_since(
+                session_factory,
+                room,
+                agent,
+                after_seq=after_seq,
+                after_event=after_event,
+            )
+            assert _sorted(
+                [(channel, json.loads(payload)) for channel, payload in announcements]
+            ) == _sorted(written)
+            assert not any(
+                "Could not finish routing" in record.getMessage()
+                for record in caplog.records
+            )
+        finally:
+            if announcer is not None:
+                await announcer.stop()
+
     async def test_every_row_is_announced_once_as_the_trigger_would(
         self, postgres_url: str, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

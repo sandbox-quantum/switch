@@ -3525,7 +3525,7 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
-        if event_type != "posted":
+        if event_type not in {"posted", "post_edited"}:
             return
 
         data = event.get("data", {})
@@ -3538,6 +3538,8 @@ class MattermostAdapter(PlatformAdapter):
         except (json.JSONDecodeError, TypeError):
             return
 
+        if not isinstance(post, dict):
+            return
         user_id = post.get("user_id", "")
         post_type = post.get("type", "")
         if post_type == "system_displayname_change":
@@ -3550,7 +3552,19 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         post_id = post.get("id", "")
-        if not self._first_sighting(post_id):
+        revision = post.get("edit_at") if event_type == "post_edited" else None
+        if event_type == "post_edited":
+            if (
+                not isinstance(revision, int)
+                or isinstance(revision, bool)
+                or revision <= 0
+                or not post_id
+                or not user_id
+                or not post.get("channel_id")
+                or not isinstance(post.get("message"), str)
+            ):
+                return
+        if event_type == "posted" and not self._first_sighting(post_id):
             return
 
         channel_id = post.get("channel_id", "")
@@ -3607,7 +3621,7 @@ class MattermostAdapter(PlatformAdapter):
             message[:80],
         )
 
-        if stripped.startswith("!") and self._on_command:
+        if revision is None and stripped.startswith("!") and self._on_command:
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
             args = parts[1].strip() if len(parts) > 1 else ""
@@ -3629,8 +3643,10 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         if self._on_message:
-            attachments, attachment_failures = await self._fetch_attachments(
-                post.get("file_ids", []), ws_loop
+            attachments, attachment_failures = (
+                ([], [])
+                if revision is not None
+                else await self._fetch_attachments(post.get("file_ids", []), ws_loop)
             )
             inbound = InboundMessage(
                 channel_id=channel_id,
@@ -3638,6 +3654,7 @@ class MattermostAdapter(PlatformAdapter):
                 sender_id=user_id,
                 sender_name=username,
                 content=message,
+                edit_revision=revision * 1000 if revision is not None else None,
                 message_ref=post_id,
                 root_id=root_id,
                 agent_name=agent_name,

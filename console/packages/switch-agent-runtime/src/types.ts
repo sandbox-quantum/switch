@@ -59,6 +59,11 @@ export interface MessagePayload {
   follow_up?: 'thread_follow_up' | 'channel_follow_up' | 'main_agent' | null;
 }
 
+export interface MessageEditPayload extends MessagePayload {
+  edit_id: string;
+  revision: number;
+}
+
 export interface CommandPayload {
   command: string;
   // Command arguments. For `reset`/`compact` this carries the role name the
@@ -82,7 +87,7 @@ export interface RoomJoinPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload;
+  payload: MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message
