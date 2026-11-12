@@ -103,6 +103,12 @@ ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 # it off the dashboard is laid out as before.
 GATEWAY_V2 = "gateway_v2"
 
+# Messaging platforms beyond Slack, Mattermost, Teams, Discord and Telegram:
+# WhatsApp, Google Chat, Zulip, Signal, Matrix, Rocket.Chat and Webex. With it
+# off their adapters are not registered, so they are missing from the platform
+# directory and no bridge of those types can be created or started.
+ADDITIONAL_MESSAGING_PLATFORMS = "additional_messaging_platforms"
+
 # Flags that need another flag on: the server refuses a configuration with
 # the key on and any of its values off, and tools that turn flags off one at a
 # time (scripts/e2e_surface.py) turn the dependants off with it.
@@ -140,5 +146,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
         GATEWAY_V2,
+        ADDITIONAL_MESSAGING_PLATFORMS,
     }
 )

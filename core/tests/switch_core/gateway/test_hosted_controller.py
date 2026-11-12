@@ -509,6 +509,25 @@ async def test_retention_sweep_keeps_a_machine_inside_its_window(controller_app)
     assert item["retain_until"] == until.isoformat()
 
 
+@pytest.mark.parametrize("state", ["retained", "error"])
+async def test_retention_sweep_keeps_the_disk_of_a_machine_an_administrator_holds(
+    controller_app, state
+):
+    app = controller_app
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state=state,
+        desired_state="retained",
+        stop_reason="admin",
+        retain_until=expired,
+        revision=3,
+    )
+    [item] = await list_machines(app.client)
+    assert (item["desired_state"], item["revision"]) == ("retained", 3)
+
+
 async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_app):
     app = controller_app
     first = await prepare(app.client, app.machine_id)

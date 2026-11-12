@@ -184,6 +184,7 @@ async def _step(
     title="",
     text="",
     message_id=ASKED,
+    subagent=False,
 ):
     await service.report_item(
         AGENT,
@@ -201,6 +202,7 @@ async def _step(
         message_id=message_id,
         occurred_at=datetime.now(UTC),
         usage=[],
+        subagent=subagent,
     )
 
 
@@ -333,8 +335,10 @@ async def test_a_card_goes_into_the_thread_it_answers(
 async def test_a_card_says_whether_its_turn_was_asked_at_the_channel_root(
     service, publisher, platform, bridged, message_id, at_root
 ):
-    """So an adapter that can also show a thread reply in the channel does,
-    for a question threaded under a channel-root message only."""
+    """An adapter that can also show a thread reply in the channel keeps the
+    card in the thread and asks for that, for a question threaded under a
+    channel-root message only."""
+    platform.broadcasts_thread_replies = True
     await _step(
         service,
         bridged.room_id,
@@ -351,6 +355,53 @@ async def test_a_card_says_whether_its_turn_was_asked_at_the_channel_root(
     [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
     assert card.thread_ref == ASKED_POST
     assert card.content.asked_at_root is at_root
+
+
+async def test_a_root_asked_card_goes_to_the_channel_when_a_thread_is_not_shown(
+    service, publisher, platform, bridged, session_factory
+):
+    """Where the platform cannot mirror a thread reply into its channel, a
+    card in that thread is a question nobody opening the channel sees, and
+    only that thread could answer it. It is asked at the root instead."""
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id=ASKED,
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref is None
+    assert (await _card_post(session_factory)).thread_ref is None
+
+
+async def test_a_card_asked_inside_a_thread_stays_there_without_broadcast(
+    service, publisher, platform, bridged, session_factory
+):
+    """Moving that one to the root would put it in front of a channel that
+    was never part of the conversation."""
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id="sw_reply",
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref == ASKED_POST
+    assert (await _card_post(session_factory)).thread_ref == ASKED_POST
 
 
 async def test_a_card_whose_turn_is_not_recorded_stays_in_its_thread(
@@ -729,6 +780,67 @@ async def test_a_stuck_turn_gets_a_message_of_its_own_until_it_clears(
         )
     )
     assert platform.drawn[-1].content.error_summary is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_subagent_that_outlives_its_turn_redraws_the_turn_when_it_ends(
+    service, session_factory, bridged, listener, platform, online, restart
+):
+    """A background subagent goes on after the turn that started it, and its
+    host closes its call only when the subagent itself ends. The turn's message
+    has to move then too, or it says "running" over a subagent long finished;
+    and it has to even when Switch restarted in between, so a publisher that
+    never drew the turn still edits the message it has.
+
+    Adapted from atharvgaur1845's test in #1714, with the restart run from
+    himanshu748's in #1546."""
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_for(1)
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="agent-1",
+            kind="tool-activity",
+            status="in-progress",
+            revision=1,
+            title="Find the retry setting",
+            subagent=True,
+        )
+        await _turn(service, bridged.room_id, "completed", 3)
+        await platform.wait_until(
+            lambda: _turns(platform)[-1].content.turn.status == "completed"
+        )
+        ended = len(_turns(platform))
+        assert [(i.subagent, i.status) for i in _turns(platform)[-1].content.items] == [
+            (True, "in-progress")
+        ]
+        if restart:
+            await publisher.stop()
+            publisher = _publisher(session_factory, bridged, listener, platform, online)
+            publisher.start()
+
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="agent-1",
+            kind="tool-activity",
+            status="completed",
+            revision=4,
+            title="Find the retry setting",
+            subagent=True,
+        )
+        await platform.wait_until(lambda: len(_turns(platform)) > ended)
+        last = _turns(platform)[-1]
+        assert last.call == "update_rich"
+        assert [(i.subagent, i.status) for i in last.content.items] == [
+            (True, "completed")
+        ]
+        assert (await _turn_post(session_factory)).external_post_id == last.ref
+    finally:
+        await publisher.stop()
 
 
 async def test_a_turn_that_failed_says_so(service, publisher, platform, bridged):

@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { McpServerSpec, ProviderCapabilities, RuntimeMode } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -7,8 +7,10 @@ import type {
   UserInputQuestion,
 } from '../events';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
-import type { ProviderLogger } from '../transport/stdio-json-rpc';
+import type { ProviderLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 import type {
+  AcpAgentCapabilities,
+  AcpConfigOption,
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
@@ -28,12 +30,26 @@ export interface AcpLaunch {
    * prompt, say).
    */
   rejectOutputLine?: (line: string) => string | undefined;
+  /** Removes what `launch` prepared for this process, once the process is gone. */
+  cleanup?: () => Promise<void>;
 }
 
 export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /**
+   * The session's runtime mode, for an agent whose permission policy is set
+   * when it starts rather than through `session/set_mode`. Absent when the
+   * launch is for a sign-in check.
+   */
+  runtimeMode?: RuntimeMode;
+  /**
+   * The session's MCP servers; none for a sign-in check. Only a provider with
+   * `mcpServersAtLaunch` uses them here: every other agent is given them in
+   * `session/new`.
+   */
+  mcpServers?: Record<string, McpServerSpec>;
 }
 
 /**
@@ -101,6 +117,13 @@ export interface AcpProviderHooks {
   capabilities: ProviderCapabilities;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
+  /**
+   * The agent ignores the MCP servers a client sends in `session/new` and
+   * reads its own configuration instead, so `launch` writes the session's
+   * servers there. `session/new` is then sent an empty list, and the
+   * MCP-over-HTTP check is skipped: the agent's own MCP client connects.
+   */
+  mcpServersAtLaunch?: boolean;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
@@ -144,21 +167,63 @@ export interface AcpProviderHooks {
    */
   promptCapabilities?: AcpPromptCapabilities;
   /**
+   * MCP transports the agent accepts whether or not it advertises them. What
+   * it advertises in `initialize` is always honoured as well.
+   */
+  mcpCapabilities?: AcpAgentCapabilities['mcpCapabilities'];
+  /**
    * The ACP mode to put a new session in for Switch's runtime mode, given the
    * modes the session advertised. Omit, or return undefined, to leave the
    * agent's default.
    */
   sessionMode?(runtimeMode: RuntimeMode, modes: AcpSessionModes | undefined): string | undefined;
   /**
+   * Session config options to set for Switch's runtime mode, for an agent
+   * whose permission level is a config option rather than a mode (Junie's
+   * brave mode). Given the options the new session offers; each value must be
+   * one its option offers, or the session does not start.
+   */
+  sessionConfigOptions?(
+    runtimeMode: RuntimeMode,
+    options: AcpConfigOption[]
+  ): Record<string, string>;
+  /**
+   * Permission option kinds that outlive the session on this agent (Junie's
+   * `allow_always` writes its allowlist for every later run). Never offered.
+   */
+  persistentPermissionKinds?: readonly string[];
+  /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to, when the agent says so. `servers`
+   * names the session's registered servers. A permission request is asked
+   * about with its own call first, then with the latest announcement or
+   * update of that call this answered for, and the request's call is
+   * `request` both times: an agent may name the server only across the two.
+   */
+  mcpServerOf?(
+    toolCall: AcpToolCall,
+    servers: ReadonlySet<string>,
+    request?: AcpToolCall
+  ): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /**
+   * A title for a tool call whose own title is only the tool's name (DeepSeek
+   * Harness): the command it runs, the file it writes. Undefined keeps the
+   * agent's title.
+   */
+  toolTitle?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The ACP `kind` of a tool call, for an agent that doesn't label its tools
+   * (Cline marks every one `other`). Consulted before the call's own `kind`;
+   * it decides which approval a call needs and the card it shows as.
+   */
+  toolKind?(toolCall: AcpToolCall): string | undefined;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.
@@ -183,10 +248,15 @@ export interface AcpSignedInQuery {
   request<T>(method: string, params: unknown): Promise<T>;
 }
 
+/** The agent's connection, for a sign-in check that must ask it more than `initialize`. */
+export type AcpConnection = Pick<StdioJsonRpcClient, 'request' | 'onNotification'>;
+
 export interface AcpSignInInput extends SignInCheckInput {
   handshake(): Promise<AcpInitializeResult>;
   /** A request to the process `handshake` started; fails when it has not run. */
   request<T>(method: string, params: unknown): Promise<T>;
+  /** The connection `handshake` opened; throws before it has. */
+  connection(): AcpConnection;
 }
 
 export interface AcpAdapterOptions {
