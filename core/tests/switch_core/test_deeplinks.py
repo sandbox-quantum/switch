@@ -81,6 +81,16 @@ class TestSwitchdashToGateway:
             is None
         )
 
+    def test_case_insensitive_scheme_and_host(self) -> None:
+        result = switchdash_to_gateway(
+            "SWITCHDASH://Session?server=https%3A%2F%2Fs&agent=a&room=r&session=x",
+            "https://gw.example",
+        )
+        assert result == (
+            "https://gw.example/deeplink/session"
+            "?server=https%3A%2F%2Fs&agent=a&room=r&session=x"
+        )
+
 
 class TestGatewayUrlIsLoopback:
     """A configured origin that only the Switch host can reach.
@@ -224,6 +234,11 @@ class TestParseConsoleLink:
         link = parse_console_link("switchdash://open/messaging-apps/connect")
         assert link is not None
         assert (link.page, link.id) == ("messaging-apps/connect", None)
+
+    def test_case_insensitive_scheme_and_host(self) -> None:
+        link = parse_console_link("SWITCHDASH://Open/agent/a-1")
+        assert link is not None
+        assert (link.page, link.id) == ("agent", "a-1")
 
     @pytest.mark.parametrize(
         "url",

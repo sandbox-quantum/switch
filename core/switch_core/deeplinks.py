@@ -35,7 +35,7 @@ def switchdash_to_gateway(deeplink_url: str, gateway_public_url: str) -> str | N
     session deeplink, so callers leave unrecognised links untouched.
     """
     parts = urlsplit(deeplink_url)
-    if parts.scheme != _DEEPLINK_SCHEME or parts.netloc != _DEEPLINK_HOST:
+    if parts.scheme.casefold() != _DEEPLINK_SCHEME or parts.netloc.casefold() != _DEEPLINK_HOST:
         return None
     # Only the query is carried across — Switch Console session deeplinks never carry
     # a fragment, so there is nothing to preserve there.
@@ -292,7 +292,7 @@ def parse_console_link(url: str) -> ConsoleLink | None:
     """Read a `switchdash://open/…` URL; None when it is not one that names a
     page Switch Console opens."""
     parts = urlsplit(url)
-    if parts.scheme != _DEEPLINK_SCHEME or parts.netloc != _CONSOLE_LINK_HOST:
+    if parts.scheme.casefold() != _DEEPLINK_SCHEME or parts.netloc.casefold() != _CONSOLE_LINK_HOST:
         return None
     return parse_console_link_path(parts.path, parts.query)
 
