@@ -83,11 +83,28 @@ def turn_state(
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
     """
+    delivery = next(
+        (
+            item.title
+            for item in items
+            if item.kind == "user-message"
+            and item.title
+            in {
+                "Steered into running turn",
+                "Started separate turn",
+                "Delivery outcome unknown",
+                "Awaiting steering result",
+                "Not delivered",
+            }
+        ),
+        None,
+    )
+    suffix = f" {delivery}." if delivery else ""
     state = TURN_STATE[turn.status]
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
-            return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
-        return state
+            return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m{suffix}"
+        return f"{state}{suffix}"
     if elapsed_seconds is not None:
         worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
         state = worked if turn.status == "completed" else f"{state} {worked}"
@@ -95,9 +112,9 @@ def turn_state(
         1 for item in items if is_tool_call(item) and item.status == "in-progress"
     )
     if not unfinished:
-        return state
+        return f"{state}{suffix}"
     step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
+    return f"{state} {unfinished} {step} left unfinished.{suffix}"
 
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:

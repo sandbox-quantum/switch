@@ -401,6 +401,7 @@ class AgentDetail(AgentSummary):
     # owner's machines and managed agents, create managed agents on them).
     # Only the owner changes it; it matters only where agent management runs.
     can_manage_agents: bool
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
     integration_profile: dict[str, Any]
     tools: list[AgentToolSummary]
     models: list[AgentModelSummary]
@@ -491,6 +492,10 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateAgentMidTurnDeliveryRequest(BaseModel):
+    delivery: Literal["steer", "queue"]
 
 
 class UpdateAgentCanManageAgentsRequest(BaseModel):

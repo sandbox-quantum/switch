@@ -468,6 +468,31 @@ class TestJourneys:
         assert await room.reached(after) == set()
 
 
+@pytest.mark.parametrize("with_file", [False, True])
+@pytest.mark.parametrize("sender", ["alice", "bob"])
+@pytest.mark.parametrize("delivery", ["steer", "queue"])
+async def test_follow_up_preserves_steering_metadata(
+    room: Journey, with_file: bool, sender: str, delivery: str
+) -> None:
+    async with room.world.session_factory() as session:
+        agent = await AgentStore().get(session, room.world.agents["helper"].id)
+        assert agent is not None
+        agent.metadata_ = {**(agent.metadata_ or {}), "mid_turn_delivery": delivery}
+        await session.commit()
+    answer = await room.post("helper", "What should I do next?", at=0)
+
+    if with_file:
+        told = await room.send_file(sender, "correction.txt", at=10, thread=answer)
+    else:
+        told = await room.say(
+            sender, "Use the corrected instructions", at=10, thread=answer
+        )
+
+    payload = (await room.payloads(told))["helper"]
+    assert payload.sender_owns_agent is (sender == "alice")
+    assert payload.mid_turn_delivery == delivery
+
+
 class TestWhyTheAgentWasGivenIt:
     """The event names the rule that delivered a follow-up, so the agent's
     session can tell a message it may leave alone from one that asked it."""

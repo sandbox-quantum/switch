@@ -38,6 +38,7 @@ import {
 } from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
 import AddressingPolicySection from "./AddressingPolicySection";
+import MidTurnDeliverySection from "./MidTurnDeliverySection";
 import AgentManagementSection from "./AgentManagementSection";
 import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
@@ -79,7 +80,7 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { capabilities } = useAuth();
+  const { user, capabilities } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
@@ -188,6 +189,7 @@ export default function AgentDetailPage() {
           canEdit={canManage}
           onUpdated={refetch}
         />
+        <MidTurnDeliverySection agent={agent} canEdit={agent.owner_id === user?.id} onUpdated={refetch} />
         <AgentManagementSection
           agent={agent}
           canEdit={agent.can_change_manage_agents}

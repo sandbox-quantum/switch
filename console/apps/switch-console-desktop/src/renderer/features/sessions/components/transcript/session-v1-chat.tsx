@@ -463,6 +463,9 @@ export function SessionV1Chat({
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
                 <div className="flex flex-col items-end gap-1">
+                  {item.title && (
+                    <span className="text-tiny text-foreground-passive">{item.title}</span>
+                  )}
                   {item.origin?.surface && item.origin.surface !== 'console' && (
                     <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
                       {item.origin.surface}

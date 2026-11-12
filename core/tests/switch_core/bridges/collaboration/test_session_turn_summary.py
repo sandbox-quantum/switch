@@ -8,6 +8,7 @@ all: the last thing the agent said, and whether the turn is still going.
 
 from __future__ import annotations
 
+from switch_core.bridges.collaboration.session.renderers import turn_state
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_summary
 from switch_core.sessions.contract import Item, TurnUpsert
 
@@ -153,3 +154,17 @@ def test_nothing_said_and_no_tool_calls_is_still_just_the_state() -> None:
         turn_summary([], turn, escape=_identity, limit=10_000)
         == "Queued. Waiting for the agent to start…"
     )
+
+
+def test_steering_delivery_keeps_the_turn_state_and_duration_visible() -> None:
+    item = _item(kind="user-message", title="Started separate turn")
+    running = turn_state([item], _turn("running"), tool_detail=False)
+    assert "Working" in running and "Started separate turn" in running
+    item = item.model_copy(update={"title": "Steered into running turn"})
+    completed = turn_state(
+        [item], _turn("completed"), tool_detail=False, elapsed_seconds=3
+    )
+    assert "Steered into running turn" in completed and "Worked for" in completed
+    item = item.model_copy(update={"title": "Delivery outcome unknown"})
+    failed = turn_state([item], _turn("error"), tool_detail=False)
+    assert "Delivery outcome unknown" in failed and "error" in failed

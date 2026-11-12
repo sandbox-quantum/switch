@@ -458,18 +458,27 @@ class TestWhatTheServiceIsSent:
 
 
 class TestWhatTheAgentIsGiven:
+    @pytest.mark.parametrize("sender", ["alice", "bob"])
+    @pytest.mark.parametrize("delivery", ["steer", "queue"])
     async def test_the_chosen_agent_receives_the_persons_own_message(
         self,
         world: World,
         room: Journey,
         service: DecisionService,
         caplog: pytest.LogCaptureFixture,
+        sender: str,
+        delivery: str,
     ) -> None:
         service.pick = "helper"
+        async with world.session_factory() as session:
+            agent = await session.get(Agent, world.agents["helper"].id)
+            assert agent is not None
+            agent.metadata_ = {**(agent.metadata_ or {}), "mid_turn_delivery": delivery}
+            await session.commit()
 
         with caplog.at_level(logging.INFO):
             told = await room.say(
-                "bob", "can someone check why the deploy failed?", at=10
+                sender, "can someone check why the deploy failed?", at=10
             )
 
         assert await room.reached(told) == {"helper"}
@@ -478,6 +487,8 @@ class TestWhatTheAgentIsGiven:
         event = AgentEvent.model_validate(own.payload)
         assert isinstance(event.payload, MessagePayload)
         assert event.payload.routed
+        assert event.payload.sender_owns_agent is (sender == "alice")
+        assert event.payload.mid_turn_delivery == delivery
         assert event.payload.addressed
         assert event.payload.message_id == told
         assert event.payload.body == "can someone check why the deploy failed?"

@@ -132,7 +132,7 @@ export async function startHostServer(
         connectivity: 'online',
         pendingRequestIds: [],
         capabilities: {
-          input: 'queue',
+          input: adapter.capabilities.steering ? 'steer' : 'queue',
           approvals: adapter.capabilities.approvals,
           questions: adapter.capabilities.userInput,
           interrupt: true,

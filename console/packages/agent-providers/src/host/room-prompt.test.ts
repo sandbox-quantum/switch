@@ -32,6 +32,13 @@ describe('a room command', () => {
     return body.text;
   };
 
+  it('uses the server-owned per-agent preference, defaulting to steer', () => {
+    expect(command(event).body).toMatchObject({ delivery: 'steer' });
+    expect(
+      command({ ...event, payload: { ...event.payload, mid_turn_delivery: 'queue' } }).body
+    ).toMatchObject({ delivery: 'queue' });
+  });
+
   it('is named by the room message it answers', () => {
     expect(command(event).commandId).toBe(roomCommandId('agent', '!room:example.test', '$m'));
   });

@@ -36,6 +36,10 @@ describe('buildWatcherTemplate', () => {
       status: 'starting',
     });
     expect(template.start.provider).toBe(provider);
+    if (provider === 'claude' || provider === 'codex' || provider === 'opencode')
+      expect(template.session.capabilities.input).toBe('steer');
+    if (provider === 'cursor' || provider === 'antigravity')
+      expect(template.session.capabilities.input).toBe('queue');
     expect(template.start.input).toMatchObject({
       sessionId: watcherSessionId('agent-1'),
       cwd: '/work/scout',

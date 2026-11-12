@@ -44,6 +44,7 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('finished'),
     commandId: z.string(),
+    steeredInto: z.string().optional(),
     // What the turn spent; absent from a host that predates it, or when the provider said nothing.
     usage: z
       .array(
@@ -146,6 +147,7 @@ export class HostedSession {
   /** Recent tool input and output, in memory only, under the same rules as reasoning. */
   private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
+  private steeringDispatch = false;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
   private publishing: Promise<unknown> = Promise.resolve();
@@ -266,6 +268,25 @@ export class HostedSession {
       }
       const recovered = events.records.length > 0;
       if (recovered) {
+        // A crash can follow the durable receipt but precede its presentation events.
+        for (const record of inbox.records) {
+          if (record.type !== 'finished' || !record.steeredInto) continue;
+          if (host.status(record.commandId).status === 'applied') continue;
+          await host.messageDelivery(record.commandId, 'Steered into running turn');
+          await host.publish({
+            type: 'turn.upsert',
+            turnId: record.commandId,
+            commandId: record.commandId,
+            status: 'completed',
+          });
+          await host.publish({
+            type: 'command.status',
+            commandId: record.commandId,
+            status: 'applied',
+            code: null,
+            message: null,
+          });
+        }
         const snapshot = host.replica.snapshot();
         for (const request of snapshot.requests)
           if (request.state === 'open' || request.state === 'submitting')
@@ -292,6 +313,13 @@ export class HostedSession {
               code: 'HOST_RESTARTED',
               message: 'The host restarted before confirming the command. It will not resend it.',
             });
+          if (
+            command.body.type === 'message.send' &&
+            command.body.delivery === 'steer' &&
+            host.dispatched.has(command.commandId) &&
+            !host.finished.has(command.commandId)
+          )
+            await host.messageDelivery(command.commandId, 'Delivery outcome unknown');
           if (command.body.type === 'message.send' && !host.finished.has(command.commandId))
             await host.publish({
               type: 'notice',
@@ -881,9 +909,9 @@ export class HostedSession {
     return true;
   }
 
-  command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
+  command(input: Command, senderOwnsAgent = false): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
-    const result = this.serial.then(() => this.accept(command));
+    const result = this.serial.then(() => this.accept(command, senderOwnsAgent));
     this.serial = result.catch(() => {});
     return result;
   }
@@ -920,7 +948,10 @@ export class HostedSession {
     return { ...command, origin: original.origin, body: original.body };
   }
 
-  private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
+  private async accept(
+    command: Command,
+    senderOwnsAgent: boolean
+  ): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
@@ -942,8 +973,6 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -1043,6 +1072,7 @@ export class HostedSession {
             origin: command.origin,
           },
         });
+        if (await this.steer(command, senderOwnsAgent)) return this.status(command.commandId);
         this.queue.push(command);
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
@@ -1192,6 +1222,30 @@ export class HostedSession {
       if (body.type === 'message.send')
         void this.runNext().catch((error: unknown) => this.fail(error));
     } catch (error) {
+      if (body.type === 'message.send') {
+        await this.eventSerial;
+        if (this.finished.has(command.commandId)) {
+          await this.messageDelivery(command.commandId, 'Started separate turn');
+          await this.publish({
+            type: 'command.status',
+            commandId: command.commandId,
+            status: 'applied',
+            code: null,
+            message: null,
+          });
+          return this.status(command.commandId);
+        }
+        await this.messageDelivery(
+          command.commandId,
+          this.dispatched.has(command.commandId) ? 'Delivery outcome unknown' : 'Not delivered'
+        );
+        await this.publish({
+          type: 'turn.upsert',
+          turnId: command.commandId,
+          commandId: command.commandId,
+          status: 'error',
+        });
+      }
       if (body.type === 'session.model.set') await this.fail(error);
       if (body.type === 'request.answer') {
         const request = this.snapshot().requests.find((r) => r.requestId === body.requestId);
@@ -1235,8 +1289,97 @@ export class HostedSession {
     return status;
   }
 
+  private async messageDelivery(commandId: string, title: string): Promise<void> {
+    const item = this.snapshot().items.find((item) => item.itemId === `user-${commandId}`);
+    if (item && item.title !== title)
+      await this.publish({
+        type: 'item.upsert',
+        item: { ...item, revision: item.revision + 1, title },
+      });
+  }
+
+  private async steer(command: Command, senderOwnsAgent: boolean): Promise<boolean> {
+    const target = this.activeTurn;
+    const origin = target ? this.originOf(target) : null;
+    if (
+      command.body.type !== 'message.send' ||
+      command.body.delivery !== 'steer' ||
+      !this.adapter.capabilities.steering ||
+      !target ||
+      !origin ||
+      !origin.roomId ||
+      origin.roomId !== command.origin.roomId ||
+      origin.threadId !== command.origin.threadId ||
+      !command.origin.actorId ||
+      (origin.actorId !== command.origin.actorId && !senderOwnsAgent)
+    )
+      return false;
+    const body = command.body;
+    const attachments = body.attachments.length
+      ? await this.config.stageAttachments!(body.attachments)
+      : [];
+    // Staging can outlast the turn: recheck before any provider side effect.
+    if (this.activeTurn !== target || this.stopped || this.shuttingDown || this.fault) return false;
+    this.steeringDispatch = true;
+    try {
+      await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+      this.dispatched.add(command.commandId);
+      await this.messageDelivery(command.commandId, 'Awaiting steering result');
+      const result = await this.adapter.sendTurn({
+        sessionId: command.sessionId,
+        turnId: command.commandId,
+        text: body.text,
+        attachments,
+      });
+      await this.eventSerial;
+      const steered = result.steeredInto !== undefined;
+      if (steered && result.steeredInto !== target)
+        throw new Error('Provider reported steering into an unexpected turn');
+      if (steered) {
+        await this.inbox.append({
+          type: 'finished',
+          commandId: command.commandId,
+          steeredInto: target,
+        });
+        this.finished.add(command.commandId);
+      } else if (!this.finished.has(command.commandId)) this.activeTurn = command.commandId;
+      await this.messageDelivery(
+        command.commandId,
+        steered ? 'Steered into running turn' : 'Started separate turn'
+      );
+      await this.publish({
+        type: 'turn.upsert',
+        turnId: command.commandId,
+        commandId: command.commandId,
+        status: steered || this.finished.has(command.commandId) ? 'completed' : 'running',
+      });
+      await this.publish({
+        type: 'command.status',
+        commandId: command.commandId,
+        status: 'applied',
+        code: null,
+        message: null,
+      });
+      return true;
+    } catch (error) {
+      await this.eventSerial;
+      if (this.dispatched.has(command.commandId) && !this.finished.has(command.commandId))
+        await this.fail(
+          new Error(
+            'Steering delivery outcome is unknown. Dispatch is paused; restart the session before sending more work.',
+            { cause: error }
+          )
+        );
+      throw error;
+    } finally {
+      this.steeringDispatch = false;
+      void this.runNext().catch((error: unknown) => this.fail(error));
+    }
+  }
+
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
+    if (this.steeringDispatch || this.activeTurn || this.shuttingDown || this.stopped || this.fault)
+      return;
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
@@ -1353,6 +1496,7 @@ export class HostedSession {
   }
 
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
+    if (this.fault && event.type === 'session.state.changed' && event.status !== 'stopped') return;
     // A reset stops the old conversation on the way to a fresh one. That stop
     // is not the session's: shown, it reads as the session ending.
     if (
@@ -1454,6 +1598,12 @@ export class HostedSession {
       event.item.type === 'user_message'
     )
       return;
+    if (
+      event.type === 'turn.started' &&
+      this.dispatched.has(event.turnId) &&
+      !this.finished.has(event.turnId)
+    )
+      this.activeTurn = event.turnId;
     // A turn is finished, with what it spent, before anyone can read that it
     // ended: its report to Switch is the one chance to count the spend.
     if (event.type === 'turn.completed') {
@@ -1463,6 +1613,17 @@ export class HostedSession {
         ...(event.usage.length > 0 ? { usage: event.usage } : {}),
       });
       this.finished.add(event.turnId);
+      const item = this.snapshot().items.find((item) => item.itemId === `user-${event.turnId}`);
+      if (item?.title === 'Delivery outcome unknown') {
+        await this.messageDelivery(event.turnId, 'Started separate turn');
+        await this.publish({
+          type: 'command.status',
+          commandId: event.turnId,
+          status: 'applied',
+          code: null,
+          message: null,
+        });
+      }
       if (event.usage.length > 0) this.usage.set(event.turnId, event.usage);
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
@@ -1473,7 +1634,7 @@ export class HostedSession {
         event.message ?? null,
         event.usageLimit ?? null
       );
-      this.activeTurn = null;
+      if (this.activeTurn === event.turnId) this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
       void this.refreshContext().catch((error: unknown) => this.fail(error));
     }

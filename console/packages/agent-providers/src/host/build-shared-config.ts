@@ -11,7 +11,7 @@ export interface BuildSharedHostConfigInput {
     env: Readonly<Record<string, string>>;
     model: ModelSelection | undefined;
   };
-  capabilities: Pick<ProviderCapabilities, 'approvals' | 'userInput'>;
+  capabilities: Pick<ProviderCapabilities, 'approvals' | 'userInput' | 'steering'>;
   execution: {
     credentialsPath: string;
     inheritEnv: readonly string[];
@@ -43,7 +43,7 @@ export function buildSharedHostConfig(input: BuildSharedHostConfigInput): Shared
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: input.capabilities.steering ? 'steer' : 'queue',
         approvals: input.capabilities.approvals,
         questions: input.capabilities.userInput,
         interrupt: true,

@@ -18,6 +18,8 @@ export const roomMessageSchema = z.object({
   payload: z.object({
     sender: z.string().min(1),
     sender_name: z.string(),
+    sender_owns_agent: z.boolean().default(false),
+    mid_turn_delivery: z.enum(['queue', 'steer']).default('steer'),
     message_id: z.string().min(1),
     body: z.string(),
     thread_id: z.string().nullish(),
@@ -280,6 +282,6 @@ export function roomCommand(input: {
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: { type: 'message.send', text, attachments, delivery: payload.mid_turn_delivery },
   };
 }

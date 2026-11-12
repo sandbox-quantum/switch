@@ -1304,3 +1304,7 @@ Every Switch tool you call in normal operation, one line each.
 - `update_room_schedule` — change one you set up.
 - `pause_room_schedule` — pause or resume one you set up.
 - `delete_room_schedule` — delete one you set up.
+
+### Messages during a running turn
+
+By default, supported providers can receive same-thread corrections from the turn starter or the agent owner while working. Other senders, rooms and threads queue. The agent owner can select always-queue on the agent settings page in the gateway. Cards report confirmed delivery; an unknown provider outcome is not automatically retried. Sending a correction does not cancel outstanding approvals.
