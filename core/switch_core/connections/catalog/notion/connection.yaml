@@ -21,9 +21,11 @@ auth:
   identity:
     # A Notion MCP token reaches neither Notion's REST API (/v1/users/me
     # answers 401) nor the MCP server's /userinfo (403). Notion advertises
-    # token introspection, whose answer names the workspace and the user, so
-    # the same person in two workspaces is two connections. It names neither
-    # by name, so the connection is labelled with the workspace's id.
+    # token introspection, whose answer names the workspace and the user. The
+    # account is that pair. A person has one Notion connection, so connecting
+    # another workspace replaces it, and its grants stop working until the
+    # person grants them again. The answer names neither by name, so the
+    # connection is labelled with the workspace's id.
     introspection: true
     account_id: [workspace_id, user_id]
     label: workspace_id

@@ -103,7 +103,9 @@ version of their own to them without also giving them a release of their own.
   can write. Its tokens reach no account endpoint, so Switch reads the account
   by token introspection (RFC 7662), which an `oauth` catalog entry can now
   ask for in place of an account URL: the connection is that user in that
-  workspace. Disconnecting revokes the sign-in at Notion.
+  workspace. A person has one Notion connection. Connecting another workspace
+  replaces it, and agents must be granted Notion again. Disconnecting revokes
+  the sign-in at Notion.
 - **How many users and agents each workspace has.** `GET /gateway/tenants/counts`
   answers for every workspace the caller may enter, counting people as the
   workspace's members list shows them: its members, and its organization's
@@ -503,7 +505,7 @@ version of their own to them without also giving them a release of their own.
   server refuses with a 4xx other than 401 or 429, the message gives the
   status. The identity call reaches only what the outbound policy allows
   (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`). `account_id` can list 2 to 8 paths,
-  joined into one id, so a person in two accounts has two connections. An
+  joined into one id, so two accounts of one person have two different ids. An
   entry whose vendor has no OAuth scopes can leave out `scope`. Its sign-ins
   are always read and write, and it has no access profiles. For a discovered
   server, Core now sends the `resource` that the server advertises. Core

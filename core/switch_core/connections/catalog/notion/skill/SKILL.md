@@ -14,9 +14,11 @@ Your owner granted this agent their Notion connection. Its tools are on the
   Notion, and every page, database entry or comment you create, change or
   delete shows there as done by them.
 - **One whole workspace.** When your owner connected, they chose a workspace,
-  not pages: you reach whatever they can reach in it. Another workspace is a
-  separate connection your owner makes; don't look for another way in.
-  `notion-get-self` says which workspace and account you are acting as.
+  not pages: you reach whatever they can reach in it. This grant reaches one
+  workspace only. Do not look for another way in. To use another workspace,
+  your owner must reconnect Notion and pick it. That replaces this workspace,
+  and your owner must grant Notion to you again. `notion-get-self` says which
+  workspace and account you are acting as.
 - **Your owner's access still applies.** On a page they can only view or
   comment on, edits are refused. Some tools need a paid Notion plan or Notion
   AI and say so when refused; `notion-get-tool-access` explains a refusal.

@@ -73,7 +73,9 @@ with `active: true` names an account. Without that endpoint the sign-in
 fails. Either way `account_id` may list several paths, such as
 `[workspace_id, user_id]` for a user who is one of several in a workspace:
 each must name one string or number, and they are escaped and joined with
-`:`, so the same person in two workspaces is two accounts.
+`:`. The same person in two workspaces then has two account ids. A person
+still has one connection for each service, so connecting the second
+workspace replaces the first.
 
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
@@ -723,9 +725,10 @@ server, with a dynamically registered public client:
   Notion's authorization server advertises an `introspection_endpoint` that
   takes a public client's id alone, and its answer for a live token has
   `active: true`, our `client_id`, `workspace_id` and `user_id`. The account
-  is the two ids, so the same person in two workspaces is two connections.
-  The answer names neither by name, so the connection is labelled with the
-  workspace's id. The token response carries the same ids, but it is never
+  is the two ids. A person has one Notion connection. Connecting another
+  workspace replaces it, and grants made for the first workspace fail until
+  the person grants them again. The answer names neither by name, so the
+  connection is labelled with the workspace's id. The token response carries the same ids, but it is never
   read for identity, since nothing checks it against the token later.
 - Notion has one scope, `default`, and its consent screen picks a workspace,
   not scopes or pages, so every connection is granted the write level and

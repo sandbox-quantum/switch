@@ -261,7 +261,7 @@ def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
         definition.access.read.scopes == definition.access.write.scopes == ["default"]
     )
     # Read by introspection, never from the token answer: the workspace and
-    # the user, so the same person in two workspaces is two accounts.
+    # the user, so the same person in two workspaces is two account ids.
     identity = definition.auth.identity
     assert identity is not None
     assert (identity.url, identity.introspection) == (None, True)
