@@ -1,7 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import { Box, Button, Stack, Tab, Tabs, Typography } from "@mui/material";
 import { useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router";
 import CreateDocumentDialog from "./CreateDocumentDialog";
 import CreatePackageDialog from "./CreatePackageDialog";
 import CreateReferenceDialog from "./CreateReferenceDialog";
@@ -27,11 +27,15 @@ const TABS = [
 
 type ResourceTab = (typeof TABS)[number]["value"];
 
-export default function ResourcesPage() {
+/** `withTemplates` is false in the new layout, where Templates is a page of
+ * its own; a link to the old tab is sent there. */
+export default function ResourcesPage({ withTemplates }: { withTemplates: boolean }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { hash } = useLocation();
   const tabParam = searchParams.get("tab");
-  const active = TABS.find((t) => t.value === tabParam) ?? TABS[0];
+  const tabs = TABS.filter((t) => withTemplates || t.value !== "templates");
+  const active = tabs.find((t) => t.value === tabParam) ?? tabs[0];
   const tab: ResourceTab = active.value;
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -71,6 +75,18 @@ export default function ResourcesPage() {
     setRefreshKey((k) => k + 1);
   };
 
+  if (!withTemplates && tabParam === "templates") {
+    const rest = new URLSearchParams(searchParams);
+    rest.delete("tab");
+    const search = rest.toString();
+    return (
+      <Navigate
+        to={{ pathname: "/templates", search: search === "" ? "" : `?${search}`, hash }}
+        replace
+      />
+    );
+  }
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
@@ -89,7 +105,7 @@ export default function ResourcesPage() {
         onChange={(_, v) => setTab(v as ResourceTab)}
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}
       >
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <Tab key={t.value} label={t.label} value={t.value} />
         ))}
       </Tabs>

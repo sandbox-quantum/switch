@@ -452,7 +452,7 @@ class TestUpdateAgentDetail:
         self,
     ) -> None:
         dicebear = generated_icon_url("target")
-        with pytest.raises(InvalidIconUrl, match="third-party avatars turned off"):
+        with pytest.raises(InvalidIconUrl, match="third-party avatars are turned off"):
             _profile(icon_url=dicebear, third_party_avatars=False)
         assert _profile(icon_url=dicebear).columns == {"icon_url": dicebear}
         other = "https://example.com/r.png"

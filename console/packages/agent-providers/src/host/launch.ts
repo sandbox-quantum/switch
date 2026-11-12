@@ -4,6 +4,7 @@ import { link, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isProcessAlive } from '../process-alive';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { commandLineNames, killProcessTree, processCommandLine } from './process-fence';
 import type { SessionLinks } from './session-channel';
@@ -243,28 +244,28 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
  * as different from whatever is asking — so it is replaced.
  */
 export async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
+  let owner;
   try {
-    const owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
-    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
-      throw new Error('Invalid shared host supervisor owner.');
-    process.kill(owner.pid, 0);
-    return { build: owner.build };
+    owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
   } catch (error) {
-    if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-    return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
   }
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
+    throw new Error('Invalid shared host supervisor owner.');
+  return isProcessAlive(owner.pid, 'recorded') ? { build: owner.build } : null;
 }
 
 async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {
   let pid: number;
   try {
     pid = JSON.parse(await readFile(ownerPath, 'utf8')).pid;
-    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
-    process.kill(pid, 0);
   } catch (error) {
-    if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
+  if (!isProcessAlive(pid, 'recorded')) return;
   const commandLine = await processCommandLine(pid);
   if (commandLine === null) return;
   if (!commandLineNames(commandLine, root))
@@ -290,12 +291,7 @@ export const STOP_GRACE_MS = 20_000;
 
 async function exitsWithin(pid: number, ms: number): Promise<boolean> {
   for (let waited = 0; ; waited += 200) {
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
-      throw error;
-    }
+    if (!isProcessAlive(pid, 'recorded')) return true;
     if (waited >= ms) return false;
     await delay(200);
   }

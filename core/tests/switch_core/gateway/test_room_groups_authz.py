@@ -8,9 +8,11 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Room, User
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.gateway import rooms as rooms_routes
 from switch_core.gateway.room_groups import (
     assign_rooms_to_group,
@@ -30,6 +32,11 @@ from switch_core.gateway.schemas import (
 
 _GROUPS = RoomGroupStore()
 _ROOMS = RoomStore()
+_NO_DECISIONS = DecisionAvailability(
+    enabled=False,
+    server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
+    store=DecisionSettingsStore(),
+)
 _USERS = UserStore()
 
 
@@ -175,6 +182,7 @@ class TestFilingRooms:
                     None,  # type: ignore[arg-type]
                     None,  # type: ignore[arg-type]
                     None,  # type: ignore[arg-type]
+                    _NO_DECISIONS,
                     member,
                     await _is_admin(session, member),
                 )
@@ -223,6 +231,7 @@ class TestFilingRooms:
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
+                _NO_DECISIONS,
                 member,
                 await _is_admin(session, member),
             )
@@ -249,6 +258,7 @@ class TestFilingRooms:
                     None,  # type: ignore[arg-type]
                     None,  # type: ignore[arg-type]
                     None,  # type: ignore[arg-type]
+                    _NO_DECISIONS,
                     member,
                     await _is_admin(session, member),
                 )
@@ -286,6 +296,7 @@ class TestFilingRooms:
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
+                _NO_DECISIONS,
                 member,
                 await _is_admin(session, member),
             )

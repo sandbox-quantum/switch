@@ -127,8 +127,8 @@ class TestSeedingRepairsTheAdmin:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """An account that could not sign in until this boot is not routine
-        news, so it is a warning naming the address — and the ordinary case
-        stays at `info` so the warning means something."""
+        news, so it is a warning naming the account (by id, never its address)
+        — and the ordinary case stays at `info` so the warning means something."""
         await _seed_admin_user(session_factory, UserStore(), _config())
         user_id = await _admin_id(session_factory)
         await _strand_the_admin(session_factory, user_id)
@@ -140,7 +140,8 @@ class TestSeedingRepairsTheAdmin:
             await _seed_admin_user(session_factory, UserStore(), _config())
             settled = [r for r in caplog.records if r.levelname == "WARNING"]
 
-        assert [ADMIN_EMAIL in r.getMessage() for r in repaired] == [True]
+        assert [str(user_id) in r.getMessage() for r in repaired] == [True]
+        assert [ADMIN_EMAIL in r.getMessage() for r in repaired] == [False]
         assert settled == []
 
     async def test_an_admin_that_already_belongs_somewhere_is_left_alone(

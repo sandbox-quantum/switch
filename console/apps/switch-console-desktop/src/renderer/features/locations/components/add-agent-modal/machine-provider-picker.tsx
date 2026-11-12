@@ -9,7 +9,7 @@ import {
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
 import { autoSelectedAgentType } from './agent-type-auto-selection';
-import { GiveMachineLogin } from './give-machine-login';
+import { GiveMachineLogin, loginKindsFor } from './give-machine-login';
 
 /** Each provider, and whether the machine last reported it installed and logged in. */
 export function machineProviderOptions(
@@ -49,9 +49,12 @@ export function MachineProviderPicker({
     () => options.filter((option) => option.ready).map((option) => option.id),
     [options]
   );
-  // Installed there but not signed in: a login can be given to the machine.
+  // Installed there but not signed in, with a login the machine can be given.
   const givable = machine.acceptsLogins
-    ? options.filter((option) => !option.ready && option.problem !== 'not installed')
+    ? options.filter(
+        (option) =>
+          !option.ready && option.problem !== 'not installed' && loginKindsFor(option.id).length > 0
+      )
     : [];
   const [giving, setGiving] = useState<AgentProviderId | null>(null);
 

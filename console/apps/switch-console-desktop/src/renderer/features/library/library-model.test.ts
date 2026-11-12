@@ -4,6 +4,7 @@ import { changesOf, emptyForm, formOf, formProblem, inputOf } from './library-fo
 import {
   accessOf,
   filterLibraryItems,
+  libraryItemOpens,
   libraryPermissions,
   NO_LIBRARY_FILTER,
   offeredLibraryFilter,
@@ -74,6 +75,54 @@ describe('libraryPermissions', () => {
     expect(
       libraryPermissions(item({ writeVisibility: 'public' }), { id: null, isAdmin: false })
     ).toEqual({ canEdit: false, canDelete: false, canChangeAccess: false });
+  });
+});
+
+describe('libraryPermissions, from a server that says', () => {
+  it('follows the server over the viewer’s own rule', () => {
+    // The owner, told no: a rule the server knows and Console does not.
+    expect(
+      libraryPermissions(item({ canEdit: false, canManage: false }), { id: 'u1', isAdmin: false })
+    ).toEqual({ canEdit: false, canDelete: false, canChangeAccess: false });
+    // Someone else, told yes to editing alone.
+    expect(
+      libraryPermissions(item({ canEdit: true, canManage: false }), { id: 'u2', isAdmin: false })
+    ).toEqual({ canEdit: true, canDelete: false, canChangeAccess: false });
+  });
+
+  it('never mixes a partial answer with the viewer’s own rule', () => {
+    // The owner, whose own rule would allow everything: a flag the server
+    // leaves out counts as no rather than falling back to that rule.
+    const owner = { id: 'u1', isAdmin: false };
+    expect(libraryPermissions(item({ canManage: true }), owner)).toEqual({
+      canEdit: false,
+      canDelete: true,
+      canChangeAccess: true,
+    });
+    expect(libraryPermissions(item({ canEdit: true }), owner)).toEqual({
+      canEdit: true,
+      canDelete: false,
+      canChangeAccess: false,
+    });
+  });
+});
+
+describe('libraryItemOpens', () => {
+  const someoneElse = { id: 'u2', isAdmin: false };
+
+  it('follows the server where it says', () => {
+    expect(libraryItemOpens(item({ canRead: false }), someoneElse)).toBe(false);
+    expect(libraryItemOpens(item({ readVisibility: 'private', canRead: true }), someoneElse)).toBe(
+      true
+    );
+  });
+
+  it('otherwise opens what is open to read, or the viewer’s own, or anything for an admin', () => {
+    const secret = item({ readVisibility: 'private' });
+    expect(libraryItemOpens(item(), someoneElse)).toBe(true);
+    expect(libraryItemOpens(secret, someoneElse)).toBe(false);
+    expect(libraryItemOpens(secret, { id: 'u1', isAdmin: false })).toBe(true);
+    expect(libraryItemOpens(secret, { id: 'u9', isAdmin: true })).toBe(true);
   });
 });
 

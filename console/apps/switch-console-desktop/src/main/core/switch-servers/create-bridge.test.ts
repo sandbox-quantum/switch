@@ -91,6 +91,7 @@ describe('createBridgeOnServer', () => {
         displayName: 'Acme Slack',
         status: 'active',
         isDefault: false,
+        preconfigured: null,
         homeUrl: null,
         // Absent on CREATED, same as home_url — a server predating the
         // capability behaves as if every bridge could create a channel.
@@ -100,6 +101,8 @@ describe('createBridgeOnServer', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },

@@ -12,6 +12,7 @@ import {
   ensureSharedProcess,
   hostedCredentialSchema,
   inProcessSupervision,
+  isProcessAlive,
   killProcessTree,
   materializeHostedProvider,
   type OpenAgentStream,
@@ -268,19 +269,9 @@ export function isInside(root: string, path: string): boolean {
   return rest !== '' && rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
 }
 
-export function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
-
 /** A saved PID counts only while it still names a process started for this root. */
 export async function ownsRoot(pid: number, root: string): Promise<boolean> {
-  if (!alive(pid)) return false;
+  if (!isProcessAlive(pid, 'recorded')) return false;
   const commandLine = await processCommandLine(pid);
   return commandLine !== null && commandLineNames(commandLine, root);
 }
@@ -330,7 +321,7 @@ export async function observeOnDisk(
 ): Promise<AgentObservation> {
   const root = layout.watcherRoot(agentId);
   const pid = await recordedPid(join(root, 'shared-owner.lock'));
-  const running = pid !== null && alive(pid);
+  const running = pid !== null && isProcessAlive(pid, 'recorded');
   const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
   const health =
     healthText === null
@@ -635,7 +626,7 @@ export class InProcessRuntime implements AgentRuntime {
       });
       await requestStop(root, pid);
       const deadline = Date.now() + STOP_TIMEOUT_MS;
-      while (alive(pid)) {
+      while (isProcessAlive(pid, 'recorded')) {
         if (Date.now() > deadline) {
           await killProcessTree(pid);
           break;

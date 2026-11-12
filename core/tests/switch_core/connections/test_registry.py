@@ -66,7 +66,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog"}
+    assert set(adapters) == {"github", "atlassian", "datadog", "notion", "sentry"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -103,6 +103,35 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
         "search:confluence:agent-interface write:jira:agent-interface "
         "write:confluence:agent-interface"
     )
+
+
+def test_notion_needs_no_settings_and_registers_a_loopback_on_any_port() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["notion"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request == {
+        "redirect_uris": ["http://127.0.0.1/switch-services/callback"],
+        "scope": "default",
+    }
+
+
+def test_sentry_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["sentry"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    assert client._request["scope"] == "org:read project:write team:write event:write"
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:
@@ -217,8 +246,8 @@ async def test_an_app_not_set_up_here_says_who_sets_it_up(
 ) -> None:
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
     reason = (
-        "{} is not set up on this server. Whoever runs your Switch server can "
-        "set it up in Switch Console, under Admin → Connector apps."
+        "{} is not set up here. Whoever runs Switch can set it up in "
+        "Switch Console, under Admin → Connector apps."
     )
     assert await availability(broker, "example") == reason.format("Example")
     assert await availability(broker, "github") == reason.format("GitHub")
@@ -238,8 +267,8 @@ async def test_a_service_signing_in_only_through_the_server_needs_its_public_url
     assert example is not None
     assert example.code == "needs_public_url"
     assert example.reason == (
-        "Example can't be connected on this server: it needs the server's "
-        "public address (GATEWAY_PUBLIC_URL)."
+        "Example can't be connected here: it needs Switch's public address "
+        "(GATEWAY_PUBLIC_URL)."
     )
     assert (await standing(broker, "example")).server_setup_needed is False
     # GitHub's App names its own callback, so it isn't held up the same way.
@@ -264,8 +293,7 @@ async def test_github_cannot_work_on_a_server_without_an_https_address(
     assert github is not None
     assert github.code == "needs_https"
     assert github.reason == (
-        "GitHub can't be used on this server: it needs the server to have an "
-        "https address."
+        "GitHub can't be used here: it needs Switch to have an https address."
     )
     assert (await standing(broker, "github")).server_setup_needed is False
     # Google and the like take an http address back, so their app still can be.
@@ -285,7 +313,7 @@ async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
     assert atlassian is not None
     assert (atlassian.code, atlassian.reason) == (
         "not_set_up",
-        "Atlassian is not set up on this server.",
+        "Atlassian is not set up here.",
     )
     assert (await standing(broker, "atlassian")).server_setup_needed is False
     asana = (await standing(broker, "asana")).unavailable

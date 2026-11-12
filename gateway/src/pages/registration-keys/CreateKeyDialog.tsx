@@ -89,7 +89,7 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{result ? "Key Created" : "Create API Key"}</DialogTitle>
+      <DialogTitle>{result ? "Key created" : "Create API key"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {result ? (
@@ -98,7 +98,7 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
                 Copy the key now. It will not be shown again.
               </Alert>
               <TextField
-                label="Registration Key"
+                label="API key"
                 value={result.key}
                 fullWidth
                 slotProps={{
@@ -106,7 +106,7 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
                     readOnly: true,
                     endAdornment: (
                       <InputAdornment position="end">
-                        <IconButton onClick={handleCopy} size="small">
+                        <IconButton onClick={handleCopy} size="small" aria-label="Copy key">
                           <ContentCopy fontSize="small" />
                         </IconButton>
                       </InputAdornment>

@@ -151,6 +151,8 @@ class TestConnections:
         # Their own connection is theirs to disconnect; there is nothing to
         # disconnect where they have none.
         assert (github["can_revoke"], asana["can_revoke"]) == (True, False)
+        assert atlassian["agent_access_note"] is None
+        assert "hour after each sign-in" in entries["sentry"]["agent_access_note"]
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
         self, harness: Harness, vendor: FakeVendor
@@ -282,7 +284,7 @@ class TestGrants:
         response = await _put(harness, owner, agent_id, {"resources": RESOURCES})
 
         assert response.status_code == 409
-        assert "Settings, Connections" in response.json()["detail"]
+        assert "Switch Console, under Connectors" in response.json()["detail"]
 
     async def test_write_on_a_read_only_connection(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

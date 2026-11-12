@@ -405,7 +405,7 @@ class TestTheAgentClientsReplies:
         assert reply is None
         assert lapsed is not None
         assert lapsed.startswith(
-            "My machine, **machine**, is offline or reconnecting to Switch"
+            "My device, **machine**, is offline or reconnecting to Switch"
         )
         assert "Switch Console" not in lapsed
         assert auto._agent_session_store.asked == []
@@ -511,7 +511,7 @@ class TestTheAgentClientsReplies:
         again = await client._reply_when_unavailable_here(object(), agent, meta, "u")
 
         assert first == (
-            "My machine, **machine**, was asleep and is starting now. I'll pick "
+            "My device, **machine**, was asleep and is starting now. I'll pick "
             "this up as soon as it's back, usually within a few minutes."
         )
         assert again is None
@@ -531,7 +531,7 @@ class TestTheAgentClientsReplies:
             object(), _agent("auto", "auto_session"), meta, "u"
         )
         assert reply == (
-            "My machine, **machine**, is stopped, so I can't answer. My owner "
+            "My device, **machine**, is stopped, so I can't answer. My owner "
             "(@owner) can start it again in Switch Console."
         )
 
@@ -553,15 +553,15 @@ class TestTheAgentClientsReplies:
         removed = await client._reply_when_unavailable_here(object(), agent, meta, "u")
 
         assert never_connected == (
-            "My machine, **machine**, is offline or reconnecting to Switch, so "
+            "My device, **machine**, is offline or reconnecting to Switch, so "
             "I can't answer right now. If I haven't answered once it's back, "
             "address me again. If it stays offline, my owner (@owner) needs to "
             "check it."
         )
         assert removed.startswith(
-            "@owner — my machine, **machine**, has been removed from Switch"
+            "@owner — my device, **machine**, has been removed from Switch"
         )
-        assert "move me to another machine" in removed
+        assert "move me to another device" in removed
 
     async def test_an_always_on_agent_is_available_while_its_controller_is(
         self,
@@ -693,9 +693,9 @@ class TestAddressingAControllerBackedAgent:
 
     async def test_a_disconnected_agent_gets_the_not_connected_reply(self) -> None:
         cases = {
-            "offline": "My machine, **machine**, is offline or reconnecting",
+            "offline": "My device, **machine**, is offline or reconnecting",
             "stopped": "@owner — you've stopped me",
-            "removed": "@owner — my machine, **machine**, has been removed",
+            "removed": "@owner — my device, **machine**, has been removed",
         }
         for case, expected in cases.items():
             registry = AgentConnectionRegistry()

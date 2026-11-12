@@ -29,9 +29,20 @@ export async function checkProviderReadiness(input: {
         return readiness('unauthenticated', signInWith(loginCommand));
       return readiness(
         'unknown',
-        'Could not verify authentication. Check the connection and provider setup, then retry.'
+        `Could not verify authentication. Check the connection and provider setup, then retry. (${failureDetail(error)})`
       );
     }
   })();
   return loginCommand === runtime.loginCommand ? result : { ...result, loginCommand };
+}
+
+/** What went wrong, short enough for a status line: the error and each cause, the last 1000 characters. */
+function failureDetail(error: unknown): string {
+  const parts: string[] = [];
+  for (let next: unknown = error; next !== undefined && parts.length < 4;) {
+    parts.push(next instanceof Error ? next.message : String(next));
+    next = next instanceof Error ? next.cause : undefined;
+  }
+  const text = parts.join(': ').replace(/\s+/g, ' ').trim();
+  return text.length > 1000 ? `…${text.slice(-1000)}` : text;
 }

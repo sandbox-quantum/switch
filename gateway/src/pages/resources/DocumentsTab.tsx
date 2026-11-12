@@ -2,12 +2,12 @@ import { Alert, Box, CircularProgress } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { AccessChip } from "../../components/AccessControls";
 import type { DocumentSummary } from "../../data/api";
 import { useDocuments } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;
@@ -96,6 +96,15 @@ export default function DocumentsTab({ refreshKey }: Props) {
           rows={filtered}
           columns={columns}
           fillHeight
+          emptyState={
+            search || ownerId ? (
+              <TableEmptyState title="No documents match these filters">
+                Clear the search or owner to see every one.
+              </TableEmptyState>
+            ) : (
+              <TableEmptyState title="No documents yet">Create one to give agents text to read in rooms.</TableEmptyState>
+            )
+          }
           onRowClick={(params) =>
             navigate(`/resources/documents/${params.id}`)
           }

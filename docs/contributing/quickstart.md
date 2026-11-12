@@ -1,8 +1,8 @@
 # Contributor quickstart: clone to first reply
 
 Run Core from your checkout, connect Switch Console, get a real agent reply,
-then make a small change. First-time downloads determine setup time; this is
-a short walkthrough, not a promise of a five-minute installation.
+then make a small change. Allow extra time for first-time downloads and
+provider sign-in; setup time depends on your machine and connection.
 
 **Switch changes fast.** If a command or screen differs, ask in the
 [issue tracker](https://github.com/sandbox-quantum/switch/issues), including
@@ -99,7 +99,7 @@ alone does not prove the bridge or agent works. If setup timed out or reports
 `409 Bridge is not running`, rerun `just up` after Core is ready and recheck.
 Keep logs private: review/redact them before attaching evidence.
 
-For the operator dashboard, use terminal B:
+Optional: for the operator dashboard, use terminal B:
 
 ```bash
 just gateway-install
@@ -160,7 +160,7 @@ it does not connect to the Core process above.
    select your account with **This is me**, then post the displayed confirmation
    code from that account as instructed. Wait until the link is confirmed:
    the default agent policy accepts instructions only from its owner.
-4. Open **Rooms → Create room**. Choose Mattermost as the messaging app,
+4. Select **Your Rooms**, then **+ New Room** in the sidebar. Choose Mattermost as the messaging app,
    name the room `quickstart-yourname`, select your registered agent under
    **Participants**, then **Create room**.
 5. Sign in at **http://localhost:8065** as `.env`'s **MATTERMOST_USER** with

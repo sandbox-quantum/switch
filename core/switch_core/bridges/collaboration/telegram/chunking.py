@@ -21,6 +21,12 @@ MAX_MESSAGE = 4096
 
 _TAG_RE = re.compile(r"<(/?)([a-z]+)[^>]*>")
 
+# An HTML entity, and how far back from a cut one can start and still be
+# straddling it: the longest Telegram's renderer emits is `&quot;`, and the
+# window leaves room for numeric ones such as `&#128512;`.
+_ENTITY_RE = re.compile(r"&[a-zA-Z#0-9]+;")
+_ENTITY_WINDOW = 10
+
 
 def open_tags(text: str) -> list[tuple[str, str]]:
     """The tags still open at the end of `text`, outermost first.
@@ -43,12 +49,19 @@ def open_tags(text: str) -> list[tuple[str, str]]:
 def safe_split(text: str, limit: int) -> int:
     """The best place to cut `text` at or before `limit`.
 
-    Never inside a tag — half an `<a href="…">` is unparseable — and on a
-    line break when there is one late enough to be worth using."""
+    Never inside a tag — half an `<a href="…">` is unparseable — nor inside
+    an entity, since a cut `&lt;` is a bare `&` Telegram refuses and a stray
+    `lt;` on the next piece; and on a line break when there is one late
+    enough to be worth using."""
     cut = min(limit, len(text))
     last_open = text.rfind("<", 0, cut)
     if last_open > text.rfind(">", 0, cut):
         cut = last_open
+    amp = text.rfind("&", max(0, cut - _ENTITY_WINDOW), cut)
+    if amp != -1:
+        entity = _ENTITY_RE.match(text, amp)
+        if entity is not None and entity.end() > cut:
+            cut = amp
     newline = text.rfind("\n", 0, cut)
     if newline > cut // 2:
         cut = newline

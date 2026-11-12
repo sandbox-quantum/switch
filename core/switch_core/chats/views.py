@@ -22,7 +22,6 @@ from switch_core.db.models import (
     AgentDefinition,
     ChatRead,
     Client,
-    ClientRoom,
     CollaborationBridge,
     Message,
     Room,
@@ -30,27 +29,22 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import (
     MENTIONS_KEY,
     addressable_text,
     named_agents,
 )
+from switch_core.providers.registry import agent_providers
 
 MESSAGE_EVENT_TYPE = "m.room.message"
 COMMAND_EVENT_TYPE = "com.switch.command"
-# A room command (`!reset @agent`) is shown so its threaded acknowledgement has a visible root.
+# A room command (`!reset @agent`) is shown, as a system line, so its threaded acknowledgement has a visible root.
 SHOWN_EVENT_TYPES = (MESSAGE_EVENT_TYPE, COMMAND_EVENT_TYPE)
 PREVIEW_CHARS = 140
 
 _MESSAGE_STORE = MessageStore()
-
-_PROVIDER_OF_KNOWN_AGENT_TYPE = {
-    "claude-code": "claude",
-    "codex": "codex",
-    "opencode": "opencode",
-    "antigravity": "antigravity",
-    "cursor": "cursor",
-}
+_ROOM_STORE = RoomStore()
 
 
 def _provider(agent: Agent, defined: object) -> str | None:
@@ -59,7 +53,9 @@ def _provider(agent: Agent, defined: object) -> str | None:
         return defined
     metadata = agent.metadata_ if isinstance(agent.metadata_, dict) else {}
     known = metadata.get("known_agent_type")
-    return _PROVIDER_OF_KNOWN_AGENT_TYPE.get(known) if isinstance(known, str) else None
+    if not isinstance(known, str):
+        return None
+    return next((p.id for p in agent_providers() if p.known_agent_type == known), None)
 
 
 class CamelModel(BaseModel):
@@ -229,14 +225,7 @@ async def chat_summaries(
         if bridge_ids
         else {}
     )
-    members: dict[str, list[str]] = {}
-    for room_id, user_id in await session.execute(
-        select(ClientRoom.room_id, Client.user_id)
-        .join(Client, Client.id == ClientRoom.client_id)
-        .where(ClientRoom.room_id.in_(room_ids), Client.type == MEMBER_CLIENT_TYPE)
-    ):
-        if user_id is not None:
-            members.setdefault(room_id, []).append(user_id)
+    members = await _ROOM_STORE.member_users_by_room(session, room_ids)
     viewer_client = (
         select(Client.id)
         .where(Client.user_id == viewer_id, Client.type == MEMBER_CLIENT_TYPE)
@@ -294,7 +283,7 @@ async def chat_summaries(
             channel_name = (
                 room.name[len(prefix) :] if room.name.startswith(prefix) else room.name
             )
-        member_user_ids = sorted(members.get(room.id, []))
+        member_user_ids = sorted(user_id for user_id, _ in members.get(room.id, []))
         last = last_messages.get(room.id)
         summaries.append(
             ChatSummary(
@@ -336,12 +325,30 @@ async def chat_summaries(
     return summaries
 
 
+_COMMAND_LINES = {
+    "reset": "Context reset requested for {agent}",
+    "compact": "Compaction requested for {agent}",
+    "interrupt": "Stop requested for {agent}",
+    "retry": "Retry requested for {agent}",
+}
+
+
 def _command_text(message: Message) -> str:
     if message.event_type != COMMAND_EVENT_TYPE:
         return ""
     command = message.content.get("command")
     args = message.content.get("args")
-    return f"!{command} {args}".strip() if args else f"!{command}"
+    text_args = args if isinstance(args, str) else ""
+    target = text_args.split()[0] if text_args.split() else ""
+    line = _COMMAND_LINES.get(command) if isinstance(command, str) else None
+    if line is not None and target.startswith("@"):
+        text = line.format(agent=target[1:])
+    elif line is not None and "@" not in text_args:
+        # Without an `@` the command addresses every agent in the room.
+        text = line.format(agent="everyone")
+    else:
+        return f"!{command} {args}".strip() if args else f"!{command}"
+    return f"{text} by {message.sender_name}" if message.sender_name else text
 
 
 async def chat_messages(
@@ -394,7 +401,9 @@ async def chat_messages(
     for message in shown:
         client = clients.get(message.sender_client_id or "")
         agent = agents.get(message.sender_client_id or "")
-        if agent is not None:
+        if message.event_type == COMMAND_EVENT_TYPE:
+            kind, source = "system", "switch"
+        elif agent is not None:
             kind, source = "agent", "switch"
         elif client is not None and client.type == MEMBER_CLIENT_TYPE:
             kind, source = "human", "console"

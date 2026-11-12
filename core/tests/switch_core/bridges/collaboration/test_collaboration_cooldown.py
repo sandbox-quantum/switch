@@ -47,12 +47,12 @@ def test_a_cooldown_says_when_the_platform_is_taking_calls_again(
     assert cooldown.remaining() == 30.0
 
     clock[0] = 31.0
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         assert cooldown.remaining() == 0.0
 
     assert "taking reactions again" in caplog.text
     caplog.clear()
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         assert cooldown.remaining() == 0.0
     assert caplog.text == "", "the lift is worth saying once, not on every call"
 
@@ -65,7 +65,7 @@ def test_a_cooldown_names_the_platform_the_scope_and_the_cost(caplog: Any) -> No
     API and leaves the reader to work out that it explains the frozen cards in
     front of them.
     """
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         _cooldown().start(45.0)
 
     assert "Slack is rate limiting reactions for the whole workspace" in caplog.text
@@ -87,7 +87,7 @@ def test_telegram_says_a_limit_holds_back_the_whole_bot(caplog: Any) -> None:
         config=TelegramConnectionConfig(bot_token="000:test", bot_username="@acme_bot")
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         failure = adapter._rich_failure(
             RetryAfter(42), description="Telegram refused the edit", text="a card"
         )

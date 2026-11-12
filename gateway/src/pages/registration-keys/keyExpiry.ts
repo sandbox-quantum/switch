@@ -1,4 +1,4 @@
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 /** How the key list shows when a key stops working. */
 export function formatKeyExpiry(expiresAt: string | null, now: Date): string {

@@ -45,6 +45,7 @@ from tests.switch_core.gateway.agent_route_harness import (
     add_user,
 )
 from tests.switch_core.gateway.test_room_detail_access import (
+    _NO_DECISIONS,
     _ROOM_STORE,
     _USER_STORE,
     _add_room,
@@ -99,6 +100,7 @@ class TestRoomPermissions:
                 None,  # type: ignore[arg-type]  # bridge_store: the room has no bridge
                 None,  # type: ignore[arg-type]  # external_user_store
                 _protocol(),
+                _NO_DECISIONS,
                 user,
                 caller == "admin",
             )
@@ -651,6 +653,7 @@ class TestRoomTransfer:
                 None,  # type: ignore[arg-type]  # bridge_store: the room has no bridge
                 None,  # type: ignore[arg-type]  # external_user_store
                 _protocol(),
+                _NO_DECISIONS,
                 owner,
                 False,
             )

@@ -63,6 +63,7 @@ from . import (
     unanswerable,
 )
 from .neutral import SAID_MARKER, in_activity_log
+from .subagents import is_subagent, is_tool_call, subagent_lines, subagent_state
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
 # where the offending value can still be named.
@@ -257,6 +258,8 @@ _TASK_STATUS = {
 # prompt would ideally be.
 _SAID_ICON = "comment"
 _TOOL_ICON = "code"
+# A call that started another agent, so a subagent stands apart from a tool.
+_SUBAGENT_ICON = "bot"
 
 _DANGEROUS = {"decline", "cancel"}
 
@@ -1045,7 +1048,7 @@ def render_activity(
                         "task_id": _task_id(turn.turn_id),
                         "title": _truncate(state, _MAX_PLAN_TASK_TITLE),
                         "status": "in_progress",
-                    }
+                    },
                 ],
             )
         return SlackMessage(text=state, blocks=[_context(state)])
@@ -1129,7 +1132,8 @@ def render_activity_text(
     if hidden:
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
-    lines += _activity_lines(did)
+    lines += _activity_lines([item for item in did if is_tool_call(item)])
+    lines += subagent_lines(items, fit=lambda text, size: _fit(text, size))
     lines.append(
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
     )
@@ -1516,6 +1520,9 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
     """
     if item.kind == "assistant-message":
         return task
+    if is_subagent(item) and item.status == "in-progress":
+        # A subagent can outlive its turn: still at work is still running.
+        return task
     if item.status != "in-progress" or turn.status in TURN_ENDED:
         task["status"] = "complete"
     if item.status == "in-progress" and turn.status in TURN_ENDED:
@@ -1672,12 +1679,19 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
     title = plain_text(item.title) if item.title else ""
-    if item.status in ("failed", "declined"):
+    if is_subagent(item):
+        # A card with an icon shows the icon in place of its status, so a
+        # subagent's status is said in words.
+        title = f"Subagent: {title or 'untitled'} — {subagent_state(item)}"
+    elif item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {
         "task_id": _task_id(item.item_id),
         "title": _truncate(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
-        "icon": {"type": "icon", "name": _TOOL_ICON},
+        "icon": {
+            "type": "icon",
+            "name": _SUBAGENT_ICON if is_subagent(item) else _TOOL_ICON,
+        },
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""

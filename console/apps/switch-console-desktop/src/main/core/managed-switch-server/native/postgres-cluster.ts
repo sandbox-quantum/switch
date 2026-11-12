@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { isProcessAlive } from '@switch-console/agent-providers';
 import { log } from '@main/lib/logger';
 import type { NativeLayout } from './native-paths';
 import { type PostgresBinaries, postgresBin } from './postgres-binaries';
@@ -261,11 +262,7 @@ export async function stopClusterByPid(layout: NativeLayout): Promise<void> {
     throw error;
   }
   if (!Number.isInteger(pid) || pid <= 0) return;
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return;
-  }
+  if (!isProcessAlive(pid, 'recorded')) return;
   if (process.platform === 'win32') {
     throw new Error(
       `PostgreSQL (pid ${pid}) is still running, and the binaries that could stop it are gone.`
@@ -274,11 +271,7 @@ export async function stopClusterByPid(layout: NativeLayout): Promise<void> {
   process.kill(pid, 'SIGINT');
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return;
-    }
+    if (!isProcessAlive(pid, 'recorded')) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`PostgreSQL (pid ${pid}) did not stop within a minute.`);
