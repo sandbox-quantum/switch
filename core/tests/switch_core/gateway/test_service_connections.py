@@ -136,10 +136,10 @@ class TestConnections:
         assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
         assert github["loopback_ports"] is None
         asana = entries["asana"]
-        assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
+        assert (asana["pass_through"], asana["token_lifetime"]) == (True, 3600)
         assert asana["configured"] is False
-        assert asana["unavailable_code"] == "coming_soon"
-        assert asana["enabled"] is False
+        assert asana["unavailable_code"] == "app_not_set_up"
+        assert asana["enabled"] is True
         assert asana["connectable"] is False
         assert asana["status"] == "not_connected"
         atlassian = entries["atlassian"]
@@ -312,11 +312,11 @@ class TestGrants:
         owner = await add_member(harness.session_factory, "ada")
         agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
 
-        asana = await _put(harness, owner, agent_id, {"resources": {}}, "asana")
+        placeholder = await _put(harness, owner, agent_id, {"resources": {}}, "gitlab")
         unknown = await _put(harness, owner, agent_id, {"resources": {}}, "nowhere")
 
-        assert asana.status_code == 422
-        assert asana.json()["detail"] == "Not available yet."
+        assert placeholder.status_code == 422
+        assert placeholder.json()["detail"] == "Not available yet."
         assert unknown.status_code == 404
 
     async def test_tools_and_resources_outside_the_grant(
@@ -659,7 +659,7 @@ class TestYourAgents:
         response = await _agents(harness, member)
         assert (response.status_code, response.json()) == (200, [])
 
-    @pytest.mark.parametrize("service", ["nowhere", "asana"])
+    @pytest.mark.parametrize("service", ["nowhere", "gitlab"])
     async def test_an_unknown_or_placeholder_service_is_not_found(
         self, harness: Harness, service: str
     ) -> None:

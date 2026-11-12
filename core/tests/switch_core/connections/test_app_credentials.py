@@ -142,12 +142,14 @@ class TestSpecs:
     def test_the_catalogs_apps_are_github_and_the_oauth_clients(self, session_factory):
         specs = _apps(session_factory).specs
         assert {slug: spec.kind for slug, spec in specs.items()} == {
+            "asana": "oauth_client",
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
+        assert specs["asana"].variables == ("ASANA_CLIENT_CONFIG_PATH",)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
 
 
