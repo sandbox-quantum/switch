@@ -95,7 +95,9 @@ version of their own to them without also giving them a release of their own.
   and what to check, posts when it fires, every hour while it stays firing and
   once on recovery, and error
   alerts count failures instead of taking a percentage, so low traffic doesn't
-  page on noise. Causes such as slow queries stay on the dashboards.
+  page on noise. Causes such as slow queries stay on the dashboards. The
+  agents-dropping alert compares with the same time a week earlier, so it
+  keeps firing for as long as agents stay away.
   `deploy/observability/apply.sh` creates or updates them in Datadog by name.
 - **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
   per crashed collaboration bridge, tagged with its platform and display name,

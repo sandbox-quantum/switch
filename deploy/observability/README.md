@@ -44,9 +44,10 @@ warnings only: errors over time by the logger that wrote them, the most
 frequent messages with their ids folded into one pattern (usually the fastest
 way to the cause), warnings by logger, and the latest errors as they arrived.
 Its note links the same view in Logs and Error Tracking. The log panels filter
-on `service:switch-core env:pilot`: logs carry no `pod_name`, staging's pods
-share pilot's name but are tagged `env:prod` only, and development reports as
-`switch-core-dev`.
+on `service:switch-core` alone: development reports as `switch-core-dev`, the
+only other `service:switch-core` logs are staging's product events, all at
+info, and `env` can't tell deployments apart because the telemetry relay sets
+it (hoot's `public_otel_proxy`).
 
 ## Alerts
 
@@ -72,7 +73,7 @@ than 10 `Could not publish` lines, so one message retrying briefly stays
 quiet), and a burst of more than 25 errors in 15 minutes. Before this change the
 worst 15 minutes of the first week of November held 54 errors, almost all the
 Slack identity error now logged as a warning; without it the worst was 7. Log alerts filter on
-`service:switch-core env:pilot`, for the reason the board's log panels do.
+`service:switch-core`, for the reason the board's log panels do.
 
 "Agent controllers keep reconnecting" watches `switch.controllers.connections`
 with `event:opened`, for the reconnect storm seen on pilot in November (about
