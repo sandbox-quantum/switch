@@ -23,6 +23,7 @@ import {
   resolveWindowsCommandPath,
 } from '@switch-console/shared/windows-spawn';
 import type {
+  AgentLaunchDefinition,
   ConversationHistoryTurn,
   ModelSelection,
   ProviderAdapter,
@@ -347,6 +348,26 @@ function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined 
 }
 
 /**
+ * An agent definition's `disallowedTools` filter the agent's tool list by name,
+ * so a rule like `Bash(curl:*)` removes Bash altogether. Only bare tool names
+ * stay in the definition; rules with arguments go to the session's own deny
+ * rules, where the CLI's `--disallowedTools` applies them to the one call.
+ */
+function agentOptions(
+  name: string,
+  definition: AgentLaunchDefinition
+): Pick<Options, 'agents' | 'disallowedTools'> {
+  const rules = (definition.disallowedTools ?? []).filter((t) => t.includes('('));
+  if (rules.length === 0) return { agents: { [name]: definition } };
+  const names = (definition.disallowedTools ?? []).filter((t) => !t.includes('('));
+  const { disallowedTools: _all, ...rest } = definition;
+  return {
+    agents: { [name]: names.length > 0 ? { ...rest, disallowedTools: names } : rest },
+    disallowedTools: rules,
+  };
+}
+
+/**
  * The tool-name prefixes covering the tools of the MCP servers the caller
  * registered. Claude Code names an MCP tool `mcp__<server>__<tool>`, folding
  * anything outside `[A-Za-z0-9_-]` in the server name to `_`.
@@ -513,7 +534,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         : {}),
       ...(input.agentName ? { agent: input.agentName } : {}),
       ...(input.agentName && input.agentDefinition
-        ? { agents: { [input.agentName]: input.agentDefinition } }
+        ? agentOptions(input.agentName, input.agentDefinition)
         : {}),
       ...(input.model ? { model: input.model.id } : {}),
       ...(effort ? { effort } : {}),

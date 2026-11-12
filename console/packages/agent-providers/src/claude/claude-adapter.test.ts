@@ -277,6 +277,22 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(named.options().agents).toBeUndefined();
   });
 
+  it('denies a tool with arguments for the session, not by removing the tool from the agent', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const definition = {
+      description: 'Runs commands',
+      prompt: 'Go.',
+      tools: ['Bash', 'Read'],
+      disallowedTools: ['Bash(curl:*)', 'Write'],
+    };
+    await adapter.startSession(startInput({ agentName: 'runner', agentDefinition: definition }));
+    expect(sdk.options().disallowedTools).toEqual(['Bash(curl:*)']);
+    expect(sdk.options().agents).toEqual({
+      runner: { ...definition, disallowedTools: ['Write'] },
+    });
+  });
+
   it('forwards the model and its reasoning effort, ignoring an effort it does not know', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
