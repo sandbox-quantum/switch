@@ -32,6 +32,9 @@ from switch_core.official_templates import (
     official_templates,
     slug_of,
 )
+from switch_core.telemetry import TelemetryService, emit_after_commit
+from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.snapshot import normalise_template_kind
 from switch_core.template_lint import lint_template
 
 if TYPE_CHECKING:
@@ -107,8 +110,12 @@ class AgentTemplates:
         max_bytes: int,
         agent_management: bool,
         switch_buddy: bool,
+        telemetry: TelemetryService | None,
     ) -> None:
         self._store = store
+        # Saving and deleting report as the gateway's do, once the caller
+        # commits.
+        self._telemetry = telemetry
         self._max_bytes = max_bytes
         # Which document an official template that comes in two is served as.
         self._agent_management = agent_management
@@ -290,6 +297,12 @@ class AgentTemplates:
             )
         except TemplateNameTaken as e:
             raise self._name_taken(name) from e
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "template_created",
+            {"template_kind": normalise_template_kind(kind)},
+        )
         return template, warnings
 
     async def _own(
@@ -373,4 +386,13 @@ class AgentTemplates:
         self._still_own(acting, locked)
         name = locked.name
         await self._store.delete(session, locked.id)
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "template_deleted",
+            {
+                "template_kind": normalise_template_kind(locked.kind),
+                "age_days": age_days(locked.created_at),
+            },
+        )
         return name

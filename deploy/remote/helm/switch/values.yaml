@@ -323,9 +323,10 @@ switchCore:
     # How often the usage snapshot is collected and sent.
     snapshotIntervalHours: 24
     # Which Amplitude project the usage lands in: prod, staging, dev or local.
-    # Leave it at prod unless this is one of Flint's own non-production
+    # Empty sends prod from a released image and dev from a development build
+    # (a `.dev` version). Set it only for one of Flint's own non-production
     # deployments; anything else is refused at startup.
-    environment: prod
+    environment: ""
     # Whether this is one of Flint's own deployments, so staff usage can be
     # told from adoption. Leave it false on any other deployment.
     internal: false
