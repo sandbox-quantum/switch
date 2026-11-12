@@ -16,97 +16,98 @@ exists is never touched, whatever its log says. Kept:
   than the workspace's, and outlives the organization too.
 
 The runtime role may not delete audit rows (`db/runtime_role.grant_runtime_role`
-takes `DELETE` back), so this runs on the schema owner's connection where one
-is configured (`SwitchConfig.owner_database_url`). Without one it runs on the
-runtime connection, which works only where that role owns the schema;
-`check_purge_privilege` says at startup when it cannot.
+takes `DELETE` back), so the deleting is done by
+`purge_deleted_workspace_audit_history()`, a `SECURITY DEFINER` function owned
+by the schema owner that takes no arguments and deletes only what the rules
+above make due (`db/audit_history_ddl.py`). This calls it on the ordinary
+runtime connection; `check_purge_function` refuses to start a server that
+could not.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from switch_core.db.audit import ServerAuditAction
-from switch_core.db.models import AuditEvent, ServerAuditEvent, Tenant
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.audit_history_ddl import AUDIT_HISTORY_HORIZON, PURGE_FUNCTION_NAME
 from switch_core.tenant_context import no_tenant
+
+__all__ = [
+    "AUDIT_HISTORY_HORIZON",
+    "AuditHistoryPurgeError",
+    "check_purge_function",
+    "purge_deleted_workspace_history",
+]
 
 logger = logging.getLogger(__name__)
 
-#: How long a deleted workspace's audit history is kept after the deletion.
-AUDIT_HISTORY_HORIZON = timedelta(days=730)
+_PURGE = text(
+    "SELECT purged_tenant_id, purged_rows FROM purge_deleted_workspace_audit_history()"
+)
+
+
+class AuditHistoryPurgeError(RuntimeError):
+    """The runtime connection cannot purge deleted workspaces' audit history."""
 
 
 async def purge_deleted_workspace_history(
-    history_sessions: async_sessionmaker[AsyncSession], now: datetime
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> int:
     """Delete the audit history of every workspace deleted more than
-    `AUDIT_HISTORY_HORIZON` before `now`, and return how many rows went.
-
-    `history_sessions` must be allowed to delete from `audit_events`: the
-    owner's connection, or a runtime role that owns the schema.
-    """
+    `AUDIT_HISTORY_HORIZON` ago, and return how many rows went."""
     with no_tenant():
-        async with history_sessions() as session:
-            deleted = await session.scalars(
-                select(ServerAuditEvent.target_id)
-                .where(
-                    ServerAuditEvent.action == ServerAuditAction.WORKSPACE_DELETED,
-                    ServerAuditEvent.target_type == "tenant",
-                    ServerAuditEvent.target_id.is_not(None),
-                    ServerAuditEvent.occurred_at < now - AUDIT_HISTORY_HORIZON,
-                )
-                .distinct()
-            )
-            tenant_ids = sorted(
-                tenant_id for tenant_id in deleted.all() if tenant_id is not None
-            )
-    purged = 0
-    for tenant_id in tenant_ids:
-        async with tenant_session(history_sessions, tenant_id) as session:
-            async with session.begin():
-                if await session.scalar(
-                    select(Tenant.id).where(Tenant.id == tenant_id)
-                ):
-                    continue
-                result = await session.execute(
-                    delete(AuditEvent).where(AuditEvent.tenant_id == tenant_id)
-                )
-        count = cast("CursorResult[Any]", result).rowcount
-        if count:
-            logger.info(
-                "Purged %d audit rows of workspace %s, deleted more than %s ago",
-                count,
-                tenant_id,
-                AUDIT_HISTORY_HORIZON,
-            )
-        purged += count
-    return purged
-
-
-async def check_purge_privilege(engine: AsyncEngine, *, owner: bool) -> bool:
-    """Whether `engine`'s role may delete audit rows, logged as an error when
-    not: the history of deleted workspaces would then be kept forever."""
-    async with engine.connect() as connection:
-        allowed = bool(
-            await connection.scalar(
-                text(
-                    "SELECT has_table_privilege(current_user, 'audit_events', 'DELETE')"
-                )
-            )
-        )
-    if not allowed:
-        logger.error(
-            "Deleted workspaces' audit history will NOT be purged after %s: the "
-            "%s connection may not delete from audit_events. Configure the schema "
-            "owner's connection (DB_OWNER_USER and DB_OWNER_PASSWORD) so the "
-            "retention pass can run it.",
+        async with session_factory() as session, session.begin():
+            rows = (await session.execute(_PURGE)).all()
+    for tenant_id, count in rows:
+        logger.info(
+            "Purged %d audit rows of workspace %s, deleted more than %s ago",
+            count,
+            tenant_id,
             AUDIT_HISTORY_HORIZON,
-            "owner's" if owner else "runtime",
         )
-    return allowed
+    return sum(int(count) for _, count in rows)
+
+
+async def check_purge_function(engine: AsyncEngine) -> None:
+    """Raise `AuditHistoryPurgeError` unless `engine`'s role can run the purge.
+
+    Asked at startup rather than left to the first retention pass, whose
+    failure is only logged: a server that cannot purge would keep the history
+    of deleted workspaces forever, and nothing else would say so.
+    """
+    async with engine.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT p.prosecdef, has_function_privilege(p.oid, 'EXECUTE')
+                    FROM pg_proc p
+                    JOIN pg_namespace n ON n.oid = p.pronamespace
+                    WHERE n.nspname = 'public' AND p.proname = :name
+                    """
+                ),
+                {"name": PURGE_FUNCTION_NAME},
+            )
+        ).one_or_none()
+    if row is None:
+        raise AuditHistoryPurgeError(
+            f"{PURGE_FUNCTION_NAME}() is not installed in this database, so "
+            "deleted workspaces' audit history would never be purged. The "
+            "schema is behind the migration that creates it."
+        )
+    definer, executable = row
+    if not definer:
+        raise AuditHistoryPurgeError(
+            f"{PURGE_FUNCTION_NAME}() is not SECURITY DEFINER, so it would run "
+            "as the runtime role, which may not delete audit rows. Reinstall "
+            "it from the migration that creates it."
+        )
+    if not executable:
+        raise AuditHistoryPurgeError(
+            f"This connection's role may not execute {PURGE_FUNCTION_NAME}(), "
+            "so deleted workspaces' audit history would never be purged. Grant "
+            "EXECUTE on it to the runtime role, or let the migration job or "
+            "boot do it by configuring DB_OWNER_USER / DB_OWNER_PASSWORD there."
+        )

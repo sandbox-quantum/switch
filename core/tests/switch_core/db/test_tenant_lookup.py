@@ -46,6 +46,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 import switch_core
+from switch_core.db.audit_history_ddl import PURGE_FUNCTION_NAME
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -306,7 +307,9 @@ class TestTheCatalogueIsWhatIsInstalled:
         self, rls_harness: RLSHarness
     ) -> None:
         """The set of exempt functions in the database is exactly the list in
-        `db/tenant_lookup.py`.
+        `db/tenant_lookup.py`, plus the audit-history purge
+        (`db/audit_history_ddl.py`), which deletes rather than looks up and
+        so is not a lookup.
 
         Both directions matter, and the second more than the first: a
         `SECURITY DEFINER` function nobody has written down is an exemption
@@ -328,7 +331,9 @@ class TestTheCatalogueIsWhatIsInstalled:
                 )
             ).scalars()
             installed = set(rows)
-        assert installed == {lookup.name for lookup in TENANT_LOOKUPS}
+        assert installed == {lookup.name for lookup in TENANT_LOOKUPS} | {
+            PURGE_FUNCTION_NAME
+        }
 
     async def test_each_one_is_stable_and_cannot_have_its_tables_shadowed(
         self, rls_harness: RLSHarness
@@ -346,11 +351,13 @@ class TestTheCatalogueIsWhatIsInstalled:
                         FROM pg_proc p
                         JOIN pg_namespace n ON n.oid = p.pronamespace
                         WHERE n.nspname = 'public' AND p.prosecdef
+                          AND p.proname = ANY(:names)
                         """
-                    )
+                    ),
+                    {"names": [lookup.name for lookup in TENANT_LOOKUPS]},
                 )
             ).all()
-        assert rows
+        assert len(rows) == len(TENANT_LOOKUPS)
         for name, volatility, config in rows:
             assert volatility == "s", f"{name} is not STABLE"
             assert config is not None, f"{name} sets no search_path"
