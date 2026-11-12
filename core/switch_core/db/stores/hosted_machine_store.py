@@ -336,6 +336,10 @@ class CloudMachineStore:
         """Hold the machine stopped until an administrator releases it. A
         retained machine stays retained, its disk kept, and cannot be claimed.
         The caller holds the machine lock and commits."""
+        if admin_stopped(machine):
+            raise CloudMachineConflict(
+                "The cloud machine is already stopped by an administrator."
+            )
         if machine.desired_state == "deleted" or machine.state in {
             "deleting",
             "deleted",

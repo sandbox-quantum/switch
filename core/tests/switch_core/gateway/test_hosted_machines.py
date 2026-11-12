@@ -366,6 +366,24 @@ async def test_the_owner_cannot_undo_an_administrator_s_stop(
     ) == ("stopped", "owner", True, 1)
 
 
+async def test_an_owner_with_a_stale_view_is_told_of_the_administrator_s_stop(
+    controller_app,  # noqa: F811
+):
+    """The administrator's stop moved the revision past the owner's view."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=2,
+    )
+    refused = await _lifecycle(app, "start", 1)
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": MACHINE_STOPPED_BY_ADMIN}
+
+
 async def test_ensure_returns_a_machine_in_error_as_it_is(controller_app):  # noqa: F811
     app = controller_app
     await update_machine(

@@ -792,6 +792,23 @@ async def test_an_administrator_holds_a_machine_stopped(
     assert machine.revision == (4 if bumped else 3)
 
 
+@pytest.mark.parametrize("desired_state", ["stopped", "retained"])
+async def test_holding_a_held_machine_again_is_refused(factory, desired_state):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state=desired_state,
+        stop_reason="admin",
+        revision=3,
+    )
+    with pytest.raises(
+        CloudMachineConflict, match="already stopped by an administrator"
+    ):
+        CloudMachineStore().admin_stop(machine, datetime.now(UTC))
+    assert machine.revision == 3
+
+
 @pytest.mark.parametrize(
     ("state", "desired_state"),
     [("deleting", "deleted"), ("retained", "deleted"), ("deleted", "deleted")],

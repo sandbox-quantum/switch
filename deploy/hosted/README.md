@@ -206,6 +206,10 @@ hosted controller and Switch Core pods. Below, `ctl` stands for
 `switch-hosted-controller --config /etc/switch-hosted/controller.json` in the
 controller pod and `core-admin` for `switch-cloud-machine` in a Core pod.
 
+Use `core-admin stop` only once every Core pod runs a version that has it. A
+pod still on an older version, during a rollout for instance, sees the machine
+as stopped by its owner, and its Start or a new claim starts it again.
+
 1. Find the machine. `core-admin find --owner-email <email>` lists the
    person's machine and its `machine_id`. `ctl status <machine-id>` gives its
    `instance_id` and `data_volume_id`.

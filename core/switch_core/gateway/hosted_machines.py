@@ -297,12 +297,12 @@ async def lifecycle(
     _machine, workspace = await _owned(session, machine_id, user.id)
     machine = await machines.locked(session, machine_id)
     assert machine is not None
+    if admin_stopped(machine):
+        raise HTTPException(409, MACHINE_STOPPED_BY_ADMIN)
     if machine.revision != body.revision and not (
         idle_sleeping(machine) and machine.revision == body.revision + 1
     ):
         raise HTTPException(409, "revision mismatch")
-    if admin_stopped(machine):
-        raise HTTPException(409, MACHINE_STOPPED_BY_ADMIN)
     retrying_retire = (
         body.action == "retry"
         and machine.state == "error"
