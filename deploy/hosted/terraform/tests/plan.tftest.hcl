@@ -101,4 +101,12 @@ run "rendered_permissions" {
     condition     = length(aws_security_group.worker.ingress) == 0
     error_message = "Workers must not expose inbound ports."
   }
+  assert {
+    condition     = length(aws_security_group.isolation.ingress) == 0 && length(aws_security_group.isolation.egress) == 0
+    error_message = "The isolation group must allow no traffic either way."
+  }
+  assert {
+    condition     = output.isolation_security_group_id == aws_security_group.isolation.id && aws_security_group.isolation.id != aws_security_group.worker.id
+    error_message = "The isolation group must be its own group, and an output for the runbook."
+  }
 }

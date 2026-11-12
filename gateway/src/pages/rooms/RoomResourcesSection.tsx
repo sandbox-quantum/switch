@@ -11,10 +11,12 @@ import {
 } from "@mui/material";
 import { type ReactNode, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import SearchablePickerDialog, {
   type PickerOption,
 } from "../../components/SearchablePickerDialog";
 import {
+  type RoomDocumentSummary,
   attachDocumentToRoom,
   attachPackageToRoom,
   attachReferenceToRoom,
@@ -30,6 +32,7 @@ import {
   useRoomPackages,
   useRoomReferences,
 } from "../../data/hooks";
+import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
@@ -268,6 +271,11 @@ function RoomDocuments({
   } = useRoomDocuments(roomId);
   const [error_, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A room document lives only here, so deleting it is asked about first.
+  // The document outlives the dialog's closing, so its title holds while it
+  // fades.
+  const [deleting, setDeleting] = useState<RoomDocumentSummary | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const attachedIds = useMemo(
     () => new Set((attached ?? []).map((d) => d.id)),
@@ -399,12 +407,8 @@ function RoomDocuments({
                       size="small"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (
-                          window.confirm(
-                            `Delete room document “${doc.name || doc.description}”? This cannot be undone.`,
-                          )
-                        )
-                          handleDetach(doc.id);
+                        setDeleting(doc);
+                        setDeleteOpen(true);
                       }}
                       disabled={busy}
                       aria-label={`Delete ${doc.name || doc.description}`}
@@ -427,6 +431,19 @@ function RoomDocuments({
           />
         )}
       </AttachControl>
+      <ConfirmDialog
+        open={deleteOpen}
+        title={`Delete ${deleting?.name || deleting?.description || "room document"}?`}
+        description="It lives only in this room, so deleting it removes it for good. This cannot be undone."
+        confirmLabel="Delete document"
+        tone="destructive"
+        onConfirm={async () => {
+          if (!deleting) return;
+          await detachDocumentFromRoom(roomId, deleting.id);
+          refetch();
+        }}
+        onClose={() => setDeleteOpen(false)}
+      />
     </Stack>
   );
 }
@@ -507,9 +524,15 @@ function RoomPackages({
               onClick={p.can_read ? () => navigate(`/resources/packages/${p.id}`) : undefined}
               data-testid={`room-package-${p.id}`}
             >
-              <Typography variant="body2" sx={{ flexGrow: 1 }}>
+              <Typography
+                variant="body2"
+                color={p.can_read ? undefined : "text.secondary"}
+              >
                 {p.name || p.description}
               </Typography>
+              {!p.can_read && <LockedMark />}
+              <span style={{ flexGrow: 1 }} />
+              {p.can_read && <OpensMark />}
               {canUnlink && (
                 <Button
                   size="small"

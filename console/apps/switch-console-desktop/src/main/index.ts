@@ -80,6 +80,9 @@ if (import.meta.env.DEV) {
 serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
+/** Long enough for switch-core's own stop grace, PostgreSQL and Mattermost's
+ * containers; the window is gone by then, so nobody watches it. */
+const LOCAL_SERVER_SHUTDOWN_MS = 30_000;
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -212,8 +215,8 @@ void app.whenReady().then(async () => {
 
   void reconcileResourceSampler();
 
-  // Reflect a managed local Switch stack that survived the last quit, so the UI
-  // shows it running without the user restarting it.
+  // Reflect a managed local Switch stack that is still running (a Console that
+  // crashed leaves it up), and start one that the last quit stopped.
   const localServerReady = localServerService.initialize();
   // Re-establish desktop-side forwards for remote-managed stacks that survived
   // the last quit, restoring their reachability from this machine.
@@ -343,6 +346,10 @@ app.on('before-quit', (event) => {
   // while it is being replaced.
   const updaterRestarts = updateService.getState().status === 'installing';
   logAppExit('before-quit');
+  // Stopping the server on this computer can take a while; the app reads as
+  // gone the moment it is asked to quit.
+  const mainWindow = getMainWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
   controlService.dispose();
   stopAutoMigration();
   stopResourceSampler();
@@ -367,6 +374,16 @@ app.on('before-quit', (event) => {
         log.error('Failed to stop the embedded agent controllers:', e);
       }),
     ]);
+    // The server on this computer lives as long as the app does. Stopped after
+    // the sessions and controllers that talk to it, and bounded like them.
+    await Promise.race([
+      localServerService.stopForQuit(),
+      delay(LOCAL_SERVER_SHUTDOWN_MS).then(() =>
+        log.warn('The local Switch server did not stop in time; it may outlive Console.')
+      ),
+    ]).catch((e) => {
+      log.error('Failed to stop the local Switch server:', e);
+    });
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });

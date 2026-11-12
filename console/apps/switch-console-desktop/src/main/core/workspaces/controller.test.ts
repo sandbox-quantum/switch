@@ -946,3 +946,34 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(fetchBridges).not.toHaveBeenCalled();
   });
 });
+
+describe('creating a room from the New room dialog', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    canSend.mockResolvedValue(true);
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    fetchBridges.mockResolvedValue([]);
+    createRoomOnServer.mockResolvedValue({ kind: 'created', room: { id: 'r1' } });
+  });
+
+  it('passes on the people to add, by their username on the app', async () => {
+    await workspacesController.createRoom({
+      workspaceId: 'ws',
+      name: 'Room',
+      description: '',
+      bridgeId: 'b1',
+      agentIds: [],
+      userNames: ['bob'],
+      channel: { kind: 'new', private: true },
+      groupId: null,
+      access: null,
+    });
+
+    expect(createRoomOnServer).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userNames: ['bob'], channel: { kind: 'new', private: true } })
+    );
+  });
+});

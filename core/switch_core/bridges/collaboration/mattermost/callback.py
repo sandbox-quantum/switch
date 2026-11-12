@@ -26,6 +26,7 @@ CONTEXT_KEY = "switch"
 _ANSWER_PURPOSE = "answer"
 _ACTIVITY_PURPOSE = "activity"
 _INTERRUPT_PURPOSE = "interrupt"
+_CARD_PURPOSE = "card"
 
 # The button that opens a turn's activity, and what it says. One per status
 # post, and the same on every status post in a channel: which turn is being
@@ -93,6 +94,18 @@ class InterruptPress:
     post_id: str
     channel_id: str
     turn_id: str
+
+
+@dataclass(frozen=True)
+class CardPress:
+    """A press on a button an agent's card (`ui_spec`) drew. Whether that
+    button is on the card in that post is checked against the room message."""
+
+    user_id: str
+    post_id: str
+    channel_id: str
+    action_id: str
+    value: str
 
 
 def action_context(secret: str, token: str, position: int) -> dict[str, Any]:
@@ -180,6 +193,41 @@ def interrupt_action(
     }
 
 
+def card_action(
+    secret: str,
+    url: str,
+    channel_id: str,
+    mm_id: str,
+    name: str,
+    style: str | None,
+    action_id: str,
+    value: str,
+) -> dict[str, Any]:
+    """A card button. The action id and value are signed with the channel, as
+    the stop control's turn is, so a leaked context presses nothing elsewhere."""
+    action: dict[str, Any] = {
+        "id": mm_id,
+        "type": "button",
+        "name": name,
+        "integration": {
+            "url": url,
+            "context": {
+                CONTEXT_KEY: {
+                    "channel": channel_id,
+                    "action": action_id,
+                    "value": value,
+                    "signature": _sign(
+                        secret, _CARD_PURPOSE, f"{channel_id}:{action_id}:{value}"
+                    ),
+                }
+            },
+        },
+    }
+    if style:
+        action["style"] = style
+    return action
+
+
 def answer_actions(
     secret: str, url: str, token: str, controls: list[Control]
 ) -> list[dict[str, Any]]:
@@ -229,7 +277,7 @@ def _button_name(control: Control) -> str:
 
 def read_press(
     verification_keys: Sequence[str], body: dict[str, Any]
-) -> Press | ActivityPress | InterruptPress | None:
+) -> Press | ActivityPress | InterruptPress | CardPress | None:
     """What a callback is asking for, or None if it is not ours to act on.
 
     Read as strictly as it is written, and in two stages. A body that does not
@@ -258,6 +306,8 @@ def read_press(
         return _activity_press(verification_keys, switch, body)
     if set(switch) == {"channel", "turn", "signature"}:
         return _interrupt_press(verification_keys, switch, body)
+    if set(switch) == {"channel", "action", "value", "signature"}:
+        return _card_press(verification_keys, switch, body)
     # Nothing but what was signed. The signature covers the card and the
     # option, so a field beside them is one it does not vouch for — and a
     # reader added later would be reading an unsigned value out of a context
@@ -369,6 +419,47 @@ def _interrupt_press(
     user_id, post_id, channel_id = who
     return InterruptPress(
         user_id=user_id, post_id=post_id, channel_id=channel_id, turn_id=turn
+    )
+
+
+def _card_press(
+    verification_keys: Sequence[str], switch: dict[str, Any], body: dict[str, Any]
+) -> CardPress | None:
+    channel = switch.get("channel")
+    action = switch.get("action")
+    value = switch.get("value")
+    signature = switch.get("signature")
+    if not (
+        isinstance(channel, str)
+        and channel
+        and isinstance(action, str)
+        and action
+        and isinstance(value, str)
+        and value
+        and isinstance(signature, str)
+        and signature
+    ):
+        return None
+    if not _signed_by_any(
+        verification_keys, signature, _CARD_PURPOSE, f"{channel}:{action}:{value}"
+    ):
+        logger.warning(
+            "Rejected a Mattermost card button callback for %s in channel %s: "
+            "the context signature does not verify.",
+            action,
+            channel,
+        )
+        return None
+    who = _presser_in(body, channel, "card")
+    if who is None:
+        return None
+    user_id, post_id, channel_id = who
+    return CardPress(
+        user_id=user_id,
+        post_id=post_id,
+        channel_id=channel_id,
+        action_id=action,
+        value=value,
     )
 
 

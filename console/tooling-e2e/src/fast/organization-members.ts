@@ -26,6 +26,7 @@ export const organizationMembers: FastScenario = {
       'GET /gateway/organizations/current/audit-events',
       'GET /gateway/operator/workspaces',
       'GET /gateway/tenants/{tenant_id}/members',
+      'GET /gateway/tenants/{tenant_id}/members/{user_id}/removal',
       'DELETE /gateway/tenants/{tenant_id}/members/{user_id}',
     ],
     lane: 'fast',
@@ -106,7 +107,11 @@ export const organizationMembers: FastScenario = {
     expect(stillIn, 'removing someone still in a workspace').toBe(409);
     expect(why).toContain('first');
 
-    await switchClient.removeWorkspaceMember(tenantId, id);
+    const preview = await switchClient.previewWorkspaceMemberRemoval(tenantId, id);
+    expect(preview.handed_over_to, 'who would receive what they own').not.toBeNull();
+    const removal = await switchClient.removeWorkspaceMember(tenantId, id);
+    expect(removal.handed_over_to, 'who received what they owned').toEqual(preview.handed_over_to);
+    expect(removal.handed_over, 'they owned nothing there').toEqual({});
     await switchClient.removeOrganizationMember(id);
     const after = await switchClient.organizationMembers();
     expect(after.map((row) => row.user_id), 'removed from the organization').not.toContain(id);

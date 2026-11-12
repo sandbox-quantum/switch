@@ -1,5 +1,6 @@
 import type * as fs from 'node:fs/promises';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { elicitationAnswer, elicitationQuestions } from '../acp/elicitation';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
 
@@ -60,8 +61,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { antigravityAcp, createAntigravityAdapter, elicitationAnswer, elicitationQuestions } =
-  await import('./antigravity-adapter');
+const { antigravityAcp, createAntigravityAdapter } = await import('./antigravity-adapter');
 beforeEach(() => {
   servers.length = 0;
   spawned.length = 0;
