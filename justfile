@@ -198,6 +198,12 @@ test *args:
 properties command="check":
     uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' python properties/gate/gate.py {{ command }}
 
+# `just properties-machine` runs the Hypothesis state machines over the real router
+# and event buffer (`nightly` for the long search) and checks the assertions the
+# server logged while they ran.
+properties-machine profile="ci":
+    properties/run-machine.sh {{ profile }}
+
 # `just properties-model` has TLC search every state the Quint models in
 # properties/specs can reach in their bounds, and checks each invariant in all of
 # them (`--deep` adds the bounds that take minutes); `just properties-mutants`
@@ -208,6 +214,14 @@ properties-model *args:
 
 properties-mutants:
     python3 properties/specs/run.py mutants
+
+# `just properties-http` fuzzes the gateway from its OpenAPI schema with
+# Schemathesis, as people in two workspaces (minutes; needs Docker). The
+# failures accepted for now are in properties/http/baseline.json.
+properties-http *args:
+    uv run --project core --group schemathesis pytest -c core/pyproject.toml \
+      core/tests/switch_core/properties/test_http_surface.py -m schemathesis \
+      -p no:cacheprovider {{ args }}
 
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
 # Plays every journey as two people in a fresh local Mattermost against

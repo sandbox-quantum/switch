@@ -178,6 +178,129 @@ const serverErrors = extract((state) => {
   return [...page.switchExploreServerErrors];
 });
 
+/** What the room list checks found, written by `checkRooms`. */
+type RoomsCheck = {
+  /** Why the page and the API disagreed in the last check that reached an answer, or null. */
+  mismatch: string | null;
+  /** How many checks reached an answer. */
+  concluded: number;
+  /** Why the last check that did not reach one stopped, or null before any. */
+  skipped: string | null;
+};
+
+const EMPTY_CHECK: RoomsCheck = { mismatch: null, concluded: 0, skipped: null };
+
+const roomsCheck = extract((state) => {
+  const page = state.window as Window & { switchExploreRoomsCheck?: RoomsCheck };
+  return page.switchExploreRoomsCheck ?? EMPTY_CHECK;
+});
+
+/** The gateway's base path, which the page's own client (`gateway/src/data/api.ts`) uses. */
+const GATEWAY = '/gateway';
+
+/** How many times a disagreeing page is looked at, and the wait between looks. */
+const LOOKS = 12;
+const LOOK_INTERVAL_MS = 750;
+/** The disagreeing looks in a row, with the page still, that make it a disagreement. */
+const STILL_LOOKS = 3;
+
+/**
+ * What the room list page shows now: whether its filters are at their defaults
+ * (an empty search box and every select beside it on Active or All), whether
+ * the table is there yet, the total in its footer, and the ids of the rows.
+ * The filters bar is found by the test id the page gives it; the table and its
+ * footer by the grid's own documented class names, so a grid upgrade that
+ * renames them makes every check stop with a reason, and `listChecked` fail.
+ */
+function readRoomsPage(document: Document) {
+  const bar = document.querySelector('[data-testid="room-filters"]');
+  const search = bar?.querySelector('input[placeholder="Search rooms..."]') as
+    | HTMLInputElement
+    | null
+    | undefined;
+  const defaults =
+    bar !== null &&
+    search !== null &&
+    search !== undefined &&
+    search.value === '' &&
+    Array.from(bar.querySelectorAll('input.MuiSelect-nativeInput')).every((input) =>
+      ['', 'active'].includes((input as HTMLInputElement).value)
+    );
+  const footer = document.querySelector('.MuiTablePagination-displayedRows')?.textContent ?? '';
+  return {
+    defaults,
+    // The page shows a spinner in place of the table while it fetches.
+    loading: document.querySelector('.MuiDataGrid-root') === null,
+    total: footer.match(/of (\d+)/)?.[1] ?? null,
+    ids: Array.from(document.querySelectorAll('.MuiDataGrid-row[data-id]'))
+      .map((row) => row.getAttribute('data-id') ?? '')
+      .sort(),
+  };
+}
+
+/**
+ * The room list page, settled and with its filters at their defaults, shows the
+ * rooms the API returns: the footer counts exactly the active ones (the page
+ * keeps the rooms whose `archived` is false, and nothing else narrows it
+ * without a filter), and every row on the page is one of them. A step of the
+ * explorer reads the page, asks the API and reads the page again.
+ *
+ * The page may be a refetch behind the API (after archiving a room, say), so
+ * a look at a page that is loading or has moved restarts the count, and a
+ * disagreement is one only when the page stays still and keeps disagreeing for
+ * `STILL_LOOKS` looks in a row, within `LOOKS`. A check that never gets the
+ * page still concludes nothing, and says why.
+ *
+ * Only the default filters are checked: a search or a filter narrows the list
+ * on purpose, and the other lists have the same shape and can follow.
+ */
+const checkRooms = registerCustomAction('checkRooms', async (document, window) => {
+  const page = window as Window & { switchExploreRoomsCheck?: RoomsCheck };
+  const record = (change: Partial<RoomsCheck>) => {
+    page.switchExploreRoomsCheck = { ...(page.switchExploreRoomsCheck ?? EMPTY_CHECK), ...change };
+  };
+  const conclude = (mismatch: string | null) =>
+    record({
+      mismatch,
+      concluded: (page.switchExploreRoomsCheck ?? EMPTY_CHECK).concluded + 1,
+    });
+  let still = 0;
+  let skipped = 'the page never settled';
+  for (let look = 0; look < LOOKS; look += 1) {
+    if (look > 0) await new Promise((resolve) => window.setTimeout(resolve, LOOK_INTERVAL_MS));
+    const before = readRoomsPage(document);
+    if (!before.defaults) return record({ skipped: 'a filter is set' });
+    if (before.loading) {
+      still = 0;
+      skipped = 'the page is loading';
+      continue;
+    }
+    if (before.total === null) return record({ skipped: 'no row count in the footer' });
+    const response = await window.fetch(`${GATEWAY}/rooms`, { credentials: 'same-origin' });
+    if (!response.ok) return record({ skipped: `the API answered ${response.status}` });
+    const rooms = (await response.json()) as { id: string; archived: boolean }[];
+    const after = readRoomsPage(document);
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      still = 0;
+      skipped = 'the page kept changing';
+      continue;
+    }
+    const active = rooms.filter((room) => room.archived === false).map((room) => room.id);
+    const unknown = after.ids.filter((id) => !active.includes(id));
+    if (after.total === String(active.length) && unknown.length === 0) return conclude(null);
+    still += 1;
+    if (still >= STILL_LOOKS) {
+      return conclude(
+        after.total !== String(active.length)
+          ? `the page counts ${after.total} rooms; the API returned ${active.length} active`
+          : `the page shows ${unknown.length} room(s) the API did not return: ${unknown.slice(0, 3).join(', ')}`
+      );
+    }
+    skipped = 'the page and the API disagreed, not yet for long enough';
+  }
+  record({ skipped });
+});
+
 /**
  * The explorer signs in from the login page it starts on.
  *
@@ -194,6 +317,24 @@ export const signsIn = eventually(() => signedIn.current).within(30, 'seconds');
 export const staysSignedIn = always(
   now(() => signedIn.current).implies(always(() => !onLoginPage.current))
 );
+
+/**
+ * The room list page shows what the API returns: after the page has settled,
+ * its count is the API's and nothing on it is a room the API left out.
+ *
+ * @property ui.list-matches-api
+ */
+export const listMatchesApi = always(
+  () => roomsCheck.current.mismatch === null
+);
+
+/**
+ * The check above ran: a run that never reached the room list, or never saw it
+ * settle with default filters, has checked nothing.
+ *
+ * @property ui.list-checked
+ */
+export const listChecked = eventually(() => roomsCheck.current.concluded > 0).within(300, 'seconds');
 
 const noBanner = () => errorBanners.current.length === 0;
 
@@ -288,6 +429,10 @@ export const exploring = weighted([
   [50, scroll],
   [10, navigation],
   [5, jumps],
+  [
+    50,
+    actions(() => [checkRooms()]).when(() => path.current === '/rooms'),
+  ],
 ]).when(() => signedIn.current && !unsettled());
 
 /**

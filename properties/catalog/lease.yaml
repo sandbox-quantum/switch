@@ -1,17 +1,35 @@
 properties:
+  - id: lease.no-overlap
+    title: One process runs a key at a time
+    statement: >
+      While every process's timers fire on time, at most one process is
+      running a key and sure of its lease: a holder stops by its own clock,
+      at half the lease, before another process may take the key over, however
+      far the two clocks have drifted (down to half the rate).
+    kind: safety
+    formality: formal
+    spec: ownership.qnt::NoOverlap
+    levels: [model, code]
+    owner: platform
+    status: checked
+    notes: >
+      A process that stalls past its deadline can still run for a moment;
+      `lease.fenced-takeover` is what refuses what it writes then.
   - id: lease.fenced-takeover
     title: A holder that was taken over is refused
     statement: >
       A lease's token strictly increases per key, and once a key is taken
       over every write by an earlier holder is refused.
     kind: safety
-    formality: semi-formal
+    formality: formal
+    spec: ownership.qnt::FencedTakeover
     levels: [model, code]
     owner: platform
-    status: proposed
+    status: checked
     notes: >
-      Two processes can both believe they hold a key for a while; the
-      property is about what the stale one can still do.
+      Two processes can both believe they hold a key for a while, as when
+      one stalled across its deadline; the property is about what the stale
+      one can still do.
   - id: lease.eventual-owner
     title: Abandoned work is picked up
     statement: >
@@ -21,4 +39,7 @@ properties:
     formality: semi-formal
     levels: [model, system]
     owner: platform
-    status: proposed
+    status: retired
+    notes: >
+      Superseded by `replica.ownership-eventual`, which says the same of the
+      work itself and is checked with two replicas.

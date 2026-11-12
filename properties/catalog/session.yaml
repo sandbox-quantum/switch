@@ -1,11 +1,49 @@
 properties:
-  - id: session.addressed-eventually-started
-    title: Addressing an agent with no session starts one
+  - id: session.addressed-reaches-controller
+    title: What is addressed to an agent reaches its controller
     statement: >
-      Addressing an agent that has no live session, where auto-start is
-      configured, eventually starts one.
+      Every event addressed to an agent that a controller has attached reaches
+      the controller's stream, after the position the stream attached the agent
+      at, in the agent's own order, with none skipped and none repeated within
+      one stream. A controller that reopens its socket or its connection from
+      the position it confirmed is sent everything past it again.
     kind: liveness
     formality: semi-formal
-    levels: [model, system]
+    levels: [code]
     owner: platform
-    status: proposed
+    status: checked
+    notes: >
+      Core never asks a controller to start a session. The controller reads
+      every event of each of its agents off one unfiltered stream
+      (`controller_stream.py`) and decides locally whether to start one, so
+      this is the half core owes an agent with no live session. The other half
+      is `session.controller-starts-on-addressed`. An agent the controller has
+      no position for is attached at its head, so what was addressed before
+      that is not the stream's to deliver. The machine runs one process with
+      a failing pool injected, so delivery when the controller's stream and the
+      writer are on different replicas is not covered (see `signal.*`).
+  - id: session.controller-starts-on-addressed
+    title: A controller starts a session for an addressed agent
+    statement: >
+      A controller whose auto-start setting is on starts a session for an
+      agent when an event addressed to it arrives and the agent has no session
+      for that room, starts none when auto-start is off, and never starts two
+      for one room.
+    kind: liveness
+    formality: semi-formal
+    levels: [code]
+    owner: platform
+    status: checked
+    notes: >
+      TypeScript, in the host the controller runs (`agent-host.ts`: `admit`,
+      `hold`, `resolveHeld`), checked with fast-check against the real host over
+      a fake stream and fake session hosts: a model of the rooms that have a
+      session and the rooms whose events are held, moved by addresses and by
+      toggling auto-start. The host is given a retry interval of an hour, so held
+      events must be answered by what it does at once when auto-start turns on,
+      and a host that waited for its retry fails the check deterministically.
+      Core's own reply, "Starting a session…", is
+      promised only for an agent with a spawn-capable direct connection, never
+      for a controller-backed one, and is covered by unit tests in
+      `delivery/test_mention_routing.py`. The provider e2e lane exercises the
+      whole path against a real console.

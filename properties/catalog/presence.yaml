@@ -1,0 +1,14 @@
+properties:
+  - id: presence.online-iff-lease
+    title: A connection reads online only while its process holds
+    statement: >
+      A connection reads as online only while the process holding it holds its
+      process lease, so a crashed process's connections read as lost within the
+      lease's lifetime.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      `process_lease.py`, `bridges/agent/protocol/connection_rows.py`.

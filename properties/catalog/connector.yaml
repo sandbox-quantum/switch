@@ -1,0 +1,25 @@
+properties:
+  - id: connector.token-only-to-granted
+    title: A service token goes only where it was granted
+    statement: >
+      The broker issues a service token only to an agent whose owner connected
+      that account and granted it to the agent, and nothing else decrypts the
+      secret.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      Security-critical (`connections/broker.py`).
+  - id: connector.refresh-single-flight
+    title: Concurrent requests refresh a token once
+    statement: >
+      Concurrent requests whose token is about to expire cause one refresh under
+      the connection's lock, never two that invalidate each other's refresh
+      token.
+    kind: safety
+    formality: semi-formal
+    levels: [code]
+    owner: platform
+    status: proposed

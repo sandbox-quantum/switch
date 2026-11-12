@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
+import fc from 'fast-check';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   MAX_HOST_RESTARTS,
@@ -2710,3 +2711,126 @@ it('tells the room once a session keeps not taking a message, instead of startin
     vi.useRealTimers();
   }
 });
+
+/** The host is given a retry interval of an hour, so only what it does at once is seen. */
+const NO_RETRY_MS = 60 * 60 * 1000;
+const HELD_ANSWER_MS = 5000;
+const PROPERTY_RUNS = Number(process.env.PROPERTY_RUNS ?? 15);
+
+type Step = { kind: 'address'; room: string } | { kind: 'toggle' };
+
+const steps = fc.array(
+  fc.oneof(
+    fc.record({ kind: fc.constant('address' as const), room: fc.constantFrom('r0', 'r1', 'r2') }),
+    fc.record({ kind: fc.constant('toggle' as const) })
+  ),
+  { maxLength: 12 }
+);
+
+/**
+ * `session.controller-starts-on-addressed`: a controller starts a session for
+ * a room that has none exactly when it may, holds the room's events when it
+ * may not and starts the session once it may, and never has two for one room.
+ * The model is a set of rooms with a session and a set with events held; every
+ * step moves it the way the controller is meant to, and the journal, the
+ * sessions launched and the placements stated to Switch must agree with it.
+ *
+ * @property session.controller-starts-on-addressed
+ */
+it.each([{ startsOn: true }, { startsOn: false }])(
+  'starts a session for an addressed room exactly when it may (starting with spawning $startsOn)',
+  async ({ startsOn }) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await fc.assert(
+      fc.asyncProperty(steps, async (run: Step[]) => {
+        streams.length = 0;
+        declarations.length = 0;
+        published.length = 0;
+        vi.mocked(ensureSharedProcess).mockReset();
+        const root = await mkdtemp(join(tmpdir(), 'shared-watch-property-'));
+        roots.push(root);
+        paths.root = root;
+        const config = await spawning(root);
+        if (!startsOn) await stopSpawning(root);
+        const { supervision } = sessionHosts();
+        const abort = new AbortController();
+        const running = runAgentHost(
+          root,
+          config,
+          abort.signal,
+          supervision,
+          new WatcherControl(),
+          openSwitchStream,
+          NO_RETRY_MS
+        );
+        try {
+          await eventually(() => streams.length === 1);
+          let on = startsOn;
+          const placed = new Set<string>();
+          const held = new Set<string>();
+          let sequence = 0;
+          const disagreement = async (): Promise<string | null> => {
+            const journal = await AgentHostAssignments.open(root);
+            const rooms = [...new Set(journal.pending().map((entry) => entry.roomId))].sort();
+            if (rooms.join() !== [...held].sort().join())
+              return `rooms with events held are ${rooms}, not ${[...held]}`;
+            if (journal.sessions().length !== placed.size)
+              return `${journal.sessions().length} sessions, not ${placed.size}`;
+            const launches = vi.mocked(ensureSharedProcess).mock.calls.length;
+            if (launches !== placed.size) return `${launches} launches, not ${placed.size}`;
+            const stated = Object.values(published.at(-1) ?? {});
+            if (stated.length !== new Set(stated).size)
+              return `a room has two sessions in the placements ${stated}`;
+            if ([...new Set(stated)].sort().join() !== [...placed].sort().join())
+              return `the placements are ${stated}, not ${[...placed]}`;
+            return null;
+          };
+          // The host publishes placements and launches sessions after the
+          // event is handed over, so what it says is read until it agrees.
+          const agrees = async (when: string) => {
+            let found = await disagreement();
+            for (let attempt = 0; found !== null && attempt < 600; attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              found = await disagreement();
+            }
+            expect(found, when).toBeNull();
+          };
+          for (const step of run) {
+            if (step.kind === 'address') {
+              await streams[0]!.onEvent!(addressed(++sequence, step.room));
+              if (!placed.has(step.room)) {
+                if (on && !held.has(step.room)) placed.add(step.room);
+                else held.add(step.room);
+              }
+              await agrees(`after ${step.room} was addressed`);
+            } else {
+              const before = declarations.length;
+              on = !on;
+              await writeFlags(root, { enabled: true, spawn: on });
+              await eventually(() => declarations.length > before);
+              if (on) {
+                // The host has no retry within the hour, so a host that waited
+                // for one to answer what was held fails here.
+                const until = Date.now() + HELD_ANSWER_MS;
+                while (!(await settled(root)) && Date.now() < until)
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                expect(
+                  await settled(root),
+                  'held events answered when spawning was turned on'
+                ).toBe(true);
+                for (const room of held) placed.add(room);
+                held.clear();
+              }
+              await agrees(`after spawning was turned ${on ? 'on' : 'off'}`);
+            }
+          }
+        } finally {
+          abort.abort();
+          await running;
+        }
+      }),
+      { numRuns: PROPERTY_RUNS }
+    );
+  },
+  PROPERTY_RUNS * 20_000
+);

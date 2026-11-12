@@ -48,6 +48,7 @@
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",
+    "fast-check": "^4.10.2",
     "tsdown": "^0.22.2",
     "vitest": "^5.0.1"
   }

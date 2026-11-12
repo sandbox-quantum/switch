@@ -1,0 +1,33 @@
+properties:
+  - id: controller.stream-complete
+    title: A controller's stream survives a change of bindings
+    statement: >
+      Agents attached to or detached from a controller's stream while it is
+      open neither lose nor repeat an event, and a cursor that retention has
+      passed is answered with a gap notice naming the rooms.
+    kind: safety
+    formality: semi-formal
+    levels: [code]
+    owner: platform
+    status: proposed
+    gaps:
+      code: the controller-stream machine does not yet attach or detach agents mid-stream or let retention pass a cursor
+    notes: >
+      What `session.addressed-reaches-controller` does not cover: that property
+      holds the stream's delivery for the agents it opened with. These are two
+      more steps of the same machine (`controller_stream_machine.py`), not a
+      checker of their own.
+  - id: controller.takeover-fenced
+    title: A controller connection that was taken over is fenced
+    statement: >
+      When a second socket takes over a controller's connection, the old one is
+      sent no more frames and its writes are refused.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      `taken_over` in `management/connection_ledger.py`. A different mechanism
+      from `lease.fenced-takeover` (the ledger, not ownership tokens), with the
+      same shape.

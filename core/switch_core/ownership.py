@@ -339,10 +339,10 @@ class Ownership:
         while not self._stopped:
             timeout = BALANCE_INTERVAL_SECONDS
             held_until = self._lease.held_until()
-            if held_until is not None and held_until > time.monotonic():
+            if held_until is not None and held_until > self._lease.monotonic():
                 # Wake as the lease stops being sure, not up to an interval
                 # after: that is the moment this process's work has to stop.
-                timeout = min(timeout, held_until - time.monotonic())
+                timeout = min(timeout, held_until - self._lease.monotonic())
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._nudged.wait(), timeout)
             self._nudged.clear()

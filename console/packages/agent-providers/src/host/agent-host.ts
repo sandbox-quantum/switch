@@ -689,7 +689,12 @@ export async function runAgentHost(
   signal: AbortSignal,
   supervision: Supervision,
   control: WatcherControl,
-  openStream: OpenAgentStream
+  openStream: OpenAgentStream,
+  // How long the host waits before it looks again at what it could not do: a
+  // session that did not answer, a room it was not yet allowed to start one for.
+  // A test sets it past its own length, so that only what the host does
+  // at once is seen.
+  retryMs = OWNERSHIP_RETRY_MS
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
@@ -1158,7 +1163,7 @@ export async function runAgentHost(
               `Session ${sessionId} did not take message ${event.messageId} (${error.message}); starting it again.`
             );
             await launch(config);
-            await new Promise((resolve) => setTimeout(resolve, OWNERSHIP_RETRY_MS));
+            await new Promise((resolve) => setTimeout(resolve, retryMs));
           }
         }
         entry.running = false;
@@ -1545,7 +1550,7 @@ export async function runAgentHost(
       if (!held.size) return;
       pending = pending.then(resolveHeld);
       void pending.catch((error: Error) => fail(error));
-    }, OWNERSHIP_RETRY_MS);
+    }, retryMs);
     retry.unref();
     /**
      * Brings this watcher's live sessions in step with its agent's definition, as

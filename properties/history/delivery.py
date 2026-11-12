@@ -57,6 +57,24 @@ class Event:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class Erasure:
+    external_user_ids: list[str]
+    former_sender_ids: list[str]
+    member_client_ids: list[str]
+    completed_at: datetime
+
+
+@dataclass(frozen=True)
+class NamedMessage:
+    """A message whose sender an erasure names."""
+
+    room_id: str
+    sender_id: str
+    sender_client_id: str | None
+    sent_at: datetime
+
+
 @dataclass
 class History:
     room_seqs: dict[str, list[int]] = field(default_factory=dict)
@@ -64,6 +82,9 @@ class History:
     heads: dict[str, tuple[int, int]] = field(default_factory=dict)
     drops: dict[tuple[str, str], int] = field(default_factory=dict)
     members: set[tuple[str, str]] = field(default_factory=set)
+    erasures: list[Erasure] = field(default_factory=list)
+    external_users_left: set[str] = field(default_factory=set)
+    named_messages: list[NamedMessage] = field(default_factory=list)
 
 
 async def load(connection: asyncpg.Connection, tag: str | None) -> History:
@@ -117,6 +138,44 @@ async def load(connection: asyncpg.Connection, tag: str | None) -> History:
                 tag,
             )
         }
+        erasure_rows = await connection.fetch(
+            "SELECT external_user_ids, former_sender_ids, member_client_ids, "
+            "completed_at FROM person_erasures "
+            "WHERE state = 'done' AND completed_at IS NOT NULL"
+        )
+        history.erasures = [
+            Erasure(
+                json.loads(row["external_user_ids"]),
+                json.loads(row["former_sender_ids"]),
+                json.loads(row["member_client_ids"]),
+                row["completed_at"],
+            )
+            for row in erasure_rows
+        ]
+        if not history.erasures:
+            return history
+        external = [i for e in history.erasures for i in e.external_user_ids]
+        clients = [i for e in history.erasures for i in e.member_client_ids]
+        senders = [i for e in history.erasures for i in e.former_sender_ids]
+        history.external_users_left = {
+            row["id"]
+            for row in await connection.fetch(
+                "SELECT id FROM external_users WHERE id = ANY($1::text[])", external
+            )
+        }
+        history.named_messages = [
+            NamedMessage(**dict(row))
+            for row in await connection.fetch(
+                "SELECT m.room_id, m.sender_id, m.sender_client_id, m.sent_at "
+                "FROM messages m JOIN rooms r ON r.id = m.room_id "
+                "WHERE ($1::text IS NULL OR starts_with(r.name, $1)) "
+                "AND (m.sender_client_id = ANY($2::text[]) "
+                "OR m.sender_id = ANY($3::text[]))",
+                tag,
+                clients,
+                senders,
+            )
+        ]
     return history
 
 
@@ -212,6 +271,30 @@ def no_silent_loss(history: History) -> list[str]:
                 found.append(
                     f"agent {agent}: event {event.seq} is kept at or below "
                     f"{dropped}, which retention deleted in room {room}"
+                )
+    return found
+
+
+@checks("retention.erasure-complete")
+def erasure_complete(history: History) -> list[str]:
+    """After an erasure is done, no identity it names is left, and no message
+    from a sender it names was sent before it finished (a member client may send
+    again afterwards: the client stays)."""
+    found = [
+        f"external user {user} is still there after the erasure that named it"
+        for user in sorted(history.external_users_left)
+    ]
+    for erasure in history.erasures:
+        for message in history.named_messages:
+            named = (
+                message.sender_client_id in erasure.member_client_ids
+                or message.sender_id in erasure.former_sender_ids
+            )
+            if named and message.sent_at <= erasure.completed_at:
+                found.append(
+                    f"a message in room {message.room_id} from "
+                    f"{message.sender_client_id or message.sender_id} survives "
+                    "the erasure that named its sender"
                 )
     return found
 

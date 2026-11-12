@@ -1,0 +1,34 @@
+properties:
+  - id: chats.membership-is-read-authority
+    title: A person reads a chat only while a member
+    statement: >
+      A person reads a room only while they have a `client_rooms` row for it and
+      a role in its workspace.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      `chats/service.py`.
+  - id: chats.owned-sync-reversible
+    title: Owned-room sync takes back only what it gave
+    statement: >
+      `sync_owned_rooms` takes back exactly the memberships it granted for agent
+      ownership, and never one a manager granted directly or the person gained by
+      being invited or creating the chat.
+    kind: safety
+    formality: semi-formal
+    levels: [code]
+    owner: platform
+    status: proposed
+  - id: chats.streams-close-on-sign-out
+    title: Signing out closes a person's streams
+    statement: >
+      Once a person's sessions end, their open chat streams and change sockets
+      close.
+    kind: safety
+    formality: semi-formal
+    levels: [system, ui]
+    owner: platform
+    status: proposed

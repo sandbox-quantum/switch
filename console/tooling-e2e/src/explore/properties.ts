@@ -12,6 +12,8 @@ export const PROPERTIES = [
   'staysSignedIn',
   'noErrorBanner',
   'noServerErrors',
+  'listMatchesApi',
+  'listChecked',
 ] as const;
 
 /** The spec's other exports: its action generators. */

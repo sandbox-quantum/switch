@@ -8,4 +8,27 @@ properties:
     formality: semi-formal
     levels: [code, system]
     owner: platform
+    status: checked
+    notes: >
+      The nightly fuzz of the gateway asks as a person in one workspace with
+      the ids of another's objects in its path, query and body parameters, as the
+      database role row-level security applies to, and fails any response that
+      names one the request did not, or answers a read of one with it. Only
+      parameters named `id`, `*_id` or `*_ids` carry them.
+  - id: tenancy.agent-surface-no-cross-tenant
+    title: An agent never reaches another tenant's rooms
+    statement: >
+      No call an agent makes over the agent HTTP API or the MCP tools reads,
+      names or acts on a room, message or other object of another tenant.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
     status: proposed
+    gaps:
+      code: no machine over the agent operations as agents of two tenants yet
+      system: the gateway fuzz does not reach the agent surface
+    notes: >
+      `tenancy.no-cross-tenant-ids` covers the gateway only. The agent
+      operations come from one definition (`bridges/agent/operations/
+      definitions.py`) served over HTTP and MCP, so one machine covers both.

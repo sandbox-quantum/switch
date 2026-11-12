@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -47,7 +48,10 @@ def _found(machine: Delivery, mutate: str | None) -> list[str]:
         )
         try:
             if mutate is not None:
-                await connection.execute(mutate)
+                changed = await connection.execute(mutate)
+                assert not changed.endswith(" 0"), (
+                    f"the planted bug changed no row ({changed}), so it proves nothing"
+                )
             history = await history_delivery.load(connection, None)
         finally:
             await connection.close()
@@ -87,6 +91,14 @@ def test_a_history_the_code_wrote_passes(run: Delivery) -> None:
             "DELETE FROM client_rooms WHERE client_id = "
             "(SELECT client_id FROM agents WHERE id = "
             "(SELECT agent_id FROM agent_events LIMIT 1))",
+        ),
+        (
+            "retention.erasure-complete",
+            "INSERT INTO person_erasures (id, tenant_id, external_user_ids, "
+            "member_client_ids, state, completed_at) "
+            "SELECT 'erasure-1', tenant_id, '[]'::jsonb, "
+            "jsonb_build_array(sender_client_id), 'done', now() + interval '1 hour' "
+            "FROM messages WHERE sender_client_id IS NOT NULL LIMIT 1",
         ),
         (
             "delivery.no-silent-loss",
@@ -190,3 +202,24 @@ def test_a_clean_assertion_log_passes_and_a_line_that_is_not_json_is_an_error() 
         history_assertions.read(_record("Always", "a", True) + "\nnot json")
     with pytest.raises(ValueError, match="no message"):
         history_assertions.read('{"antithesis_assert": {"display_type": "Always"}}')
+
+
+def test_the_assertion_messages_the_scripts_require_exist_in_the_server() -> None:
+    root = Path(__file__).parents[4]
+    server = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (root / "core" / "switch_core").rglob("*.py")
+    )
+    scripts = [
+        root / "properties" / "run-machine.sh",
+        root / "console" / "tooling-e2e" / "scripts" / "ephemeral-stack.sh",
+    ]
+    wanted = [
+        message
+        for script in scripts
+        for message in re.findall(
+            r'--(?:require|called) "([^"]+)"', script.read_text(encoding="utf-8")
+        )
+    ]
+    assert len(wanted) >= 3
+    assert [m for m in wanted if f'"{m}"' not in server] == []

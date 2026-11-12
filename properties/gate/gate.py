@@ -21,6 +21,10 @@ Tags, by level (`<id>` is the property's id):
     code   `@pytest.mark.property("<id>")` on a test
     system `@checks("<id>")` on a history check
     ui     `@property <id>` in the doc comment directly above a Bombadil export
+    system `@property <id>` in the doc comment directly above an export of the fast
+           lane (`console/tooling-e2e/src/fast/*.ts`): a scenario or a probe
+    code   `@property <id>` in the doc comment directly above an `it` or `it.each`
+           in a package's vitest file (`console/packages/*/src/**/*.test.ts`)
 
 An assertion in the server from `antithesis.assertions` that states something
 (`always*`, `unreachable`) and whose message starts with a property id, alone or
@@ -65,6 +69,8 @@ MODEL_GLOB = f"{SPECS_DIR}/**/*.qnt"
 CODE_GLOB = "core/tests/switch_core/properties/**/*.py"
 SYSTEM_GLOB = "properties/history/**/*.py"
 UI_GLOB = "console/tooling-e2e/src/explore/spec/*.ts"
+FAST_GLOB = "console/tooling-e2e/src/fast/*.ts"
+VITEST_GLOB = "console/packages/*/src/**/*.test.ts"
 ASSERT_GLOB = "core/switch_core/**/*.py"
 ASSERT_PREFIXES = ("always", "sometimes", "reachable", "unreachable")
 ASSERT_EVIDENCE = ("always", "unreachable")
@@ -82,10 +88,17 @@ QUINT_DOC = re.compile(
 QUINT_TAG = re.compile(r"^[ \t]*///[ \t]*@property[ \t]+(?P<id>\S+)", re.MULTILINE)
 QUINT_NAME = re.compile(rf"^[ \t]*{QUINT_DEFINITION}", re.MULTILINE)
 TS_DOC_COMMENT = re.compile(
-    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:const|function)\s+(?P<name>\w+))?",
+    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:default\s+)?(?:async\s+)?(?:const|let|function\*?|class|interface|type|enum)\s+(?P<name>\w+))?",
     re.DOTALL,
 )
-TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>\S+)", re.MULTILINE)
+TS_TEST_DOC = re.compile(
+    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*"
+    r"(?P<fn>(?:it|test)(?:\.[A-Za-z]+(?:\([^()\n]*\))?)*)"
+    r"(?:\((?:(?!\n[ \t]*\n).)*?\)\(|\()\s*(?P<quote>['\"`])(?P<title>.*?)(?P=quote)",
+    re.DOTALL,
+)
+TS_NOT_RUN = {"skip", "todo", "skipIf", "fails"}
+TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>[^\s{]\S*)", re.MULTILINE)
 
 NOT_RUN = {"pytest.mark.skip", "pytest.mark.xfail"}
 
@@ -367,16 +380,30 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
         for tagged, tag in tags:
             found[tagged].append(tag)
 
-    for path in sorted(root.glob(UI_GLOB)):
+    for ts_glob, ts_level in ((UI_GLOB, "ui"), (FAST_GLOB, "system")):
+        for path in sorted(root.glob(ts_glob)):
+            label = path.relative_to(root).as_posix()
+            for comment in TS_DOC_COMMENT.finditer(path.read_text(encoding="utf-8")):
+                for tag in TS_TAG.finditer(comment["body"]):
+                    if comment["name"] is None:
+                        problems.append(
+                            f"{label}: tag for {tag['id']} is not above an export"
+                        )
+                    else:
+                        found[tag["id"]].append(Tag(ts_level, label, comment["name"]))
+    for path in sorted(root.glob(VITEST_GLOB)):
         label = path.relative_to(root).as_posix()
-        for comment in TS_DOC_COMMENT.finditer(path.read_text(encoding="utf-8")):
+        for comment in TS_TEST_DOC.finditer(path.read_text(encoding="utf-8")):
+            skipped = TS_NOT_RUN & set(
+                re.sub(r"\([^()]*\)", "", comment["fn"]).split(".")[1:]
+            )
             for tag in TS_TAG.finditer(comment["body"]):
-                if comment["name"] is None:
+                if skipped:
                     problems.append(
-                        f"{label}: tag for {tag['id']} is not above an export"
+                        f"{label}: {comment['title']!r} is tagged for {tag['id']} but is {comment['fn']}, which does not run"
                     )
                 else:
-                    found[tag["id"]].append(Tag("ui", label, comment["name"]))
+                    found[tag["id"]].append(Tag("code", label, comment["title"]))
     return found, problems
 
 
