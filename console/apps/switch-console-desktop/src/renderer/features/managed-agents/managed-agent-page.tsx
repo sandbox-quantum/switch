@@ -115,6 +115,7 @@ function ManagedAgentPageContent({
   const queryClient = useQueryClient();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
   const showRename = useShowModal('renameAgentModal');
+  const showMove = useShowModal('moveAgentModal');
   const schemaQuery = useAdvancedConfigSchema(agent.serverId);
   const machines = useManagedMachines(agent.serverId);
   const schema = schemaQuery.data?.[agent.definition.provider] ?? NO_FIELDS;
@@ -360,6 +361,20 @@ function ManagedAgentPageContent({
                   cloud={agent.machine !== null && isCloudMachine(agent.machine)}
                 />
               )}
+              <SettingRow
+                title="Device"
+                info={null}
+                description={
+                  agent.machine
+                    ? `Runs on ${agent.machine.name}${machine?.local?.kind === 'this-computer' ? ' (this computer)' : ''}.`
+                    : 'Runs on no device.'
+                }
+                control={
+                  <Button variant="outline" size="sm" onClick={() => showMove({ agent })}>
+                    Change…
+                  </Button>
+                }
+              />
               <SettingRow
                 title="Directory"
                 info={{

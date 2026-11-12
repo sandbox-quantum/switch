@@ -158,6 +158,19 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     );
   });
 
+  it("gives an agent the variables a provider's runtime asks for, but a path in the controller's home", async () => {
+    env = {
+      ...env,
+      COPILOT_GITHUB_TOKEN: 'token-placeholder',
+      COPILOT_HOME: '/home/controller/.copilot',
+    };
+    runtime = makeRuntime();
+    await start('agent-1');
+    expect(readFileSync(join(config.dataDir, 'units', '01', 'environment'), 'utf8')).toBe(
+      "ANTHROPIC_API_KEY='sk-placeholder'\nCOPILOT_GITHUB_TOKEN='token-placeholder'\n"
+    );
+  });
+
   it('gives each agent a user of its own, and says so when none is left', async () => {
     await start('agent-1');
     await start('agent-2');

@@ -19,13 +19,20 @@ from switch_core.bridges.agent.protocol.types import (
 )
 from switch_core.clients.actor import SystemActor
 from switch_core.tenant_context import tenant_scope
-from switch_core.trust.client import TrustCheckResult, TrustFinding
+from switch_core.trust.client import (
+    GuardrailBlockedError,
+    TrustCheckResult,
+    TrustFinding,
+)
+from switch_core.ui_spec import UI_CONTENT_KEY, UISpecError, parse_ui_spec
 
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
 
 
 class _ContentTrustClient:
     async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+        if "forbidden" in content:
+            return TrustCheckResult("blocked", "p", "policy", _FINDING)
         if "nothing-to-cut" in content:
             return TrustCheckResult("redacted", "p", "policy", _FINDING, content)
         if "token-123" in content:
@@ -44,10 +51,12 @@ class _ContentTrustClient:
 class _FakeClient:
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.extra: list[Any] = []
         self.agent = SimpleNamespace(name="helper")
 
-    async def send_message(self, room_id: str, content: str, **_kw: Any) -> str:
+    async def send_message(self, room_id: str, content: str, **kw: Any) -> str:
         self.sent.append(content)
+        self.extra.append(kw.get("extra_content"))
         return f"$event-{len(self.sent)}"
 
 
@@ -118,7 +127,11 @@ def test_a_redaction_does_not_hide_a_file_that_was_flagged_or_not_checked() -> N
     """A caption redacted beside a file Switch Trust could not check: the
     outcome is the redaction, and `alert` keeps the file's side visible."""
     feedback = _trust_feedback(
-        "redacted", "see [redacted]", ("the file was not checked", "errored"), None
+        "redacted",
+        "see [redacted]",
+        ("the file was not checked", "errored"),
+        None,
+        False,
     )
 
     assert feedback is not None
@@ -334,3 +347,183 @@ async def test_send_targeted_message_result_carries_the_redaction(
     result = await definitions.send_targeted_message("token-123", target_names=["bob"])
 
     assert result["trust"] == {"outcome": "redacted", "delivered": "@bob [redacted]"}
+
+
+# ── A message carrying a card ────────────────────────────────────────────────
+
+
+def _card(text: str) -> dict[str, Any]:
+    return {
+        "root": "c",
+        "elements": {
+            "c": {"type": "Card", "props": {"title": "Status"}, "children": ["t"]},
+            "t": {"type": "Text", "props": {"content": text}, "children": []},
+        },
+    }
+
+
+async def test_a_clean_card_is_sent_with_the_body() -> None:
+    svc, client, _ = _build()
+    spec = parse_ui_spec(_card("all good"))
+
+    sent = await svc.send_message("agent-1", "room-1", "status", ui=spec)
+
+    assert client.sent == ["status"]
+    assert parse_ui_spec(client.extra[0][UI_CONTENT_KEY]) == spec
+    assert sent.trust is None
+
+
+async def test_a_blocked_card_blocks_the_send() -> None:
+    svc, client, _ = _build()
+    blocked: list[Any] = []
+
+    async def _blocked_notice(*args: Any) -> None:
+        blocked.append(args)
+
+    svc._post_trust_blocked_notice = _blocked_notice  # type: ignore[method-assign]
+
+    with pytest.raises(GuardrailBlockedError):
+        await svc.send_message(
+            "agent-1", "room-1", "status", ui=parse_ui_spec(_card("forbidden"))
+        )
+
+    assert client.sent == []
+    assert len(blocked) == 1
+
+
+async def test_a_redacted_card_is_dropped_and_the_body_sent_alone() -> None:
+    svc, client, _ = _build()
+
+    sent = await svc.send_message(
+        "agent-1", "room-1", "status", ui=parse_ui_spec(_card("key token-123"))
+    )
+
+    assert client.sent == ["status"]
+    assert client.extra == [None]
+    assert sent.trust is not None
+    assert sent.trust.to_result() == {
+        "outcome": "redacted",
+        "delivered": "status",
+        "card": "dropped",
+    }
+
+
+def _button_card(button_id: str) -> dict[str, Any]:
+    return {
+        "root": "c",
+        "elements": {
+            "c": {"type": "Card", "props": {"title": "Status"}, "children": ["a"]},
+            "a": {"type": "Actions", "props": {}, "children": ["b"]},
+            "b": {
+                "type": "Button",
+                "props": {"id": button_id, "label": "Approve"},
+                "children": [],
+            },
+        },
+    }
+
+
+async def test_a_card_redacted_only_in_a_button_id_is_dropped() -> None:
+    """A button's id goes out as its action, and as its value when it has none."""
+    svc, client, _ = _build()
+
+    sent = await svc.send_message(
+        "agent-1", "room-1", "status", ui=parse_ui_spec(_button_card("token-123"))
+    )
+
+    assert client.extra == [None]
+    assert sent.trust is not None
+    assert sent.trust.to_result()["card"] == "dropped"
+
+
+async def test_a_card_blocked_only_in_a_button_id_blocks_the_send() -> None:
+    svc, client, _ = _build()
+
+    async def _blocked_notice(*args: Any) -> None:
+        return None
+
+    svc._post_trust_blocked_notice = _blocked_notice  # type: ignore[method-assign]
+
+    with pytest.raises(GuardrailBlockedError):
+        await svc.send_message(
+            "agent-1", "room-1", "status", ui=parse_ui_spec(_button_card("forbidden"))
+        )
+
+    assert client.sent == []
+
+
+async def test_a_flagged_card_is_sent_with_a_notice() -> None:
+    svc, client, notices = _build()
+
+    sent = await svc.send_message(
+        "agent-1", "room-1", "status", ui=parse_ui_spec(_card("suspicious"))
+    )
+
+    assert UI_CONTENT_KEY in client.extra[0]
+    assert sent.trust is not None and sent.trust.outcome == "alerted"
+    assert notices[0][2] == "alerted"
+
+
+async def test_a_card_rides_beside_the_room_wide_marker() -> None:
+    svc, client, _ = _build()
+
+    await svc.send_message(
+        "agent-1",
+        "room-1",
+        "status",
+        extra_content={"com.switch.room_wide_mention": True},
+        ui=parse_ui_spec(_card("ok")),
+    )
+
+    assert set(client.extra[0]) == {"com.switch.room_wide_mention", UI_CONTENT_KEY}
+
+
+class _RecordingProtocol(_Protocol):
+    def __init__(self) -> None:
+        super().__init__(SentMessage(event_id="$e", trust=None))
+        self.kwargs: list[dict[str, Any]] = []
+
+    async def send_message(self, *_args: Any, **kwargs: Any) -> SentMessage:
+        self.kwargs.append(kwargs)
+        return self._sent
+
+    async def send_targeted_message(
+        self, *_args: Any, **kwargs: Any
+    ) -> SendTargetedResult:
+        self.kwargs.append(kwargs)
+        return await super().send_targeted_message()
+
+
+async def test_an_invalid_card_fails_the_call_and_posts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _RecordingProtocol()
+    _connected(monkeypatch, protocol)
+    bad = _card("x")
+    bad["elements"]["t"]["props"] = {}
+
+    with pytest.raises(UISpecError, match="elements.t.props.content: Field required"):
+        await definitions.post_message("status", ui=bad)
+    with pytest.raises(UISpecError):
+        await definitions.send_targeted_message("status", target_names=["bob"], ui=bad)
+
+    assert protocol.kwargs == []
+
+
+async def test_a_valid_card_reaches_the_protocol_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _RecordingProtocol()
+    _connected(monkeypatch, protocol)
+
+    await definitions.post_message("status", ui=_card("ok"))
+    await definitions.send_targeted_message(
+        "status", target_names=["bob"], ui=_card("ok")
+    )
+    await definitions.post_message("plain")
+
+    assert [k["ui"] for k in protocol.kwargs] == [
+        parse_ui_spec(_card("ok")),
+        parse_ui_spec(_card("ok")),
+        None,
+    ]

@@ -712,6 +712,19 @@ class CollaborationBridgeLifecycleService:
             and adapter_cls.supports_private_channels
         )
 
+    def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
+        """Whether a new public channel on this platform has the person asking
+        for it put in it, when they have a confirmed linked account there.
+
+        Read from the adapter class, like `supports_private_channels`."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return False
+        return (
+            adapter_cls.supports_channel_creation
+            and adapter_cls.adds_creator_to_public_channel
+        )
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
 
@@ -827,15 +840,7 @@ class CollaborationBridgeLifecycleService:
         bridges: list[CollaborationBridge] = []
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
-                # Filtered on the row's own tenant, not left to the policy: on an
-                # owner connection no policy narrows this read, and the fan-out
-                # would act on every tenant's rows once per tenant. See
-                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                bridges.extend(
-                    bridge
-                    for bridge in await self._bridge_store.get_active(session)
-                    if bridge.tenant_id == tenant_id
-                )
+                bridges.extend(await self._bridge_store.get_active(session))
 
         logger.info("Wanting %d collaboration bridges", len(bridges))
         for bridge in bridges:
@@ -922,15 +927,7 @@ class CollaborationBridgeLifecycleService:
         existing: list[CollaborationBridge] = []
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
-                # Filtered on the row's own tenant, not left to the policy: on an
-                # owner connection no policy narrows this read, and the fan-out
-                # would act on every tenant's rows once per tenant. See
-                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                existing.extend(
-                    bridge
-                    for bridge in await self._bridge_store.get_all(session)
-                    if bridge.tenant_id == tenant_id
-                )
+                existing.extend(await self._bridge_store.get_all(session))
         for other in existing:
             # Guard the None case explicitly: an unflushed row has no id yet, and
             # `other.id == exclude_bridge_id` would then be None == None and skip
@@ -1285,6 +1282,7 @@ class CollaborationBridgeLifecycleService:
             adapter.set_listening(active)
             adapter.set_tenant_id(tenant_id)
             adapter.set_bridge_id(bridge_id)
+            adapter.set_session_factory(self._session_factory)
             adapter.set_outbound_policy(self._config.outbound_policy)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
@@ -2012,7 +2010,6 @@ class CollaborationBridgeLifecycleService:
                 rows.update(
                     (bridge.id, bridge)
                     for bridge in await self._bridge_store.get_active(session)
-                    if bridge.tenant_id == tenant_id
                 )
         # `_started` too: a bridge that crashed is out of `_bridges` but still
         # counted as expected (`crashed`, `running_count`), so once its row is
