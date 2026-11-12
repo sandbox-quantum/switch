@@ -51,6 +51,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.ticker import StrMethodFormatter  # noqa: E402
 
 DAY = 24 * 3600
@@ -719,12 +720,11 @@ def caption(graph: Graph) -> str:
     return text
 
 
-def figure(
+def draw(
     graph: Graph, drawn: list[Drawn], service: str, start: int, end: int
-) -> bytes:
-    """The graph of the day as a PNG, with a title, the time span, labelled
-    axes, a legend and a caption. Raises ValueError when there is nothing to
-    draw."""
+) -> Figure:
+    """The graph of the day, with a title, the time span, labelled axes, a
+    legend and a caption. Raises ValueError when there is nothing to draw."""
     if not any(d.points for d in drawn):
         raise ValueError("no data to draw")
     fig, ax = plt.subplots(figsize=(11.5, 6), dpi=150)
@@ -803,6 +803,14 @@ def figure(
         va="bottom",
     )
     fig.subplots_adjust(left=0.07, right=0.8, top=0.87, bottom=0.2)
+    return fig
+
+
+def figure(
+    graph: Graph, drawn: list[Drawn], service: str, start: int, end: int
+) -> bytes:
+    """The graph of the day (`draw`) as a PNG."""
+    fig = draw(graph, drawn, service, start, end)
     out = io.BytesIO()
     fig.savefig(out, format="png", facecolor="white")
     plt.close(fig)

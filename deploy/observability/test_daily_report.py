@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import daily_report as r
 import httpx
+import matplotlib.pyplot as plt
+import pytest
 
 FINE = {
     "agents_now": 9,
@@ -82,11 +85,22 @@ def test_a_quiet_week_walks_through_every_graph():
 def test_every_graph_is_drawn_with_a_title_axes_and_a_caption():
     start = 1_700_000_000
     points = [(start + 60 * i, 50.0 + i % 7) for i in range(0, 24 * 60, 5)]
+    drawn = [r.Drawn("pod abcde", points), r.Drawn("pod fghij", points)]
     for graph in GRAPHS:
+        fig = r.draw(graph, drawn, "switch-core", start, start + r.DAY)
+        ax = fig.axes[0]
+        texts = [text.get_text().replace("\n", " ") for text in fig.texts]
+        legend = [text.get_text() for text in ax.get_legend().get_texts()]
+        plt.close(fig)
+        assert graph.title in texts, graph.key
+        assert "switch-core, 14 Nov 22:13 to 15 Nov 22:13 UTC" in texts
+        assert r.caption(graph) in texts, graph.key
         assert graph.axis, graph.key
-        drawn = [r.Drawn("pod abcde", points), r.Drawn("pod fghij", points)]
-        png = r.figure(graph, drawn, "switch-core", start, start + r.DAY)
-        assert png.startswith(b"\x89PNG")
+        assert (ax.get_xlabel(), ax.get_ylabel()) == ("Time (UTC)", graph.axis)
+        assert legend[:2] == ["pod abcde", "pod fghij"], graph.key
+        assert (legend[2:] != []) == (graph.limit is not None), graph.key
+    png = r.figure(GRAPHS[0], drawn, "switch-core", start, start + r.DAY)
+    assert png.startswith(b"\x89PNG")
 
 
 def test_the_caption_says_how_to_read_the_graph_and_its_limit():
@@ -97,13 +111,69 @@ def test_the_caption_says_how_to_read_the_graph_and_its_limit():
 
 
 def test_a_graph_with_no_data_is_not_drawn():
-    import pytest
-
     with pytest.raises(ValueError):
         r.figure(GRAPHS[0], [r.Drawn("", [])], "switch-core", 0, r.DAY)
 
 
 BY_KEY = {graph.key: graph for graph in GRAPHS}
+
+
+def datadog_answering(series_for: Callable[[str, int], list[dict]]) -> r.Datadog:
+    """A Datadog whose /query answers with `series_for(query, from)`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        series = series_for(params["query"], int(params["from"]))
+        return httpx.Response(200, json={"series": series})
+
+    dd = r.Datadog("api", "app", "datadoghq.com")
+    dd.http = httpx.Client(
+        base_url="https://api.datadoghq.com/api/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    return dd
+
+
+def test_a_split_graph_draws_one_line_per_pod_oldest_first():
+    start = 1_700_000_000
+    pod = "pod_name:switch-switch-core-58f65f47cf-{},service:switch-core"
+    dd = datadog_answering(
+        lambda query, at: [
+            {
+                "scope": pod.format("k2x9p"),
+                "pointlist": [[(start + 3600) * 1000, 40.0]],
+            },
+            {
+                "scope": pod.format("zjttv"),
+                "pointlist": [[start * 1000, 30.0], [(start + 60) * 1000, None]],
+            },
+        ]
+    )
+    assert r.graph_lines(dd, BY_KEY["pool"], start, start + r.DAY) == [
+        r.Drawn("pod zjttv", [(start, 30.0)]),
+        r.Drawn("pod k2x9p", [(start + 3600, 40.0)]),
+    ]
+
+
+def test_traffic_is_drawn_against_the_same_hours_last_week():
+    start = 1_700_000_000
+    week = 7 * r.DAY
+    today = [[start * 1000, 5.0], [(start + 60) * 1000, 6.0]]
+    before = [[(start - week) * 1000, 4.0], [(start - week + 60) * 1000, 4.5]]
+    dd = datadog_answering(
+        lambda query, at: [
+            {
+                "scope": "service:switch-core",
+                "pointlist": today if at == start else before,
+            }
+        ]
+    )
+    assert r.graph_lines(dd, BY_KEY["traffic"], start, start + r.DAY) == [
+        r.Drawn("Today", [(start, 5.0), (start + 60, 6.0)]),
+        r.Drawn(
+            "Same hours last week", [(start, 4.0), (start + 60, 4.5)], last_week=True
+        ),
+    ]
 
 
 def test_a_full_pool_is_explained_and_comes_with_a_next_step():
