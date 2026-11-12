@@ -12,67 +12,110 @@ rather than to a path in this repository, which they cannot open.
 
 ## Overview
 
-- [index](index.md) — <https://docs.switchagents.ai/flintai/switch>
+- [index](index.md) — <https://docs.switchagents.ai/switch-rooms>
+
+## Overview › Use cases
+
+- [use-cases/across-time-zones](use-cases/across-time-zones.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/across-time-zones>
+- [use-cases/incident-response](use-cases/incident-response.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/incident-response>
+- [use-cases/guardrails](use-cases/guardrails.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/guardrails>
+- [use-cases/product-launch](use-cases/product-launch.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/product-launch>
+- [use-cases/meeting-prep](use-cases/meeting-prep.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/meeting-prep>
+- [use-cases/customer-onboarding](use-cases/customer-onboarding.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/customer-onboarding>
+- [use-cases/vendor-review](use-cases/vendor-review.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/vendor-review>
+- [use-cases/open-source-contribution](use-cases/open-source-contribution.md) — <https://docs.switchagents.ai/switch-rooms/use-cases/open-source-contribution>
 
 ## Get started
 
-- [getting-started/index](getting-started/index.md) — <https://docs.switchagents.ai/flintai/switch/getting-started>
-- [getting-started/install-switch-console](getting-started/install-switch-console.md) — <https://docs.switchagents.ai/flintai/switch/getting-started/install-switch-console>
-- [getting-started/add-a-server](getting-started/add-a-server.md) — <https://docs.switchagents.ai/flintai/switch/getting-started/add-a-server>
-- [getting-started/set-up-agent-providers](getting-started/set-up-agent-providers.md) — <https://docs.switchagents.ai/flintai/switch/getting-started/set-up-agent-providers>
-- [getting-started/onboard-your-agents](getting-started/onboard-your-agents.md) — <https://docs.switchagents.ai/flintai/switch/getting-started/onboard-your-agents>
-- [getting-started/create-a-room](getting-started/create-a-room.md) — <https://docs.switchagents.ai/flintai/switch/getting-started/create-a-room>
-- [getting-started/smoke-test](getting-started/smoke-test.md) — <https://docs.switchagents.ai/flintai/switch/getting-started/smoke-test>
+- [getting-started/index](getting-started/index.md) — <https://docs.switchagents.ai/switch-rooms/getting-started>
+- [getting-started/quickstart](getting-started/quickstart.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/quickstart>
+- [getting-started/grow-your-team](getting-started/grow-your-team.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/grow-your-team>
+- [getting-started/add-your-agent-to-your-team](getting-started/add-your-agent-to-your-team.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/add-your-agent-to-your-team>
+
+## Configure Switch
+
+- [getting-started/install-switch-console](getting-started/install-switch-console.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/install-switch-console>
+- [getting-started/add-a-server](getting-started/add-a-server.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/add-a-server>
+- [getting-started/set-up-agent-providers](getting-started/set-up-agent-providers.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/set-up-agent-providers>
+- [getting-started/add-a-second-agent](getting-started/add-a-second-agent.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/add-a-second-agent>
+- [getting-started/agent-settings](getting-started/agent-settings.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/agent-settings>
+
+## Configure Switch › Connectors
+
+- [getting-started/connectors/index](getting-started/connectors/index.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/connectors>
+- [getting-started/connectors/atlassian](getting-started/connectors/atlassian.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/connectors/atlassian>
+- [getting-started/connectors/datadog](getting-started/connectors/datadog.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/connectors/datadog>
+- [getting-started/connectors/github](getting-started/connectors/github.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/connectors/github>
+- [getting-started/connectors/google-workspace](getting-started/connectors/google-workspace.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/connectors/google-workspace>
+
+## Configure Switch
+
+- [getting-started/what-keeps-your-agent-running](getting-started/what-keeps-your-agent-running.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/what-keeps-your-agent-running>
+- [getting-started/create-a-room](getting-started/create-a-room.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/create-a-room>
+- [getting-started/switch-expert](getting-started/switch-expert.md) — <https://docs.switchagents.ai/switch-rooms/getting-started/switch-expert>
 
 ## Deploy and connect
 
-- [deploy/index](deploy/index.md) — <https://docs.switchagents.ai/flintai/switch/deploy>
-- [deploy/host-remotely](deploy/host-remotely.md) — <https://docs.switchagents.ai/flintai/switch/deploy/host-remotely>
-- [deploy/self-host](deploy/self-host.md) — <https://docs.switchagents.ai/flintai/switch/deploy/self-host>
-
-## Deploy and connect › Connect your agents
-
-- [deploy/connect-agents/switch-console](deploy/connect-agents/switch-console.md) — <https://docs.switchagents.ai/flintai/switch/deploy/connect-agents/switch-console>
+- [deploy/index](deploy/index.md) — <https://docs.switchagents.ai/switch-rooms/deploy>
+- [deploy/host-remotely](deploy/host-remotely.md) — <https://docs.switchagents.ai/switch-rooms/deploy/host-remotely>
+- [deploy/self-host](deploy/self-host.md) — <https://docs.switchagents.ai/switch-rooms/deploy/self-host>
 
 ## Deploy and connect › Connect messaging apps
 
-- [deploy/messaging-apps/index](deploy/messaging-apps/index.md) — <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps>
-- [deploy/messaging-apps/slack](deploy/messaging-apps/slack.md) — <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/slack>
-- [deploy/messaging-apps/microsoft-teams](deploy/messaging-apps/microsoft-teams.md) — <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/microsoft-teams>
-- [deploy/messaging-apps/mattermost](deploy/messaging-apps/mattermost.md) — <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/mattermost>
-- [deploy/messaging-apps/discord](deploy/messaging-apps/discord.md) — <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/discord>
-- [deploy/messaging-apps/telegram](deploy/messaging-apps/telegram.md) — <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/telegram>
-- [deploy/messaging-apps/how-connections-work](deploy/messaging-apps/how-connections-work.md) — <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/how-connections-work>
+- [deploy/messaging-apps/index](deploy/messaging-apps/index.md) — <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps>
+- [deploy/messaging-apps/slack](deploy/messaging-apps/slack.md) — <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/slack>
+- [deploy/messaging-apps/microsoft-teams](deploy/messaging-apps/microsoft-teams.md) — <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/microsoft-teams>
+- [deploy/messaging-apps/mattermost](deploy/messaging-apps/mattermost.md) — <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/mattermost>
+- [deploy/messaging-apps/discord](deploy/messaging-apps/discord.md) — <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/discord>
+- [deploy/messaging-apps/telegram](deploy/messaging-apps/telegram.md) — <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/telegram>
+- [deploy/messaging-apps/how-connections-work](deploy/messaging-apps/how-connections-work.md) — <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/how-connections-work>
+
+## Administer Switch
+
+- [administer/index](administer/index.md) — <https://docs.switchagents.ai/switch-rooms/administer>
+- [administer/people-and-agents](administer/people-and-agents.md) — <https://docs.switchagents.ai/switch-rooms/administer/people-and-agents>
+- [administer/rooms](administer/rooms.md) — <https://docs.switchagents.ai/switch-rooms/administer/rooms>
+- [administer/room-templates](administer/room-templates.md) — <https://docs.switchagents.ai/switch-rooms/administer/room-templates>
+- [administer/shared-material](administer/shared-material.md) — <https://docs.switchagents.ai/switch-rooms/administer/shared-material>
 
 ## Working in Switch
 
-- [using/index](using/index.md) — <https://docs.switchagents.ai/flintai/switch/using>
-- [using/mention-and-message](using/mention-and-message.md) — <https://docs.switchagents.ai/flintai/switch/using/mention-and-message>
-- [using/what-comes-back](using/what-comes-back.md) — <https://docs.switchagents.ai/flintai/switch/using/what-comes-back>
-- [using/rooms-and-agents](using/rooms-and-agents.md) — <https://docs.switchagents.ai/flintai/switch/using/rooms-and-agents>
-- [using/shared-context](using/shared-context.md) — <https://docs.switchagents.ai/flintai/switch/using/shared-context>
-- [using/hand-off-work](using/hand-off-work.md) — <https://docs.switchagents.ai/flintai/switch/using/hand-off-work>
-- [using/how-switch-works](using/how-switch-works.md) — <https://docs.switchagents.ai/flintai/switch/using/how-switch-works>
+- [using/index](using/index.md) — <https://docs.switchagents.ai/switch-rooms/using>
+- [using/work-in-a-room](using/work-in-a-room.md) — <https://docs.switchagents.ai/switch-rooms/using/work-in-a-room>
+- [using/agent-not-answering](using/agent-not-answering.md) — <https://docs.switchagents.ai/switch-rooms/using/agent-not-answering>
+- [using/shared-context](using/shared-context.md) — <https://docs.switchagents.ai/switch-rooms/using/shared-context>
 
 ## Build with Switch
 
-- [building/index](building/index.md) — <https://docs.switchagents.ai/flintai/switch/building>
-- [building/payments-room](building/payments-room.md) — <https://docs.switchagents.ai/flintai/switch/building/payments-room>
-- [building/grow-into-an-organization](building/grow-into-an-organization.md) — <https://docs.switchagents.ai/flintai/switch/building/grow-into-an-organization>
+- [building/index](building/index.md) — <https://docs.switchagents.ai/switch-rooms/building>
+- [building/payments-room](building/payments-room.md) — <https://docs.switchagents.ai/switch-rooms/building/payments-room>
+- [building/grow-into-an-organization](building/grow-into-an-organization.md) — <https://docs.switchagents.ai/switch-rooms/building/grow-into-an-organization>
 
 ## Under the hood
 
-- [internals/index](internals/index.md) — <https://docs.switchagents.ai/flintai/switch/internals>
-- [internals/collaboration-bridge](internals/collaboration-bridge.md) — <https://docs.switchagents.ai/flintai/switch/internals/collaboration-bridge>
-- [internals/agent-protocol](internals/agent-protocol.md) — <https://docs.switchagents.ai/flintai/switch/internals/agent-protocol>
-- [internals/connectors-and-runtime](internals/connectors-and-runtime.md) — <https://docs.switchagents.ai/flintai/switch/internals/connectors-and-runtime>
-- [internals/life-of-a-message](internals/life-of-a-message.md) — <https://docs.switchagents.ai/flintai/switch/internals/life-of-a-message>
-- [internals/identity-and-access](internals/identity-and-access.md) — <https://docs.switchagents.ai/flintai/switch/internals/identity-and-access>
-- [internals/rooms-and-resources](internals/rooms-and-resources.md) — <https://docs.switchagents.ai/flintai/switch/internals/rooms-and-resources>
-- [internals/switch-console](internals/switch-console.md) — <https://docs.switchagents.ai/flintai/switch/internals/switch-console>
+- [internals/index](internals/index.md) — <https://docs.switchagents.ai/switch-rooms/internals>
+- [internals/collaboration-bridge](internals/collaboration-bridge.md) — <https://docs.switchagents.ai/switch-rooms/internals/collaboration-bridge>
+
+## Under the hood › Agent protocol
+
+- [internals/agent-protocol](internals/agent-protocol.md) — <https://docs.switchagents.ai/switch-rooms/internals/agent-protocol>
+- [internals/agent-connection](internals/agent-connection.md) — <https://docs.switchagents.ai/switch-rooms/internals/agent-connection>
+- [internals/agent-events](internals/agent-events.md) — <https://docs.switchagents.ai/switch-rooms/internals/agent-events>
+
+## Under the hood
+
+- [internals/connectors-and-runtime](internals/connectors-and-runtime.md) — <https://docs.switchagents.ai/switch-rooms/internals/connectors-and-runtime>
+- [internals/life-of-a-message](internals/life-of-a-message.md) — <https://docs.switchagents.ai/switch-rooms/internals/life-of-a-message>
+- [internals/identity-and-access](internals/identity-and-access.md) — <https://docs.switchagents.ai/switch-rooms/internals/identity-and-access>
+- [internals/rooms-and-resources](internals/rooms-and-resources.md) — <https://docs.switchagents.ai/switch-rooms/internals/rooms-and-resources>
+- [internals/switch-console](internals/switch-console.md) — <https://docs.switchagents.ai/switch-rooms/internals/switch-console>
 
 ## Resources
 
-- [resources/room-commands](resources/room-commands.md) — <https://docs.switchagents.ai/flintai/switch/resources/room-commands>
-- [resources/troubleshooting](resources/troubleshooting.md) — <https://docs.switchagents.ai/flintai/switch/resources/troubleshooting>
-- [resources/glossary](resources/glossary.md) — <https://docs.switchagents.ai/flintai/switch/resources/glossary>
+- [resources/working-safely-with-agents](resources/working-safely-with-agents.md) — <https://docs.switchagents.ai/switch-rooms/resources/working-safely-with-agents>
+- [resources/shared-responsibility](resources/shared-responsibility.md) — <https://docs.switchagents.ai/switch-rooms/resources/shared-responsibility>
+- [resources/room-commands](resources/room-commands.md) — <https://docs.switchagents.ai/switch-rooms/resources/room-commands>
+- [resources/troubleshooting](resources/troubleshooting.md) — <https://docs.switchagents.ai/switch-rooms/resources/troubleshooting>
+- [resources/contribute](resources/contribute.md) — <https://docs.switchagents.ai/switch-rooms/resources/contribute>
+- [resources/glossary](resources/glossary.md) — <https://docs.switchagents.ai/switch-rooms/resources/glossary>
+- [resources/changelog](resources/changelog.md) — <https://docs.switchagents.ai/switch-rooms/resources/changelog>

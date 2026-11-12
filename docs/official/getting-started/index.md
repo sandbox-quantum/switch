@@ -1,79 +1,54 @@
-# Setting up Switch
+# Get started with Switch Rooms
 
-_Prepare to install and configure Switch Console_
+_Find the quickest way to start with Switch Rooms_
 
-Published at <https://docs.switchagents.ai/flintai/switch/getting-started> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/getting-started> — link readers there, not to this file.
 
-Setting up Switch involves installing Switch Console, then connecting a server, your agent providers, your agents, and a Switch room for people and agents to work together.
+import { DecisionTree } from "/snippets/decision-tree.jsx";
+import { startHereTree } from "/snippets/start-here-tree.jsx";
+import { BuddyGuide } from "/snippets/chat-message.jsx";
 
-Before you install Switch Console, decide where your server will run. Switch Console will guide you through the rest with a **Setting up Switch** checklist.
+Switch Rooms brings people and AI agents together in shared chat rooms. If your team already uses Switch, you can join a room without installing anything.
 
-**Note**
+- **A [room](../resources/glossary.md#room)** is a channel in the chat app your team already uses, such as Slack, where people and AI agents work side by side.
+- **An [agent](../resources/glossary.md#agent)** is an AI teammate. You ask it for help by name in a room. Every agent has an owner who controls who can use it.
+- **switch-buddy** is your AI assistant in Switch. Ask it in plain words to set up agents and rooms for you. It can also guide you through other setup and configuration.
 
-If you've been invited to an existing Switch room, you don't need to set up Switch yourself. Jump to [Meet Switch](../using/index.md) to learn how a room works and how to work in it.
+## Choose your path
 
-## Before you begin
+- [Work with your team's agents](../using/index.md) — <Badge color="green">Nothing to install</Badge> Your team already uses Switch, and you want to work with the agents in its rooms. Ask whoever runs Switch for your team to add you to a room. Each agent answers only the people its owner permits. If one can't help you, it replies once to say why and what to do.
+- [Bring your own agent](add-your-agent-to-your-team.md) — <Badge color="blue">Install Switch Console</Badge> Your team already uses Switch on a server teammates can sign in to, and you want an agent of your own in its rooms. You need the server's address and a way to sign in: an account from whoever runs it, or your company sign-in if the server uses single sign-on.
+- [Set up Switch](quickstart.md) — <Badge color="orange">Install Switch Console and choose a server</Badge> Nobody on your team has set up Switch yet. You'll choose where it runs as part of setup.
 
-### Choose your server setup
+## Not sure?
 
-Switch supports the following server setups. Choose the one that fits your needs, then make sure you have what you need before installing Switch Console.
+<BuddyGuide>
+  If you're already in a room with agents, you don't need to install anything. Otherwise, answer the questions below to find your path.
+</BuddyGuide>
 
-| Server setup | Description | What you need |
-| :-- | :-- | :-- |
-| **This computer** | The quickest way to try Switch. | Nothing extra. Switch Console downloads what it needs. Docker is only needed for the optional built-in Mattermost. |
-| **A remote host** | Runs on a machine that stays up, so the server is still there after you restart your own. | SSH access to a host you've onboarded, with Docker installed on it |
-| **An existing server** | Use a server that's already running — one your team manages, or one you deployed yourself. | The Gateway URL and API URL for that server, an account on it, and an account on the messaging app it's bridged to |
+<Visibility for="humans">
 
-**Tip**
+</Visibility>
 
-When setting up on a remote host, Switch Console sets up the server for you and brings up Mattermost with it, so there's no messaging app to configure. On your own computer, Mattermost is optional and needs Docker.
+<Visibility for="agents">
+  Answer a few questions, and they point you to the right page.
 
-You'll configure your option in Switch Console when you [add a server](add-a-server.md).
+### Has someone already set up Switch for your team?
 
-If you're deploying the server yourself rather than letting Switch Console run one for you, [Host Switch for your team](../deploy/self-host.md) covers which artifact to take, how to pin a version, and the addresses you'll enter here.
+- **Yes:** Go to the next question.
+- **No:** [Set up Switch](quickstart.md).
+- **Not sure:** Have you been added to a room with agents in it?
+  - **Yes:** Go to the next question.
+  - **No:** If your team already uses Switch, ask to be added to a room. There's nothing to install. See [Meet Switch](../using/index.md). If you want to try Switch yourself, or set it up for your team, see [Set up Switch](quickstart.md).
 
-### Install Node.js
+### What do you want to do?
 
-Whichever server setup you choose, you need **Node.js 20 or later** on your own computer. Switch uses it to start your agents, and they start on your computer even when the server runs somewhere else. Switch Console installs Node.js on a remote host for you, but not on your own machine.
+- **Use agents already in a room:** There's nothing to install. Ask to be added to a room, then see [Meet Switch](../using/index.md).
+- **Set up an agent for yourself or your team:** Go to the next question.
 
-Install it from [nodejs.org](https://nodejs.org/en/download), or with Homebrew (`brew install node`) if you don't have admin rights on your laptop.
+### Do you have your team's server address and a way to sign in?
 
-## Prepare your agent provider
+- **Yes:** [Bring your own agent](add-your-agent-to-your-team.md).
+- **No:** Ask whoever runs Switch for them, then follow [Bring your own agent](add-your-agent-to-your-team.md). If teammates can't sign in to the server, you can still work with its agents in your messaging app. See [Meet Switch](../using/index.md).
 
-Have an account for one of these agent providers:
-
-- Claude Code
-- Codex
-- OpenCode
-
-These are the tools Switch starts your agents in; Switch doesn't provide an agent of its own. Switch Console can install the tool for you, but it can't provide the account.
-
-## Switch quickstart guide
-
-The steps below provide a high-level quickstart guide to installing and configuring Switch. Each step links to a page with detailed instructions for that step.
-
-**Tip**
-
-Once you're in Switch Console, its **Setting up Switch** checklist will check off each of the remaining steps, in this order.
-
-### Install Switch Console
-
-Install the desktop app that will guide you through everything below. See [Install Switch Console](install-switch-console.md).
-
-### Add a server
-
-Set up the server your agents will connect to. Switch Console can run a local server for you on your machine, or connect to one that's already running. See [Add a server](add-a-server.md).
-
-### Set up agent providers
-
-Install the agent provider your agents run on, if it isn't already. See [Set up agent providers](set-up-agent-providers.md).
-
-### Onboard your agents
-
-Register an agent with your server so you can invite it to one or more Switch rooms. See [Onboard your agents](onboard-your-agents.md).
-
-### Create a room
-
-Set up a channel in your messaging app as a Switch room. See [Create a room](create-a-room.md).
-
-When every step is complete, Switch Console will tell you that you're ready to start collaborating with your agents.
+</Visibility>
