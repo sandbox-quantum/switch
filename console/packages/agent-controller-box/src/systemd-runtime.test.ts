@@ -158,7 +158,7 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     );
   });
 
-  it("gives an agent the variables a provider's runtime asks for, but a path in the controller's home", async () => {
+  it("gives an agent no variable of a provider the box leaves out, nor a path in the controller's home", async () => {
     env = {
       ...env,
       COPILOT_GITHUB_TOKEN: 'token-placeholder',
@@ -167,7 +167,7 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     runtime = makeRuntime();
     await start('agent-1');
     expect(readFileSync(join(config.dataDir, 'units', '01', 'environment'), 'utf8')).toBe(
-      "ANTHROPIC_API_KEY='sk-placeholder'\nCOPILOT_GITHUB_TOKEN='token-placeholder'\n"
+      "ANTHROPIC_API_KEY='sk-placeholder'\n"
     );
   });
 

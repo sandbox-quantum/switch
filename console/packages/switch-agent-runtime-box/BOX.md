@@ -54,7 +54,11 @@ Behind the scenes:
 
 Where the box keeps its own rule over upstream's:
 
-22. A recorded process id that answers EPERM is neither alive nor gone (`process-alive.ts`). Upstream reads it as
+22. Only the providers the box carries are offered: Claude Code, Codex, OpenCode, Cursor and Antigravity. Upstream's
+    newer providers (Pi, Junie, Kiro, Qwen Code, Cline, Copilot, DeepSeek Harness, Droid, Goose, Mistral Vibe) are left
+    out: the controller drops their plugins by name (`LEFT_OUT_PROVIDERS`), and still refuses to start for any other
+    plugin without a runtime. (`providers.ts`, `registry.ts`)
+23. A recorded process id that answers EPERM is neither alive nor gone (`process-alive.ts`). Upstream reads it as
     gone, but on a box the controller and the agents run as different users, so a live agent host answers EPERM too.
     Listing sessions counts it as alive, as before. (`process-alive.ts`, `session-list.ts`)
 
@@ -71,5 +75,8 @@ memory guard, resting and parking, the live status file, and the sign-in-after-w
 - Upstream fixes to the four upstream packages reach these copies only when they are synced by hand. Each rebase
   lists upstream's changes to those packages since the last sync. The last sync took upstream from `0f7f96732` to
   `1a0d5002f`.
+- Each provider's own variables in the controller's environment reach every agent (`PROVIDER_ENV_VARS`), so a box's
+  controller environment must hold only what is meant for its agents.
+- The provider README is upstream's, so it still describes the providers the box leaves out.
 - Some box files had been copied from upstream earlier than the recorded base (the controller's relay and stream from
   30 October, Claude's result mapping from 2 November), so the last sync took them from those points instead.
