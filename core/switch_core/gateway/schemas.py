@@ -186,6 +186,11 @@ class RoomCreateRequest(BaseModel):
     read_visibility: str = "public"
     write_visibility: str = "public"
     roles: list[RoomRoleSpec] | None = None
+    # Whether the room starts with auto-route on; omitted, the workspace's
+    # default for new rooms decides (never for a direct room).
+    auto_route: bool | None = None
+    # The room's triage agent for auto-route, by id or name: one of its agents.
+    triage_agent: str | None = None
 
 
 class RoomUpdateRequest(BaseModel):
@@ -2178,6 +2183,20 @@ class DecisionSettingsResponse(BaseModel):
     workspace: DecisionWorkspaceSettings | None
     server_default: DecisionServerDefault
     options: DecisionOptions
+
+
+class DecisionRoomDefault(BaseModel):
+    """The workspace's auto-route default for new rooms. `available` and
+    `reason` say whether a room made now could have auto-route on: without a
+    decision service the default is kept but new rooms start off."""
+
+    auto_route_new_rooms: bool
+    available: bool
+    reason: str | None
+
+
+class DecisionRoomDefaultUpdate(BaseModel):
+    auto_route_new_rooms: bool
 
 
 class DecisionSettingsUpdateRequest(BaseModel):

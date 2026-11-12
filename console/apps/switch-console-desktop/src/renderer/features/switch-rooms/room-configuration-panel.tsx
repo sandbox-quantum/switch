@@ -83,6 +83,17 @@ const ChatConfiguration = observer(function ChatConfiguration({
                 canUnlink: chat.canManage,
               }}
             />
+            {/* A group chat can start with auto-route on (the workspace's
+                default for new rooms), so it is shown and changed here too. */}
+            {detail.data.autoRoute && (
+              <AutoRouteSection
+                workspaceId={workspaceId}
+                room={detail.data}
+                autoRoute={detail.data.autoRoute}
+                canWrite={chat.canManage}
+                canManage={chat.canManage}
+              />
+            )}
             <RoomInfoSection room={detail.data} />
           </>
         )}

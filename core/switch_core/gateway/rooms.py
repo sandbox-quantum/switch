@@ -97,6 +97,7 @@ from switch_core.room_service import (
     RoleSpec,
     RoomCreateConfig,
     RoomService,
+    TriageAgentNotInRoom,
     require_membership_changeable_from_outside,
 )
 from switch_core.rooms_yaml import (
@@ -520,9 +521,13 @@ async def create_room(
         read_visibility=req.read_visibility,
         write_visibility=req.write_visibility,
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
+        auto_route=req.auto_route,
+        triage_agent=req.triage_agent,
     )
     try:
         result = await room_service.create_room(config)
+    except TriageAgentNotInRoom as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ChannelInUse as e:
         # The channel is someone else's room's: not a malformed request, a
         # conflict with what exists.
@@ -538,7 +543,7 @@ async def create_room(
     fresh = await room_store.get(session, result.room.id)
     if fresh is None:
         raise HTTPException(status_code=500, detail="Room missing after create")
-    return await _build_room_detail(
+    detail = await _build_room_detail(
         session,
         fresh,
         room_store,
@@ -548,6 +553,10 @@ async def create_room(
         Principal(user.id, is_admin),
         decisions,
     )
+    if result.auto_route_refused is not None:
+        # Asked for and not applied: the room says why it is off.
+        detail.auto_route.reason = result.auto_route_refused
+    return detail
 
 
 @router.post("/from-yaml", status_code=201)

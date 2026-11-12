@@ -70,6 +70,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.keys import Keyring
 from switch_core.messages.notify import MessageListener
 from switch_core.ownership import Ownership
@@ -424,6 +425,7 @@ async def _process(
         ),
         session_factory=session_factory,
         room_cache=room_cache,
+        decisions=DecisionAvailability.off(),
     )
     BridgeSignals(lifecycle=bridges, bus=bus)
     clients.add_agents_changed_listener(bridges.agents_changed)

@@ -1141,6 +1141,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         session_factory=session_factory,
         telemetry=telemetry,
         room_cache=room_cache,
+        decisions=decision_client.availability,
     )
     collab_lifecycle._room_service = room_service
 

@@ -50,6 +50,7 @@ from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.rooms import get_decision_availability
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
+from tests.switch_core.test_room_service_auto_route import _CLIENT_OF, _service
 
 KEYRING = Keyring.parse("test:" + "r" * 40, legacy_secret=None)
 
@@ -79,6 +80,14 @@ def _app(
     app = FastAPI()
     app.include_router(rooms_router, prefix="/rooms")
     protocol = _Protocol()
+    availability = DecisionAvailability(
+        enabled=enabled,
+        server=ServerDefault(
+            endpoint_url=server_url, api_key=None, bedrock_enabled=False
+        ),
+        store=DecisionSettingsStore(),
+    )
+    rooms, _ = _service(session_factory, availability)
     app.dependency_overrides.update(
         {
             gw_deps.get_session: _session,
@@ -91,13 +100,8 @@ def _app(
             gw_deps.get_config: lambda: SimpleNamespace(
                 keyring=KEYRING, gateway_tenant_choice_enabled=False
             ),
-            get_decision_availability: lambda: DecisionAvailability(
-                enabled=enabled,
-                server=ServerDefault(
-                    endpoint_url=server_url, api_key=None, bedrock_enabled=False
-                ),
-                store=DecisionSettingsStore(),
-            ),
+            gw_deps.get_room_service: lambda: rooms,
+            get_decision_availability: lambda: availability,
         }
     )
     return app
@@ -143,6 +147,7 @@ async def _agent(session: AsyncSession, owner: User, name: str) -> Agent:
     )
     session.add(agent)
     await session.flush()
+    _CLIENT_OF[agent.id] = client.id
     return agent
 
 
@@ -419,3 +424,104 @@ class TestTheToggle:
         assert put.status_code == 200
         assert put.json()["on"] is True
         assert put.json()["fallback_agent"] == triage.id
+
+
+async def _agents(
+    session_factory: async_sessionmaker[AsyncSession], owner: User
+) -> tuple[Agent, Agent]:
+    async with session_factory() as session:
+        ops = await _agent(session, owner, "ops")
+        billing = await _agent(session, owner, "billing")
+        await session.commit()
+        return ops, billing
+
+
+class TestCreatingARoom:
+    async def test_auto_route_and_a_triage_agent_are_set_as_asked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        ops, billing = await _agents(session_factory, owner)
+        async with _as(_app(session_factory), owner) as client:
+            created = await client.post(
+                "/rooms",
+                json={
+                    "name": "ops",
+                    "description": "d",
+                    "internal_only": True,
+                    "agent_ids": [ops.id, billing.id],
+                    "auto_route": True,
+                    "triage_agent": "billing",
+                },
+            )
+
+        assert created.status_code == 201, created.text
+        assert created.json()["auto_route"] == {
+            "on": True,
+            "available": True,
+            "reason": None,
+            "fallback_agent": billing.id,
+            "fallback_agent_name": "billing",
+        }
+
+    async def test_off_is_kept_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        ops, _ = await _agents(session_factory, owner)
+        async with _as(_app(session_factory), owner) as client:
+            created = await client.post(
+                "/rooms",
+                json={
+                    "name": "ops",
+                    "description": "d",
+                    "internal_only": True,
+                    "agent_ids": [ops.id],
+                    "auto_route": False,
+                },
+            )
+
+        assert created.status_code == 201, created.text
+        assert created.json()["auto_route"]["on"] is False
+
+    async def test_a_triage_agent_not_in_the_room_is_refused_naming_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        ops, billing = await _agents(session_factory, owner)
+        async with _as(_app(session_factory), owner) as client:
+            refused = await client.post(
+                "/rooms",
+                json={
+                    "name": "ops",
+                    "description": "d",
+                    "internal_only": True,
+                    "agent_ids": [ops.id],
+                    "triage_agent": billing.id,
+                },
+            )
+
+        assert refused.status_code == 422
+        assert f"triage agent {billing.id} is not one" in refused.json()["detail"]
+
+    async def test_without_a_decision_service_the_room_is_made_off_saying_why(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        ops, _ = await _agents(session_factory, owner)
+        async with _as(_app(session_factory, server_url=None), owner) as client:
+            created = await client.post(
+                "/rooms",
+                json={
+                    "name": "ops",
+                    "description": "d",
+                    "internal_only": True,
+                    "agent_ids": [ops.id],
+                    "auto_route": True,
+                },
+            )
+
+        assert created.status_code == 201, created.text
+        auto_route = created.json()["auto_route"]
+        assert (auto_route["on"], auto_route["available"]) == (False, False)
+        assert auto_route["reason"] == NO_BACKEND_REASON

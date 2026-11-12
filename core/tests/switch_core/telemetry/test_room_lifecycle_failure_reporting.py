@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from types import TracebackType
 
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.room_service import RoomService
 
 
@@ -50,6 +51,7 @@ def _room_service() -> RoomService:
         resource_service=None,  # type: ignore[arg-type]
         session_factory=_broken_session_factory,  # type: ignore[arg-type]
         room_cache=None,  # type: ignore[arg-type]
+        decisions=DecisionAvailability.off(),
         telemetry=object(),  # type: ignore[arg-type]
     )
 

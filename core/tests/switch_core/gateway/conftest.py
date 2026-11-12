@@ -38,6 +38,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.chats import (
     chat_error_response,
@@ -294,6 +295,7 @@ def _chat_service(
         resource_service=None,  # type: ignore[arg-type]
         session_factory=session_factory,
         room_cache=MagicMock(),
+        decisions=DecisionAvailability.off(),
     )
     service = ChatService(
         session_factory=session_factory,

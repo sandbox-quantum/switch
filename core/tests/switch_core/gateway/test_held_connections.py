@@ -48,6 +48,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.gateway import auth as gateway_auth
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.agents import router as agents_router
@@ -405,6 +406,7 @@ def _room_service(
         resource_service=None,  # type: ignore[arg-type]
         session_factory=session_factory,
         room_cache=MagicMock(),
+        decisions=DecisionAvailability.off(),
     )
 
 

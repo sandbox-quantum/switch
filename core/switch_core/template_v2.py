@@ -56,7 +56,11 @@ _CONDITION = re.compile(
 _MAX_SLUG_INPUT = 128
 
 _AGENT_ONLY = ("type", "if")
-_ROOM_ONLY = ("type", "if", "kickoff", "group")
+_ROOM_ONLY = ("type", "if", "kickoff", "group", "triage")
+# Keys a version 2 room resource takes besides a version 1 room block's.
+# `triage` names the room's triage agent by its key, as `agents` does, and
+# compiles to a version 1 room's `triage_agent`.
+ROOM_RESOURCE_KEYS = _ROOM_ONLY
 _GROUP_ONLY = ("type", "if", "links")
 
 
@@ -330,6 +334,8 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
             room["aliases"] = {
                 agent_name(k, key): v for k, v in room["aliases"].items()
             }
+        if spec.get("triage") is not None:
+            room["triage_agent"] = agent_name(spec["triage"], key)
         return room
 
     out: dict[str, Any] = {"version": 1}

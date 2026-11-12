@@ -451,6 +451,7 @@ class DocSpec(BaseModel):
 
 
 class RoomSpec(BaseModel):
+    model_config = {"extra": "forbid"}
     name: str
     description: str
     instructions: str | None = None
@@ -467,6 +468,11 @@ class RoomSpec(BaseModel):
     docs: list[DocSpec] = []
     # Agent name to the alias it can be addressed by in this room.
     aliases: dict[str, str] | None = None
+    # Whether the room starts with auto-route on; omitted, it follows the
+    # workspace's default for new rooms.
+    auto_route: bool | None = None
+    # The room's triage agent for auto-route: one of `agents`, by name.
+    triage_agent: str | None = None
     # Used only for a room inside a group's ``rooms:`` list, where each room
     # has its own kickoff. A single-room document puts ``kickoff:`` at the
     # top level, next to ``room:``.
@@ -535,6 +541,29 @@ class ParsedTemplate:
     values: dict[str, str | int | float | bool]
 
 
+def _room_spec(raw: Any, failure: str) -> RoomSpec:
+    """A room block validated, refusing a key a room does not take by naming
+    it and the room, rather than in the validator's own words."""
+    try:
+        return RoomSpec.model_validate(raw)
+    except ValidationError as e:
+        unknown = sorted(
+            str(d["loc"][-1])
+            for d in e.errors()
+            # The room's own keys; a nested block's say where they are below.
+            if d["type"] == "extra_forbidden" and len(d["loc"]) == 1
+        )
+        if unknown:
+            name = raw.get("name") if isinstance(raw, dict) else None
+            keys = ", ".join(f"'{k}'" for k in unknown)
+            raise ValueError(
+                f"Room '{name}' has {keys}, which "
+                f"{'is not a key' if len(unknown) == 1 else 'are not keys'} a room "
+                f"takes. A room takes: {', '.join(sorted(RoomSpec.model_fields))}."
+            ) from e
+        raise ValueError(f"{failure}: {e}") from e
+
+
 class ProvisionResult(BaseModel):
     room_id: str
     room_name: str
@@ -544,6 +573,9 @@ class ProvisionResult(BaseModel):
     created_document_ids: list[str] = []
     role_names: list[str] = []
     failed_attachments: list[dict[str, Any]] = []
+    # Why the room's `auto_route: true` could not be applied; it was made with
+    # auto-route off.
+    auto_route_refused: str | None = None
 
 
 class GroupProvisionResult(BaseModel):
@@ -699,10 +731,7 @@ class RoomYamlService:
             spec: RoomSpec | GroupSpec = self._group_spec(body)
             kickoff = None
         else:
-            try:
-                spec = RoomSpec.model_validate(body["room"])
-            except ValidationError as e:
-                raise ValueError(f"Invalid room spec: {e}") from e
+            spec = _room_spec(body["room"], "Invalid room spec")
             if spec.kickoff is not None:
                 raise ValueError(
                     "a single-room template's kickoff goes at the top level, "
@@ -733,10 +762,7 @@ class RoomYamlService:
             raise ValueError("'rooms:' must be a non-empty list")
         rooms: list[RoomSpec] = []
         for i, entry in enumerate(raw_rooms):
-            try:
-                rooms.append(RoomSpec.model_validate(entry))
-            except ValidationError as e:
-                raise ValueError(f"Invalid room spec at index {i}: {e}") from e
+            rooms.append(_room_spec(entry, f"Invalid room spec at index {i}"))
         raw_links = body.get("links") or []
         if not isinstance(raw_links, list):
             raise ValueError("'links:' must be a list")
@@ -1097,6 +1123,8 @@ class RoomYamlService:
             reference_ids=attached_ref_ids or None,
             package_ids=attached_package_ids or None,
             aliases=spec.aliases,
+            auto_route=spec.auto_route,
+            triage_agent=spec.triage_agent,
         )
         result = await self._rooms.create_room(config)
         room_id = result.room.id
@@ -1134,6 +1162,7 @@ class RoomYamlService:
             created_document_ids=created_doc_ids,
             role_names=[r.name for r in spec.roles],
             failed_attachments=failures,
+            auto_route_refused=result.auto_route_refused,
         )
 
     async def provision_group(

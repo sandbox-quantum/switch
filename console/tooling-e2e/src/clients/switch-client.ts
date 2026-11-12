@@ -757,6 +757,29 @@ export class SwitchClient {
     return this.gateway("POST", "/decision-settings/test", body);
   }
 
+  /** `GET /gateway/decision-settings/room-default`: whether new rooms start with auto-route on. */
+  async decisionRoomDefault(): Promise<Record<string, unknown>> {
+    return this.gateway("GET", "/decision-settings/room-default");
+  }
+
+  /** `PUT /gateway/decision-settings/room-default`: set whether new rooms start with auto-route on. */
+  async saveDecisionRoomDefault(
+    autoRouteNewRooms: boolean,
+  ): Promise<Record<string, unknown>> {
+    return this.gateway("PUT", "/decision-settings/room-default", {
+      auto_route_new_rooms: autoRouteNewRooms,
+    });
+  }
+
+  /** The `auto_route` block of `GET /gateway/rooms/{room_id}`: the room's auto-route state. */
+  async roomAutoRoute(roomId: string): Promise<Record<string, unknown>> {
+    const room = await this.gateway<{ auto_route: Record<string, unknown> }>(
+      "GET",
+      `/rooms/${roomId}`,
+    );
+    return room.auto_route;
+  }
+
   /** `PUT /gateway/rooms/{room_id}/auto-route`: the room's auto-route switch. */
   async setRoomAutoRoute(
     roomId: string,

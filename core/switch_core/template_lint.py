@@ -26,8 +26,13 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec
-from switch_core.template_v2 import RESOURCE_TYPES, condition_params, is_v2
+from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec, RoomSpec
+from switch_core.template_v2 import (
+    RESOURCE_TYPES,
+    ROOM_RESOURCE_KEYS,
+    condition_params,
+    is_v2,
+)
 
 # Top-level keys any shape of template may carry, across every shape known to
 # be in flight — room, group, and the kickoff message that rides beside them.
@@ -137,6 +142,51 @@ def _walk_strings(node: Any) -> list[str]:
 def _unknown_keys(details: list[Any]) -> set[str]:
     """The field names an `extra_forbidden` complaint was about."""
     return {str(d["loc"][-1]) for d in details if d["loc"]}
+
+
+def _check_room_keys(
+    room: Any, where: str, allowed: frozenset[str], errors: list[Finding]
+) -> None:
+    """Refuse a room block's keys that a room does not take, naming each:
+    the run would refuse them too, and saying so here says which room."""
+    if not isinstance(room, dict):
+        return
+    for key in sorted(str(k) for k in room if str(k) not in allowed):
+        errors.append(
+            Finding(
+                "unknown_room_key",
+                f"Room '{where}' has '{key}', which is not a key a room takes. "
+                f"A room takes: {', '.join(sorted(allowed))}.",
+                key,
+            )
+        )
+
+
+def _check_triage(room: Any, where: str, key: str, errors: list[Finding]) -> None:
+    """Refuse a triage agent that is not among the room's agents, which the
+    run would refuse before making the room. A value still to be filled in
+    from a param is left to the run."""
+    if not isinstance(room, dict):
+        return
+    triage, agents = room.get(key), room.get("agents")
+    if not isinstance(triage, str) or "{{" in triage:
+        return
+    if not isinstance(agents, list) or any("{{" in str(a) for a in agents):
+        return
+    if triage not in [str(a) for a in agents]:
+        errors.append(
+            Finding(
+                "triage_not_in_room",
+                f"Room '{where}' names {triage} as its triage agent, but {triage} "
+                "is not one of its agents: add it to the room's agents, or name "
+                "one of them.",
+                key,
+            )
+        )
+
+
+_V1_ROOM_KEYS = frozenset(RoomSpec.model_fields)
+_V2_ROOM_KEYS = _V1_ROOM_KEYS | frozenset(ROOM_RESOURCE_KEYS)
 
 
 def _check_params(raw: Any, errors: list[Finding], warnings: list[Finding]) -> set[str]:
@@ -395,6 +445,8 @@ def _lint_v2(
             agents.append({k: v for k, v in spec.items() if k not in ("type", "if")})
         elif kind == "room":
             room_count += 1
+            _check_room_keys(spec, str(key), _V2_ROOM_KEYS, errors)
+            _check_triage(spec, str(key), "triage", errors)
         else:
             has_group = True
     if room_count > 1 and not has_group:
@@ -559,6 +611,13 @@ def lint_template(text: str) -> LintResult:
                 )
 
     _check_agent_runtime(document, warnings)
+    rooms = [document.get("room")] + (
+        document["rooms"] if isinstance(document.get("rooms"), list) else []
+    )
+    for room in rooms:
+        if isinstance(room, dict):
+            _check_room_keys(room, str(room.get("name", "")), _V1_ROOM_KEYS, errors)
+            _check_triage(room, str(room.get("name", "")), "triage_agent", errors)
 
     # Placeholders are looked for everywhere except the params block, which
     # declares them rather than using them.

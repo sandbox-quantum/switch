@@ -1064,6 +1064,31 @@ export type ClearDecisionSettingsResult =
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string };
 
+/** A workspace's auto-route default for new rooms
+ * (`GET /decision-settings/room-default`): `available` is false, with the
+ * reason, where no decision service could act, so a stored "on" waits. */
+export type DecisionRoomDefault = {
+  autoRouteNewRooms: boolean;
+  available: boolean;
+  reason: string | null;
+};
+
+export type FetchDecisionRoomDefaultResult =
+  | { kind: 'loaded'; roomDefault: DecisionRoomDefault }
+  /** The server predates the setting. */
+  | { kind: 'unsupported' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+export type UpdateDecisionRoomDefaultParams = { workspaceId: string; autoRouteNewRooms: boolean };
+
+export type UpdateDecisionRoomDefaultResult =
+  | { kind: 'saved'; roomDefault: DecisionRoomDefault }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
 export type DecisionTestErrorCode =
   | 'unreachable'
   | 'timeout'

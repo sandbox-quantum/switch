@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.config import SwitchConfig
 from switch_core.db.models import DecisionSettings, User, require_tenant_id
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.decision.client import DynamicDecisionClient
 from switch_core.decision.settings import (
     DecisionAvailability,
@@ -30,6 +31,8 @@ from switch_core.gateway.dependencies import get_config, get_session
 from switch_core.gateway.schemas import (
     DecisionEffective,
     DecisionOptions,
+    DecisionRoomDefault,
+    DecisionRoomDefaultUpdate,
     DecisionServerDefault,
     DecisionSettingsResponse,
     DecisionSettingsTestRequest,
@@ -47,6 +50,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _STORE = DecisionSettingsStore()
+_TENANTS = TenantStore()
 
 
 def get_decision_client(request: Request) -> DynamicDecisionClient:
@@ -317,3 +321,38 @@ async def test_decision_settings(
             else None
         ),
     )
+
+
+async def _room_default(
+    session: AsyncSession, checks: DecisionAvailability
+) -> DecisionRoomDefault:
+    availability = await checks.check(session, require_tenant_id())
+    return DecisionRoomDefault(
+        auto_route_new_rooms=await _TENANTS.auto_route_new_rooms(session),
+        available=availability.available,
+        reason=availability.reason,
+    )
+
+
+@router.get("/decision-settings/room-default")
+async def get_decision_room_default(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    client: Annotated[DynamicDecisionClient, Depends(get_decision_client)],
+    _admin: Annotated[User, Depends(require_tenant_admin)],
+) -> DecisionRoomDefault:
+    """Whether rooms made in the workspace start with auto-route on."""
+    return await _room_default(session, client.availability)
+
+
+@router.put("/decision-settings/room-default")
+async def update_decision_room_default(
+    req: DecisionRoomDefaultUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    client: Annotated[DynamicDecisionClient, Depends(get_decision_client)],
+    _admin: Annotated[User, Depends(require_tenant_admin)],
+) -> DecisionRoomDefault:
+    """Turn the workspace's auto-route default for new rooms on or off. Rooms
+    that exist keep their own setting, and a direct chat never gets it."""
+    await _TENANTS.set_auto_route_new_rooms(session, req.auto_route_new_rooms)
+    await session.commit()
+    return await _room_default(session, client.availability)

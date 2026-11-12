@@ -8,13 +8,18 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { DecisionSettings } from '@shared/core/switch-servers/switch-servers';
+import type {
+  DecisionRoomDefault,
+  DecisionSettings,
+} from '@shared/core/switch-servers/switch-servers';
 
 const switchServers = vi.hoisted(() => ({
   getDecisionSettings: vi.fn(),
   updateDecisionSettings: vi.fn(),
   clearDecisionSettings: vi.fn(),
   testDecisionSettings: vi.fn(),
+  getDecisionRoomDefault: vi.fn(),
+  updateDecisionRoomDefault: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -76,8 +81,18 @@ const NO_SERVICE: DecisionSettings = {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
+const DEFAULT_OFF: DecisionRoomDefault = {
+  autoRouteNewRooms: false,
+  available: true,
+  reason: null,
+};
+
 beforeEach(() => {
   for (const mock of Object.values(switchServers)) mock.mockReset();
+  switchServers.getDecisionRoomDefault.mockResolvedValue({
+    kind: 'loaded',
+    roomDefault: DEFAULT_OFF,
+  });
 });
 
 afterEach(async () => {
@@ -405,4 +420,69 @@ it('tells a member who is not the workspace’s admin that it is theirs to chang
     'Only an admin of this workspace can view or change its decision routing.'
   );
   expect(el.querySelector('[role="radio"]')).toBeNull();
+});
+
+function roomDefaultSwitch(el: HTMLElement): HTMLElement | null {
+  return el.querySelector<HTMLElement>('[aria-label="Auto-route new rooms"]');
+}
+
+it('turns the workspace default for new rooms on, saying what it covers', async () => {
+  switchServers.updateDecisionRoomDefault.mockResolvedValue({
+    kind: 'saved',
+    roomDefault: { ...DEFAULT_OFF, autoRouteNewRooms: true },
+  });
+  const el = await render(SERVER_DEFAULT);
+
+  const toggle = roomDefaultSwitch(el)!;
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
+  expect(el.textContent).toContain('Existing rooms and direct chats aren’t changed');
+  await act(async () => toggle.click());
+  for (let i = 0; i < 3; i++) await act(async () => await Promise.resolve());
+
+  expect(switchServers.updateDecisionRoomDefault).toHaveBeenCalledWith({
+    workspaceId: 'ws-1',
+    autoRouteNewRooms: true,
+  });
+  expect(roomDefaultSwitch(el)!.getAttribute('aria-checked')).toBe('true');
+});
+
+it('turns the workspace default back off', async () => {
+  switchServers.getDecisionRoomDefault.mockResolvedValue({
+    kind: 'loaded',
+    roomDefault: { ...DEFAULT_OFF, autoRouteNewRooms: true },
+  });
+  switchServers.updateDecisionRoomDefault.mockResolvedValue({
+    kind: 'saved',
+    roomDefault: DEFAULT_OFF,
+  });
+  const el = await render(SERVER_DEFAULT);
+
+  await act(async () => roomDefaultSwitch(el)!.click());
+  for (let i = 0; i < 3; i++) await act(async () => await Promise.resolve());
+
+  expect(switchServers.updateDecisionRoomDefault).toHaveBeenCalledWith({
+    workspaceId: 'ws-1',
+    autoRouteNewRooms: false,
+  });
+  expect(roomDefaultSwitch(el)!.getAttribute('aria-checked')).toBe('false');
+});
+
+it('holds the default off without a decision service, keeping a stored on', async () => {
+  switchServers.getDecisionRoomDefault.mockResolvedValue({
+    kind: 'loaded',
+    roomDefault: { autoRouteNewRooms: true, available: false, reason: 'No service' },
+  });
+  const el = await render(NO_SERVICE);
+
+  const toggle = roomDefaultSwitch(el)!;
+  expect(toggle.hasAttribute('data-disabled')).toBe(true);
+  expect(el.textContent).toContain('Choose a decision service first.');
+  expect(el.textContent).toContain('saved as on, and applies once one is');
+});
+
+it('shows no default for new rooms to someone who may not change it', async () => {
+  switchServers.getDecisionRoomDefault.mockResolvedValue({ kind: 'forbidden' });
+  const el = await render(SERVER_DEFAULT);
+
+  expect(roomDefaultSwitch(el)).toBeNull();
 });

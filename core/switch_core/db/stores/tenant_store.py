@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Tenant
+from switch_core.db.models import Tenant, require_tenant_id
 
 # Postgres's default name for `tenants.slug`'s unique constraint, from the
 # migration that created the table.
@@ -62,3 +63,26 @@ class TenantStore:
                 raise TenantSlugTaken(tenant.slug) from err
             raise
         return tenant
+
+    async def auto_route_new_rooms(
+        self, session: AsyncSession, tenant_id: str | None = None
+    ) -> bool:
+        """Whether rooms made in the workspace, the session's unless named,
+        start with auto-route on (`Tenant.auto_route_new_rooms`)."""
+        tenant_id = tenant_id or require_tenant_id()
+        on = await session.scalar(
+            select(Tenant.auto_route_new_rooms).where(Tenant.id == tenant_id)
+        )
+        if on is None:
+            raise LookupError(f"No workspace {tenant_id!r}.")
+        return on
+
+    async def set_auto_route_new_rooms(self, session: AsyncSession, on: bool) -> None:
+        """Turn the session's workspace's auto-route default for new rooms on
+        or off. Rooms that exist keep their own setting."""
+        tenant_id = require_tenant_id()
+        result = await session.execute(
+            update(Tenant).where(Tenant.id == tenant_id).values(auto_route_new_rooms=on)
+        )
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise LookupError(f"No workspace {tenant_id!r}.")

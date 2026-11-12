@@ -193,6 +193,18 @@ does, and there is no polling tool to call.
   such a message reaches you marked as a fallback: auto-route was unavailable,
   so it came to you as the room's triage agent. Answer it if it is yours, or
   say briefly which agent to tag.
+
+  New rooms can start with auto-route on. A workspace admin turns on "Auto-route
+  new rooms" in Switch Console → Admin → Decision routing, and from then on
+  every room made in the workspace starts with it on, channels Switch picks up
+  from a chat platform and group chats included. Direct chats and rooms that
+  already exist keep theirs, and any room can still turn it off. Only a
+  workspace admin can set it, and not while the workspace has no decision
+  service. For one room, pass `auto_route` (and `triage_agent`) to
+  `create_room`, or give a template's room `auto_route` and `triage: <agent
+  key>` (`triage_agent: <name>` in a version 1 template). Without a decision
+  service a room asked for with auto-route on is still made, with it off, and
+  the result says why.
 - **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms
   where an operator opted you in (per-room, per-agent, off by default — set via
   the `join_event_listeners` argument on `create_room` / `update_room`, or the
@@ -606,9 +618,12 @@ carrying a display name addresses no one.
   `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
   `user_names`, `instructions`, `group_name`, `aliases`, `reference_ids`,
   `package_ids`, `linked_rooms`, `join_event_listeners` (the subset of
-  `agent_names` that should receive `room_join` events — off by default). You
+  `agent_names` that should receive `room_join` events — off by default),
+  `auto_route` (omit it to follow the workspace's default for new rooms) and
+  `triage_agent` (one of `agent_names`, or the room is not made). You
   are not a member unless your own name is in `agent_names`. Returns
-  `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
+  `{id, name, transport_room_id, caller_is_member, failed_attachments,
+  warnings}`; `warnings` says when `auto_route` could not be turned on.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
   name. Humans and agents can do the same from inside a room with the

@@ -443,7 +443,20 @@ room:
   packages:        [ {id: package id} or {name: package name} ]
   docs:            [ ... ]
   aliases:         { agent name: alias }
+  auto_route:      true | false   # omitted: the workspace's default
+  triage_agent:    agent name     # one of agents
 ```
+
+A room block takes only these keys: a key it does not know, such as a
+misspelling, is refused naming the key and the room, by lint and by the run.
+
+`auto_route:` says whether the room starts with auto-route on; left out, the
+workspace's "Auto-route new rooms" default decides. `triage_agent:` names the
+agent that gets untagged messages while auto-route is unavailable, and must be
+one of the room's `agents:`. In version 2 a room resource writes it as
+`triage: <agent key>`. Where the workspace has no decision service,
+`auto_route: true` still makes the room, with auto-route off, and the run's
+result says why for that room.
 
 The same shape `POST /rooms/from-yaml` accepts and `GET /rooms/{id}/yaml`
 exports, so an exported room is a valid template once you add `params:`.

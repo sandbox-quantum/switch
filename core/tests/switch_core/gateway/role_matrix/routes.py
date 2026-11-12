@@ -522,6 +522,14 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/decision-settings/test": post(
         f"{G}/decision-settings/test", admins(), json={"backend": "none"}
     ),
+    "GET /gateway/decision-settings/room-default": get(
+        f"{G}/decision-settings/room-default", admins()
+    ),
+    "PUT /gateway/decision-settings/room-default": put(
+        f"{G}/decision-settings/room-default",
+        admins(),
+        json={"auto_route_new_rooms": False},
+    ),
     "PUT /gateway/rooms/{room_id}/auto-route": put(
         f"{G}/rooms/{{room}}/auto-route",
         owner_or_admins(),

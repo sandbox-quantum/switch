@@ -6,9 +6,11 @@
  * unavailable, picked from the room's own agents.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { runInAction } from 'mobx';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { ChatSummary } from '@shared/core/chats/chats';
 import type { RoomAutoRoute } from '@shared/core/switch-servers/switch-servers';
 
 const getRoomDetail = vi.hoisted(() => vi.fn());
@@ -52,6 +54,7 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   },
 }));
 
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 
@@ -339,4 +342,44 @@ it('offers both to the room’s owner or a workspace admin', async () => {
     'Only the room’s owner or a workspace admin can change this.'
   );
   expect(el.textContent).not.toContain('needs write access');
+});
+
+it('shows a group chat’s auto-route too, which can start on from the workspace default', async () => {
+  runInAction(() => {
+    chatsStore.serverId = 'server-1';
+  });
+  chatsStore.upsert({
+    roomId: 'room-1',
+    name: 'ops',
+    channelType: 'channel_private',
+    bridgeType: null,
+    channelName: null,
+    agents: [],
+    canManage: true,
+    ownsAgent: true,
+    memberUserIds: [],
+    memberCount: 2,
+    unreadCount: 0,
+    lastMessage: null,
+  } satisfies ChatSummary);
+  try {
+    setRoomAutoRoute.mockResolvedValue(OFF);
+    const el = await render({ ...OFF, on: true });
+    await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
+    expect(el.textContent).toContain('Leave room');
+    expect(checked(el)).toBe(true);
+
+    await act(async () => toggle(el).click());
+
+    expect(setRoomAutoRoute).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      on: false,
+    });
+  } finally {
+    runInAction(() => {
+      chatsStore.chats.delete('room-1');
+      chatsStore.serverId = null;
+    });
+  }
 });
