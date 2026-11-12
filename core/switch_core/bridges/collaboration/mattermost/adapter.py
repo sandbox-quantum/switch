@@ -2928,8 +2928,16 @@ class MattermostAdapter(PlatformAdapter):
                 None, self._admin_driver.users.get_user_by_username, username
             )
             return str(user["id"])
-        except Exception:
+        except ResourceNotFound:
             return None
+        except sync_requests.exceptions.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return None
+            logger.exception("Failed to resolve Mattermost user ID for '%s'", username)
+            raise
+        except Exception:
+            logger.exception("Failed to resolve Mattermost user ID for '%s'", username)
+            raise
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
