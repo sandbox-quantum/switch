@@ -347,12 +347,27 @@ setting, because the log protects the operator as well as the customer.
   than the workspace's and outlives the organization: nothing purges it.
 
 The runtime role has `UPDATE` and `DELETE` revoked on the audit tables, so a
-compromised process cannot erase its tracks. The purge therefore runs on the
-schema owner's connection (`DB_OWNER_USER` and `DB_OWNER_PASSWORD`). A
-deployment without one runs it on the runtime connection, which works only
-where that role owns the schema; otherwise switch-core logs an error at
-startup saying the history will not be purged, and each pass logs the
-refusal.
+compromised process cannot erase its tracks, and the serving process is not
+given the schema owner's password. The purge is therefore a database function,
+`purge_deleted_workspace_audit_history()` (`db/audit_history_ddl.py`), which
+the retention pass calls on its ordinary runtime connection:
+
+- It is `SECURITY DEFINER` and owned by the schema owner, so it deletes as the
+  owner of `audit_events`. Row-level security does not apply to the table's
+  owner (nothing sets `force row level security`), so it reaches every
+  tenant's rows with none bound.
+- It takes no arguments. The horizon is written into its body and the time is
+  the database's `now()`, so a caller cannot widen what it deletes: holding
+  `EXECUTE` on it allows only what the retention pass would do anyway, and the
+  runtime role still cannot delete an audit row any other way.
+- Its `search_path` is pinned (`pg_catalog, public, pg_temp`), `EXECUTE` is
+  revoked from `PUBLIC`, and the runtime role is granted it with the other
+  functions in the schema when the grants are re-issued.
+
+Because the horizon is part of the function, changing
+`AUDIT_HISTORY_HORIZON` needs a migration that replaces the function. Startup
+refuses to serve if the function is missing, is not `SECURITY DEFINER`, or the
+runtime role may not execute it.
 
 ### Backups and logs
 

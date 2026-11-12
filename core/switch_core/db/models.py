@@ -33,6 +33,7 @@ from switch_core.db.agent_event_notify_ddl import (
     CREATE_AGENT_EVENT_NOTIFY_TRIGGER,
     DROP_AGENT_EVENT_NOTIFY_TRIGGER,
 )
+from switch_core.db.audit_history_ddl import attach_audit_history_purge
 from switch_core.db.auth_rows_notify_ddl import (
     CREATE_AGENT_NOTIFY_FUNCTION,
     CREATE_AGENT_NOTIFY_TRIGGER,
@@ -5252,6 +5253,10 @@ attach_row_level_security(Base.metadata)
 # `create_all` built without them is not the schema the server runs against.
 # After the tables, not before — see `db/tenant_lookup.py`.
 attach_tenant_lookups(Base.metadata)
+
+# The purge of deleted workspaces' audit history, the one other function that
+# runs as the owner. See `db/audit_history_ddl.py`.
+attach_audit_history_purge(Base.metadata)
 
 
 # The triggers that signal every process when an agent joins or leaves a room,

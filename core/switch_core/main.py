@@ -116,7 +116,6 @@ from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
-    app_connect_args,
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
@@ -225,7 +224,7 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
-from switch_core.retention.audit_history import check_purge_privilege
+from switch_core.retention.audit_history import check_purge_function
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
@@ -718,28 +717,6 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
-async def _audit_history_sessions(
-    config: SwitchConfig,
-    engine: AsyncEngine,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession]]:
-    """The sessions the retention pass purges deleted workspaces' audit history
-    on: the schema owner's, where configured, since the runtime role may not
-    delete audit rows; the runtime ones otherwise. Says at startup, as an
-    error, when the chosen role cannot (`retention/audit_history.py`).
-
-    Returns the owner's engine, for the caller to dispose of, or None."""
-    owner_url = config.owner_database_url
-    if owner_url is None:
-        await check_purge_privilege(engine, owner=False)
-        return None, session_factory
-    owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
-    )
-    await check_purge_privilege(owner_engine, owner=True)
-    return owner_engine, create_session_factory(owner_engine)
-
-
 async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
@@ -762,9 +739,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
     install_hold_timer(engine)
-    history_engine, history_sessions = await _audit_history_sessions(
-        config, engine, session_factory
-    )
+    await check_purge_function(engine)
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -1675,9 +1650,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if management is not None
                 else None
             )
-            data_retention_task = asyncio.create_task(
-                retention_loop(session_factory, history_sessions)
-            )
+            data_retention_task = asyncio.create_task(retention_loop(session_factory))
             erasure_task = asyncio.create_task(
                 erasure_loop(
                     session_factory,
@@ -1708,8 +1681,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
                 await _stop_tasks(data_retention_task, erasure_task)
-                if history_engine is not None:
-                    await history_engine.dispose()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()

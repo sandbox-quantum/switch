@@ -50,6 +50,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import switch_core.db.models  # noqa: F401 — registers every table, and the RLS/notify DDL, on Base.metadata
+from switch_core.db.audit_history_ddl import PURGE_FUNCTION_NAME
 from switch_core.db.base import Base
 from switch_core.db.notify_ddl import NOTIFY_FUNCTION_NAME, NOTIFY_TRIGGER_NAME
 from switch_core.db.rls_ddl import (
@@ -165,7 +166,8 @@ def _without_comments(body: str) -> str:
 
 
 def _tenant_lookups(connection: Connection) -> dict[str, tuple[Any, ...]]:
-    """Everything about the exempt lookups that decides what they can do.
+    """Everything about the exempt lookups, and the audit-history purge
+    (`db/audit_history_ddl.py`), that decides what they can do.
 
     Not just the body: `prosecdef` is what makes them run as the owner and so
     outside the policies, `provolatile` is what keeps the planner from
@@ -184,7 +186,11 @@ def _tenant_lookups(connection: Connection) -> dict[str, tuple[Any, ...]]:
             "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
             "WHERE n.nspname = 'public' AND p.proname = ANY(:names)"
         ),
-        {"names": sorted(lookup.name for lookup in TENANT_LOOKUPS)},
+        {
+            "names": sorted(
+                [lookup.name for lookup in TENANT_LOOKUPS] + [PURGE_FUNCTION_NAME]
+            )
+        },
     )
     return {
         row.proname: (
@@ -349,7 +355,9 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
         "create_all did not attach any tenant_isolation policies — "
         "db/rls_ddl.py is not wired into Base.metadata"
     )
-    assert set(live.tenant_lookups) == {lookup.name for lookup in TENANT_LOOKUPS}, (
+    assert set(live.tenant_lookups) == {lookup.name for lookup in TENANT_LOOKUPS} | {
+        PURGE_FUNCTION_NAME
+    }, (
         "create_all did not build every tenant lookup — db/tenant_lookup.py "
         "is not wired into Base.metadata, and the comparison below would "
         "pass vacuously"
@@ -399,8 +407,8 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
         f"{sorted(live.security_definer_functions - migrated.security_definer_functions)}"
     )
     assert migrated.tenant_lookups == live.tenant_lookups, (
-        "the migration's frozen tenant lookups no longer match "
-        "db/tenant_lookup.py's live copy. These are the whole exemption from "
+        "the migration's frozen tenant lookups or audit-history purge no "
+        "longer match db/tenant_lookup.py's or db/audit_history_ddl.py's live copy. These are the whole exemption from "
         "row-level security, so a divergence here is a deployment whose "
         "credential resolution behaves differently from every test:\n"
         + _diff(migrated.tenant_lookups, live.tenant_lookups)

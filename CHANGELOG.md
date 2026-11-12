@@ -671,9 +671,11 @@ version of their own to them without also giving them a release of their own.
 - **A deleted workspace's audit history goes after two years.** It is kept
   while the workspace exists and for two years after it is deleted, then
   deleted by the hourly retention pass. The server's own record of the
-  deletion stays. Deleting audit rows needs the schema owner's connection
-  (`DB_OWNER_USER` and `DB_OWNER_PASSWORD`); without it, switch-core logs an
-  error at startup saying the history will not be purged.
+  deletion stays. The purge runs on the ordinary runtime connection through a
+  database function owned by the schema owner, so the serving process needs
+  no owner credentials; the runtime role still cannot delete audit rows
+  itself. switch-core refuses to start if the function is missing or the
+  runtime role may not execute it.
 - **Workspace admins can delete an empty workspace.** Workspace settings has a
   Delete workspace action that asks for the workspace's name
   (`DELETE /tenants/{id}`). It is refused, with what is left by kind and count,

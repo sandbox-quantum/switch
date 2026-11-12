@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.audit_history_ddl import WORKSPACE_DELETED_ACTION
 from switch_core.db.models import (
     AuditEvent,
     OrganizationAuditEvent,
@@ -127,7 +128,7 @@ class ServerAuditAction(StrEnum):
     # Every session the account held was ended, by the person ("Sign out of
     # all devices") or by the operator for them.
     USER_SESSIONS_ENDED = "user.sessions_ended"
-    WORKSPACE_DELETED = "workspace.deleted"
+    WORKSPACE_DELETED = WORKSPACE_DELETED_ACTION
     # A run of the operator's purge of an organization at its owner's request
     # (`accounts/organization_purge.py`) began deleting, naming the accounts
     # it is to delete: the record a run that stops part-way is resumed from.
