@@ -2,6 +2,7 @@ import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
+import { consoleChatNotice } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -114,6 +115,11 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   const activeRoomId = slot?.roomId ?? navigatedRoomId;
   // A Console chat has no channel to embed; the room view draws its conversation.
   const consoleChat = activeRoomId !== null && opensAsConsoleChat(activeRoomId);
+  // One it does not draw, such as a direct chat on its way to the chat view, is said so.
+  const summary =
+    activeRoomId !== null && !consoleChat ? switchRoomsStore.roomSummaryById(activeRoomId) : null;
+  const chatNotice = summary ? consoleChatNotice(summary) : null;
+  const showsChatNotice = chatNotice !== null;
   const layerRef = useRef<HTMLDivElement>(null);
   const slotBox = useBoxWithin(slot?.element ?? null, layerRef);
 
@@ -168,7 +174,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   // Resolve a room the first time it is opened, and evict the oldest beyond the
   // cap. Rooms already resolved are left alone — that is the whole point.
   useEffect(() => {
-    if (!activeRoomId || consoleChat) return;
+    if (!activeRoomId || consoleChat || showsChatNotice) return;
 
     orderRef.current = [...orderRef.current.filter((id) => id !== activeRoomId), activeRoomId];
     const evicted = orderRef.current.slice(0, -MAX_LIVE_EMBEDS);
@@ -184,7 +190,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     }
 
     if (!startedRef.current.has(activeRoomId)) void resolve(activeRoomId);
-  }, [activeRoomId, consoleChat, resolve]);
+  }, [activeRoomId, consoleChat, showsChatNotice, resolve]);
 
   // The room list is read again every little while; a room whose channel link
   // has come back since it was opened is opened again.
@@ -238,7 +244,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
       activeRoomId,
       slot ? (slot.fallback ?? embeddedRoomFallbackTab(activeRoomId)) : 'chat'
     ) === 'chat';
-  const active = activeState;
+  const active = chatNotice ? null : activeState;
 
   return (
     <div
@@ -254,6 +260,14 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         <RoomNotice
           icon={<Loader2 className="size-5 animate-spin" />}
           title="Opening conversation…"
+        />
+      ) : null}
+
+      {visible && chatNotice ? (
+        <RoomNotice
+          icon={<MessagesSquare className="size-6" />}
+          title={chatNotice.title}
+          detail={chatNotice.detail}
         />
       ) : null}
 

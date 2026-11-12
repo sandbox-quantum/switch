@@ -599,3 +599,72 @@ async def test_an_official_template_is_listed_served_and_never_changed(
     deleted = await client.delete("/templates/official:switch-expert")
     assert deleted.status_code == 403
     assert (await client.get("/templates/official:nope")).status_code == 404
+
+
+class TestRunCounts:
+    async def test_each_reported_run_is_counted_on_the_list_and_the_template(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        run = await _upload(client, name="run")
+        idle = await _upload(client, name="idle")
+        assert run["run_count"] == 0
+
+        for expected in (1, 2):
+            recorded = await client.post(f"/templates/{run['id']}/runs")
+            assert recorded.status_code == 201, recorded.text
+            assert recorded.json() == {"template_id": run["id"], "run_count": expected}
+
+        listed = {t["id"]: t for t in (await client.get("/templates")).json()}
+        assert listed[run["id"]]["run_count"] == 2
+        assert listed[idle["id"]]["run_count"] == 0
+        detail = await client.get(f"/templates/{run['id']}")
+        assert detail.json()["run_count"] == 2
+
+    async def test_a_run_of_an_official_template_is_counted(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["bob"])
+        (official,) = [
+            t for t in (await client.get("/templates")).json() if t["official"]
+        ]
+        assert (official["run_count"], official["run_blocked_reason"]) == (0, None)
+
+        recorded = await client.post(f"/templates/{official['id']}/runs")
+        assert recorded.status_code == 201, recorded.text
+
+        (official,) = [
+            t for t in (await client.get("/templates")).json() if t["official"]
+        ]
+        assert official["run_count"] == 1
+
+    async def test_a_template_the_caller_cannot_see_is_not_counted(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        private = await _upload(
+            _client(session_factory, users["alice"]),
+            name="private",
+            read_visibility="private",
+        )
+
+        bob = _client(session_factory, users["bob"])
+        refused = await bob.post(f"/templates/{private['id']}/runs")
+        missing = await bob.post("/templates/official:nope/runs")
+
+        assert (refused.status_code, missing.status_code) == (404, 404)
+        async with session_factory() as session:
+            assert await TemplateStore().run_count(session, private["id"]) == 0
+            assert await TemplateStore().run_count(session, "official:nope") == 0
+
+    async def test_deleting_a_template_deletes_its_count(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="gone")
+        await client.post(f"/templates/{created['id']}/runs")
+
+        deleted = await client.delete(f"/templates/{created['id']}")
+
+        assert deleted.status_code == 200, deleted.text
+        async with session_factory() as session:
+            assert await TemplateStore().run_count(session, created["id"]) == 0

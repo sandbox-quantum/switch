@@ -19,6 +19,9 @@ from fastapi import HTTPException
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
+    ChannelInUse,
+    ChannelNotUsable,
+    PrivateChannelOwnerMissing,
 )
 from switch_core.gateway.rooms import create_room
 from switch_core.gateway.schemas import RoomCreateRequest
@@ -84,6 +87,29 @@ async def test_switch_declining_is_still_a_400() -> None:
 
     assert exc.status_code == 400
     assert "turned off" in exc.detail
+
+
+async def test_a_channel_another_room_uses_is_a_409() -> None:
+    exc = await _call(ChannelInUse("C0123ABCD"))
+
+    assert exc.status_code == 409
+    assert "C0123ABCD is already used by a room" in exc.detail
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ChannelNotUsable("Slack cannot find channel C1 (channel_not_found)."),
+        PrivateChannelOwnerMissing("Link your Teams account first."),
+    ],
+)
+async def test_a_channel_the_room_cannot_have_is_a_400_saying_why(
+    error: Exception,
+) -> None:
+    exc = await _call(error)
+
+    assert exc.status_code == 400
+    assert exc.detail == str(error)
 
 
 async def test_an_ordinary_bug_is_not_dressed_up_as_a_platform_refusal() -> None:

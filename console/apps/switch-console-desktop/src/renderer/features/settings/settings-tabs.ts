@@ -4,7 +4,8 @@
  * Settings is about this person and this computer, so most of it is the same
  * for everyone. What changes is what needs a server (your messaging accounts,
  * keys and account live on one), what needs agent management, and whether the
- * server serves the web gateway that its workspace settings live in.
+ * server serves the web gateway that its workspace and organization settings
+ * live in.
  */
 
 export type SettingsPageTab =
@@ -19,7 +20,7 @@ export type SettingsPageTab =
   | 'account';
 
 /** Links out of Settings: they open somewhere else rather than a pane. */
-export type SettingsLink = 'workspace-settings' | 'docs';
+export type SettingsLink = 'workspace-settings' | 'organization-settings' | 'docs';
 
 export type SettingsItemId = SettingsPageTab | SettingsLink;
 
@@ -60,12 +61,15 @@ export type SettingsAudience = {
   agentManagement: boolean;
   /** The active server serves the web gateway, and you are signed in to it. */
   workspaceSettings: boolean;
+  /** As `workspaceSettings`, and you administer the workspace's organization. */
+  organizationSettings: boolean;
 };
 
 /**
  * The sidebar's sections, in order: this computer and your work, then your
  * account, then the ways out. The workspace's own settings are the gateway's,
- * open to every member there; the organization's will join them.
+ * open to every member there; the organization's are the gateway's too, offered
+ * to the organization's admins, who are the ones who can change them.
  */
 export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
   const main: SettingsItem[] = [
@@ -74,7 +78,7 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
     { id: 'clis-models', label: 'Agent providers' },
     ...(audience.hasServer ? [{ id: 'api-keys' as const, label: 'API keys' }] : []),
     // The devices Switch knows are yours exist only where agent management runs.
-    ...(audience.agentManagement ? [{ id: 'devices' as const, label: 'Your devices' }] : []),
+    ...(audience.agentManagement ? [{ id: 'devices' as const, label: 'Devices' }] : []),
     // The SSH hosts this Console reaches are this computer's own list.
     { id: 'remote-hosts', label: 'Remote hosts' },
     ...(audience.agentManagement
@@ -88,6 +92,9 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
   const links: SettingsItem[] = [
     ...(audience.workspaceSettings
       ? [{ id: 'workspace-settings' as const, label: 'Workspace settings', isExternal: true }]
+      : []),
+    ...(audience.organizationSettings
+      ? [{ id: 'organization-settings' as const, label: 'Organization settings', isExternal: true }]
       : []),
     { id: 'docs', label: 'Docs', isExternal: true },
   ];

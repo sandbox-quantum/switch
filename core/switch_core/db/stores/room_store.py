@@ -1,4 +1,4 @@
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import NamedTuple
@@ -32,14 +32,20 @@ from switch_core.db.models import (
     ExternalUserClaim,
     Room,
     RoomGroup,
+    User,
     require_tenant_id,
     room_agents,
 )
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 
-# Where a room's name came from, in its `metadata`: "channel" for a bridged
-# room named after its channel (it follows the channel's renames), "custom"
-# once a person or an agent names it. Absent on rooms from before it was kept.
+# Where a room's name came from, in its `metadata`. Both "channel" and
+# "created" follow the linked channel's renames:
+# - "channel": a room the bridge adopted from a channel, named
+#   "<messaging app>: <channel name>".
+# - "created": a room named in Switch whose channel Switch made from that name;
+#   it takes the channel's new name as the platform shows it.
+# - "custom": a person or an agent named it; it keeps that name.
+# Absent on rooms from before it was kept.
 NAME_SOURCE_KEY = "name_source"
 # The linked platform channel's name as the bridge last saw it.
 LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
@@ -838,6 +844,34 @@ class RoomStore:
             by_room.setdefault(room_id, []).append(client_id)
         return by_room
 
+    async def member_users_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """The people in each room through their Switch Console member client,
+        as `(user id, user name)` sorted by name, for many rooms in one query.
+        A room with no such people has no key.
+
+        Sorted here rather than in SQL, so the order is Python's, the same as
+        a bridged room's names in the gateway, whatever the database's
+        collation."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(ClientRoom.room_id, User.id, User.name)
+            .join(Client, Client.id == ClientRoom.client_id)
+            .join(User, User.id == Client.user_id)
+            .where(
+                any_of(ClientRoom.room_id, room_ids),
+                Client.type == MEMBER_CLIENT_TYPE,
+            )
+        )
+        by_room: dict[str, list[tuple[str, str]]] = {}
+        for room_id, user_id, name in result.all():
+            by_room.setdefault(room_id, []).append((user_id, name))
+        for members in by_room.values():
+            members.sort(key=lambda member: (member[1], member[0]))
+        return by_room
+
     async def get_member_agent_clients(
         self, session: AsyncSession, room_id: str
     ) -> dict[str, str]:
@@ -980,10 +1014,20 @@ class RoomStore:
         room = await session.get(Room, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        room.name = name
+        self._follow(room, name, channel_name, "channel")
+        await session.flush()
+
+    async def set_created_channel_name(
+        self, session: AsyncSession, room_id: str, channel_name: str
+    ) -> None:
+        """Record the channel Switch just made from the room's name, so the
+        room follows that channel's renames from now on."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
         room.metadata_ = {
             **(room.metadata_ or {}),
-            NAME_SOURCE_KEY: "channel",
+            NAME_SOURCE_KEY: "created",
             LINKED_CHANNEL_NAME_KEY: channel_name,
         }
         await session.flush()
@@ -992,14 +1036,27 @@ class RoomStore:
         self,
         session: AsyncSession,
         room_id: str,
-        name: str,
-        channel_name: str,
-        legacy_name: str,
+        *,
+        old_name: str,
+        new_name: str,
+        bridge_display_name: str,
+        channel_name_for: Callable[[str], str],
     ) -> bool:
-        """`set_platform_name`, decided on the row locked for it: only when the
-        room is named after its channel, or, from before that was recorded,
-        still has exactly `legacy_name`. False, and nothing written, when
-        someone named the room meanwhile."""
+        """Rename the room after its renamed channel when it follows the
+        channel, decided on the row locked for it so a name someone gives the
+        room meanwhile wins. True when the room now carries the channel's
+        name; False, and nothing written, when it does not follow.
+
+        `old_name` is empty when the platform did not say, and equals
+        `new_name` when the bridge is only reporting the name it sees. A report
+        naming the channel the room already knows (`LINKED_CHANNEL_NAME_KEY`,
+        or `old_name` where nothing is recorded) is not a rename: platforms
+        also report a channel the first time the bridge sees it. Nor is one
+        whose old name is not the one recorded: it renamed something else. A room from before
+        `NAME_SOURCE_KEY` was kept follows only while its name still matches
+        the channel's old name, and takes the source that match implies.
+        `channel_name_for` is the channel name the bridge would make from a
+        room name."""
         room = (
             await session.execute(
                 select(Room).where(Room.id == room_id).with_for_update()
@@ -1007,11 +1064,45 @@ class RoomStore:
         ).scalar_one_or_none()
         if room is None:
             return False
-        source = (room.metadata_ or {}).get(NAME_SOURCE_KEY)
-        if not (source == "channel" or (source is None and room.name == legacy_name)):
+        metadata = room.metadata_ or {}
+        source = metadata.get(NAME_SOURCE_KEY)
+        known = metadata.get(LINKED_CHANNEL_NAME_KEY)
+        if new_name == (known if known is not None else old_name):
             return False
-        await self.set_platform_name(session, room_id, name, channel_name)
+        if old_name and old_name != new_name and known not in (None, old_name):
+            # A rename of something other than the name the room follows,
+            # such as a Teams team whose General channel is known by its own.
+            return False
+        prefixed = f"{bridge_display_name}: {new_name}"
+        if source == "channel":
+            self._follow(room, prefixed, new_name, "channel")
+        elif source == "created":
+            self._follow(room, new_name, new_name, "created")
+        elif source is None and room.name == f"{bridge_display_name}: {old_name}":
+            self._follow(room, prefixed, new_name, "channel")
+        elif (
+            source is None
+            and old_name
+            and old_name
+            in {
+                room.name,
+                channel_name_for(room.name),
+            }
+        ):
+            self._follow(room, new_name, new_name, "created")
+        else:
+            return False
+        await session.flush()
         return True
+
+    @staticmethod
+    def _follow(room: Room, name: str, channel_name: str, source: str) -> None:
+        room.name = name
+        room.metadata_ = {
+            **(room.metadata_ or {}),
+            NAME_SOURCE_KEY: source,
+            LINKED_CHANNEL_NAME_KEY: channel_name,
+        }
 
     async def record_channel_name(
         self, session: AsyncSession, room_id: str, channel_name: str

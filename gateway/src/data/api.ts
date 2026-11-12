@@ -40,6 +40,10 @@ export interface RoomSummary {
   // The viewer takes part in it: owns it, is in it (in Switch Console or
   // through a platform account they claimed), or owns an agent in it.
   viewer_is_member: boolean;
+  // Made in Switch Console as a chat: its people are its members, named by
+  // their Switch name, rather than accounts on a messaging app. Absent from
+  // servers that predate it.
+  is_console_chat?: boolean;
   // What the viewer may do, as the server decides it. `can_write` covers the
   // room's settings, roles, links and attaching resources;
   // `can_change_members` covers adding and removing its agents and people,
@@ -188,6 +192,12 @@ export interface BridgeDetail {
   // Why no existing channel can be linked by id on this connection, or null
   // when one can — the Switch Telegram app, whose chats come from connecting.
   channel_ids_refused?: string | null;
+  // Whether a new room here can have a private channel, and whether that needs
+  // the person asking to have linked their account there (Teams names them its
+  // owner). Absent on an older server.
+  private_channels_supported?: boolean;
+  private_channel_needs_linked_account?: boolean;
+  public_channel_adds_creator?: boolean;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
@@ -244,8 +254,24 @@ export interface RoomDetail extends RoomSummary {
   // Agent ids configured to receive room_join events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
+  // What deleting the room can do to its platform channel, as that platform's
+  // bridge declares it; null when the room has no channel.
+  channel_on_delete: ChannelRetirement | null;
   /** Absent on servers that predate decision routing. */
   auto_route?: RoomAutoRoute;
+}
+
+/** What deleting a room does to its platform channel when asked to: archived
+ * on Slack and Mattermost, deleted on Discord, left by the bot on Telegram,
+ * and kept on Teams, where Switch may not remove it. */
+export type ChannelRetirement = "archived" | "deleted" | "left" | "kept";
+
+/** What deleting a room did to its platform channel. `failed` means the
+ * channel is still there and someone has to remove it by hand; `reason`
+ * says why. */
+export interface RetireOutcome {
+  outcome: ChannelRetirement | "failed";
+  reason: string | null;
 }
 
 /**
@@ -391,6 +417,12 @@ export async function fetchRooms(
  * rather than answering null so a failure can say why. */
 export async function loadRooms(): Promise<RoomSummary[]> {
   return jsonRequest<RoomSummary[]>("/rooms", "GET");
+}
+
+/** Every room the viewer may read, archived ones included, throwing rather
+ * than answering null so a failure can say why. */
+export async function loadRoomsWithArchived(): Promise<RoomSummary[]> {
+  return jsonRequest<RoomSummary[]>("/rooms?include_archived=true", "GET");
 }
 
 export async function fetchRoom(roomId: string): Promise<RoomDetail | null> {
@@ -577,31 +609,25 @@ export async function addRoomUsers(
   });
 }
 
-export async function deleteRoom(roomId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/rooms/${roomId}`, {
-    method: "DELETE",
-  });
-  return res?.ok ?? false;
+/** Delete the room. Its platform channel is kept unless `retireChannel`
+ * asks for what `channel_on_delete` says; `channel` reports how that went. */
+export async function deleteRoom(
+  roomId: string,
+  retireChannel: boolean,
+): Promise<{ ok: boolean; channel: RetireOutcome | null }> {
+  return jsonRequest(`/rooms/${roomId}?retire_channel=${retireChannel}`, "DELETE");
 }
 
-export async function bulkDeleteRooms(
-  roomIds: string[],
-): Promise<{ deleted: number } | null> {
-  return fetchJson<{ deleted: number }>("/rooms/bulk-delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds }),
-  });
-}
-
+/** Archive or unarchive many rooms. The server skips, without failing, any
+ * room the viewer may not change or that is gone, and says how many it did
+ * change. */
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
-): Promise<{ updated: number } | null> {
-  return fetchJson<{ updated: number }>("/rooms/bulk-archive", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds, archived }),
+): Promise<{ updated: number }> {
+  return jsonRequest<{ updated: number }>("/rooms/bulk-archive", "POST", {
+    room_ids: roomIds,
+    archived,
   });
 }
 
@@ -1400,8 +1426,44 @@ export async function updateMemberRole(
   );
 }
 
-export async function removeMember(tenantId: string, userId: string): Promise<void> {
-  await jsonRequest(
+/** Who receives what a removed member owns in the workspace: the admin
+ * removing them when that admin is a member, otherwise its longest-standing
+ * other admin. */
+export interface RemovalHeir {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
+export interface MemberRemovalPreview {
+  /** Null when the workspace has no other admin: what they own stays theirs. */
+  handed_over_to: RemovalHeir | null;
+}
+
+export interface MemberRemovalResult {
+  ok: true;
+  /** Sign-ins Switch could not revoke at a vendor. */
+  warning: string | null;
+  handed_over_to: RemovalHeir | null;
+  /** How many of each kind passed to `handed_over_to`; kinds with none are absent. */
+  handed_over: Partial<Record<Exclude<OwnershipKind, "agent">, number>>;
+}
+
+export async function previewMemberRemoval(
+  tenantId: string,
+  userId: string,
+): Promise<MemberRemovalPreview> {
+  return jsonRequest<MemberRemovalPreview>(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/removal`,
+    "GET",
+  );
+}
+
+export async function removeMember(
+  tenantId: string,
+  userId: string,
+): Promise<MemberRemovalResult> {
+  return jsonRequest<MemberRemovalResult>(
     `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     "DELETE",
   );
@@ -1912,6 +1974,9 @@ export interface ReferenceDetail {
   // it, and handing it to someone else.
   can_edit: boolean;
   can_manage: boolean;
+  // Whether the viewer may open its page. A package's or a room's list names
+  // a private item to everyone who may read the package or room.
+  can_read: boolean;
 }
 
 export interface ReferenceCreateInput {
@@ -1959,6 +2024,8 @@ export interface DocumentSummary {
   can_manage: boolean;
   // Handing it to someone else: never for a document scoped to one room.
   can_transfer: boolean;
+  // As on `ReferenceDetail`.
+  can_read: boolean;
 }
 
 export interface DocumentDetail extends DocumentSummary {
@@ -2482,6 +2549,12 @@ export interface TemplateSummary {
   /** What the signed-in user may do with it, as the server judges it. */
   can_edit: boolean;
   can_manage: boolean;
+  /** Why a person should not run it by hand (switch-buddy, which Switch
+   * Console sets up itself); null when nothing stands in the way. */
+  run_blocked_reason: string | null;
+  /** How many times it has been run in this workspace, since runs were
+   * first counted. */
+  run_count: number;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -2521,17 +2594,18 @@ export interface TemplateFilter {
   owner_id?: string;
 }
 
-/** The templates the signed-in user may see, narrowed on the server. */
+/** The templates the signed-in user may see, narrowed on the server, or an
+ * error carrying the server's reason. */
 export async function fetchTemplates(
   filter: TemplateFilter = {},
-): Promise<TemplateSummary[] | null> {
+): Promise<TemplateSummary[]> {
   const params = new URLSearchParams();
   const q = filter.q?.trim();
   if (q) params.set("q", q);
   if (filter.kind) params.set("kind", filter.kind);
   if (filter.owner_id) params.set("owner_id", filter.owner_id);
   const qs = params.toString();
-  return fetchJson<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`);
+  return jsonRequest<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`, "GET");
 }
 
 /** One template, or an error carrying the server's reason (403, 404, or the

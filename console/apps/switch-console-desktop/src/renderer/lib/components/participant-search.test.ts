@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   agentParticipant,
+  bridgePersonParticipant,
+  carryPicks,
   type Participant,
   personParticipant,
   pickerKey,
@@ -71,6 +73,57 @@ describe('agentParticipant / personParticipant', () => {
       id: 'u2',
       name: 'Bob',
       detail: '',
+      userIds: ['u2'],
     });
+  });
+});
+
+describe('bridgePersonParticipant', () => {
+  it('shows someone on an app by the Switch name linked to them, with their username', () => {
+    expect(
+      bridgePersonParticipant({ username: 'bob.s', linkedUserIds: ['u2'], linkedName: 'Bob' })
+    ).toEqual({ kind: 'person', id: 'bob.s', name: 'Bob', detail: '@bob.s', userIds: ['u2'] });
+  });
+
+  it('shows someone nobody has linked by their username', () => {
+    expect(
+      bridgePersonParticipant({ username: 'guest', linkedUserIds: [], linkedName: null })
+    ).toMatchObject({ id: 'guest', name: 'guest', userIds: [] });
+  });
+});
+
+describe('carryPicks', () => {
+  const onSlack = [
+    bridgePersonParticipant({ username: 'bob.s', linkedUserIds: ['u2'], linkedName: 'Bob' }),
+    bridgePersonParticipant({ username: 'guest', linkedUserIds: [], linkedName: null }),
+  ];
+
+  it('keeps a person known on the new app as that account, and agents as they are', () => {
+    const { kept, dropped } = carryPicks(
+      [helper, personParticipant({ userId: 'u2', name: 'Bob', email: null })],
+      [helper, ...onSlack]
+    );
+    expect(kept.map((each) => each.id)).toEqual(['a1', 'bob.s']);
+    expect(dropped).toEqual([]);
+  });
+
+  it('leaves out, and names, someone with no account there', () => {
+    const carol = personParticipant({ userId: 'u3', name: 'Carol', email: null });
+    const { kept, dropped } = carryPicks([carol], onSlack);
+    expect(kept).toEqual([]);
+    expect(dropped).toEqual([carol]);
+  });
+
+  it('never matches someone nobody has linked, or keeps one account twice', () => {
+    const { kept, dropped } = carryPicks(
+      [
+        onSlack[1],
+        personParticipant({ userId: 'u2', name: 'Bob', email: null }),
+        { kind: 'person', id: 'bob.m', name: 'Bob', detail: '@bob.m', userIds: ['u2'] },
+      ],
+      [personParticipant({ userId: 'u2', name: 'Bob', email: null })]
+    );
+    expect(kept.map((each) => each.id)).toEqual(['u2']);
+    expect(dropped.map((each) => each.id)).toEqual(['guest']);
   });
 });

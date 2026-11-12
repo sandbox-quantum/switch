@@ -1866,6 +1866,67 @@ def test_service_messages_are_not_bridged_as_empty_messages(field: str) -> None:
     assert seen == []
 
 
+def _titles(adapter: TelegramAdapter) -> list[tuple[str, str, str]]:
+    reported: list[tuple[str, str, str]] = []
+
+    async def named(chat_id: str, old: str, new: str) -> None:
+        reported.append((chat_id, old, new))
+
+    adapter.set_channel_rename_handler(named)
+    return reported
+
+
+def test_a_retitled_group_is_reported_from_its_service_message() -> None:
+    adapter = _adapter()
+    reported = _titles(adapter)
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(message_id=1, text="hi")))
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                message_id=2,
+                text=None,
+                chat=_FakeChat(title="general 2026"),
+                new_chat_title="general 2026",
+            )
+        )
+    )
+
+    # Seen first without an old title; the bridge compares with its record.
+    assert reported == [
+        (str(CHAT_ID), "", "general"),
+        (str(CHAT_ID), "general", "general 2026"),
+    ]
+    assert [m.content for m in seen] == ["hi"]
+
+
+def test_an_unchanged_title_is_reported_once() -> None:
+    adapter = _adapter()
+    reported = _titles(adapter)
+    adapter._on_message = lambda m: _collect([], m)
+
+    for message_id in (1, 2, 3):
+        _run(adapter._handle_message(_FakeInbound(message_id=message_id)))
+
+    assert reported == [(str(CHAT_ID), "", "general")]
+
+
+def test_a_private_chat_has_no_title_to_report() -> None:
+    adapter = _adapter()
+    reported = _titles(adapter)
+    adapter._on_message = lambda m: _collect([], m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(chat=_FakeChat(chat_id=7, chat_type="private", title=None))
+        )
+    )
+
+    assert reported == []
+
+
 def test_a_photo_with_no_caption_is_still_bridged() -> None:
     # The service-message guard keys on there being nothing at all to relay, so
     # it must not swallow a wordless image.

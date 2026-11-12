@@ -509,7 +509,9 @@ switchCore:
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy, buddy_slack_handoff, decision_routing, gateway_v2
+  # switch_buddy, buddy_slack_handoff, decision_routing,
+  # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
+  # Matrix, Rocket.Chat, Webex), gateway_v2
   # (development and staging only until the new dashboard layout is finished).
   featureFlags:
     enabled: []
@@ -938,6 +940,11 @@ decision:
   model: ""
   # DECISION_CONFIDENCE_THRESHOLD; empty keeps the service's default (0.6).
   confidenceThreshold: ""
+  # DECISION_MIN_LEAD. Set (e.g. "0.05"), a model that scores every option
+  # (Strands, llama.cpp) picks its top agent when it leads the next option,
+  # another agent or "none", by at least this much, and confidenceThreshold no
+  # longer applies to it. Empty keeps the threshold.
+  minLead: ""
   # Claude Haiku on Amazon Bedrock as a per-workspace choice. Sets
   # DECISION_BEDROCK_ENABLED on the service and on switch-core. Bedrock is
   # called with the pod's AWS credentials: on EKS, an IAM role allowing

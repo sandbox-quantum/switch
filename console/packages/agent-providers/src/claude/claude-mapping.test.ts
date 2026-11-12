@@ -1,5 +1,96 @@
+import type { SDKAssistantMessage, SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it } from 'vitest';
-import { approvalContent, mcpToolParts } from './claude-mapping';
+import {
+  approvalContent,
+  isUsageLimitText,
+  mcpToolParts,
+  rateLimitErrorText,
+  rejectedLimit,
+  resultHitUsageLimit,
+  usageLimitNotice,
+} from './claude-mapping';
+
+function assistant(text: string, error?: SDKAssistantMessage['error']): SDKAssistantMessage {
+  return {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] },
+    parent_tool_use_id: null,
+    ...(error ? { error } : {}),
+  } as unknown as SDKAssistantMessage;
+}
+
+function result(fields: Record<string, unknown>): SDKResultMessage {
+  return { type: 'result', subtype: 'success', is_error: false, result: '', ...fields } as never;
+}
+
+const THROTTLE =
+  'API Error: 429 {"type":"rate_limit_error","message":"Number of requests exceeded"}';
+
+describe('usage limit detection', () => {
+  it('recognises the CLI’s own limit wording and nothing else', () => {
+    expect(isUsageLimitText("You've hit your 5-hour limit · resets 8:40am")).toBe(true);
+    expect(isUsageLimitText("  You've reached your weekly limit")).toBe(true);
+    expect(isUsageLimitText('The build hit a limit')).toBe(false);
+    expect(isUsageLimitText(THROTTLE)).toBe(false);
+  });
+
+  it('takes the notice only from a flagged assistant message in the usage-limit wording', () => {
+    expect(
+      usageLimitNotice(assistant("You've hit your 5-hour limit · resets 8:40am", 'rate_limit'))
+    ).toBe("You've hit your 5-hour limit · resets 8:40am");
+    expect(usageLimitNotice(assistant("You're out of usage credits", 'billing_error'))).toBe(
+      "You're out of usage credits"
+    );
+    expect(usageLimitNotice(assistant(THROTTLE, 'rate_limit'))).toBeUndefined();
+    expect(usageLimitNotice(assistant('Invalid API key', 'authentication_failed'))).toBeUndefined();
+    expect(usageLimitNotice(assistant("You've hit your 5-hour limit"))).toBeUndefined();
+  });
+
+  it('keeps the text of a rate_limit message apart, whatever it says', () => {
+    expect(rateLimitErrorText(assistant(THROTTLE, 'rate_limit'))).toBe(THROTTLE);
+    expect(rateLimitErrorText(assistant(THROTTLE, 'server_error'))).toBeUndefined();
+    expect(rateLimitErrorText(assistant(THROTTLE))).toBeUndefined();
+  });
+
+  it('reads a limit off a result only when the result is an error', () => {
+    expect(
+      resultHitUsageLimit(result({ is_error: true, result: "You've hit your limit" }), false)
+    ).toBe(true);
+    expect(resultHitUsageLimit(result({ result: "You've hit your limit" }), false)).toBe(false);
+    expect(
+      resultHitUsageLimit(
+        result({ subtype: 'error_during_execution', errors: ["You've hit your 5-hour limit"] }),
+        false
+      )
+    ).toBe(true);
+    expect(
+      resultHitUsageLimit(result({ subtype: 'error_during_execution', errors: ['boom'] }), false)
+    ).toBe(false);
+  });
+
+  it('takes a 429 for the usage limit only beside its wording or a rejected limit', () => {
+    const throttled = result({ is_error: true, api_error_status: 429, result: THROTTLE });
+    expect(resultHitUsageLimit(throttled, false)).toBe(false);
+    expect(resultHitUsageLimit(throttled, true)).toBe(true);
+    expect(
+      resultHitUsageLimit(
+        result({ is_error: true, api_error_status: 429, result: "You've hit your 5-hour limit" }),
+        false
+      )
+    ).toBe(true);
+  });
+
+  it('gives a rejected limit, and its reset time in epoch ms, and none otherwise', () => {
+    expect(rejectedLimit({ status: 'rejected', resetsAt: 1_800_000_000 })).toEqual({
+      resetsAt: 1_800_000_000_000,
+    });
+    expect(rejectedLimit({ status: 'rejected' })).toEqual({ resetsAt: null });
+    expect(
+      rejectedLimit({ status: 'rejected', resetsAt: 1_800_000_000, isUsingOverage: true })
+    ).toBeNull();
+    expect(rejectedLimit({ status: 'allowed_warning', resetsAt: 1_800_000_000 })).toBeNull();
+  });
+});
 
 describe('mcpToolParts', () => {
   it('splits a tool name into its server and tool', () => {

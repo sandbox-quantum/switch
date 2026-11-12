@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const identity = vi.hoisted(() => ({ IS_CANARY: false, USER_DATA_DIR_NAME: 'switchdash' }));
 vi.mock('@shared/app-identity', () => identity);
 
-const { checkedFolderName, userDataDirName } = await import('./user-data-dir');
+const { checkedFolderName, freshReplayDirName, userDataDirName } = await import('./user-data-dir');
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -38,5 +38,17 @@ describe('checkedFolderName', () => {
 
   it.each(['../elsewhere', '/tmp/x', 'a/b', '..', '.', 'a b'])('refuses %j', (name) => {
     expect(() => checkedFolderName(name)).toThrow(/SWITCH_CONSOLE_USER_DATA_DIR/);
+  });
+});
+
+describe('freshReplayDirName', () => {
+  it('names a new folder after the current one', () => {
+    expect(freshReplayDirName('switchdash-canary', 42)).toBe('switchdash-canary-replay-42');
+  });
+
+  it('does not nest when already in a replay folder', () => {
+    expect(freshReplayDirName('switchdash-canary-replay-42', 99)).toBe(
+      'switchdash-canary-replay-99'
+    );
   });
 });
