@@ -184,6 +184,7 @@ async def _step(
     title="",
     text="",
     message_id=ASKED,
+    subagent=False,
 ):
     await service.report_item(
         AGENT,
@@ -201,6 +202,7 @@ async def _step(
         message_id=message_id,
         occurred_at=datetime.now(UTC),
         usage=[],
+        subagent=subagent,
     )
 
 
@@ -729,6 +731,67 @@ async def test_a_stuck_turn_gets_a_message_of_its_own_until_it_clears(
         )
     )
     assert platform.drawn[-1].content.error_summary is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_subagent_that_outlives_its_turn_redraws_the_turn_when_it_ends(
+    service, session_factory, bridged, listener, platform, online, restart
+):
+    """A background subagent goes on after the turn that started it, and its
+    host closes its call only when the subagent itself ends. The turn's message
+    has to move then too, or it says "running" over a subagent long finished;
+    and it has to even when Switch restarted in between, so a publisher that
+    never drew the turn still edits the message it has.
+
+    Adapted from atharvgaur1845's test in #1714, with the restart run from
+    himanshu748's in #1546."""
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_for(1)
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="agent-1",
+            kind="tool-activity",
+            status="in-progress",
+            revision=1,
+            title="Find the retry setting",
+            subagent=True,
+        )
+        await _turn(service, bridged.room_id, "completed", 3)
+        await platform.wait_until(
+            lambda: _turns(platform)[-1].content.turn.status == "completed"
+        )
+        ended = len(_turns(platform))
+        assert [(i.subagent, i.status) for i in _turns(platform)[-1].content.items] == [
+            (True, "in-progress")
+        ]
+        if restart:
+            await publisher.stop()
+            publisher = _publisher(session_factory, bridged, listener, platform, online)
+            publisher.start()
+
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="agent-1",
+            kind="tool-activity",
+            status="completed",
+            revision=4,
+            title="Find the retry setting",
+            subagent=True,
+        )
+        await platform.wait_until(lambda: len(_turns(platform)) > ended)
+        last = _turns(platform)[-1]
+        assert last.call == "update_rich"
+        assert [(i.subagent, i.status) for i in last.content.items] == [
+            (True, "completed")
+        ]
+        assert (await _turn_post(session_factory)).external_post_id == last.ref
+    finally:
+        await publisher.stop()
 
 
 async def test_a_turn_that_failed_says_so(service, publisher, platform, bridged):

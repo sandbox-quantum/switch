@@ -1521,3 +1521,255 @@ describe('ClaudeAdapter connector tools', () => {
     });
   });
 });
+
+it.each([
+  ['completed', 'completed'],
+  ['failed', 'failed'],
+  ['stopped', 'declined'],
+  ['killed', 'declined'],
+] as const)(
+  'keeps a background child running past its launch result and reports %s as %s',
+  async (sdkStatus, expected) => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'Review' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      assistantMessage('launch', [
+        {
+          type: 'tool_use',
+          id: 'call-child',
+          name: 'Agent',
+          input: {
+            description: 'Review changes',
+            subagent_type: 'Reviewer',
+            run_in_background: true,
+          },
+        },
+      ])
+    );
+    query.emit({
+      type: 'system',
+      subtype: 'task_started',
+      uuid: randomUUID(),
+      session_id: 'native-1',
+      task_id: 'native-child',
+      tool_use_id: 'call-child',
+      task_type: 'local_agent',
+      description: 'Review changes',
+      subagent_type: 'Reviewer',
+      is_backgrounded: true,
+    });
+    query.emit({
+      type: 'user',
+      uuid: randomUUID(),
+      session_id: 'native-1',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'call-child', content: 'Launched' }],
+      },
+    });
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', () => true, 1000);
+    expect(
+      recorder.ofType('item.completed').filter((event) => event.item.id === 'call-child')
+    ).toHaveLength(0);
+    query.emit({
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: randomUUID(),
+      session_id: 'native-1',
+      task_id: 'native-child',
+      status: sdkStatus,
+      output_file: '',
+      summary: 'private child transcript',
+    });
+    const ended = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'call-child',
+      1000
+    );
+    expect(ended).toMatchObject({
+      turnId: 'turn-1',
+      item: { id: 'call-child', type: 'subagent', status: expected, title: 'Review changes' },
+    });
+    expect(ended.item.text).toBeUndefined();
+    await adapter.stopAll();
+  }
+);
+
+// Edge cases from himanshu748's #1546, run against this adapter.
+describe('ClaudeAdapter subagent edge cases', () => {
+  function task(subtype: string, fields: Record<string, unknown>) {
+    return { type: 'system', subtype, uuid: randomUUID(), session_id: 'native-1', ...fields };
+  }
+
+  function spawn(id = 'call-1', backgrounded = true) {
+    return assistantMessage(`spawn-${id}`, [
+      {
+        type: 'tool_use',
+        id,
+        name: 'Agent',
+        input: {
+          description: 'Inspect tests',
+          subagent_type: 'Explore',
+          run_in_background: backgrounded,
+        },
+      },
+    ]);
+  }
+
+  function toolResult(id = 'call-1', isError = false) {
+    return {
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: id, content: 'Task launched', is_error: isError },
+        ],
+      },
+      uuid: randomUUID(),
+      session_id: 'native-1',
+    };
+  }
+
+  function started(id = 'call-1', taskId = 'child-1') {
+    return task('task_started', {
+      task_id: taskId,
+      tool_use_id: id,
+      task_type: 'local_agent',
+      description: 'Inspect tests',
+      is_backgrounded: true,
+    });
+  }
+
+  function notified(status: string, taskId = 'child-1') {
+    return task('task_notification', {
+      task_id: taskId,
+      status,
+      summary: 'private child output',
+      output_file: '',
+    });
+  }
+
+  async function barrier(
+    query: ReturnType<ReturnType<typeof createFakeSdk>['latest']>,
+    recorder: EventRecorder,
+    id: string
+  ) {
+    query.emit(assistantMessage(id, [{ type: 'text', text: 'still here' }]));
+    await recorder.waitFor('item.completed', (event) => event.item.id === `${id}#a0`, 1_000);
+  }
+
+  it('settles a child on the turn that started it when it ends during a later turn', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(spawn());
+    query.emit(started());
+    query.emit(toolResult());
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', (event) => event.turnId === 'turn-1', 1_000);
+
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-2', text: 'other work' });
+    query.emit(notified('completed'));
+    const done = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'call-1',
+      1_000
+    );
+    expect(done.turnId).toBe('turn-1');
+    expect(done.item).toMatchObject({ type: 'subagent', status: 'completed' });
+    expect(adapter.hasBackgroundWork(SESSION)).toBe(false);
+    await adapter.stopAll();
+  });
+
+  it('settles a child once when its notification arrives twice', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    query.emit(spawn());
+    query.emit(started());
+    query.emit(toolResult());
+    query.emit(notified('completed'));
+    query.emit(notified('completed'));
+    await barrier(query, recorder, 'barrier');
+    expect(
+      recorder.ofType('item.completed').filter((event) => event.item.id === 'call-1')
+    ).toHaveLength(1);
+    await adapter.stopAll();
+  });
+
+  it('joins a task start that arrives before its Agent tool block', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    query.emit(started());
+    query.emit(spawn());
+    query.emit(toolResult());
+    await barrier(query, recorder, 'barrier');
+    expect(recorder.ofType('item.completed').filter((event) => event.item.id === 'call-1')).toEqual(
+      []
+    );
+    query.emit(notified('completed'));
+    const done = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'call-1',
+      1_000
+    );
+    expect(done.item).toMatchObject({ type: 'subagent', status: 'completed' });
+    await adapter.stopAll();
+  });
+
+  it('keeps an outcome that arrives before the Agent tool block, and settles the child once', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    query.emit(started());
+    query.emit(notified('stopped'));
+    query.emit(spawn());
+    query.emit(toolResult());
+    await barrier(query, recorder, 'barrier');
+    const settled = recorder.ofType('item.completed').filter((event) => event.item.id === 'call-1');
+    expect(settled.map((event) => event.item.status)).toEqual(['declined']);
+    expect(adapter.hasBackgroundWork(SESSION)).toBe(false);
+    await adapter.stopAll();
+  });
+
+  it("keeps a subagent's own tool calls off the parent's activity", async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    query.emit(spawn());
+    query.emit(started());
+    query.emit({
+      ...assistantMessage('inside-child', [
+        { type: 'tool_use', id: 'child-bash', name: 'Bash', input: { command: 'sleep 100' } },
+      ]),
+      parent_tool_use_id: 'call-1',
+    });
+    await barrier(query, recorder, 'barrier');
+    const ids = recorder.ofType('item.started').map((event) => event.item.id);
+    expect(ids).toContain('call-1');
+    expect(ids).not.toContain('child-bash');
+    await adapter.stopAll();
+  });
+
+  it('fails a background launch the CLI refused, without waiting for a task', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    sdk.latest().emit(spawn());
+    sdk.latest().emit(toolResult('call-1', true));
+    const done = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'call-1',
+      1_000
+    );
+    expect(done.item.status).toBe('failed');
+    expect(adapter.hasBackgroundWork(SESSION)).toBe(false);
+    await adapter.stopAll();
+  });
+});

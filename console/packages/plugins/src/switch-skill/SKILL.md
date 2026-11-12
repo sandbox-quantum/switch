@@ -15,7 +15,8 @@ Hosts show the tools under the server's name rather than bare: Claude Code as
 `mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
 `switch` server. Antigravity
 reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool. The names in this skill are the tool names themselves.
+tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
+tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -387,7 +388,7 @@ Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
 Code, OpenCode, Antigravity and Mistral Vibe have them, while Codex, Cursor, DeepSeek
-Harness and Pi sessions generally do not. Without one, when you genuinely need a decision, ask in the
+Harness, Pi and Junie sessions generally do not. Without one, when you genuinely need a decision, ask in the
 room with `send_targeted_message` and wait for the reply as an ordinary event.
 
 Request cards (your session's questions and approvals) use server authorization.
@@ -929,7 +930,7 @@ does not manage agents, so say so rather than looking for another way.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
   `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
-  `deepseek-harness`, `pi`, `mistral-vibe`), and
+  `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before

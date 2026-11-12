@@ -12,6 +12,6 @@ export const SWITCH_SKILL_NAME = 'switch';
 
 /**
  * The same skill without its frontmatter, for hosts that take it as system
- * context rather than as a loadable skill (Claude Code, Cursor, Antigravity).
+ * context rather than as a loadable skill (Claude Code, Cursor, Antigravity, Junie).
  */
 export const SWITCH_SKILL_CONTEXT: string = skill.replace(/^---\n[\s\S]*?\n---\n+/, '');
