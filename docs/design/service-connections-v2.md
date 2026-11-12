@@ -475,8 +475,9 @@ Core calls the tool with `{}`. Core does not check the result against the
 tool's `outputSchema`, because the MCP SDK's check can fetch a remote `$ref`.
 Core's own checks apply instead. The result must be one JSON object, from
 `structuredContent` or from one text block. Each `account_id` path must give
-one non-empty string or integer. Missing ids, arrays and results with several
-accounts fail sign-in. Core never picks the first account.
+a string with at least one character that is not a space, or an integer.
+Missing ids, arrays and results with several accounts fail sign-in. Core never
+picks the first account.
 
 `account_id` is one path, or a list of 2 to 8 paths, for example
 `[userId, hubId]`. Core percent-encodes each part of a list and joins the
@@ -484,7 +485,7 @@ parts with `:`. So a separator in a vendor id cannot make two accounts look
 the same. The single-path form keeps the vendor id unchanged. The two forms
 give different ids for the same account, so an entry chooses its form once.
 
-The identity call has these limits:
+The MCP identity call has these limits:
 
 - 15 seconds for the whole call.
 - 1 MiB per response, and 4 MiB for all responses together.
@@ -526,6 +527,15 @@ discovered metadata (RFC 7662). Core authenticates there as it does at the
 token endpoint. Only an answer with `active: true` names an account. If the
 metadata has no introspection endpoint, Core refuses the sign-in before the
 person consents.
+
+The introspection request does not have the MCP identity call's limits. It
+has these:
+
+- 20 seconds for each connect, read and write, from Core's HTTP client for
+  services. No limit applies to the whole request.
+- 64 KiB for the answer.
+- No redirects.
+- Only the addresses that Core's outbound policy allows.
 
 Core never reads the ids in the token response, because nothing checks that
 response against the token later. The introspection answer is the vendor's
@@ -731,8 +741,9 @@ server, with a dynamically registered public client:
   is the two ids. A person has one Notion connection. Connecting another
   workspace replaces it, and grants made for the first workspace fail until
   the person grants them again. The answer names neither by name, so the
-  connection is labelled with the workspace's id. The token response carries the same ids, but it is never
-  read for identity, since nothing checks it against the token later.
+  connection is labelled with the workspace's id. The token response carries
+  the same ids, but it is never read for identity, since nothing checks it
+  against the token later.
 - Notion has one scope, `default`, and its consent screen picks a workspace,
   not scopes or pages, so every connection is granted the write level and
   reaches what the person can reach in that workspace.
