@@ -367,8 +367,18 @@ no further setup.
   `eks.amazonaws.com/role-arn` for an IAM role allowing `bedrock:InvokeModel`
   on Haiku). Without a GPU, set `decision.modelServer.enabled: false` and
   `decision.backend` to `anthropic` or `bedrock`.
+- **Logs.** The decision service logs the way switch-core does, with no
+  settings of its own: `switchCore.logging` sets its format (`json` for a log
+  pipeline), root level and environment, its service name is
+  `switch-decision`, and every line carries the pod's name. With
+  `switchCore.observability.otlpEndpoint` set it also gets the endpoint,
+  `deploymentId`, `logs`, `timeoutSeconds` and the OTLP headers from the
+  chart's Secret, so with `logs: true` it ships its log records to the same
+  collector. It sends no metrics: switch-core measures every decision itself.
+  With no endpoint, no `OTLP_*` variable is set and nothing leaves the pod.
 - **Other settings.** `decision.env` passes anything else in the service's
-  environment (`DECISION_TIMEOUT_S`, `DECISION_HISTORY_LIMIT`, …).
+  environment (`DECISION_TIMEOUT_S`, `DECISION_HISTORY_LIMIT`, …). It comes
+  last, so an entry there also replaces any of the variables above.
 - **The NetworkPolicy** needs a CNI that enforces it; where none does, the
   token still keeps other pods from asking for decisions or using the model
   (they can read `/health`). It stays on by

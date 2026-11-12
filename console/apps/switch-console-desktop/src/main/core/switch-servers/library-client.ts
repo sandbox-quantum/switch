@@ -41,7 +41,19 @@ type LibraryItemJson = {
   packages?: string[];
   scope?: 'global' | 'room';
   created_at: string;
+  can_read?: boolean;
+  can_edit?: boolean;
+  can_manage?: boolean;
 };
+
+/** The server's answers on what the viewer may do, where it gives them. */
+function capabilities(r: { can_read?: boolean; can_edit?: boolean; can_manage?: boolean }) {
+  return {
+    ...(r.can_read !== undefined ? { canRead: r.can_read } : {}),
+    ...(r.can_edit !== undefined ? { canEdit: r.can_edit } : {}),
+    ...(r.can_manage !== undefined ? { canManage: r.can_manage } : {}),
+  };
+}
 
 function visibility(value: string): LibraryVisibility {
   return value === 'public' ? 'public' : 'private';
@@ -70,6 +82,7 @@ export function mapLibraryItem(kind: LibraryKind, r: LibraryItemJson): LibraryIt
     referencesCount: r.references_count ?? 0,
     documentsCount: r.documents_count ?? 0,
     createdAt: r.created_at,
+    ...capabilities(r),
   };
 }
 
@@ -193,6 +206,8 @@ type ReferenceTypeJson = {
   write_visibility?: string;
   shadowed_by_builtin?: boolean;
   created_at?: string;
+  can_edit?: boolean;
+  can_manage?: boolean;
 };
 
 function mapReferenceType(t: ReferenceTypeJson): ReferenceTypeOption {
@@ -215,6 +230,7 @@ function mapManagedReferenceType(t: ReferenceTypeJson): ManagedReferenceType {
     writeVisibility: visibility(t.write_visibility ?? 'private'),
     shadowedByBuiltin: t.shadowed_by_builtin ?? false,
     createdAt: t.created_at ?? '',
+    ...capabilities(t),
   };
 }
 

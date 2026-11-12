@@ -10,6 +10,7 @@ import {
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
+import { isProcessAlive } from '../process-alive';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
 import {
@@ -697,14 +698,16 @@ export async function runAgentHost(
   const owned = await withOwnershipLockOutlasting(
     root,
     async () => {
+      let text: string | null = null;
       try {
-        const { pid } = z
-          .object({ pid: z.number().int().positive() })
-          .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
-        process.kill(pid, 0);
-        throw new Error('The shared SDK watcher is already running.');
+        text = await readFile(ownerPath, 'utf8');
       } catch (error) {
-        if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (text !== null) {
+        const { pid } = z.object({ pid: z.number().int().positive() }).parse(JSON.parse(text));
+        if (isProcessAlive(pid, 'recorded'))
+          throw new Error('The shared SDK watcher is already running.');
       }
       await replaceOwner(ownerPath, owner);
     },

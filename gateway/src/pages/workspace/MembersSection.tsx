@@ -12,19 +12,81 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import ConfirmDialog from "../../components/ConfirmDialog";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type Member,
+  type MemberRemovalResult,
+  type RemovalHeir,
   type TenantRole,
   fetchMembers,
+  previewMemberRemoval,
   removeMember,
   updateMemberRole,
 } from "../../data/api";
-import { formatDate, sentenceCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/format";
 import { useLoad } from "./useLoad";
 
 type MemberRow = Member & { id: string };
+
+type HandedOver = MemberRemovalResult["handed_over"];
+
+interface PendingRemoval {
+  member: Member;
+  heir: RemovalHeir | null;
+}
+
+const HANDED_OVER_LABELS: Record<keyof HandedOver, [string, string]> = {
+  room: ["room", "rooms"],
+  package: ["package", "packages"],
+  reference: ["reference", "references"],
+  reference_type: ["reference type", "reference types"],
+  document: ["library document", "library documents"],
+  template: ["template", "templates"],
+};
+
+function heirLabel(heir: RemovalHeir, selfId: string): string {
+  return heir.user_id === selfId ? "you" : `${heir.name} (${heir.email})`;
+}
+
+function handedOverSummary(handed: HandedOver): string {
+  return (Object.keys(HANDED_OVER_LABELS) as (keyof HandedOver)[])
+    .filter((kind) => (handed[kind] ?? 0) > 0)
+    .map((kind) => {
+      const count = handed[kind] ?? 0;
+      const [one, many] = HANDED_OVER_LABELS[kind];
+      return `${count} ${count === 1 ? one : many}`;
+    })
+    .join(", ");
+}
+
+/** What the removal moved, and to whom, as the server reports it. */
+function removalNotice(member: Member, result: MemberRemovalResult, selfId: string): string {
+  const leaving = member.user_id === selfId;
+  const done = leaving ? "You left the workspace." : `Removed ${member.name}.`;
+  const owner = leaving ? "you" : "they";
+  const summary = handedOverSummary(result.handed_over);
+  if (result.handed_over_to && summary) {
+    return `${done} What ${owner} owned there passed to ${heirLabel(result.handed_over_to, selfId)}: ${summary}.`;
+  }
+  return `${done} Nothing ${owner} owned there changed hands.`;
+}
+
+function removalDescription({ member, heir }: PendingRemoval, selfId: string): string {
+  const leaving = member.user_id === selfId;
+  const lose = leaving
+    ? "You will lose access to this workspace, along with your API keys and connector sign-ins here."
+    : `${member.name} will lose access to this workspace, along with their API keys and connector sign-ins here.`;
+  const owned = leaving ? "you own" : "they own";
+  if (heir === null) {
+    return `${lose} The workspace has no other admin, so what ${owned} here stays ${leaving ? "yours" : "theirs"}.`;
+  }
+  return (
+    `${lose} Anything ${owned} here (rooms, packages, references, reference types, ` +
+    `library documents and templates) passes to ${heirLabel(heir, selfId)}. Chats stay as they are.`
+  );
+}
 
 interface Props {
   tenantId: string;
@@ -37,26 +99,30 @@ interface Props {
  * whose role comes from the organization and is changed on its page. One
  * with no membership of their own here is listed "via the organization". The
  * server refuses to demote or remove the last admin when asked — its message
- * is shown as is. */
+ * is shown as is.
+ *
+ * Removing someone, or leaving, hands what they own here to another admin.
+ * The confirmation names that admin beforehand, as the server would choose
+ * them, and the page reports what passed afterwards, from the server's
+ * response. */
 export default function MembersSection({ tenantId, selfId }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionWarning, setActionWarning] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Kept once the dialog closes, so its text holds while it fades out.
+  const [pending, setPending] = useState<PendingRemoval | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const { refresh } = useAuth();
 
-  const act = useCallback(
-    async (userId: string, action: () => Promise<unknown>, leaving = false) => {
+  const changeRole = useCallback(
+    async (userId: string, role: TenantRole) => {
       setBusy(userId);
       setActionError(null);
       try {
-        await action();
-        if (leaving) {
-          // The session is on another workspace now, or none, and the page
-          // follows it rather than reading this one's members again.
-          await refresh();
-          return;
-        }
+        await updateMemberRole(tenantId, userId, role);
         await refetch();
         // Your own role decides what this page offers you.
         if (userId === selfId) await refresh();
@@ -66,8 +132,40 @@ export default function MembersSection({ tenantId, selfId }: Props) {
         setBusy(null);
       }
     },
-    [refetch, refresh, selfId],
+    [refetch, refresh, selfId, tenantId],
   );
+
+  const askToRemove = useCallback(
+    async (member: Member) => {
+      setBusy(member.user_id);
+      setActionError(null);
+      try {
+        const preview = await previewMemberRemoval(tenantId, member.user_id);
+        setPending({ member, heir: preview.handed_over_to });
+        setConfirming(true);
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : "Could not prepare the removal");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [tenantId],
+  );
+
+  const confirmRemoval = useCallback(async () => {
+    if (pending === null) return;
+    const { member } = pending;
+    const result = await removeMember(tenantId, member.user_id);
+    setNotice(removalNotice(member, result, selfId));
+    setActionWarning(result.warning);
+    if (member.user_id === selfId) {
+      // The session is on another workspace now, or none, and the page
+      // follows it rather than reading this one's members again.
+      await refresh();
+      return;
+    }
+    await refetch();
+  }, [pending, refetch, refresh, selfId, tenantId]);
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
     const roles: TenantRole[] = ["admin", "member"];
@@ -90,12 +188,9 @@ export default function MembersSection({ tenantId, selfId }: Props) {
               size="small"
               value={row.role}
               disabled={busy !== null}
-              onChange={(e) =>
-                act(row.user_id, () =>
-                  updateMemberRole(tenantId, row.user_id, e.target.value as TenantRole),
-                )
-              }
-              aria-label={`Role for ${row.email}`}
+              onChange={(e) => changeRole(row.user_id, e.target.value as TenantRole)}
+              // The name goes on the input: on the Select it labels nothing.
+              inputProps={{ "aria-label": `Role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
               {roles.map((role) => (
@@ -149,13 +244,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
                 <IconButton
                   size="small"
                   disabled={busy !== null}
-                  onClick={() =>
-                    act(
-                      row.user_id,
-                      () => removeMember(tenantId, row.user_id),
-                      row.user_id === selfId,
-                    )
-                  }
+                  onClick={() => askToRemove(row)}
                   aria-label={row.user_id === selfId ? "Leave this workspace" : `Remove ${row.email}`}
                 >
                   <DeleteOutline fontSize="small" />
@@ -165,7 +254,9 @@ export default function MembersSection({ tenantId, selfId }: Props) {
           ) : null,
       },
     ];
-  }, [act, busy, selfId, tenantId]);
+  }, [askToRemove, busy, changeRole, selfId]);
+
+  const leaving = pending?.member.user_id === selfId;
 
   return (
     <Stack spacing={1.5}>
@@ -176,16 +267,36 @@ export default function MembersSection({ tenantId, selfId }: Props) {
           {actionError}
         </Alert>
       )}
+      {notice && (
+        <Alert severity="info" onClose={() => setNotice(null)}>
+          {notice}
+        </Alert>
+      )}
+      {actionWarning && (
+        <Alert severity="warning" onClose={() => setActionWarning(null)}>
+          {actionWarning}
+        </Alert>
+      )}
       {loading ? (
         <CircularProgress />
       ) : (
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
           columns={columns}
+          emptyState={<TableEmptyState title="No users in this workspace yet" />}
           height={Math.min(520, 108 + (members?.length ?? 0) * 52)}
           pageSize={25}
         />
       )}
+      <ConfirmDialog
+        open={confirming}
+        title={leaving ? "Leave this workspace?" : `Remove ${pending?.member.name ?? ""}?`}
+        description={pending ? removalDescription(pending, selfId) : undefined}
+        confirmLabel={leaving ? "Leave" : "Remove"}
+        tone="destructive"
+        onConfirm={confirmRemoval}
+        onClose={() => setConfirming(false)}
+      />
     </Stack>
   );
 }

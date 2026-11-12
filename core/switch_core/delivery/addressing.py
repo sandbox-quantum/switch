@@ -452,7 +452,7 @@ class AddressingResolver:
             and policy.requires_owner_identity()
         )
         if unclaimed:
-            logger.warning(
+            logger.info(
                 "Addressing denied for %s: sender %s in room %s has not been "
                 "claimed by any Switch user, so an owner-scoped rule cannot "
                 "match them — the owner may need to link this identity",
@@ -461,7 +461,7 @@ class AddressingResolver:
                 room_id,
             )
         else:
-            logger.warning(
+            logger.info(
                 "Addressing denied for %s: %s %s not permitted in room %s",
                 agent.name,
                 principal.kind,

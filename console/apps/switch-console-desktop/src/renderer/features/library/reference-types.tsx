@@ -220,22 +220,29 @@ export function ReferenceTypesPanel({
         aria-label="Reference types"
         className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]"
       >
-        {shown.map((card) => (
-          <div role="listitem" key={card.key}>
-            <TypeCard
-              card={card}
-              viewerId={viewerId}
-              showYours={!filter.mineOnly}
-              onOpen={() => showType({ workspaceId, editing: card.managed, viewing: card })}
-              onEdit={
-                card.managed
-                  ? () => showType({ workspaceId, editing: card.managed, viewing: card })
-                  : null
-              }
-              onDelete={card.managed ? () => remove(card) : null}
-            />
-          </div>
-        ))}
+        {shown.map((card) => {
+          // The server says what the viewer may do with a type they manage; an
+          // older one lists only those they may change and delete.
+          const editable =
+            card.managed !== null && (card.managed.canEdit ?? true) ? card.managed : null;
+          const deletable = card.managed !== null && (card.managed.canManage ?? true);
+          return (
+            <div role="listitem" key={card.key}>
+              <TypeCard
+                card={card}
+                viewerId={viewerId}
+                showYours={!filter.mineOnly}
+                onOpen={() => showType({ workspaceId, editing: editable, viewing: card })}
+                onEdit={
+                  editable
+                    ? () => showType({ workspaceId, editing: editable, viewing: card })
+                    : null
+                }
+                onDelete={deletable ? () => remove(card) : null}
+              />
+            </div>
+          );
+        })}
       </div>
     </>
   );
