@@ -1224,3 +1224,64 @@ describe('HostDependencyManager enumeration', () => {
     expect(npmInst?.isActive).toBe(false);
   });
 });
+
+/**
+ * A Windows machine as `where` sees it. `where` reads a colon as its own
+ * `dir:pattern` separator, so a full path such as `C:\…\codex.exe` is an
+ * "Invalid pattern" error; a bare name is looked up on PATH with PATHEXT.
+ */
+function windowsCtx(files: Record<string, string>, path: string[]): IExecutionContext {
+  const exists = (file: string) =>
+    Object.keys(files).find((f) => f.toLowerCase() === file.toLowerCase());
+  return makeCtx(async (command, args = []) => {
+    if (command === 'where') {
+      const arg = args[0] ?? '';
+      const colon = arg.lastIndexOf(':');
+      const [dirs, pattern] =
+        colon > 1 ? [[arg.slice(0, colon)], arg.slice(colon + 1)] : [path, arg];
+      if (/[\\/:]/.test(pattern)) throw new Error('ERROR: Invalid pattern is specified.');
+      const names = pattern.includes('.') ? [pattern] : ['.exe', '.cmd'].map((e) => pattern + e);
+      const found = dirs.flatMap((dir) =>
+        names.map((name) => exists(`${dir.replace(/\\$/, '')}\\${name}`)).filter(Boolean)
+      );
+      if (found.length === 0) throw new Error('INFO: Could not find files');
+      return { stdout: `${found.join('\r\n')}\r\n`, stderr: '' };
+    }
+    const real = exists(command);
+    if (real && args[0] === '--version') return { stdout: files[real]!, stderr: '' };
+    throw new Error(`'${command}' is not recognized`);
+  });
+}
+
+describe('HostDependencyManager on Windows with the official Codex installer', () => {
+  const official = 'C:\\Users\\USER\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe';
+  const older = 'C:\\Users\\USER\\.local\\bin\\codex.exe';
+  const files = { [official]: 'codex-cli 0.167.0\r\n', [older]: 'codex-cli 0.166.0\r\n' };
+
+  it('accepts the picked codex.exe as a path override', async () => {
+    const manager = new HostDependencyManager(windowsCtx(files, ['C:\\Users\\USER\\.local\\bin']), {
+      dependencies: TEST_DEPENDENCIES,
+      installMethodDetector: unknownDetector,
+      platform: 'windows',
+    });
+    const result = await manager.probeOverride('codex', { path: official });
+    expect(result).toMatchObject({ id: 'path', status: 'available', version: '0.167.0' });
+  });
+
+  it('reads a saved path override as the installation in use, not the older one on PATH', async () => {
+    const manager = new HostDependencyManager(windowsCtx(files, ['C:\\Users\\USER\\.local\\bin']), {
+      dependencies: TEST_DEPENDENCIES,
+      installMethodDetector: unknownDetector,
+      platform: 'windows',
+      getSelection: async () => ({ kind: 'path', path: official }),
+    });
+    await manager.probe('codex');
+    await vi.waitFor(() => expect(manager.getHostDependency('codex')).toBeDefined());
+    const host = manager.getHostDependency('codex')!;
+    expect(host.used).toEqual({ kind: 'path', path: official });
+    expect(host.installations.find((i) => i.id === 'path')).toMatchObject({
+      status: 'available',
+      version: '0.167.0',
+    });
+  });
+});

@@ -658,6 +658,13 @@ class PlatformAdapter(ABC):
     #: platform, and refuses before asking the platform when they have none.
     private_channel_needs_owner: ClassVar[bool] = False
 
+    #: Whether Switch puts the person a room is for into a new public channel
+    #: it makes for the room, through their confirmed linked account. False
+    #: where joining a public channel means more than the channel: on Teams a
+    #: standard channel's members are the whole team's, so adding someone
+    #: would add them to the team.
+    adds_creator_to_public_channel: ClassVar[bool] = True
+
     #: Whether this platform renders a link whose scheme is not http(s).
     #:
     #: False for platforms that linkify only the web schemes. It matters

@@ -134,6 +134,18 @@ async def test_a_step_in_a_room_is_announced_with_its_room(
     assert change.room_id == room
 
 
+async def test_a_step_for_a_room_deleted_mid_report_is_not_found(service, monkeypatch):
+    async def member(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(service, "_require_member", member)
+    with pytest.raises(SessionError) as error:
+        await service.report_item(
+            AGENT, SESSION, **_step(room_id="00000000-0000-0000-0000-00000000dead")
+        )
+    assert error.value.code == "NOT_FOUND"
+
+
 def _turn(turn_id: str, revision: int, status: str, usage=()):
     return _step(
         turn_id=turn_id,

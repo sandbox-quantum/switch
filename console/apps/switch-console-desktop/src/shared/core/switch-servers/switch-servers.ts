@@ -687,6 +687,12 @@ export type RemoteBridge = {
    * (Teams). False on a server predating the field.
    */
   privateChannelNeedsLinkedAccount: boolean;
+  /**
+   * Whether a new public channel here has the person asking put in it, when
+   * they have a confirmed linked account on the platform; it is made without
+   * them otherwise. False on Teams, and on a server predating the field.
+   */
+  publicChannelAddsCreator: boolean;
   /** Whether this connection receives its platform's events on an address of
    * its own, which the operator has to give the platform. */
   receivesWebhooks: boolean;

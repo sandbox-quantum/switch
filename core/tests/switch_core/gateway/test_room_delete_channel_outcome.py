@@ -54,6 +54,8 @@ class _RoomService:
         ("telegram", "left"),
         ("teams", "kept"),
         ("google_chat", "left"),
+        ("rocketchat", "archived"),
+        ("webex", "left"),
     ],
 )
 def test_room_detail_names_the_platforms_outcome(

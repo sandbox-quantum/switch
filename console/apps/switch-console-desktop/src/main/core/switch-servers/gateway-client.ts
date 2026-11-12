@@ -1831,6 +1831,8 @@ type BridgeJson = {
   // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  // Absent on a server predating it, which put nobody in a public channel.
+  public_channel_adds_creator?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1856,6 +1858,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelIdsRefused: b.channel_ids_refused ?? null,
     privateChannels: b.private_channels_supported ?? null,
     privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
+    publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
     ...(b.setup_values ? { setupValues: b.setup_values } : {}),
@@ -3781,23 +3784,6 @@ export async function fetchArchivedRooms(server: SwitchServer): Promise<RemoteRo
 }
 
 /**
- * The messaging-app usernames Switch knows on one bridge
- * (`GET /collaborations/{id}/users`) — the people a bridged room can be given.
- */
-export async function fetchBridgeUserNames(
-  server: SwitchServer,
-  bridgeId: string
-): Promise<string[]> {
-  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
-    authenticated: true,
-  });
-  const users = (await res.json()) as ExternalUserSummaryJson[];
-  return [...new Set(users.map((user) => user.external_username))].sort((a, b) =>
-    a.localeCompare(b)
-  );
-}
-
-/**
  * Change a room's auto-route setting (`PUT /rooms/{id}/auto-route`), the same
  * store `!auto-route` writes; a field left out is left alone. Answers with the
  * setting as it now stands.
@@ -4175,6 +4161,7 @@ export async function getConnectionCatalog(
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
+    agent_access_note: entry.agent_access_note,
     loopback_ports: entry.loopback_ports,
     key: entry.key,
     external_identity: entry.external_identity,
@@ -4198,6 +4185,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: null,

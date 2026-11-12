@@ -19,11 +19,19 @@ from switch_core.bridges.collaboration.google_chat.adapter import (
     GoogleChatAdapter,
     GoogleChatConnectionConfig,
 )
+from switch_core.bridges.collaboration.matrix.adapter import (
+    MatrixAdapter,
+    MatrixConnectionConfig,
+)
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
 )
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
+from switch_core.bridges.collaboration.rocketchat.adapter import (
+    RocketChatAdapter,
+    RocketChatConnectionConfig,
+)
 from switch_core.bridges.collaboration.signal.adapter import (
     SignalAdapter,
     SignalConnectionConfig,
@@ -39,6 +47,10 @@ from switch_core.bridges.collaboration.teams.adapter import (
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
+)
+from switch_core.bridges.collaboration.webex.adapter import (
+    WebexAdapter,
+    WebexConnectionConfig,
 )
 from switch_core.bridges.collaboration.webhook.adapter import (
     WebhookAdapter,
@@ -78,6 +90,9 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("google_chat", GoogleChatAdapter, GoogleChatConnectionConfig),
     PlatformRegistration("zulip", ZulipAdapter, ZulipConnectionConfig),
     PlatformRegistration("signal", SignalAdapter, SignalConnectionConfig),
+    PlatformRegistration("matrix", MatrixAdapter, MatrixConnectionConfig),
+    PlatformRegistration("rocketchat", RocketChatAdapter, RocketChatConnectionConfig),
+    PlatformRegistration("webex", WebexAdapter, WebexConnectionConfig),
 )
 
 
