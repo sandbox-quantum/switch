@@ -786,6 +786,13 @@ class DiscordAdapter(PlatformAdapter):
         conn.set_dm_handler(self._handle_message)
         conn.set_interaction_handler(self._make_on_interaction())
         conn.set_channel_update_handler(self.dispatch_channel_update)
+        conn.set_takeback_handlers(
+            on_message_delete=self.dispatch_message_delete,
+            on_bulk_message_delete=self.dispatch_bulk_message_delete,
+            on_message_edit=self.dispatch_message_edit,
+            on_channel_delete=self.dispatch_channel_delete,
+            on_thread_delete=self.dispatch_thread_delete,
+        )
         await conn.connect(
             commands=build_app_commands(self._handle_slash_command),
         )
@@ -896,6 +903,102 @@ class DiscordAdapter(PlatformAdapter):
         self._channel_names_seen.add(after.id)
         if self._on_channel_named is not None:
             await self._on_channel_named(str(after.id), before.name, after.name)
+
+    # ── Taken back on Discord ────────────────────────────────────────────────
+    #
+    # Reported in the forms `_handle_message` gave the post: the channel is a
+    # thread's parent, since a thread is a Switch thread in its parent's room,
+    # and the ref is `<channel or thread id>:<message id>`. Posts the bridge
+    # made, and ones it never relayed, are the bridge core's to ignore.
+
+    def _not_this_guild(self, guild_id: int | None) -> bool:
+        """An event from another guild the bot token is in. A guild-less one is
+        a direct message, which only a bridge with its own connection is
+        handed."""
+        return guild_id is not None and guild_id != self._guild_id
+
+    async def _room_channel_id(self, channel_id: int) -> str:
+        """The channel a post in `channel_id` came in under: the parent of a
+        thread, the channel itself otherwise."""
+        channel = await self._get_channel(channel_id)
+        parent_id = getattr(channel, "parent_id", None)
+        return str(parent_id if parent_id is not None else channel.id)
+
+    async def dispatch_message_delete(
+        self, payload: discord.RawMessageDeleteEvent
+    ) -> None:
+        if self._not_this_guild(payload.guild_id):
+            return
+        await self.report_message_deleted(
+            await self._room_channel_id(payload.channel_id),
+            f"{payload.channel_id}:{payload.message_id}",
+        )
+
+    async def dispatch_bulk_message_delete(
+        self, payload: discord.RawBulkMessageDeleteEvent
+    ) -> None:
+        """A moderator's purge: each message is reported on its own, and one
+        that fails is logged and does not stop the rest."""
+        if self._not_this_guild(payload.guild_id):
+            return
+        channel_id = await self._room_channel_id(payload.channel_id)
+        for message_id in sorted(payload.message_ids):
+            message_ref = f"{payload.channel_id}:{message_id}"
+            try:
+                await self.report_message_deleted(channel_id, message_ref)
+            except Exception:
+                logger.exception(
+                    "Failed to follow the bulk deletion of Discord message %s",
+                    message_ref,
+                )
+
+    async def dispatch_message_edit(
+        self, payload: discord.RawMessageUpdateEvent
+    ) -> None:
+        """Reported only when the words changed. Discord sends an update for a
+        link preview or embed arriving too, with no edit time on a message
+        never edited, and the same words where discord.py held the old copy.
+
+        Empty words are not reported: without the message content intent
+        Discord withholds a message's words unless it mentions the bot, so an
+        edit that drops the mention would read as the author erasing them."""
+        if self._not_this_guild(payload.guild_id):
+            return
+        message = payload.message
+        if message.author.id == self._require_connection().bot_user_id:
+            return
+        webhook_id = getattr(message, "webhook_id", None)
+        if webhook_id and webhook_id in self._webhook_ids:
+            return
+        if message.edited_at is None:
+            return
+        content = str(message.content or "")
+        if not content:
+            return
+        cached = payload.cached_message
+        if cached is not None and cached.content == content:
+            return
+        await self.report_message_edited(
+            await self._room_channel_id(payload.channel_id),
+            f"{payload.channel_id}:{payload.message_id}",
+            content,
+        )
+
+    async def dispatch_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        if self._not_this_guild(channel.guild.id):
+            return
+        await self.report_channel_removed(str(channel.id), deleted=True)
+
+    async def dispatch_thread_delete(
+        self, payload: discord.RawThreadDeleteEvent
+    ) -> None:
+        """A deleted thread is reported as a deleted channel, for a room bound
+        to the thread itself. Its posts relayed into the parent channel's room
+        stay there: Discord sends no deletion for each, and the bridge core has
+        no way yet to delete a thread of a room."""
+        if self._not_this_guild(payload.guild_id):
+            return
+        await self.report_channel_removed(str(payload.thread_id), deleted=True)
 
     async def dispatch_interaction(self, interaction: discord.Interaction) -> None:
         """Handle one press on a card's button the shared client routed here.

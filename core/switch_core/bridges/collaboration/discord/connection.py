@@ -5,6 +5,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from typing import Any
 
 import discord
@@ -31,6 +32,15 @@ NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
 _MEMBER_SEARCHES_PER_WINDOW = 60
 _MEMBER_SEARCH_WINDOW = 60.0
 _clock = time.monotonic
+
+
+@dataclass(frozen=True)
+class _TakebackHandlers:
+    message_delete: Callable[[discord.RawMessageDeleteEvent], Awaitable[None]]
+    bulk_message_delete: Callable[[discord.RawBulkMessageDeleteEvent], Awaitable[None]]
+    message_edit: Callable[[discord.RawMessageUpdateEvent], Awaitable[None]]
+    channel_delete: Callable[[discord.abc.GuildChannel], Awaitable[None]]
+    thread_delete: Callable[[discord.RawThreadDeleteEvent], Awaitable[None]]
 
 
 class DiscordConnection:
@@ -113,11 +123,34 @@ class DiscordConnection:
             ]
             | None
         ) = None
+        self._takeback_handlers: _TakebackHandlers | None = None
 
     def set_interaction_handler(
         self, handler: Callable[[discord.Interaction], Awaitable[None]] | None
     ) -> None:
         self._interaction_handler = handler
+
+    def set_takeback_handlers(
+        self,
+        *,
+        on_message_delete: Callable[[discord.RawMessageDeleteEvent], Awaitable[None]],
+        on_bulk_message_delete: Callable[
+            [discord.RawBulkMessageDeleteEvent], Awaitable[None]
+        ],
+        on_message_edit: Callable[[discord.RawMessageUpdateEvent], Awaitable[None]],
+        on_channel_delete: Callable[[discord.abc.GuildChannel], Awaitable[None]],
+        on_thread_delete: Callable[[discord.RawThreadDeleteEvent], Awaitable[None]],
+    ) -> None:
+        """Handlers for what is taken back on Discord: a message deleted (one
+        or in bulk) or edited, a channel or thread deleted. One each for the
+        whole socket, as for presses; unset means the event is dropped."""
+        self._takeback_handlers = _TakebackHandlers(
+            message_delete=on_message_delete,
+            bulk_message_delete=on_bulk_message_delete,
+            message_edit=on_message_edit,
+            channel_delete=on_channel_delete,
+            thread_delete=on_thread_delete,
+        )
 
     def set_channel_update_handler(
         self,
@@ -240,6 +273,8 @@ class DiscordConnection:
         # none is set.
         client.event(self._make_on_interaction())
         client.event(self._make_on_guild_channel_update())
+        for takeback_event in self._make_takeback_events():
+            client.event(takeback_event)
         if self._guild_remove_handler is not None:
             client.event(self._make_on_guild_remove())
         if self._guild_join_handler is not None:
@@ -402,6 +437,67 @@ class DiscordConnection:
                 logger.exception("Failed to handle a Discord channel update")
 
         return on_guild_channel_update
+
+    def _make_takeback_events(self) -> list[Callable[..., Coroutine[Any, Any, None]]]:
+        """The raw delete and edit events, and channel and thread deletion,
+        each routed to its handler from `set_takeback_handlers`, looked up
+        live. The raw events are delivered whether or not discord.py still
+        holds the message in its cache."""
+
+        async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent) -> None:
+            handlers = self._takeback_handlers
+            if handlers is None:
+                return
+            try:
+                await handlers.message_delete(payload)
+            except Exception:
+                logger.exception("Failed to handle a Discord message deletion")
+
+        async def on_raw_bulk_message_delete(
+            payload: discord.RawBulkMessageDeleteEvent,
+        ) -> None:
+            handlers = self._takeback_handlers
+            if handlers is None:
+                return
+            try:
+                await handlers.bulk_message_delete(payload)
+            except Exception:
+                logger.exception("Failed to handle a bulk Discord message deletion")
+
+        async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent) -> None:
+            handlers = self._takeback_handlers
+            if handlers is None:
+                return
+            try:
+                await handlers.message_edit(payload)
+            except Exception:
+                logger.exception("Failed to handle a Discord message edit")
+
+        async def on_guild_channel_delete(channel: discord.abc.GuildChannel) -> None:
+            handlers = self._takeback_handlers
+            if handlers is None:
+                return
+            try:
+                await handlers.channel_delete(channel)
+            except Exception:
+                logger.exception("Failed to handle a Discord channel deletion")
+
+        async def on_raw_thread_delete(payload: discord.RawThreadDeleteEvent) -> None:
+            handlers = self._takeback_handlers
+            if handlers is None:
+                return
+            try:
+                await handlers.thread_delete(payload)
+            except Exception:
+                logger.exception("Failed to handle a Discord thread deletion")
+
+        return [
+            on_raw_message_delete,
+            on_raw_bulk_message_delete,
+            on_raw_message_edit,
+            on_guild_channel_delete,
+            on_raw_thread_delete,
+        ]
 
     def _make_on_guild_join(
         self,
