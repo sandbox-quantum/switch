@@ -217,6 +217,20 @@ describe('runAgent', () => {
     expect(agent.instructions).toContain('clone https://github.com/acme/widgets into it');
   });
 
+  it('fills the params in its instructions, as run_template does', () => {
+    const agent = runAgent({
+      slot: 'red-a',
+      name: 'red-a',
+      entry: entry({ instructions: 'Work in {workdir} as {agent}. Leave {unknown} alone.' }),
+      values: { workdir: '/srv/widgets' },
+      displayName: null,
+      provider: 'claude',
+      machine: LAPTOP,
+      directoryText: '',
+    });
+    expect(agent.instructions).toBe('Work in /srv/widgets as red-a. Leave {unknown} alone.');
+  });
+
   it('sends the default addressing for an agent whose entry names none', () => {
     const agent = runAgent({
       slot: 'red-a',

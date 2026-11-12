@@ -64,6 +64,9 @@ class _Lifecycle:
     def get_adapter(self, bridge_id: str) -> None:
         return None
 
+    def supports_private_channels(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         return False
 

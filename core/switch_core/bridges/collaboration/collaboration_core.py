@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
@@ -16,12 +17,15 @@ from typing import TYPE_CHECKING, TypeVar
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE, defuse_label_markup
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
+    CardRejectedError,
+    MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
     SupportsSharedConnection,
@@ -30,6 +34,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
+    ChannelInUse,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -50,7 +55,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -107,6 +112,17 @@ from switch_core.trust.client import (
     trust_is_active,
     trust_redaction_notice,
 )
+from switch_core.ui_spec import (
+    UI_ACTION_PREFIX,
+    UI_CONTENT_KEY,
+    UI_PRESS_KEY,
+    ButtonProps,
+    UISpec,
+    UISpecError,
+    answerer_name,
+    parse_ui_spec,
+    pressed_button,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -119,6 +135,11 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# (bridge type, agent name, failure) of identity provisioning failures already
+# logged as a warning by this process; see `_sync_agent_identities`.
+_IDENTITY_FAILURES_SEEN: set[tuple[str, str, str]] = set()
+_IDENTITY_FAILURES_SEEN_MAX = 2000
 
 _InboundEventT = TypeVar(
     "_InboundEventT",
@@ -201,6 +222,41 @@ def _no_agents_notice(slash_hint: str | None) -> str:
         "Once an agent is in the room, @-mention it here and it'll pick up the "
         "conversation."
     )
+
+
+# Held while a card press is relayed: a mark goes in once its message reaches
+# the send, after which a failure may still have delivered it.
+_PRESS_SENDING: ContextVar[list[bool] | None] = ContextVar(
+    "press_sending", default=None
+)
+
+
+def _mark_sending() -> None:
+    sending = _PRESS_SENDING.get()
+    if sending is not None:
+        sending.append(True)
+
+
+def _inert(text: str) -> str:
+    """Text a card's author wrote, unable to address anyone once it is a
+    person's message: no `@name`, and no `<@U…>` or `<!channel>` for
+    `translate_inbound` to turn into one."""
+    return defuse_label_markup(text).replace("<", "<" + ZERO_WIDTH_SPACE)
+
+
+def _inbound_extra_content(
+    msg: InboundMessage, check: TrustCheckResult | None
+) -> dict[str, object] | None:
+    extra = dict(msg.extra_content)
+    if check is not None and (
+        check.redacted_content is not None or trust_annotation(check) is not None
+    ):
+        # A press repeats its text here; once Switch Trust changed or flagged
+        # that text, the raw copy must not ride along.
+        extra.pop(UI_PRESS_KEY, None)
+    if msg.sender_is_app:
+        extra[SENDER_IS_APP_MARKER] = True
+    return extra or None
 
 
 def _post_source(bridge_id: str, channel_id: str, message_ref: str) -> str:
@@ -433,7 +489,7 @@ class CollaborationCore:
         )
 
     def _traced(
-        self, kind: str, handler: Callable[[_InboundEventT], Awaitable[None]]
+        self, kind: str, handler: Callable[[_InboundEventT], Awaitable[object]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:
         """Give each inbound platform event its own id in the logs, count it,
         and bind the tenant the event belongs to.
@@ -822,13 +878,25 @@ class CollaborationCore:
 
         failures = await self._adapter.sync_agent_identities(list(current.values()))
         failed = {name for name, _ in failures}
+        any_new = False
         for name, exc in failures:
-            logger.error(
+            # A refusal that needs a person (a handle taken in the workspace)
+            # comes back on every bridge start: a warning the first time this
+            # process sees it, debug after that.
+            seen = (self._bridge_id, name, str(exc))
+            first = seen not in _IDENTITY_FAILURES_SEEN
+            if first:
+                any_new = True
+                if len(_IDENTITY_FAILURES_SEEN) >= _IDENTITY_FAILURES_SEEN_MAX:
+                    _IDENTITY_FAILURES_SEEN.clear()
+                _IDENTITY_FAILURES_SEEN.add(seen)
+            logger.log(
+                logging.WARNING if first else logging.DEBUG,
                 "Failed to provision %s identity for agent %s: %s",
                 self._bridge_type,
                 name,
                 exc,
-                exc_info=exc,
+                exc_info=exc if first else None,
             )
         for identity in current.values():
             if identity.name not in failed:
@@ -839,7 +907,8 @@ class CollaborationCore:
         # count regardless of failures would read as success on a run where
         # every one of them failed.
         if failures:
-            logger.warning(
+            logger.log(
+                logging.WARNING if any_new else logging.INFO,
                 "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
                 len(current),
@@ -937,13 +1006,12 @@ class CollaborationCore:
         self, channel_id: str, old_name: str, new_name: str
     ) -> None:
         """The platform reports this channel's name (renamed from `old_name`,
-        or unchanged). The room linked to it follows when it is named after
-        the channel (`NAME_SOURCE_KEY` "channel"), or, from before that was
-        kept, when its name is exactly the one it was made with from the old
-        channel name. Any other room keeps its name, and the channel's is
-        recorded for whoever wants to take it (`/rooms/{id}/sync-name`)."""
-        bridge_name = self._bridge_display_name
-        name = f"{bridge_name}: {new_name}"
+        empty when the platform did not say, or unchanged). The room linked to
+        it follows when it is named after the channel (`NAME_SOURCE_KEY`
+        "channel" or "created"), or, from before that was kept, while its name
+        still matches the channel's old one (`RoomStore.follow_channel_name`).
+        Any other room keeps its name, and the channel's is recorded for
+        whoever wants to take it (`/rooms/{id}/sync-name`)."""
         with tenant_scope(self._bridge_tenant_id):
             async with tenant_session(
                 self._session_factory, self._bridge_tenant_id
@@ -953,12 +1021,15 @@ class CollaborationCore:
                 )
             if room is None:
                 return
-            metadata = room.metadata_ or {}
-            if room.name != name and await self._room_service.follow_channel_name(
-                room.id, name, new_name, f"{bridge_name}: {old_name}"
+            if await self._room_service.follow_channel_name(
+                room.id,
+                old_name=old_name,
+                new_name=new_name,
+                bridge_display_name=self._bridge_display_name,
+                channel_name_for=self._adapter.channel_name_for,
             ):
                 return
-            if metadata.get(LINKED_CHANNEL_NAME_KEY) != new_name:
+            if (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY) != new_name:
                 await self._room_service.record_channel_name(room.id, new_name)
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
@@ -1086,7 +1157,9 @@ class CollaborationCore:
             msg.channel_id, _LOBBY_DEPRECATION_NOTICE, thread_root_id
         )
 
-    async def _handle_inbound_message(self, msg: InboundMessage) -> None:
+    async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
+        """Write a platform message into its room as its sender, and return
+        the event it became, or None when it was not relayed."""
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
             msg.channel_id,
@@ -1103,13 +1176,13 @@ class CollaborationCore:
             logger.debug(
                 "[BRIDGE-IN] dropping echo from Switch agent %s", msg.sender_name
             )
-            return
+            return None
         if msg.channel_type == "lobby":
             # The Slack app's DM ("lobby") is deprecated as a place to talk to
             # agents: point the user at the docs instead of auto-creating a room
             # and routing the message. Only Slack im/mpim map to "lobby".
             await self._handle_lobby_message(msg)
-            return
+            return None
         # An answer typed in words. Almost no message is one, and the check is a
         # parse before it is a query, so this costs a channel nothing. It does
         # not consume the message: the room still sees what was said.
@@ -1128,7 +1201,7 @@ class CollaborationCore:
                         channel_name=msg.channel_name,
                     )
             if room_ids is None:
-                return
+                return None
 
         room_id, transport_room_id = room_ids
 
@@ -1154,7 +1227,7 @@ class CollaborationCore:
                 raise BridgeOperationError(
                     "The message sender is not ready; retry delivery"
                 )
-            return
+            return None
 
         content = self._adapter.translate_inbound(msg.content)
         if mention_target is not None and (
@@ -1174,7 +1247,7 @@ class CollaborationCore:
         if msg.root_id is not None:
             thread_root_id = await self._event_for_external_post(msg.root_id)
             if thread_root_id is None:
-                logger.warning(
+                logger.info(
                     "[BRIDGE-IN] no room message mapped for external root %s; "
                     "posting top-level in room %s",
                     msg.root_id,
@@ -1220,12 +1293,13 @@ class CollaborationCore:
                     "can't access it.",
                     AdminMessageType.TRUST_BLOCKED,
                 )
-                return
+                return None
             if check.redacted_content is not None:
                 content = check.redacted_content
             annotation = trust_annotation(check)
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
+            _mark_sending()
             with writes_derived_from(
                 human_actor.client_id,
                 _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
@@ -1236,9 +1310,7 @@ class CollaborationCore:
                     format="markdown",
                     thread_root_id=thread_root_id,
                     metered=True,
-                    extra_content=(
-                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
-                    ),
+                    extra_content=_inbound_extra_content(msg, check),
                 )
             if event_id is None:
                 logger.error(
@@ -1251,7 +1323,7 @@ class CollaborationCore:
                     raise BridgeOperationError(
                         "The room did not accept the message; retry delivery"
                     )
-                return
+                return None
             # Tell the sender what happened only now that the message is
             # actually confirmed to have reached the room — posting this
             # beforehand risks telling them their message was flagged/
@@ -1279,7 +1351,7 @@ class CollaborationCore:
                 transport_event_id=event_id,
                 external_post_id=msg.message_ref,
             )
-            return
+            return event_id
 
         # A message with files is checked as a whole before anything is
         # uploaded: the typed text exactly as above, and each file through the
@@ -1334,7 +1406,7 @@ class CollaborationCore:
                     "can't access it."
                 )
             await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
-            return
+            return None
         if caption_check is not None and caption_check.redacted_content is not None:
             content = caption_check.redacted_content
         caption_annotation = (
@@ -1363,6 +1435,7 @@ class CollaborationCore:
         # into the same group, which then completes.
         source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
         group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
+        _mark_sending()
         for index, attachment in enumerate(msg.attachments):
             media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
@@ -1388,9 +1461,7 @@ class CollaborationCore:
                         else None
                     ),
                     metered=True,
-                    extra_content=(
-                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
-                    ),
+                    extra_content=_inbound_extra_content(msg, caption_check),
                 )
             if event_id is None:
                 logger.error(
@@ -1431,6 +1502,7 @@ class CollaborationCore:
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
             )
+        return first_event_id
 
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
@@ -1841,9 +1913,10 @@ class CollaborationCore:
 
         try:
             result = await self._room_service.create_room(config)
-        except IntegrityError:
+        except (IntegrityError, ChannelInUse):
             # Backstop: the (bridge_id, external_channel_id) unique index
-            # rejected a concurrent duplicate. Adopt the room that won the race.
+            # rejected a concurrent duplicate (room creation reports that as
+            # `ChannelInUse`). Adopt the room that won the race.
             logger.warning(
                 "Duplicate room creation for channel %s rejected by unique "
                 "constraint; adopting existing room",
@@ -2074,6 +2147,9 @@ class CollaborationCore:
         if interaction.action_id == INTERRUPT_ACTION:
             await self._handle_stop_press(interaction)
             return
+        if interaction.action_id.startswith(UI_ACTION_PREFIX):
+            await self._handle_card_press(interaction)
+            return
         if self._approval_answers is None:
             return
         answered = await self._approval_answers.for_press(interaction)
@@ -2174,6 +2250,207 @@ class CollaborationCore:
         await tell(
             "Switch has asked the agent to stop its current work. The activity "
             "message will say when it has."
+        )
+
+    async def _handle_card_press(self, interaction: InboundInteraction) -> None:
+        """Someone pressed a button on an agent's card (`ui_spec`).
+
+        Only which message it was on and who the platform says pressed it are
+        taken from the press. The room, the agent and the thread come from the
+        room message the bridge posted as that message, and the button has to
+        be one that message's card drew. The press then goes to the room as the
+        presser's message to the agent, in the card's thread, through the path
+        a typed message takes, so it gets the same identity and Switch Trust
+        checks, once the presser is shown to be someone who may address the
+        author (the check a stop press takes). It addresses the card's author and no one else: what the
+        button says is made inert, and goes structured under `UI_PRESS_KEY`
+        unless Switch Trust changed or flagged it.
+        A card takes one answer, recorded on the bridge's mapping of the
+        card's post before the press is delivered; any later press is refused.
+        """
+
+        async def tell(text: str) -> None:
+            await self._adapter.tell_actor(
+                interaction.channel_id,
+                interaction.sender_id,
+                interaction.sender_name,
+                interaction.thread_ref,
+                text,
+            )
+
+        room_ids = self._channel_to_room.get(interaction.channel_id)
+        card_ref = interaction.message_ref
+        card_event_id = (
+            await self._event_for_external_post(card_ref)
+            if card_ref is not None
+            else None
+        )
+        if room_ids is None or card_ref is None or card_event_id is None:
+            logger.warning(
+                "Ignoring a card press in %s on bridge %s: message %s maps to no "
+                "room message",
+                interaction.channel_id,
+                self._bridge_id,
+                interaction.message_ref,
+            )
+            await tell(
+                "This card is no longer connected to a Switch room, so your "
+                "answer was not sent."
+            )
+            return
+        room_id, transport_room_id = room_ids
+        human_actor = await self._ensure_human_in_room(
+            external_user_id=interaction.sender_id,
+            external_username=interaction.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if human_actor is None or human_actor.transport is None:
+            logger.warning(
+                "Ignoring a card press on %s: no Switch identity for %s on bridge %s",
+                card_event_id,
+                interaction.sender_id,
+                self._bridge_id,
+            )
+            await tell(
+                "Switch couldn't identify your account, so your answer was not sent."
+            )
+            return
+        card = await human_actor.transport.get_event(transport_room_id, card_event_id)
+        spec: UISpec | None = None
+        button: ButtonProps | None = None
+        author: Agent | None = None
+        if card is not None and card.sender_name:
+            try:
+                spec = parse_ui_spec(card.content.get(UI_CONTENT_KEY))
+            except UISpecError:
+                spec = None
+            if spec is not None:
+                async with self._session_factory() as session:
+                    author = await self._agent_store.get_by_name(
+                        session, card.sender_name
+                    )
+            if spec is not None and author is not None:
+                button = pressed_button(spec, interaction.action_id, interaction.value)
+        if card is None or spec is None or author is None or button is None:
+            logger.warning(
+                "Ignoring a card press on %s: %s/%s is not a button an agent's "
+                "card drew there",
+                card_event_id,
+                interaction.action_id,
+                interaction.value,
+            )
+            await tell(
+                "That button isn't on an agent's card in this room, so your "
+                "answer was not sent."
+            )
+            return
+        agent_name = _inert(author.display_name or author.name)
+        try:
+            await self._session_activity_service.authorize_room_control(
+                author.id,
+                room_id,
+                PlatformPerson(human_actor.transport_user_id),
+                doing="answer its card",
+            )
+        except SessionError as error:
+            logger.warning(
+                "Refused a card press on %s from %s: %s",
+                card_event_id,
+                interaction.sender_id,
+                error,
+            )
+            await tell(
+                f"You can't answer this card: you're not allowed to address {agent_name}."
+                if error.code == "NOT_AUTHORIZED"
+                else f"You can't answer this card: {agent_name} is not available."
+            )
+            return
+        channel_type = await self._adapter.get_channel_type(interaction.channel_id)
+        root_id = await self._external_post_for_event(
+            card.thread_root_event_id or card_event_id
+        )
+        async with self._session_factory() as session:
+            answered = await self._bridge_message_map_store.answer_card(
+                session,
+                bridge_id=self._bridge_id,
+                external_post_id=card_ref,
+                answer={
+                    "by": answerer_name(interaction.sender_display_name),
+                    "label": button.label,
+                },
+            )
+            await session.commit()
+        if answered is not None:
+            await tell(
+                f"This card was already answered by {_inert(str(answered['by']))} "
+                f"({_inert(str(answered['label']))})."
+            )
+            return
+        details = f"action: {button.id}" + (
+            f", value: {button.value}" if button.value else ""
+        )
+
+        async def release() -> None:
+            async with self._session_factory() as session:
+                await self._bridge_message_map_store.clear_card_answer(
+                    session, bridge_id=self._bridge_id, external_post_id=card_ref
+                )
+                await session.commit()
+
+        # A failure before the send releases the claim; once the send may have
+        # happened the card stays answered, however the relay ends.
+        sending: list[bool] = []
+        held = _PRESS_SENDING.set(sending)
+        try:
+            delivered = await self._handle_inbound_message(
+                InboundMessage(
+                    channel_id=interaction.channel_id,
+                    channel_type=channel_type,
+                    sender_id=interaction.sender_id,
+                    sender_name=interaction.sender_name,
+                    content=(
+                        f"@{card.sender_name} Clicked “{_inert(button.label)}” "
+                        f"({_inert(details)})"
+                    ),
+                    # Its own post, never the card's, and the same on a retry so the
+                    # room writes it once (`_post_source`).
+                    message_ref=(
+                        f"{card_event_id}#press:{button.id}:{interaction.sender_id}"
+                    ),
+                    root_id=root_id,
+                    extra_content={
+                        UI_PRESS_KEY: {
+                            "action": button.id,
+                            "value": button.value,
+                            "label": button.label,
+                            "card_event_id": card_event_id,
+                        }
+                    },
+                )
+            )
+        except (Exception, asyncio.CancelledError):
+            if not sending:
+                await asyncio.shield(release())
+            raise
+        finally:
+            _PRESS_SENDING.reset(held)
+        if delivered is None:
+            await release()
+            await tell(f"Your answer could not be delivered to {agent_name}.")
+            return
+        await self._adapter.settle_card_press(
+            interaction.model_copy(
+                update={
+                    "sender_display_name": answerer_name(
+                        interaction.sender_display_name
+                    )
+                }
+            ),
+            button.label,
+            author=card.sender_name,
+            spec=spec,
+            body=card.content["body"],
         )
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
@@ -2740,6 +3017,8 @@ class CollaborationCore:
                     admin_marker=admin_marker if is_system else None,
                     is_system=is_system,
                 )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2786,14 +3065,33 @@ class CollaborationCore:
         # Only the marker pages a channel. An `@channel` an agent wrote
         # itself is defused by `translate_outbound` like any other text.
         room_wide = is_room_wide_mention(event_content)
+        text = (
+            self._adapter.render_room_wide_mention(event.body)
+            if room_wide
+            else self._adapter.translate_outbound(event.body)
+        )
+        if UI_CONTENT_KEY in event_content:
+            try:
+                # Re-parsed: the card crossed the transport since it was checked.
+                spec = parse_ui_spec(event_content[UI_CONTENT_KEY])
+                return await self._adapter.send_ui_message(
+                    channel_id,
+                    sender_name,
+                    spec,
+                    text,
+                    thread_root_ref,
+                    room_wide_mention=room_wide,
+                )
+            except (UISpecError, CardRejectedError) as error:
+                logger.error(
+                    "[BRIDGE-OUT] card on %s was not posted; posting its text only: %s",
+                    event.event_id,
+                    error,
+                )
         return await self._adapter.send_message(
             channel_id,
             sender_name,
-            (
-                self._adapter.render_room_wide_mention(event.body)
-                if room_wide
-                else self._adapter.translate_outbound(event.body)
-            ),
+            text,
             thread_root_id=thread_root_ref,
             room_wide_mention=room_wide,
         )
@@ -2981,6 +3279,8 @@ class CollaborationCore:
                         caption=caption,
                         thread_root_id=thread_root_ref,
                     )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -3112,6 +3412,8 @@ class CollaborationCore:
                     caption=pending.caption,
                     thread_root_id=thread_root_ref,
                 )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(claim_event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(claim_event_id))
             raise
@@ -3224,6 +3526,25 @@ class CollaborationCore:
                 channel_id,
             )
         return claimed
+
+    @staticmethod
+    def _partly_posted(
+        transport_event_id: str, channel_id: str, partial: MessagePartlySent
+    ) -> str:
+        """The ref to settle a message's claim with when only some of its parts
+        reached the platform.
+
+        Settled rather than let go: a claim let go is posted again by the next
+        delivery, and the parts already in the channel would show twice. What
+        is missing has been said in the channel by the adapter."""
+        logger.error(
+            "[BRIDGE-OUT] %s reached channel %s only in part, and is not posted "
+            "again: %s",
+            transport_event_id,
+            channel_id,
+            partial,
+        )
+        return partial.first_ref
 
     async def _settle_outbound(
         self, transport_event_id: str, external_post_id: str | None

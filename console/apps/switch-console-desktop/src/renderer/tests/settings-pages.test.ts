@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { splitApiKeys } from '@renderer/features/settings/pages/api-keys';
+import {
+  describeCreatedKeyExpiry,
+  formatKeyExpiry,
+  keyLifetime,
+  splitApiKeys,
+} from '@renderer/features/settings/pages/api-keys';
 import {
   resolveSettingsTab,
   type SettingsAudience,
@@ -13,6 +18,7 @@ const everyone: SettingsAudience = {
   hasServer: true,
   agentManagement: true,
   workspaceSettings: true,
+  organizationSettings: false,
 };
 
 const ids = (audience: SettingsAudience) =>
@@ -37,15 +43,27 @@ describe('Settings sections', () => {
   });
 
   it('keeps only what stands without a server when there is none', () => {
-    expect(ids({ hasServer: false, agentManagement: false, workspaceSettings: false })).toEqual([
-      ['preferences', 'clis-models', 'remote-hosts', 'status'],
-      [],
-      ['docs'],
-    ]);
+    expect(
+      ids({
+        hasServer: false,
+        agentManagement: false,
+        workspaceSettings: false,
+        organizationSettings: false,
+      })
+    ).toEqual([['preferences', 'clis-models', 'remote-hosts', 'status'], [], ['docs']]);
   });
 
   it('offers workspace settings only where a gateway serves them', () => {
     expect(ids({ ...everyone, workspaceSettings: false })[2]).toEqual(['docs']);
+  });
+
+  it("offers the organization's settings to its admins, after the workspace's", () => {
+    expect(ids({ ...everyone, organizationSettings: true })[2]).toEqual([
+      'workspace-settings',
+      'organization-settings',
+      'docs',
+    ]);
+    expect(ids(everyone)[2]).not.toContain('organization-settings');
   });
 
   it('offers your devices and managed agents only with agent management', () => {
@@ -60,6 +78,7 @@ describe('Settings sections', () => {
       hasServer: false,
       agentManagement: false,
       workspaceSettings: false,
+      organizationSettings: false,
     });
     expect(shownSettingsTab('account', noServer)).toBe('preferences');
     expect(shownSettingsTab('remote-hosts', noServer)).toBe('remote-hosts');
@@ -89,6 +108,7 @@ const key = (id: string, type: string): SwitchApiKey => ({
   type,
   keyPrefix: 'abc',
   createdAt: '2026-11-03',
+  expiresAt: null,
 });
 
 describe('API keys', () => {
@@ -101,5 +121,23 @@ describe('API keys', () => {
     ]);
     expect(split.registration.map((k) => k.id)).toEqual(['r', 'b']);
     expect(split.agent.map((k) => k.id)).toEqual(['a']);
+  });
+
+  it("shows a key's expiry, past expiry, or that it has none", () => {
+    const now = new Date('2026-11-06T12:00:00Z');
+    expect(formatKeyExpiry(null, now)).toBe('No expiry');
+    expect(formatKeyExpiry('2027-02-04T12:00:00Z', now)).toBe('2027-02-04');
+    expect(formatKeyExpiry('2026-11-01T12:00:00Z', now)).toBe('Expired 2026-11-01');
+  });
+
+  it("describes a new key's expiry", () => {
+    expect(describeCreatedKeyExpiry(null)).toBe('This key does not expire.');
+    expect(describeCreatedKeyExpiry('2027-02-04T12:00:00Z')).toBe('Expires 2027-02-04.');
+  });
+
+  it('sends the chosen lifetime as days or never', () => {
+    expect(keyLifetime('90')).toBe(90);
+    expect(keyLifetime('365')).toBe(365);
+    expect(keyLifetime('never')).toBe('never');
   });
 });

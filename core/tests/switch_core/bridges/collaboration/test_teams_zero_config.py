@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    CreatedChannel,
 )
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
@@ -282,8 +283,8 @@ class _RecordingAdapter(PlatformAdapter):
     async def send_message(self, *args: Any, **kwargs: Any) -> str | None:
         return None
 
-    async def create_channel(self, *args: Any, **kwargs: Any) -> str:
-        return "c"
+    async def create_channel(self, *args: Any, **kwargs: Any) -> CreatedChannel:
+        return CreatedChannel(id="c", name="c")
 
     async def get_channel_type(self, *args: Any, **kwargs: Any) -> Any:
         return None

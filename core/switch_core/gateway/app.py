@@ -46,6 +46,7 @@ from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connector_apps import router as connector_apps_router
+from switch_core.gateway.decision_settings import router as decision_settings_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
@@ -72,6 +73,7 @@ from switch_core.gateway.providers import router as providers_router
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
+from switch_core.gateway.room_schedules import router as room_schedules_router
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
@@ -243,6 +245,7 @@ def create_gateway_app(
     )
     app.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
     app.include_router(references_router, tags=["references"])
+    app.include_router(room_schedules_router, tags=["room-schedules"])
     app.include_router(room_links_router, tags=["linked-rooms"])
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
@@ -251,6 +254,7 @@ def create_gateway_app(
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])
+    app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,

@@ -119,6 +119,17 @@ class AgentStore:
         result = await session.execute(select(Agent))
         return list(result.scalars().all())
 
+    async def count(self, session: AsyncSession) -> int:
+        """How many agents the bound tenant has, children included, as
+        `get_all` lists them."""
+        return (
+            await session.scalar(
+                select(func.count())
+                .select_from(Agent)
+                .where(Agent.tenant_id == require_tenant_id())
+            )
+        ) or 0
+
     async def get_by_owner(self, session: AsyncSession, owner_id: str) -> list[Agent]:
         """Every agent `owner_id` owns in the bound tenant.
 

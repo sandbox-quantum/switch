@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -548,8 +549,13 @@ class WebhookAdapter(PlatformAdapter):
         return ref if ack.found else None
 
     async def create_channel(
-        self, name: str, topic: str, *, channel_type: ChannelType = "channel_public"
-    ) -> str:
+        self,
+        name: str,
+        topic: str,
+        *,
+        channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "Create the chat in your app, then send a channel.join event"
         )

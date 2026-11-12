@@ -65,6 +65,7 @@ async def _read(session: AsyncSession, room_id: str, user: User) -> object:
         None,
         None,
         None,
+        None,
         user,
         False,  # type: ignore[arg-type]
     )
@@ -77,6 +78,7 @@ async def _write(session: AsyncSession, room_id: str, user: User) -> None:
         session,
         _SentinelRoomService(),  # type: ignore[arg-type]
         _ROOM_STORE,
+        None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]

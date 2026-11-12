@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -223,6 +224,7 @@ class TenantMember(Base):
     __tablename__ = "tenant_members"
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'member')", name="ck_tenant_members_role"),
+        Index("ix_tenant_members_user_id", "user_id"),
     )
 
     tenant_id: Mapped[str] = mapped_column(
@@ -1332,6 +1334,77 @@ class RoomLink(TenantScoped, Base):
     label: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class RoomSchedule(TenantScoped, Base):
+    """A message Switch posts in a room on a timer, addressed to some of its agents.
+
+    The timing is either a recurring `cron` rule read in `timezone`, or a
+    one-off `run_at`; exactly one is set. `next_run_at` is when it fires next,
+    and None once a one-off has fired. A run is claimed by moving
+    `next_run_at` on (`RoomScheduleStore.claim`), so one process posts it
+    however many are running.
+
+    The message is posted on behalf of `author_id`, whoever last set what the
+    schedule says or to whom, so each agent applies its policy to that person,
+    as for a template's kickoff. When an agent set it through its Switch tools,
+    `author_agent_id` names that agent and `author_id` is its owner: the
+    message then speaks as the agent, and the schedule goes with it.
+    """
+
+    __tablename__ = "room_schedules"
+    __table_args__ = (
+        Index("ix_room_schedules_tenant_id", "tenant_id"),
+        Index("ix_room_schedules_room_id", "room_id"),
+        Index("ix_room_schedules_next_run_at", "next_run_at"),
+        CheckConstraint(
+            "(cron IS NULL) <> (run_at IS NULL)", name="room_schedules_one_timing"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_schedules_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "author_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_room_schedules_author_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    author_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", name="fk_room_schedules_author", ondelete="CASCADE"),
+        nullable=False,
+    )
+    author_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    cron: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 
@@ -2523,6 +2596,9 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The press that answered the card this message carries, `{"by", "label"}`;
+    # null until a press is delivered. A card takes one answer.
+    card_answer: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2736,6 +2812,50 @@ class TrustSettings(Base):
     endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     policy_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# The backends a workspace may choose for decision routing
+# (`decision/settings.py`): none (auto-route off in the workspace), its own
+# endpoint, or Haiku run by the server's decision service.
+DECISION_BACKENDS = ("none", "endpoint", "haiku_anthropic", "haiku_bedrock")
+
+
+class DecisionSettings(TenantScoped, Base):
+    """A workspace's choice of decision backend for auto-route
+    (`decision/settings.py`): at most one row per workspace.
+
+    No row means the workspace uses the server default, the decision service
+    in the server's configuration (`DECISION_ENDPOINT_URL`). A row with
+    backend `none` turns auto-route off in the workspace even when the server
+    has a default. `api_key_encrypted` is under `config.keyring`: the bearer
+    token for an `endpoint`, the Anthropic key for `haiku_anthropic`, never
+    set for `haiku_bedrock`. `threshold` is sent to the service as the
+    confidence it needs to name an agent; None leaves it to the service.
+    """
+
+    __tablename__ = "decision_settings"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", name="pk_decision_settings"),
+        CheckConstraint(
+            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock')",
+            name="ck_decision_settings_backend",
+        ),
+        CheckConstraint(
+            "threshold IS NULL OR (threshold >= 0 AND threshold <= 1)",
+            name="ck_decision_settings_threshold",
+        ),
+    )
+
+    backend: Mapped[str] = mapped_column(Text, nullable=False)
+    endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -3127,6 +3247,48 @@ class PendingAttachmentGroup(TenantScoped, Base):
     total: Mapped[int] = mapped_column(Integer, nullable=False)
     from_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PendingDecision(TenantScoped, Base):
+    """A person's message waiting for the decision service to say who answers
+    it (`delivery/decision.py`).
+
+    Written by the router in the transaction that writes the message, when no
+    rule delivered it to anyone in a room with auto-route on, and deleted in
+    the transaction that stores the chosen agent's own event, or when the
+    decision is settled some other way. Every switch-core process runs the
+    worker, which claims a room's oldest row with `FOR UPDATE SKIP LOCKED` and
+    a lease (`claimed_until`) rather than holding a transaction open across
+    the call to the service. A row whose lease lapsed, because the process
+    deciding it stopped, is claimed again. A row older than
+    `DECISION_PENDING_MAX_AGE_SECONDS` is dropped rather than answered late.
+    """
+
+    __tablename__ = "pending_decisions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "room_id", "room_seq", name="pk_pending_decisions"
+        ),
+        # The worker's question: which of a tenant's rows are oldest.
+        Index("ix_pending_decisions_created_at", "tenant_id", "created_at"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_pending_decisions_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # The message's place in its room, and its key (`transport_event_id`).
+    room_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    claimed_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AgentRoomRead(TenantScoped, Base):
@@ -3836,6 +3998,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     turn_id: Mapped[str] = mapped_column(Text, nullable=False)
     item_id: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+    subagent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)

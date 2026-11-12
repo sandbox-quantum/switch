@@ -60,7 +60,7 @@ describe('ChatComposer mention badges', () => {
         agents={[agent]}
         people={[]}
         groupName="Ship review"
-        activity={null}
+        activities={[]}
         replyTo={null}
         onClearReply={() => {}}
         disabled={null}
@@ -118,7 +118,7 @@ describe('ChatComposer picked mentions', () => {
         agents={[sharer]}
         people={[{ userId: 'u1', name: 'Bob Member', email: 'bob@example.com' }]}
         groupName="Ship review"
-        activity={null}
+        activities={[]}
         replyTo={null}
         onClearReply={() => {}}
         disabled={null}
@@ -168,7 +168,7 @@ describe('ChatComposer on a server without group chats', () => {
           agents={[one, agent]}
           people={[{ userId: 'u1', name: 'Bob Member', email: null }]}
           groupName="Ship review"
-          activity={null}
+          activities={[]}
           replyTo={null}
           onClearReply={() => {}}
           disabled={null}

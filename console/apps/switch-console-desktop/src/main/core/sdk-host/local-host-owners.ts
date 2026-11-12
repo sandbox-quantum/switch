@@ -1,19 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isProcessAlive } from '@switch-console/agent-providers';
 
 /** The owner records a host writes under its state root, in stop order. */
 export const OWNER_RECORDS = ['shared-owner.lock', 'supervisor/owner.json'] as const;
-
-export function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
 
 export async function ownerPid(path: string): Promise<number | null> {
   try {
@@ -45,7 +36,13 @@ export function ownsRoot(pid: number, root: string): boolean {
 export async function ownedElsewhere(root: string): Promise<boolean> {
   for (const record of OWNER_RECORDS) {
     const pid = await ownerPid(join(root, record));
-    if (pid !== null && pid !== process.pid && alive(pid) && ownsRoot(pid, root)) return true;
+    if (
+      pid !== null &&
+      pid !== process.pid &&
+      isProcessAlive(pid, 'recorded') &&
+      ownsRoot(pid, root)
+    )
+      return true;
   }
   return false;
 }
@@ -60,7 +57,11 @@ export async function clearStaleOwners(root: string): Promise<void> {
   for (const record of OWNER_RECORDS) {
     const path = join(root, record);
     const pid = await ownerPid(path);
-    if (pid === null || (pid !== process.pid && alive(pid) && ownsRoot(pid, root))) continue;
+    if (
+      pid === null ||
+      (pid !== process.pid && isProcessAlive(pid, 'recorded') && ownsRoot(pid, root))
+    )
+      continue;
     if (pid === process.pid) continue;
     await unlink(path).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;

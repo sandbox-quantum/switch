@@ -1,7 +1,7 @@
 # switch-buddy playbook
 
-Details switch-buddy reads from its clone of the Switch repository when its
-instructions (`AGENT.md`, next to this file) point at a section here. Each
+Details switch-buddy fetches from the Switch repository when its instructions
+(`AGENT.md`, next to this file) point at a section here. Each
 section stands on its own: read the one you were pointed at, then act.
 
 ## Telegram private channel
@@ -86,8 +86,9 @@ When `messaging_apps.how_to_add` is `own_app`, they create an app on the platfor
   them to choose "Use your own app instead", then Slack, and follow the steps.
   The app comes pre-filled, the tokens are checked as they paste them, and the
   workspace is filled in for them.
-- **Other platforms:** read the platform's page in your clone,
-  `docs/official/deploy/messaging-apps/<platform>.md`, and walk them through
+- **Other platforms:** fetch the platform's page in the docs,
+  `https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/<platform>.md`
+  (`microsoft-teams` for Teams), and walk them through
   it in order. Then link the same page and tell them to choose "Use your own
   app instead" and paste the values.
 - Never ask them to paste a token into this chat.

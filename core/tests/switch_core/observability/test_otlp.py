@@ -7,6 +7,7 @@ ever notice.
 """
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -421,3 +422,38 @@ async def test_empty_partial_success_is_not_a_failure():
 async def test_non_json_success_body_is_tolerated():
     client = _client(lambda request: httpx.Response(200, text="OK"))
     await client.post("metrics", {})
+
+
+def test_the_decision_services_copy_of_the_log_payload_matches_this_one():
+    """The decision service builds OTLP logs with its own copy of this module's
+    log encoding (it cannot import switch-core). Both sides check the same
+    fixture, so a change here that the copy did not follow fails here too."""
+    fixture_path = (
+        Path(__file__).resolve().parents[4]
+        / "decision"
+        / "tests"
+        / "fixtures"
+        / "otlp_logs_payload.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+    resource = OtlpResource(
+        service_name=fixture["resource"]["service_name"],
+        service_version=fixture["resource"]["service_version"],
+        environment=fixture["resource"]["environment"],
+        deployment_id=fixture["resource"]["deployment_id"],
+        commit_sha=None,
+        repository_url=None,
+        instance_id=fixture["resource"]["instance_id"],
+    )
+    records = [
+        LogRecord(
+            body=record["body"],
+            severity_text=record["severity_text"],
+            severity_number=record["severity_number"],
+            time_nanos=record["time_nanos"],
+            attributes=record["attributes"],
+        )
+        for record in fixture["records"]
+    ]
+
+    assert build_logs_payload(records, resource) == fixture["payload"]

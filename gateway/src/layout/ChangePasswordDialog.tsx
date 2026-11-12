@@ -65,7 +65,7 @@ export default function ChangePasswordDialog({ open, onClose }: Props) {
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Change Password</DialogTitle>
+      <DialogTitle>Change password</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
@@ -104,7 +104,7 @@ export default function ChangePasswordDialog({ open, onClose }: Props) {
           disabled={submitting || !currentPassword || !newPassword || !confirmPassword}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
-          Change Password
+          Change password
         </Button>
       </DialogActions>
     </Dialog>

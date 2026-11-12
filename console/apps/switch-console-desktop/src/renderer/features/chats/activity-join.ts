@@ -5,6 +5,7 @@ import {
 } from '@shared/core/chats/activity';
 import { type ChatMessage, isSessionStartingNotice, turnEndNotice } from '@shared/core/chats/chats';
 import { isControlAck } from './stop-rows';
+import { switchTool } from './tool-presentation';
 
 /**
  * Joining an agent's turns, as Switch's activity feed stores them, to the
@@ -251,16 +252,44 @@ export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStat
 
 /** Tool calls whose only output is the room message the user already sees. */
 export function isHiddenTool(item: Pick<ChatActivityItem, 'title'>): boolean {
+  const tool = switchTool(item.title);
   return (
-    /^mcp__switch__post_message(\s|$)/.test(item.title) ||
-    /^mcp__switch__send_targeted_message(\s|$)/.test(item.title) ||
+    tool === 'post_message' ||
+    tool === 'send_targeted_message' ||
     /^ToolSearch(\s|$)/.test(item.title)
   );
 }
 
 /** The tool calls a turn shows. Assistant text is left out: the room message is the copy shown. */
 export function turnTools(turn: TurnActivity): ChatActivityItem[] {
-  return turn.items.filter((item) => item.kind === 'tool-activity' && !isHiddenTool(item));
+  return turn.items.filter(
+    (item) => item.kind === 'tool-activity' && !item.subagent && !isHiddenTool(item)
+  );
+}
+
+export function turnSubagents(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items
+    .filter((item) => item.kind === 'tool-activity' && item.subagent)
+    .sort((a, b) => Number(b.status === 'in-progress') - Number(a.status === 'in-progress'));
+}
+
+/**
+ * The text Switch gives a subagent it settles because the agent's session went
+ * away while it was running. The same words as `ORPHANED_SUBAGENT_TEXT` in
+ * switch-core's `sessions/contract.py`.
+ */
+export const ORPHANED_SUBAGENT_TEXT =
+  "Ended by Switch: the agent's session went away before this subagent finished.";
+
+/**
+ * How a subagent stands, in the words the chat platforms use too. A subagent can
+ * outlive its turn, so one still at work is running whatever the turn says.
+ */
+export function subagentStatus(item: ChatActivityItem): string {
+  if (item.status === 'in-progress') return 'running';
+  if (item.status === 'completed') return 'done';
+  if (item.status === 'declined') return 'stopped';
+  return item.text === ORPHANED_SUBAGENT_TEXT ? 'not confirmed finished' : 'failed';
 }
 
 /** Whether the turn is running with no visible tool currently running. */

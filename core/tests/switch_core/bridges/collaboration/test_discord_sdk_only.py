@@ -370,6 +370,9 @@ def test_discord_names_the_asker_because_nothing_else_reaches_them() -> None:
     adapter, _channel, _thread, _webhook = _guild_setup()
 
     assert adapter.notifies_only_by_mention is True
+    # And there is no `reply_broadcast` here to show that reply in the channel
+    # as well, so a card for a root-asked turn is posted at the root instead.
+    assert adapter.broadcasts_thread_replies is False
     assert adapter.separate_attention_slot is True
     assert adapter.supports_activity_reactions is True
     assert adapter.activity_reactions_per_agent is False
