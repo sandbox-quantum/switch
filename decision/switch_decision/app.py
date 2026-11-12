@@ -14,14 +14,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from switch_decision.backends import (
-    ErrorKind,
-    InvalidChoiceError,
-    ModelServerError,
-    ask,
-    check,
-    model_server,
-)
+from switch_decision.backends import ask, check, model_server
 from switch_decision.config import DEFAULT_ANTHROPIC_MODEL, Settings, load_settings
 from switch_decision.logging_setup import (
     RequestIdMiddleware,
@@ -33,7 +26,12 @@ from switch_decision.logging_setup import (
 )
 from switch_decision.models import DecideRequest, DecideResponse
 from switch_decision.otlp_logs import load_otlp_settings, start_log_shipping
-from switch_decision.prompt import NONE
+from switch_decision.readers import (
+    ErrorKind,
+    InvalidChoiceError,
+    ModelServerError,
+    picked,
+)
 
 logger = logging.getLogger("switch_decision")
 
@@ -231,11 +229,7 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
         )
         raise DecideFailed(str(exc), exc.kind) from exc
     latency_ms = int((time.monotonic() - started) * 1000)
-    picked = (
-        None
-        if answer.choice == NONE or answer.confidence < threshold
-        else answer.choice
-    )
+    agent = picked(answer, threshold)
     logger.info(
         "decide backend=%s model=%s candidates=%d choice=%s confidence=%.2f threshold=%.2f picked=%s latency_ms=%d",
         used.backend,
@@ -244,11 +238,11 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
         answer.choice,
         answer.confidence,
         threshold,
-        picked,
+        agent,
         latency_ms,
     )
     return DecideResponse(
-        agent=picked,
+        agent=agent,
         model_choice=answer.choice,
         confidence=answer.confidence,
         threshold=threshold,

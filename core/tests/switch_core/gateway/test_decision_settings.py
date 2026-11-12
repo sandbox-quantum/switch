@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     DecisionSettings,
@@ -26,9 +27,11 @@ from switch_core.db.models import (
     TenantMember,
     User,
 )
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.client import DynamicDecisionClient
+from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
@@ -73,6 +76,7 @@ def _app(
     server_url: str | None = SERVER_URL,
     bedrock: bool = False,
     allowed: str = "10.9.0.0/16",
+    presence: ControllerPresence | None = None,
 ) -> FastAPI:
     async def _session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
@@ -88,6 +92,7 @@ def _app(
                 bedrock_enabled=bedrock,
             ),
             store=DecisionSettingsStore(),
+            controllers=AgentControllerStore(),
         ),
         keyring=KEYRING,
         client=httpx.AsyncClient(transport=httpx.MockTransport(service.handle)),
@@ -98,6 +103,11 @@ def _app(
         timeout_seconds=1.0,
         telemetry=None,
         cache_seconds=60,
+        machines=MachineDecisions(
+            presence
+            if presence is not None
+            else ControllerPresence(on_bound=lambda _agent_id: None)
+        ),
     )
     app = FastAPI()
     app.include_router(decision_router)
@@ -195,6 +205,7 @@ async def test_with_no_row_the_server_default_applies(
             "threshold": None,
             "available": True,
             "reason": None,
+            "machine": None,
         },
         "workspace": None,
         "server_default": {
@@ -202,7 +213,7 @@ async def test_with_no_row_the_server_default_applies(
             "endpoint": SERVER_URL,
             "has_api_key": True,
         },
-        "options": {"haiku_anthropic": True, "haiku_bedrock": False},
+        "options": {"haiku_anthropic": True, "haiku_bedrock": False, "machines": []},
     }
 
 
@@ -223,7 +234,11 @@ async def test_no_server_default_offers_no_haiku_and_says_why(
     assert body["effective"]["available"] is False
     assert "Decision routing" in body["effective"]["reason"]
     assert body["server_default"]["configured"] is False
-    assert body["options"] == {"haiku_anthropic": False, "haiku_bedrock": False}
+    assert body["options"] == {
+        "haiku_anthropic": False,
+        "haiku_bedrock": False,
+        "machines": [],
+    }
     assert haiku.status_code == 422
 
 
@@ -348,6 +363,8 @@ async def test_an_endpoint_key_is_kept_only_for_the_same_url(
     assert moved_with_key.status_code == 200
     assert moved_with_key.json()["workspace"]["api_key_last4"] == "NewA"
     assert service.calls == []
+    row = await _row(session_factory, TENANT_ZERO_ID)
+    assert row is not None and row.saved_by == admin.id
 
 
 @pytest.mark.parametrize(
@@ -411,6 +428,7 @@ async def test_a_key_the_server_cannot_decrypt_still_loads(
             endpoint="http://10.9.0.5/decide",
             api_key_encrypted=lost.encrypt("lost-token"),
             threshold=None,
+            saved_by=None,
         )
         await session.commit()
 

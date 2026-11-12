@@ -1,5 +1,6 @@
 """The controller's connection over one WebSocket: the stream's frames down,
-pongs up as beats, and its agents' calls up and their answers down.
+pongs up as beats, its agents' calls up and their answers down, and decision
+requests down ahead of everything and their results up.
 
 What the stream carries, what a beat does and what a call answers are tested
 against Postgres in `test_stream.py` and `test_socket_calls.py`, through the
@@ -11,7 +12,7 @@ drives, how refusals and evictions are told, and how calls share the socket.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ from starlette.websockets import WebSocketDisconnect
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.dependencies import get_protocol
 from switch_core.bridges.agent.protocol.controller_presence import (
+    ControllerConnection,
     ControllerTakenOverError,
     UnknownControllerConnectionError,
 )
@@ -62,6 +64,14 @@ class _Calls:
         self.answered: list[dict[str, Any]] = []
         # Released by a test to let the calls to `slow` finish.
         self.slow = asyncio.Event()
+        # The connection the socket serves, made as the stream attaches.
+        self.conn: ControllerConnection | None = None
+        # Called with the connection as the stream yields its frame at that
+        # index, to act on the connection mid-stream.
+        self.on_frame: dict[int, Callable[[ControllerConnection], None]] = {}
+        # Decision requests waiting on the connection, made as it attaches.
+        self.waiting: list[str] = []
+        self.futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
 
 @pytest.fixture
@@ -74,18 +84,33 @@ def client(calls: _Calls, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClien
     # Pings every 50 ms rather than every heartbeat interval.
     monkeypatch.setattr(controller_routes, "PING_INTERVAL_SECONDS", 0.05)
 
-    async def attach_stream(**kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
+    async def attach_stream(**kwargs: Any) -> controller_routes.AttachedStream:
         if calls.attach_refusal is not None:
             raise calls.attach_refusal
+        conn = ControllerConnection(
+            id="c1",
+            controller_id=CONTROLLER,
+            tenant_id="tenant-1",
+            generation=7,
+            resume_cursors={},
+            last_beat=0.0,
+            opened_at=0.0,
+        )
+        calls.conn = conn
+        for request_id in calls.waiting:
+            calls.futures[request_id] = conn.expect_decision(request_id)
 
         async def frames() -> AsyncGenerator[dict[str, Any]]:
-            for frame in calls.frames:
+            for index, frame in enumerate(calls.frames):
+                act = calls.on_frame.get(index)
+                if act is not None:
+                    act(conn)
                 yield frame
             while True:  # the stream stays open until the socket goes
                 yield controller_routes.IDLE
                 await _sleep()
 
-        return frames()
+        return controller_routes.AttachedStream(conn=conn, frames=frames())
 
     async def record_beat(**kwargs: Any) -> list[str]:
         calls.beats.append(kwargs)
@@ -311,3 +336,113 @@ async def test_an_answer_goes_out_before_the_frames_waiting() -> None:
         "agent.event",
     ]
     assert await outbox.get(timeout=0.01) is None
+
+
+async def test_a_decision_request_goes_out_before_answers_and_frames() -> None:
+    outbox = controller_routes._Outbox(2)
+    await outbox.put_frame({"event": "agent.event", "data": {"n": 1}})
+    outbox.put_answer({"event": "call.result", "data": {"id": 1}})
+    outbox.put_urgent({"event": "decision.request", "data": {"request_id": "r1"}})
+
+    sent = [await outbox.get(timeout=1) for _ in range(3)]
+
+    assert [frame["event"] if frame else None for frame in sent] == [
+        "decision.request",
+        "call.result",
+        "agent.event",
+    ]
+    assert outbox.empty()
+
+
+def test_calls_and_decisions_share_the_socket(
+    client: TestClient, calls: _Calls
+) -> None:
+    calls.waiting = ["r1"]
+    calls.on_frame[1] = lambda conn: conn.send_urgent(DECISION)
+    seen: dict[str, dict[str, Any]] = {}
+    with client.websocket_connect(PATH) as socket:
+        socket.send_json(_call("c-1"))
+        for _ in range(50):
+            frame = socket.receive_json()
+            seen.setdefault(frame["event"], frame)
+            if frame["event"] == "decision.request":
+                socket.send_json(
+                    {"type": "decision.result", "request_id": "r1", "ok": True}
+                )
+                # Read after the result: once it is a beat, the result is in.
+                socket.send_json({"type": "pong", "cursors": {}})
+            if "call.result" in seen and calls.beats:
+                break
+
+    assert seen["call.result"]["data"]["id"] == "c-1"
+    assert seen["decision.request"] == DECISION
+    assert calls.futures["r1"].result()["request_id"] == "r1"
+
+
+DECISION = {
+    "event": "decision.request",
+    "data": {
+        "request_id": "r1",
+        "kind": "llamacpp",
+        "model": "qwen3.5-4b-q4_k_m",
+        "payload": {"messages": []},
+        "deadline_ms": 2000,
+    },
+}
+
+
+def test_a_decision_request_overtakes_a_catch_up_backlog(
+    client: TestClient, calls: _Calls
+) -> None:
+    backlog = [
+        {"event": "agent.event", "data": {"agent_id": "a1", "seq": n}}
+        for n in range(200)
+    ]
+    calls.frames = [calls.frames[0], *backlog]
+    # Asked while the stream is still catching up: the socket's outbox already
+    # holds the frames before it, and the stream has many more to send.
+    calls.on_frame[40] = lambda conn: conn.send_urgent(DECISION)
+    with client.websocket_connect(PATH) as socket:
+        received = [socket.receive_json() for _ in range(120)]
+
+    events = [frame["event"] for frame in received]
+    at = events.index("decision.request")
+    sent_before = [
+        f["data"]["seq"] for f in received[:at] if f["event"] == "agent.event"
+    ]
+    # Only frames the socket had already taken, not the backlog queued
+    # behind them, went out first.
+    assert len(sent_before) < 40
+    assert received[at] == DECISION
+    seqs = [f["data"]["seq"] for f in received if f["event"] == "agent.event"]
+    assert seqs == sorted(seqs) and seqs == list(range(len(seqs)))
+
+
+def test_a_decision_result_answers_the_request_it_names(
+    client: TestClient, calls: _Calls, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls.waiting = ["r1"]
+    result = {
+        "type": "decision.result",
+        "request_id": "r1",
+        "ok": True,
+        "body": {"choices": []},
+        "model_ms": 412,
+    }
+    with client.websocket_connect(PATH) as socket:
+        _until(socket, "ping")
+        socket.send_json(
+            {"type": "decision.result", "request_id": "nobody", "ok": True}
+        )
+        socket.send_json(result)
+        # The pong after them is read after them: once it is a beat, both
+        # results have been handled.
+        socket.send_json({"type": "pong", "cursors": {}})
+        for _ in range(100):
+            if calls.beats:
+                break
+            _until(socket, "ping")
+
+    future = calls.futures["r1"]
+    assert future.done() and future.result() == result
+    assert "'nobody', which is not waiting on this connection" in caplog.text

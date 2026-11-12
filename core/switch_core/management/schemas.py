@@ -179,6 +179,9 @@ class StatusControllerInfo(_StatusBody):
     # names, or Switch Console, which runs it (on an SSH host, say) and
     # replaces its bundle. Absent from a controller older than this field.
     updated_by: Literal["self", "console"] | None = None
+    # What it can do beyond running agents: `decision.v1` when it can serve
+    # auto-route's decision model. Absent from a controller older than this.
+    capabilities: list[str] | None = None
 
 
 class MachineStatus(_StatusBody):
@@ -237,6 +240,51 @@ class AgentStatus(_StatusBody):
         return self
 
 
+class DecisionHardware(_StatusBody):
+    accelerator: Literal["apple_silicon", "nvidia", "cpu"]
+    memory_bytes: int
+    gpu_name: str | None = None
+    vram_bytes: int | None = None
+
+
+class DecisionOffer(_StatusBody):
+    """A decision model the machine can run, and how fast."""
+
+    model: str
+    label: str
+    kind: Literal["llamacpp"]
+    runtime: str
+    download_bytes: int
+    speed: Literal["fast", "slow"]
+
+
+class DecisionProgress(_StatusBody):
+    done_bytes: int
+    total_bytes: int
+
+
+class DecisionStatus(_StatusBody):
+    """The decision model the machine serves for auto-route, if any
+    (`decision/machine.py`): its hardware, what it offers, and the state of
+    the model its assignment names. `reason` is one of
+    `turned_off_on_machine`, `not_enough_disk`, `download_failed`,
+    `checksum_mismatch`, `model_server_crashed`, `out_of_memory` or
+    `unsupported_hardware`; kept as sent, so a newer controller's reason is
+    shown rather than refused."""
+
+    hardware: DecisionHardware
+    offered: list[DecisionOffer]
+    state: Literal["off", "downloading", "starting", "running", "failed"]
+    model: str | None
+    applied_revision: int | None
+    progress: DecisionProgress | None = None
+    restarts_10m: int
+    since: str
+    reason: str | None = None
+    detail: str | None = None
+    last_decision_ms: int | None = None
+
+
 class StatusReport(_StatusBody):
     seq: int = Field(ge=0)
     observed_at: str
@@ -245,6 +293,8 @@ class StatusReport(_StatusBody):
     providers: list[ProviderStatus]
     tools: list[ToolStatus]
     agents: list[AgentStatus]
+    # Absent from a controller that cannot serve the decision model.
+    decision: DecisionStatus | None = None
 
 
 class ProgressRequest(_ControllerBody):

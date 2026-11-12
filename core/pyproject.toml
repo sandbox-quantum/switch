@@ -46,6 +46,9 @@ dependencies = [
     "uvloop>=0.21,<1 ; sys_platform != 'win32'",
     "cronsim>=2.6,<3",
     "tzdata>=2025.2",
+    # The decision service's base package (prompt, readers, threshold), for
+    # asking a decision model served on a user's own machine.
+    "switch-decision",
 ]
 
 # Repo coordinates point at the public switch repo — see RELEASING.md.
@@ -60,6 +63,9 @@ switch-migrate = "switch_core.main:migrate"
 switch-link-workos = "switch_core.workos_linking:main"
 switch-purge-organization = "switch_core.purge_organization:main"
 switch-cloud-machine = "switch_core.cloud_machine_admin:main"
+
+[tool.uv.sources]
+switch-decision = { path = "../decision", editable = true }
 
 [build-system]
 requires = ["hatchling"]

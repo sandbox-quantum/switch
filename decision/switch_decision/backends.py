@@ -2,11 +2,8 @@
 
 import asyncio
 import hashlib
-import json
-import math
 import os
-from dataclasses import dataclass
-from typing import Any, Literal, get_args
+from typing import Any
 
 import anthropic
 import boto3
@@ -31,40 +28,23 @@ from switch_decision.models import DecideRequest
 from switch_decision.prompt import (
     NONE,
     PICK_TOOL,
-    SPEAKER_QUESTION,
     SYSTEM,
     build_messages,
     build_state,
-    letter_messages,
+    llamacpp_request,
     output_schema,
     pick_tool,
     systemone_request,
 )
-
-# Why a model call failed, as the 502 body's `error_kind`. switch-core counts
-# failures by it and reads nothing else from the body, so the set is fixed.
-ErrorKind = Literal[
-    "model_server_unreachable",
-    "model_server_timeout",
-    "model_server_error",
-    "model_unavailable",
-    "credentials_missing",
-    "backend_refused",
-]
-ERROR_KINDS: tuple[str, ...] = get_args(ErrorKind)
-
-
-class ModelServerError(Exception):
-    """The model server could not be reached or gave an answer we cannot use.
-
-    `kind` classifies the failure. `log_text` is what the service logs: the same
-    as the message, minus anything the backend sent back (an error body could
-    echo room content)."""
-
-    def __init__(self, message: str, *, kind: ErrorKind, log_text: str | None = None):
-        super().__init__(message)
-        self.kind = kind
-        self.log_text = log_text if log_text is not None else message
+from switch_decision.readers import (
+    ErrorKind,
+    ModelAnswer,
+    ModelServerError,
+    read_bedrock,
+    read_letter_logprobs,
+    read_ollama,
+    read_systemone,
+)
 
 
 def kind_of_status(status: int) -> ErrorKind:
@@ -130,112 +110,6 @@ def kind_of_bedrock_error(exc: BotoCoreError | ClientError) -> ErrorKind:
     if isinstance(exc, ReadTimeoutError):
         return "model_server_timeout"
     return "model_server_error"
-
-
-class InvalidChoiceError(ModelServerError):
-    """The model answered, but named something that is not one of the options.
-
-    The API turns this into "no agent" rather than a failure: the backend worked,
-    its answer just can't be routed."""
-
-    def __init__(self, choice: object, confidence: float = 0.0):
-        super().__init__(
-            f"model chose {choice!r}, which is not one of the options",
-            kind="model_server_error",
-        )
-        self.choice = str(choice)
-        self.confidence = confidence
-
-
-def _confidence_of(value: object) -> float:
-    try:
-        c = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
-    return c if 0.0 <= c <= 1.0 else 0.0
-
-
-@dataclass(frozen=True)
-class ModelAnswer:
-    choice: str
-    confidence: float
-    reason: str
-
-
-def read_systemone(body: object, options: list[str]) -> ModelAnswer:
-    """Map a SystemOne response to a choice and the chosen option's probability."""
-    try:
-        answer = body["answers"][SPEAKER_QUESTION]  # type: ignore[index]
-        choice = answer["choice"]
-        probabilities = answer.get("probabilities") or {}
-    except (KeyError, TypeError) as exc:
-        raise ModelServerError(
-            f"SystemOne response has no '{SPEAKER_QUESTION}' answer",
-            kind="model_server_error",
-        ) from exc
-    if choice not in options:
-        raise InvalidChoiceError(
-            choice, _confidence_of(probabilities.get(choice, answer.get("confidence")))
-        )
-    confidence = probabilities.get(choice, answer.get("confidence"))
-    if not isinstance(confidence, (int, float)):
-        raise ModelServerError(
-            f"SystemOne response has no probability for {choice!r}",
-            kind="model_server_error",
-        )
-    top = sorted(probabilities.items(), key=lambda kv: kv[1], reverse=True)[:3]
-    reason = (
-        "probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in top) if top else ""
-    )
-    return ModelAnswer(choice=choice, confidence=float(confidence), reason=reason)
-
-
-def read_ollama(body: object, options: list[str]) -> ModelAnswer:
-    try:
-        content = body["message"]["content"]  # type: ignore[index]
-        out = json.loads(content)
-        choice, confidence, reason = (
-            out["agent"],
-            float(out["confidence"]),
-            out.get("reason", ""),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ModelServerError(
-            "Ollama output was not the expected JSON", kind="model_server_error"
-        ) from exc
-    if choice not in options:
-        raise InvalidChoiceError(choice, _confidence_of(confidence))
-    return ModelAnswer(choice=choice, confidence=confidence, reason=reason)
-
-
-def read_bedrock(body: dict, options: list[str]) -> ModelAnswer:
-    """Map a Converse response whose message calls the pick tool."""
-    try:
-        blocks = body["output"]["message"]["content"]
-        call = next(
-            b["toolUse"]
-            for b in blocks
-            if "toolUse" in b and b["toolUse"]["name"] == PICK_TOOL
-        )
-        out = call["input"]
-        choice, confidence, reason = (
-            out["agent"],
-            float(out["confidence"]),
-            out.get("reason", ""),
-        )
-    except (KeyError, TypeError, ValueError, StopIteration) as exc:
-        raise ModelServerError(
-            "Bedrock response did not call the pick tool with a decision",
-            kind="model_server_error",
-        ) from exc
-    if choice not in options:
-        raise InvalidChoiceError(choice, _confidence_of(confidence))
-    if not 0.0 <= confidence <= 1.0:
-        raise ModelServerError(
-            f"model gave confidence {confidence}, outside 0 to 1",
-            kind="model_server_error",
-        )
-    return ModelAnswer(choice=choice, confidence=confidence, reason=reason)
 
 
 def _is_claude(model_id: str) -> bool:
@@ -311,37 +185,6 @@ async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
             f"{where} declined to answer (stopReason={stop})", kind="backend_refused"
         )
     return read_bedrock(body, options)
-
-
-def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
-    """Probabilities over the option letters from the first token's top logprobs,
-    renormalised over the letters that are options."""
-    try:
-        top = body["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ModelServerError(
-            "llama.cpp response has no top logprobs for the first token",
-            kind="model_server_error",
-        ) from exc
-    mass: dict[str, float] = {}
-    for t in top:
-        letter = t["token"].strip()
-        if letter in options:
-            mass[letter] = mass.get(letter, 0.0) + math.exp(t["logprob"])
-    total = sum(mass.values())
-    if total <= 0:
-        raise ModelServerError(
-            "the model put no probability on any option letter",
-            kind="model_server_error",
-        )
-    probs = {options[k]: v / total for k, v in mass.items()}
-    choice = max(probs, key=probs.get)
-    ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)[:3]
-    return ModelAnswer(
-        choice=choice,
-        confidence=probs[choice],
-        reason="probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in ranked),
-    )
 
 
 def anthropic_request(req: DecideRequest, settings: Settings) -> dict:
@@ -496,16 +339,8 @@ async def ask(
     if settings.backend == "anthropic":
         return await ask_anthropic(settings, req, anthropic_key)
     if settings.backend == "llamacpp":
-        messages, letters = letter_messages(req, settings.history_limit)
+        payload, letters = llamacpp_request(req, settings.history_limit)
         url = f"{settings.llamacpp_url}/v1/chat/completions"
-        payload = {
-            "messages": messages,
-            "max_tokens": 1,
-            "temperature": 0,
-            "logprobs": True,
-            "top_logprobs": 20,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
         try:
             r = await client.post(
                 url,

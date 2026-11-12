@@ -43,6 +43,8 @@ AGENT_MANAGEMENT_TOOLS = {
     "get_advanced_config",
     "create_agent",
     "list_managed_agents",
+    "get_decision_routing",
+    "set_decision_routing",
 }
 
 

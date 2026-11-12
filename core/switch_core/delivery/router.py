@@ -106,7 +106,7 @@ from switch_core.db.stores.room_store import (
     main_agent_in,
 )
 from switch_core.db.stores.template_install_store import TemplateInstallStore
-from switch_core.decision.client import Decided, Failed, Unavailable
+from switch_core.decision.client import Decided, Failed, MachinePlacement, Unavailable
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
     ConversationMessage,
@@ -116,8 +116,8 @@ from switch_core.delivery.conversation import (
     may_follow,
 )
 from switch_core.delivery.decision import (
-    DECISION_NOTICE,
     DECISION_NOTICE_EVERY_SECONDS,
+    decision_notice,
     decision_request,
 )
 from switch_core.delivery.recipient import (
@@ -993,6 +993,9 @@ class MessageRouter:
         # and the tenants woken again while theirs ran.
         self._decision_runs: dict[str, asyncio.Task[None]] = {}
         self._decision_again: set[str] = set()
+        # How the process holding a workspace's machine is woken to decide
+        # its waiting messages: `wake(process_id, tenant_id)`.
+        self._wake_holder: Callable[[str, str], None] | None = None
         self._client_store = client_store
         self._budget_store = budget_store
         self._transports: Callable[[Actor[ClientConfig]], MessageTransport] | None = (
@@ -1012,6 +1015,12 @@ class MessageRouter:
         """How a room is told auto-route is unavailable: `post(tenant_id,
         transport_room_id, body)` posts an admin notice there."""
         self._notices = post
+
+    def use_decision_wakes(self, wake: Callable[[str, str], None]) -> None:
+        """How another process is woken to decide a workspace's waiting
+        messages, when it holds the socket of the machine they are decided
+        on: `wake(process_id, tenant_id)` (`decision/signals.py`)."""
+        self._wake_holder = wake
 
     def use_transports(
         self, transport_for: Callable[[Actor[ClientConfig]], MessageTransport]
@@ -1478,7 +1487,11 @@ class MessageRouter:
             while True:
                 self._decision_again.discard(tenant_id)
                 try:
-                    await self.decide_pending(tenant_id)
+                    placement = await self._machine_placement(tenant_id)
+                    if placement is not None and placement[0] == "elsewhere":
+                        self._wake_machine_holder(placement[1], tenant_id)
+                    else:
+                        await self.decide_pending(tenant_id)
                 except Exception:
                     metrics().increment(ROUTING_FAILURES, {"stage": "decision"})
                     logger.error(
@@ -1492,6 +1505,28 @@ class MessageRouter:
         finally:
             self._decision_runs.pop(tenant_id, None)
 
+    async def _machine_placement(self, tenant_id: str) -> MachinePlacement | None:
+        """Where the workspace's machine is held, when its decisions run on
+        one; None otherwise."""
+        decisions = self._decisions
+        if decisions is None:
+            return None
+        async with tenant_session(self.services.session_factory, tenant_id) as session:
+            return await decisions.machine_placement(session, tenant_id)
+
+    def _wake_machine_holder(self, process_id: str | None, tenant_id: str) -> None:
+        assert process_id is not None
+        if self._wake_holder is None:
+            logger.warning(
+                "Decision routing: tenant %s's machine is held by process %s, "
+                "and nothing wakes it from here; its sweep decides the waiting "
+                "messages",
+                tenant_id,
+                process_id,
+            )
+            return
+        self._wake_holder(process_id, tenant_id)
+
     async def decide_pending(self, tenant_id: str) -> int:
         """Decide the tenant's messages waiting for the decision service, and
         return how many were settled.
@@ -1499,7 +1534,11 @@ class MessageRouter:
         Every process runs this, woken when a message it wrote commits and on
         a sweep (`DECISION_SWEEP_SECONDS`), so a message whose process stopped
         is decided by another, or by the same after a restart. Rows older than
-        `DECISION_PENDING_MAX_AGE_SECONDS` are dropped first. Each pass claims
+        `DECISION_PENDING_MAX_AGE_SECONDS` are dropped first. A workspace whose
+        decisions run on a machine is decided only in the process holding the
+        machine's socket; anywhere else this claims nothing, unless no process
+        holds it, when each message fails at once as the machine being
+        offline (`decision/machine.py`). Each pass claims
         the oldest waiting message of up to `_DECISION_BATCH` rooms and decides
         them side by side, a room's messages in order. A message that fails
         to be decided for a reason other than the service keeps its claim
@@ -1530,6 +1569,9 @@ class MessageRouter:
                     asked=None,
                     agent=None,
                 )
+        placement = await self._machine_placement(tenant_id)
+        if placement is not None and placement[0] == "elsewhere":
+            return 0
         settled = 0
         # Long enough to cover one decision call (they run side by side), and
         # no longer: after a crash, a claimed message waits out the lease
@@ -1669,7 +1711,7 @@ class MessageRouter:
                     ),
                     reason="decided",
                     transport_room_id=transport_room_id,
-                    notice=False,
+                    notice=None,
                     decision_id=decision_id,
                     asked=asked,
                 )
@@ -1685,7 +1727,7 @@ class MessageRouter:
                 ),
                 reason="fallback",
                 transport_room_id=transport_room_id,
-                notice=True,
+                notice=decision_notice(outcome),
                 decision_id=decision_id,
                 asked=asked,
             )
@@ -1758,16 +1800,17 @@ class MessageRouter:
         pick: Callable[[AgentRecipient], bool] | None,
         reason: Literal["decided", "fallback"],
         transport_room_id: str,
-        notice: bool,
+        notice: str | None,
         decision_id: str,
         asked: AskedBackend,
     ) -> None:
         """Settle a decided message: in one transaction, delete its pending
         row and store the picked agent's own event, marked `routed_reason`,
         once the agent is checked again (still in the room, its policy and
-        budget letting the sender through). With `notice`, the backend failed,
-        and the room is told at most once an hour (`DECISION_NOTICE_AT_KEY`).
-        Either way the message's decision record is written.
+        budget letting the sender through). With a `notice`, the backend
+        failed, and the room is told so at most once an hour
+        (`DECISION_NOTICE_AT_KEY`). Either way the message's decision record
+        is written.
 
         A row another process settled already, after this one's claim lapsed,
         is left alone: its delivery is that process's.
@@ -1818,7 +1861,7 @@ class MessageRouter:
                             )
                             is not None
                         )
-            if notice:
+            if notice is not None:
                 tell_room = await self.services.room_store.claim_decision_notice(
                     session, room_id, every_seconds=DECISION_NOTICE_EVERY_SECONDS
                 )
@@ -1846,10 +1889,11 @@ class MessageRouter:
                 await chosen.actor.connect()
                 await delivery.after(row)
         if tell_room:
-            await self._tell_room(tenant_id, room_id, transport_room_id)
+            assert notice is not None
+            await self._tell_room(tenant_id, room_id, transport_room_id, notice)
 
     async def _tell_room(
-        self, tenant_id: str, room_id: str, transport_room_id: str
+        self, tenant_id: str, room_id: str, transport_room_id: str, notice: str
     ) -> None:
         """Post the "auto-route is unavailable" notice. Best effort: the
         message is settled either way, and a notice that cannot be posted is
@@ -1862,7 +1906,7 @@ class MessageRouter:
             )
             return
         try:
-            await self._notices(tenant_id, transport_room_id, DECISION_NOTICE)
+            await self._notices(tenant_id, transport_room_id, notice)
             metrics().increment(DECISION_NOTICES, {})
         except Exception:
             logger.warning(

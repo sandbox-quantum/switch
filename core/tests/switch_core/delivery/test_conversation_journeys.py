@@ -44,6 +44,7 @@ from switch_core.db.models import (
     Room,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
@@ -277,6 +278,7 @@ class Journey:
                         endpoint_url=None, api_key=None, bedrock_enabled=False
                     ),
                     store=DecisionSettingsStore(),
+                    controllers=AgentControllerStore(),
                 )
             ),
         )

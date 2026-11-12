@@ -10,9 +10,9 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --extra service --no-install-project
 COPY switch_decision ./switch_decision
-RUN uv sync --frozen --no-dev --no-editable \
+RUN uv sync --frozen --no-dev --extra service --no-editable \
     && groupadd --gid 10001 decision \
     && useradd --uid 10001 --gid 10001 --no-create-home decision
 

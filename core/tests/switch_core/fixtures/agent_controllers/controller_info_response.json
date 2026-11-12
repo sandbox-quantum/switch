@@ -28,7 +28,8 @@
       "version": "0.1.0",
       "protocol": 1,
       "assignment_revision": 3,
-      "updated_by": "self"
+      "updated_by": "self",
+      "capabilities": ["decision.v1"]
     },
     "machine": {
       "platform": {
@@ -64,7 +65,26 @@
         "state": "missing"
       }
     ],
-    "agents": []
+    "agents": [],
+    "decision": {
+      "hardware": { "accelerator": "apple_silicon", "memory_bytes": 25769803776 },
+      "offered": [
+        {
+          "model": "qwen3.5-4b-q4_k_m",
+          "label": "Qwen3.5-4B",
+          "kind": "llamacpp",
+          "runtime": "llamacpp-metal",
+          "download_bytes": 2740000000,
+          "speed": "fast"
+        }
+      ],
+      "state": "downloading",
+      "model": "qwen3.5-4b-q4_k_m",
+      "applied_revision": 3,
+      "progress": { "done_bytes": 1200000000, "total_bytes": 2740000000 },
+      "restarts_10m": 0,
+      "since": "2026-01-01T00:00:00Z"
+    }
   },
   "assignment_revision": 0,
   "workspaces_dir": "/home/user/.local/state/switch/agent-controller/workspaces",

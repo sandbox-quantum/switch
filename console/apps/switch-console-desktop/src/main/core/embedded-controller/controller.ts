@@ -49,6 +49,17 @@ export const embeddedControllerController = createRPCController({
 
   dismissRemoved: (serverId: string): Promise<void> => embeddedControllerService.dismiss(serverId),
 
+  /** Whether this computer may run auto-route's decision model ("Let this computer run the decision model"). */
+  getDecisionModelEnabled: (): Promise<boolean> => embeddedControllerService.decisionModelEnabled(),
+
+  /** Lets this computer run the decision model, or stops it; its controllers restart to take it up. */
+  setDecisionModelEnabled: (enabled: boolean): Promise<void> =>
+    embeddedControllerService.setDecisionModelEnabled(enabled),
+
+  /** Has this computer's controller for the server delete the decision model it downloaded. */
+  removeDecisionModel: (serverId: string): Promise<void> =>
+    embeddedControllerService.removeDecisionModel(serverId),
+
   /** Enrolls this computer again when the server no longer knows the machine it was. */
   enrollAgain: (serverId: string): Promise<void> => embeddedControllerService.enrollAgain(serverId),
 

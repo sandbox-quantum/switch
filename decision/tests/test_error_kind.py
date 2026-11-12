@@ -13,7 +13,7 @@ from botocore.exceptions import (
 )
 
 from switch_decision import backends
-from switch_decision.backends import ERROR_KINDS
+from switch_decision.readers import ERROR_KINDS
 from tests.helpers import ANTHROPIC_KEY, BODY, SECRET_TEXT, settings_for
 
 ANTHROPIC_HEADERS = {

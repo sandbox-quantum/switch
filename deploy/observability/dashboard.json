@@ -1490,7 +1490,26 @@
       "layout": {
         "x": 0,
         "y": 127,
-        "width": 12,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Machines running a decision model, by state (failed ones by reason); each pod counts its own, so summed",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.decision.machines{$env,$service} by {state,reason}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 127,
+        "width": 6,
         "height": 4
       }
     }

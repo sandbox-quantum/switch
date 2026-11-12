@@ -73,6 +73,7 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.client import DynamicDecisionClient
+from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 from switch_core.gateway.app import create_gateway_app
@@ -400,6 +401,7 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         timeout_seconds=1.0,
         telemetry=None,
         cache_seconds=0,
+        machines=MachineDecisions(protocol.connections.controllers),
     )
     gateway.state.github_connections = _github()
     # The clients the room and chat services think are running: `World` adds

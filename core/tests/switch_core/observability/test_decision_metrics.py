@@ -12,6 +12,7 @@ from switch_core.observability.catalogue import (
     DECISION_DURATION,
     DECISION_FAILURES,
     DECISION_LATENCY_BOUNDS_MS,
+    DECISION_MACHINES,
     DECISION_MODEL_TIME,
     DECISION_NOTICES,
     DECISION_PENDING,
@@ -34,6 +35,7 @@ EXPECTED = {
     DECISION_PENDING: ("gauge", set()),
     DECISION_PENDING_OLDEST_AGE: ("gauge", set()),
     DECISION_NOTICES: ("sum", set()),
+    DECISION_MACHINES: ("gauge", {"state", "reason"}),
 }
 
 # What would make a series one tenant's, or unbounded.

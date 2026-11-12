@@ -220,8 +220,9 @@ switch-core logs for each message.
 `switch.decision.pending.oldest_age` are sampled from the database, so every
 pod reports the same server-wide value; summed, they would read two pods as
 twice the backlog. `multi-pod-dashboard.json` shows pending per pod so you can
-see that they agree. The machine-state gauge arrives with "run on my machines",
-and is read with `sum`, since each pod counts only the machines connected to it.
+see that they agree. The machine-state gauge, `switch.decision.machines`, is the
+opposite: each pod counts only the machines whose controller is connected to
+it, so it is read with `sum`.
 
 **The monitors:**
 

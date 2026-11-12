@@ -13,6 +13,8 @@ import {
   isUpgradeRequired,
   type OpenWebSocket,
 } from './api';
+import type { DecisionModelRemovals } from './decision/control';
+import type { DecisionRuntime } from './decision/runtime';
 import { ConfigurationError } from './errors';
 import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
@@ -26,6 +28,8 @@ import type { AgentRuntime } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
+  type DecisionRequestFrame,
+  type DecisionResult,
   isProvider,
   type Provider,
   type StatusReport,
@@ -46,7 +50,7 @@ import {
   statusFingerprint,
 } from './status';
 import type { ControllerStore } from './store';
-import { type ControllerFrame, runControllerStream } from './stream';
+import { type ControllerFrame, ControllerStream } from './stream';
 
 export type ControllerTiming = {
   /** The full resync safety net. */
@@ -87,6 +91,11 @@ export const DEFAULT_TIMING: ControllerTiming = {
  */
 export const OUTDATED_RESTART_RETRY_MS = 10 * 60 * 1000;
 
+export type DecisionService = Pick<
+  DecisionRuntime,
+  'start' | 'reconcile' | 'status' | 'decide' | 'refreshSetting' | 'removeModel' | 'close'
+>;
+
 export type ControllerDeps = {
   store: ControllerStore;
   secrets: SecretStore;
@@ -111,6 +120,14 @@ export type ControllerDeps = {
    * passed to whoever runs this controller (`SessionStartedNotice`).
    */
   sessionStarted: (started: Omit<SessionStartedNotice, 'kind'>) => void;
+  /**
+   * Builds the decision model this machine serves for auto-route, given what
+   * to call when its status changes: reconciled to the assignment's
+   * `decision`, answering `decision.request` frames.
+   */
+  decision: (onChange: () => void) => DecisionService;
+  /** Requests to remove the downloaded decision model, served while the controller runs. */
+  decisionRemovals: DecisionModelRemovals;
   /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
   tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
@@ -356,6 +373,9 @@ export async function runController(
     }
   };
   if (assignment) placeAgents(assignment);
+  const decision = deps.decision(() => reporter?.request());
+  await decision.start();
+  decision.reconcile(assignment?.decision ?? null);
   const port = await relay.start(store.relayPort());
   store.saveRelayPort(port);
   log.info('Relay listening for this machine’s agents', { endpoint: relay.endpoint });
@@ -448,6 +468,7 @@ export async function runController(
     workspacesDir: workspaces,
     version: deps.version,
     updatedBy: deps.updatedBy,
+    decision: () => decision.status(),
     now: deps.now,
   });
   const reconcileDeps: ReconcileDeps = {
@@ -485,7 +506,10 @@ export async function runController(
           log.info('Pulled assignment', { revision: assignment.revision, why });
           placeAgents(assignment);
         }
-        if (assignment) await reconcile(assignment, reconcileDeps);
+        if (assignment) {
+          decision.reconcile(assignment.decision ?? null);
+          await reconcile(assignment, reconcileDeps);
+        }
         reporter?.request();
       } catch (error) {
         failed('Assignment sync', error);
@@ -660,6 +684,66 @@ export async function runController(
     });
   };
 
+  const stream = new ControllerStream({
+    client,
+    cursors: () => {
+      const cursors: Record<string, AgentCursor> = {};
+      for (const entry of assignment?.agents ?? []) cursors[entry.agent_id] = 'head';
+      return { ...cursors, ...hub.cursors() };
+    },
+    confirmed: () => hub.cursors(),
+    onOpened: (connection) =>
+      log.info('Switch has these agents bound to this controller', {
+        agents: connection.agents,
+      }),
+    onConnected: () => {
+      log.info('Connected to Switch');
+      hub.streamAttached();
+      void sync('connected');
+      void runOperations();
+    },
+    onDisconnected: () => {
+      hub.setUpstream(false);
+    },
+    onFrame: (frame) => onFrame(frame),
+    signal: stop.signal,
+    log,
+    idleTimeoutMs: timing.streamIdleMs,
+    initialBackoffMs: timing.streamInitialBackoffMs,
+    maxBackoffMs: timing.streamMaxBackoffMs,
+    random: deps.random,
+    calls,
+  });
+
+  /**
+   * Answers one decision off the frame loop, so frames behind it are not
+   * held up while the model works, and sends the answer up the socket. The
+   * request's payload and the answer's body are room content: neither is
+   * logged.
+   */
+  const answerDecision = async (request: DecisionRequestFrame): Promise<void> => {
+    let answer: DecisionResult;
+    try {
+      answer = await decision.decide(request);
+    } catch (error) {
+      answer = {
+        type: 'decision.result',
+        request_id: request.request_id,
+        ok: false,
+        error: { code: 'model_server_error', message: errorMessage(error) },
+      };
+    }
+    if (!stream.send(answer))
+      log.warn('Could not send a decision’s answer: the controller socket is down', {
+        requestId: request.request_id,
+      });
+  };
+
+  const stopServingDecisionRemovals = deps.decisionRemovals.serve(async () => {
+    await decision.removeModel();
+    reporter?.request();
+  });
+
   /** A hint that a chat with the agent was created or reopened: a failure costs only the head start. */
   const warmAgent = async (agentId: string, roomId: string): Promise<void> => {
     try {
@@ -719,6 +803,9 @@ export async function runController(
       case 'credential.revoked':
         await revoke();
         return;
+      case 'decision.request':
+        void answerDecision(frame.data);
+        return;
     }
   };
 
@@ -734,6 +821,10 @@ export async function runController(
   }, timing.resyncMs);
   let lastPeriodic = deps.now();
   const poll = setInterval(() => {
+    // The owner may have turned decision work on or off with the CLI.
+    void decision
+      .refreshSetting()
+      .catch((error: unknown) => failed('Reading the decision model setting', error));
     if (deps.now() - lastPeriodic >= reportWithinS * 1000) {
       lastPeriodic = deps.now();
       reporter?.request();
@@ -748,36 +839,7 @@ export async function runController(
 
   let ending: ControllerExit = 'stopped';
   try {
-    ending = await runControllerStream({
-      client,
-      cursors: () => {
-        const cursors: Record<string, AgentCursor> = {};
-        for (const entry of assignment?.agents ?? []) cursors[entry.agent_id] = 'head';
-        return { ...cursors, ...hub.cursors() };
-      },
-      confirmed: () => hub.cursors(),
-      onOpened: (connection) =>
-        log.info('Switch has these agents bound to this controller', {
-          agents: connection.agents,
-        }),
-      onConnected: () => {
-        log.info('Connected to Switch');
-        hub.streamAttached();
-        void sync('connected');
-        void runOperations();
-      },
-      onDisconnected: () => {
-        hub.setUpstream(false);
-      },
-      onFrame,
-      signal: stop.signal,
-      log,
-      idleTimeoutMs: timing.streamIdleMs,
-      initialBackoffMs: timing.streamInitialBackoffMs,
-      maxBackoffMs: timing.streamMaxBackoffMs,
-      random: deps.random,
-      calls,
-    });
+    ending = await stream.run();
     if (ending === 'revoked') await revoke();
     if (ending === 'taken_over')
       log.error(
@@ -796,15 +858,23 @@ export async function runController(
       log.info('Exiting for the service to start this controller on its new release.');
   } finally {
     stopServingRechecks();
+    stopServingDecisionRemovals();
     clearInterval(resync);
     clearInterval(poll);
     signal.removeEventListener('abort', forward);
     stop.abort();
     try {
-      if (revocation) await revocation;
-      await queue.drain();
-      await reporter.idle();
-      await deps.selfUpdate?.settled();
+      // First, and waited for: the model server holds gigabytes of memory,
+      // and whatever supervises this process may kill it before the rest
+      // is done, which would leave the server running.
+      try {
+        await decision.close();
+      } finally {
+        if (revocation) await revocation;
+        await queue.drain();
+        await reporter.idle();
+        await deps.selfUpdate?.settled();
+      }
     } finally {
       await runtime.close();
       await relay.close();

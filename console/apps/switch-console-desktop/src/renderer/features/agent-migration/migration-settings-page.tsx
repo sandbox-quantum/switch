@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { CircleCheck, Monitor, RefreshCw, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { ThisComputerDecisionModelRow } from '@renderer/features/managed-agents/this-computer-decision-model-row';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -57,6 +58,7 @@ export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
         title="Managed agents"
         description="Console moves each of your agents onto a managed machine by itself, on this computer and on your SSH hosts, so Switch runs them. This shows how far that has got."
       />
+      <ThisComputerDecisionModelRow />
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-foreground-muted">
           {running ? (

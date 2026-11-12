@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Room, User
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
@@ -36,6 +37,7 @@ _NO_DECISIONS = DecisionAvailability(
     enabled=False,
     server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
     store=DecisionSettingsStore(),
+    controllers=AgentControllerStore(),
 )
 _USERS = UserStore()
 

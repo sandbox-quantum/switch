@@ -2829,8 +2829,9 @@ class TrustSettings(Base):
 
 # The backends a workspace may choose for decision routing
 # (`decision/settings.py`): none (auto-route off in the workspace), its own
-# endpoint, or Haiku run by the server's decision service.
-DECISION_BACKENDS = ("none", "endpoint", "haiku_anthropic", "haiku_bedrock")
+# endpoint, Haiku run by the server's decision service, or a model served on
+# one of the workspace admin's own machines.
+DECISION_BACKENDS = ("none", "endpoint", "haiku_anthropic", "haiku_bedrock", "machine")
 
 
 class DecisionSettings(TenantScoped, Base):
@@ -2844,18 +2845,41 @@ class DecisionSettings(TenantScoped, Base):
     token for an `endpoint`, the Anthropic key for `haiku_anthropic`, never
     set for `haiku_bedrock`. `threshold` is sent to the service as the
     confidence it needs to name an agent; None leaves it to the service.
+
+    Backend `machine` runs the decision model on one of the workspace's
+    agent controllers (`decision/machine.py`): `controller_id` is that
+    controller and `model` the catalogue model it serves, both required.
+    `machine_ready_at` is when the controller first reported the model
+    running for this choice; until then auto-route is unavailable there and
+    posts no notices. Deleting the controller deletes the row.
+
+    `saved_by` is the user whose save wrote the row: the person in Console or
+    the gateway, or the owner of the agent whose tool saved it. An agent's
+    tool replaces or clears only a row its owner saved. None for a row from
+    before it was recorded, or once that user is deleted.
     """
 
     __tablename__ = "decision_settings"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", name="pk_decision_settings"),
+        ForeignKeyConstraint(
+            ["tenant_id", "controller_id"],
+            ["agent_controllers.tenant_id", "agent_controllers.id"],
+            name="fk_decision_settings_controller",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
-            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock')",
+            "backend IN ('none', 'endpoint', 'haiku_anthropic', 'haiku_bedrock', "
+            "'machine')",
             name="ck_decision_settings_backend",
         ),
         CheckConstraint(
             "threshold IS NULL OR (threshold >= 0 AND threshold <= 1)",
             name="ck_decision_settings_threshold",
+        ),
+        CheckConstraint(
+            "backend <> 'machine' OR (controller_id IS NOT NULL AND model IS NOT NULL)",
+            name="ck_decision_settings_machine",
         ),
     )
 
@@ -2863,6 +2887,18 @@ class DecisionSettings(TenantScoped, Base):
     endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    machine_ready_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    saved_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_decision_settings_saved_by"
+        ),
+        nullable=True,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -567,31 +567,40 @@ name = "switch-decision"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+service = [
     { name = "anthropic" },
     { name = "boto3" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "pydantic" },
     { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "switch-decision", extra = ["service"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=2.3.0" },
-    { name = "boto3", specifier = ">=1.43.117" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "anthropic", marker = "extra == 'service'", specifier = ">=2.3.0" },
+    { name = "boto3", marker = "extra == 'service'", specifier = ">=1.43.117" },
+    { name = "fastapi", marker = "extra == 'service'", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'service'", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
-    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "uvicorn", marker = "extra == 'service'", specifier = ">=0.30" },
 ]
+provides-extras = ["service"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "switch-decision", extras = ["service"] },
+]
 
 [[package]]
 name = "truststore"

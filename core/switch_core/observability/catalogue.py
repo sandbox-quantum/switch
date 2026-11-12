@@ -779,6 +779,21 @@ DECISION_NOTICES = _spec(
     "per room).",
 )
 
+# Machines running auto-route's decision model for their workspace ("run on my
+# machines"), by the state their controller last reported. Each process counts
+# the controllers whose socket it holds, so sum across replicas. Never which
+# machine or whose: those are per tenant.
+DECISION_MACHINES = _spec(
+    "switch.decision.machines",
+    "gauge",
+    "{machine}",
+    "Connected machines that run a decision model, by the state they last "
+    "reported (off, downloading, starting, running, failed) and, when failed, "
+    "why. Each replica counts the machines connected to it: read with sum.",
+    "state",
+    "reason",
+)
+
 # ── Health ───────────────────────────────────────────────────────────────────
 # One series per dependency, so a dashboard shows which one broke.
 HEALTH_CHECK = _spec(
@@ -856,6 +871,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         DECISION_PENDING,
         DECISION_PENDING_OLDEST_AGE,
         DECISION_NOTICES,
+        DECISION_MACHINES,
         HEALTH_CHECK,
     )
 }

@@ -25,6 +25,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 from fastapi import (
@@ -44,10 +45,12 @@ from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
     ConnectionNotLetGoError,
+    ControllerConnection,
     ControllerConnectionError,
     ControllerRevokedError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import (
+    DECISION_RESULT,
     IDLE,
     IDLE_INTERVAL_SECONDS,
     ControllerFrame,
@@ -421,6 +424,16 @@ async def open_connection(
     }
 
 
+@dataclass(frozen=True)
+class AttachedStream:
+    """A stream attached to a connection held here: the connection, whose
+    urgent frames and decision requests the socket serves, and the frames the
+    stream yields."""
+
+    conn: ControllerConnection
+    frames: AsyncGenerator[ControllerFrame]
+
+
 async def attach_stream(
     *,
     principal: ControllerPrincipal,
@@ -429,7 +442,7 @@ async def attach_stream(
     session_factory: async_sessionmaker[AsyncSession],
     connection_id: str,
     generation: int,
-) -> AsyncGenerator[ControllerFrame]:
+) -> AttachedStream:
     """Attach the stream to an open connection: its agents' events and the
     management nudges, starting with `connection_state`.
 
@@ -479,16 +492,19 @@ async def attach_stream(
         # The socket takes its agents' operations as calls (`socket_calls`).
         "calls": socket_calls.calls_offered(),
     }
-    return controller_event_stream(
+    return AttachedStream(
         conn=conn,
-        stream_token=token,
-        presence=presence,
-        buffer=protocol.event_buffer,
-        approvals=protocol.approval_outcomes,
-        nudges=nudges,
-        opening=opening,
-        rooms_of=_rooms_reader(protocol),
-        idle_seconds=IDLE_INTERVAL_SECONDS,
+        frames=controller_event_stream(
+            conn=conn,
+            stream_token=token,
+            presence=presence,
+            buffer=protocol.event_buffer,
+            approvals=protocol.approval_outcomes,
+            nudges=nudges,
+            opening=opening,
+            rooms_of=_rooms_reader(protocol),
+            idle_seconds=IDLE_INTERVAL_SECONDS,
+        ),
     )
 
 
@@ -569,21 +585,25 @@ async def connection_socket(
     generation: int,
 ) -> None:
     """The controller's one connection: its agents' events and the management
-    nudges down, its heartbeat and its agents' calls up, on one WebSocket.
+    nudges down, its heartbeat, its agents' calls and decision results up,
+    on one WebSocket.
 
     Attaches to a connection opened with `POST .../connection`. Frames are
     JSON `{"event", "data"}`, the events the stream carries. The server sends
     `{"event": "ping"}` every `PING_INTERVAL_SECONDS` and the controller answers
     `{"type": "pong", "cursors": {agent_id: n}}`, which is its beat. A
     `{"type": "call", ...}` runs one of its agents' operations and is answered
-    with a `call.result` frame (`socket_calls`). A refused attach is a
-    `refused` frame, then a close with 4000 plus the status; a refused beat is
-    an `evicted` frame naming why, then a close.
+    with a `call.result` frame (`socket_calls`). A `decision.request` frame
+    goes out ahead of anything the stream has queued, and the controller
+    answers it with a `{"type": "decision.result", "request_id", ...}`
+    message. A refused attach is a `refused` frame, then a close with 4000
+    plus the status; a refused beat is an `evicted` frame naming why, then a
+    close.
     """
     await websocket.accept()
     try:
         principal = _socket_principal(websocket, controller_id)
-        frames = await attach_stream(
+        attached = await attach_stream(
             principal=principal,
             management=management,
             protocol=protocol,
@@ -596,14 +616,17 @@ async def connection_socket(
         await websocket.close(code=4000 + error.status_code)
         return
 
+    conn = attached.conn
     outbox = _Outbox(_SOCKET_OUTBOX)
-    pump = asyncio.create_task(_pump(frames, outbox))
+    pump = asyncio.create_task(_pump(attached.frames, outbox))
+    urgent = asyncio.create_task(_forward_urgent(conn, outbox))
     receiver = asyncio.create_task(
         _receive(
             websocket,
             principal=principal,
             protocol=protocol,
             authenticator=authenticator,
+            conn=conn,
             connection_id=connection_id,
             generation=generation,
             outbox=outbox,
@@ -617,7 +640,8 @@ async def connection_socket(
     loop = asyncio.get_running_loop()
     next_ping = loop.time() + PING_INTERVAL_SECONDS
     try:
-        # One writer: frames, call answers and pings all go out from this loop.
+        # One writer: decision requests, call answers, frames and pings all
+        # go out from this loop, in that order.
         while not pump.done() or not outbox.empty():
             if receiver.done():
                 refusal = receiver.result()
@@ -643,6 +667,7 @@ async def connection_socket(
     finally:
         pump.cancel()
         receiver.cancel()
+        urgent.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
         # Cancelling only asks the pump to stop. Waiting for it means the
         # stream has detached from the connection, and the ledger has been
@@ -672,19 +697,21 @@ class _Outbox:
     read only as fast as the socket takes them. A call's answer never waits
     for room, as there are no more of them than calls in flight, and goes out
     before any frame still waiting, so a backlog of events does not hold a
-    call up.
+    call up. A decision request goes out first of all: it has a deadline of
+    a few seconds, and there are no more of them than decisions in flight.
     """
 
     def __init__(self, size: int) -> None:
         self._size = size
         self._frames: deque[ControllerFrame] = deque()
         self._answers: deque[ControllerFrame] = deque()
+        self._urgent: deque[ControllerFrame] = deque()
         self._waiting = asyncio.Event()
         self._room = asyncio.Event()
         self._room.set()
 
     def empty(self) -> bool:
-        return not self._frames and not self._answers
+        return not self._frames and not self._answers and not self._urgent
 
     async def put_frame(self, frame: ControllerFrame) -> None:
         while len(self._frames) >= self._size:
@@ -695,6 +722,10 @@ class _Outbox:
 
     def put_answer(self, answer: ControllerFrame) -> None:
         self._answers.append(answer)
+        self._waiting.set()
+
+    def put_urgent(self, frame: ControllerFrame) -> None:
+        self._urgent.append(frame)
         self._waiting.set()
 
     def wake(self) -> None:
@@ -710,6 +741,8 @@ class _Outbox:
                 await asyncio.wait_for(self._waiting.wait(), timeout)
             except TimeoutError:
                 return None
+        if self._urgent:
+            return self._urgent.popleft()
         if self._answers:
             return self._answers.popleft()
         if not self._frames:
@@ -743,20 +776,32 @@ async def _pump(frames: AsyncGenerator[ControllerFrame], outbox: _Outbox) -> Non
         await frames.aclose()
 
 
+async def _forward_urgent(conn: ControllerConnection, outbox: _Outbox) -> None:
+    """Hand the connection's urgent frames (`ControllerConnection.send_urgent`,
+    its decision requests) to the outbox as they are queued, ahead of the
+    stream's frames and the calls' answers."""
+    while True:
+        await conn.urgent_ready.wait()
+        for frame in conn.take_urgent():
+            outbox.put_urgent(frame)
+
+
 async def _receive(
     websocket: WebSocket,
     *,
     principal: ControllerPrincipal,
     protocol: AgentCore,
     authenticator: ManagementAuthenticator,
+    conn: ControllerConnection,
     connection_id: str,
     generation: int,
     outbox: _Outbox,
 ) -> ControllerConnectionError | None:
-    """Turn each pong into a beat and start answering each call, until the
-    controller goes or a beat is refused. Returns the refusal, so the socket
-    can say which before it closes; None when the controller simply went
-    away."""
+    """Read what the controller sends: each pong becomes a beat, each call
+    starts being answered, and each `decision.result` answers the request it
+    names. Until the controller goes or a beat is refused; returns the
+    refusal, so the socket can say which before it closes, or None when the
+    controller simply went away."""
     in_flight: set[asyncio.Task[None]] = set()
     while True:
         try:
@@ -775,6 +820,16 @@ async def _receive(
                 protocol=protocol,
                 authenticator=authenticator,
             )
+            continue
+        if kind == DECISION_RESULT:
+            if not conn.settle_decision(message):
+                logger.warning(
+                    "Controller %s answered decision request %r, which is not "
+                    "waiting on this connection (unknown, or past its deadline); "
+                    "ignored",
+                    principal.controller_id,
+                    str(message.get("request_id"))[:80],
+                )
             continue
         if kind != "pong":
             continue

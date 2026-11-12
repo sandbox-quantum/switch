@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from switch_core.decision.client import SETTINGS_CACHE_SECONDS, DynamicDecisionClient
+from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import DECISION_ROUTING
 from switch_core.outbound import guarded_async_client
@@ -25,6 +26,7 @@ def build_decision_client(
     config: SwitchConfig,
     session_factory: async_sessionmaker[AsyncSession],
     telemetry: TelemetryService | None,
+    machines: MachineDecisions,
 ) -> DynamicDecisionClient:
     """The decision client; `main` closes it (`aclose`). A workspace's own
     endpoint is reached through the server's outbound policy
@@ -51,4 +53,5 @@ def build_decision_client(
         timeout_seconds=config.decision_timeout_seconds,
         telemetry=telemetry,
         cache_seconds=SETTINGS_CACHE_SECONDS,
+        machines=machines,
     )

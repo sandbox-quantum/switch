@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Room, User, room_agents
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -25,6 +26,7 @@ _NO_DECISIONS = DecisionAvailability(
     enabled=False,
     server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
     store=DecisionSettingsStore(),
+    controllers=AgentControllerStore(),
 )
 
 

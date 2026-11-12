@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { sealProviderLogin } from '@switch-console/agent-providers';
 import { afterAll, describe, expect, it } from 'vitest';
 import { type ControllerExit, runController } from './controller';
+import { DecisionModelRemovals } from './decision/control';
 import { silentLogger } from './log';
 import { ProviderRechecks } from './provider-rechecks';
 import type { AgentAssignment, StatusReport } from './schemas';
@@ -18,6 +19,7 @@ import {
 import { ControllerStore } from './store';
 import { SystemdRuntime, systemctl } from './systemd-runtime';
 import { FakeCore } from './testing/fake-core';
+import { testDecisionRuntime } from './testing/fake-decision';
 
 /**
  * Runs real agents as users of their own, under systemd, against a fake Core.
@@ -120,6 +122,8 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
       {
         store,
         secrets,
+        decision: (onChange) => testDecisionRuntime(dataDir!, { onChange }),
+        decisionRemovals: new DecisionModelRemovals(),
         runtime: () =>
           new SystemdRuntime({
             config,

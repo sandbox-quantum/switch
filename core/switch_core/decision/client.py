@@ -37,13 +37,18 @@ route, so either the service's base URL or its `/decide` URL works):
 - Haiku: the server's decision service, told the backend per request in
   `X-Decision-Backend` (`anthropic` with the workspace's key in
   `X-Decision-Anthropic-Key`, or `bedrock`).
+- a machine: one of the workspace admin's own agent controllers, asked over
+  its connection with the service's own prompt and readers
+  (`decision/machine.py`), in the process holding its socket.
 
 A decision never holds up the room or breaks it, so every way of not getting
 an answer means nobody answers (or the room's triage agent, see
 `delivery/decision.py`): a timeout, a connection error, a response other than
 200, a body that is not the response above, or one naming an agent that was
-not a candidate. Each is logged, counted in the operator's metrics
-(`switch.decision.*`) and reported without identifiers (`decision_failed`).
+not a candidate; for a machine, also one that is offline, busy, or whose
+model is not running or fails. Each is logged, counted in the operator's
+metrics (`switch.decision.*`) and reported without identifiers
+(`decision_failed`).
 """
 
 from __future__ import annotations
@@ -52,15 +57,26 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
+from switch_decision.models import DecideRequest
+from switch_decision.readers import DEFAULT_CONFIDENCE_THRESHOLD
 
 from switch_core.db.session_scope import tenant_session
+from switch_core.decision.error_kinds import (
+    KNOWN_BACKEND_ERROR_KINDS,
+    BackendErrorKind,
+)
+from switch_core.decision.machine import (
+    MachineDecisionError,
+    MachineDecisions,
+    MachineFailure,
+)
 from switch_core.decision.settings import (
     Backend,
     DecisionAvailability,
@@ -147,45 +163,28 @@ class DecisionAnswer(BaseModel):
     latency_ms: float | None = None
 
 
-FailureReason = Literal[
-    "timeout",
-    "unreachable",
-    "error_status",
-    "bad_answer",
-    "key_unreadable",
-    "endpoint_refused",
-]
+FailureReason = (
+    Literal[
+        "timeout",
+        "unreachable",
+        "error_status",
+        "bad_answer",
+        "key_unreadable",
+        "endpoint_refused",
+    ]
+    | MachineFailure
+)
 # A backend as telemetry and the log name it: the server default is told apart
 # from a workspace's own endpoint.
-BackendLabel = Literal["server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+BackendLabel = Literal[
+    "server_default", "endpoint", "haiku_anthropic", "haiku_bedrock", "machine"
+]
 
 
 # What an error answer's body said, classified as it arrives. The body itself
 # is never kept: a workspace's endpoint chooses it, so it stays out of the log
 # and out of what Test shows.
 ErrorSignal = Literal["backend_unavailable", "auth"]
-
-# What went wrong behind the service, as a failed answer's `error_kind` says.
-# Only these values are taken; anything else, or none, is `unknown`.
-BackendErrorKind = Literal[
-    "model_server_unreachable",
-    "model_server_timeout",
-    "model_server_error",
-    "model_unavailable",
-    "credentials_missing",
-    "backend_refused",
-    "unknown",
-]
-_BACKEND_ERROR_KINDS: frozenset[str] = frozenset(
-    {
-        "model_server_unreachable",
-        "model_server_timeout",
-        "model_server_error",
-        "model_unavailable",
-        "credentials_missing",
-        "backend_refused",
-    }
-)
 
 _AUTH_WORDS = ("401", "auth", "api key", "api_key", "x-api-key")
 
@@ -201,7 +200,7 @@ def _error_kind(content: bytes) -> BackendErrorKind:
     if not isinstance(parsed, dict):
         return "unknown"
     kind = parsed.get("error_kind")
-    if isinstance(kind, str) and kind in _BACKEND_ERROR_KINDS:
+    if isinstance(kind, str) and kind in KNOWN_BACKEND_ERROR_KINDS:
         return cast(BackendErrorKind, kind)
     return "unknown"
 
@@ -391,13 +390,16 @@ class Decided:
 
 @dataclass(frozen=True)
 class Failed:
-    """The backend gave no usable answer. `latency_ms` is None when nothing
-    was asked (the key could not be read); `answer` is set when the backend
-    answered with an agent that was not a candidate."""
+    """The backend gave no usable answer. `machine` is the machine's name
+    when the backend is one, for the room's notice to name it. `latency_ms`
+    is None when nothing was asked (the key could not be read, or the
+    machine's owner no longer administers the workspace); `answer` is set
+    when the backend answered with an agent that was not a candidate."""
 
     reason: FailureReason
     backend: BackendLabel
     message: str
+    machine: str | None
     latency_ms: int | None
     answer: DecisionAnswer | None
 
@@ -429,13 +431,18 @@ def confidence_bucket(confidence: float | None) -> str:
     return "0.9_1.0"
 
 
+# Where a workspace's machine is held, for the decision worker: its socket in
+# this process, in another (named), or in none.
+MachinePlacement = tuple[Literal["here", "elsewhere", "nowhere"], str | None]
+
+
 @dataclass(frozen=True)
 class TestOutcome:
     """What the admin's Test button shows: the sample's pick, or why there
     was none. `error_code` is one of `unreachable`, `timeout`,
     `unauthorized`, `key_refused`, `bad_answer`, `backend_unavailable`,
-    `not_configured` and `refused` (an endpoint the server's outbound policy
-    does not allow)."""
+    `not_configured`, `refused` (an endpoint the server's outbound policy
+    does not allow), `machine_not_ready` and `machine_offline`."""
 
     ok: bool
     agent: str | None
@@ -496,10 +503,12 @@ class DynamicDecisionClient:
         timeout_seconds: float,
         telemetry: TelemetryService | None,
         cache_seconds: float,
+        machines: MachineDecisions,
     ) -> None:
         """`client` reaches the server's own decision service; a workspace's
         endpoint is reached only through `guarded_client`, a
-        `guarded_async_client` over `outbound_policy`."""
+        `guarded_async_client` over `outbound_policy`. `machines` asks the
+        machines whose sockets this process holds."""
         self._session_factory = session_factory
         self.availability = availability
         self._keyring = keyring
@@ -510,10 +519,50 @@ class DynamicDecisionClient:
         self._telemetry = telemetry
         self._cache_seconds = cache_seconds
         self._cache: dict[str, tuple[float, ResolvedSettings]] = {}
+        self.machines = machines
+        # How a saved machine choice reaches the controllers it affects:
+        # `nudge(tenant_id, {controller_id: assignment_revision})`, given by
+        # agent management when it runs (`use_assignment_nudges`).
+        self._nudge: Callable[[str, dict[str, int]], None] | None = None
+        # How the Test button reaches a machine held by another process
+        # (`decision/signals.py`).
+        self._relay_test: (
+            Callable[[str, str, str, float], Awaitable[TestOutcome]] | None
+        ) = None
 
     @property
     def server(self) -> ServerDefault:
         return self.availability.server
+
+    def use_assignment_nudges(
+        self, nudge: Callable[[str, dict[str, int]], None]
+    ) -> None:
+        """How a controller is told its assignment changed, so a machine
+        chosen (or no longer chosen) for a workspace starts (or stops) its
+        model at once."""
+        self._nudge = nudge
+
+    def nudge(self, tenant_id: str, revisions: dict[str, int]) -> None:
+        """Tell each controller its new assignment revision, after the save
+        that bumped it committed."""
+        if not revisions:
+            return
+        if self._nudge is None:
+            logger.warning(
+                "Decision routing: controllers %s have a new assignment, but "
+                "nothing nudges them in this process (agent management is "
+                "off); they pick it up on their next poll",
+                sorted(revisions),
+            )
+            return
+        self._nudge(tenant_id, revisions)
+
+    def use_test_relay(
+        self, relay: Callable[[str, str, str, float], Awaitable[TestOutcome]]
+    ) -> None:
+        """How the sample decision is asked of a machine held elsewhere:
+        `relay(process_id, controller_id, model, threshold)`."""
+        self._relay_test = relay
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -563,6 +612,25 @@ class DynamicDecisionClient:
         """Drop the workspace's cached settings, after a save here."""
         self._cache.pop(tenant_id, None)
 
+    async def machine_placement(
+        self, session: AsyncSession, tenant_id: str
+    ) -> MachinePlacement | None:
+        """Where the workspace's machine is held, when its decisions run on
+        one that can be asked; None for every other backend."""
+        if not self.availability.enabled:
+            return None
+        machine = (await self.settings(session, tenant_id)).machine
+        # A machine whose owner is no longer an admin is never asked, so any
+        # process can settle its messages as failed.
+        if machine is None or not machine.usable or not machine.owner_admin:
+            return None
+        if self.machines.held_here(machine.id):
+            return ("here", None)
+        holder = self.machines.holder_elsewhere(machine.id)
+        if holder is not None:
+            return ("elsewhere", holder)
+        return ("nowhere", None)
+
     async def decide(
         self,
         request: DecisionRequest,
@@ -579,6 +647,10 @@ class DynamicDecisionClient:
             settings = await self.settings(session, tenant_id)
         if not self.availability.enabled or not settings.has_backend:
             return Unavailable(reason=settings.reason)
+        if settings.machine is not None:
+            return await self._decide_on_machine(
+                request, settings, room_id, decision_id
+            )
         label: BackendLabel = (
             "server_default"
             if settings.source == "server_default"
@@ -597,6 +669,7 @@ class DynamicDecisionClient:
                 "key_unreadable",
                 "the workspace's decision key is encrypted under a secret Switch "
                 "no longer holds; a workspace admin has to save it again",
+                machine=None,
                 latency_ms=None,
             )
         target = decision_target(
@@ -618,7 +691,12 @@ class DynamicDecisionClient:
                     {"backend": label, "kind": error.error_kind},
                 )
             return self._failed(
-                room_id, label, error.reason, str(error), latency_ms=latency_ms
+                room_id,
+                label,
+                error.reason,
+                str(error),
+                machine=None,
+                latency_ms=latency_ms,
             )
         latency_ms = round((time.monotonic() - started) * 1000)
         candidates = [agent.name for agent in request.agents]
@@ -641,6 +719,7 @@ class DynamicDecisionClient:
                 reason="bad_answer",
                 backend=label,
                 message=f"named {answer.agent!r}, not a candidate",
+                machine=None,
                 latency_ms=latency_ms,
                 answer=answer,
             )
@@ -664,6 +743,93 @@ class DynamicDecisionClient:
         )
         return Decided(answer=answer, backend=label, latency_ms=latency_ms)
 
+    async def _decide_on_machine(
+        self,
+        request: DecisionRequest,
+        settings: ResolvedSettings,
+        room_id: str,
+        decision_id: str,
+    ) -> DecisionOutcome:
+        machine = settings.machine
+        assert machine is not None
+        if not machine.owner_admin:
+            return self._failed(
+                room_id,
+                "machine",
+                "owner_not_admin",
+                f"controller {machine.id}'s owner no longer administers the "
+                "workspace, so it was sent nothing",
+                machine=machine.name,
+                latency_ms=None,
+            )
+        threshold = (
+            settings.threshold
+            if settings.threshold is not None
+            else DEFAULT_CONFIDENCE_THRESHOLD
+        )
+        started = time.monotonic()
+        try:
+            answer = await self.machines.ask(
+                controller_id=machine.id,
+                model=machine.model,
+                request=DecideRequest.model_validate(request.model_dump(mode="json")),
+                threshold=threshold,
+                timeout_seconds=self.timeout_seconds,
+                request_id=decision_id,
+            )
+        except MachineDecisionError as error:
+            if error.error_kind is not None:
+                metrics().increment(
+                    DECISION_BACKEND_ERRORS,
+                    {"backend": "machine", "kind": error.error_kind},
+                )
+            return self._failed(
+                room_id,
+                "machine",
+                error.reason,
+                str(error),
+                machine=machine.name,
+                latency_ms=round((time.monotonic() - started) * 1000),
+            )
+        latency_ms = round((time.monotonic() - started) * 1000)
+        outcome = "agent" if answer.agent is not None else "none"
+        registry = metrics()
+        registry.increment(
+            DECISION_REQUESTS, {"backend": "machine", "outcome": outcome}
+        )
+        registry.observe(DECISION_DURATION, {"backend": "machine"}, latency_ms)
+        registry.observe(DECISION_CONFIDENCE, {"backend": "machine"}, answer.confidence)
+        if answer.model_ms is not None:
+            registry.observe(
+                DECISION_MODEL_TIME, {"backend": "machine"}, answer.model_ms
+            )
+        emit_safely(
+            self._telemetry,
+            "decision_made",
+            {
+                "backend": "machine",
+                "outcome": outcome,
+                "confidence": confidence_bucket(answer.confidence),
+                "latency_ms": latency_ms,
+            },
+        )
+        return Decided(
+            answer=DecisionAnswer(
+                agent=answer.agent,
+                model_choice=answer.choice,
+                confidence=answer.confidence,
+                threshold=answer.threshold,
+                reason=answer.reason,
+                model=machine.model,
+                backend="machine",
+                latency_ms=(
+                    float(answer.model_ms) if answer.model_ms is not None else None
+                ),
+            ),
+            backend="machine",
+            latency_ms=latency_ms,
+        )
+
     def _failed(
         self,
         room_id: str,
@@ -671,6 +837,7 @@ class DynamicDecisionClient:
         reason: FailureReason,
         message: str,
         *,
+        machine: str | None,
         latency_ms: int | None,
     ) -> Failed:
         logger.warning(
@@ -687,8 +854,69 @@ class DynamicDecisionClient:
             reason=reason,
             backend=label,
             message=message,
+            machine=machine,
             latency_ms=latency_ms,
             answer=None,
+        )
+
+    async def test_machine(
+        self, *, controller_id: str, model: str, threshold: float | None
+    ) -> TestOutcome:
+        """Ask the machine about the sample decision, wherever its socket is
+        held: here, or in the process holding it. The caller has checked it
+        reports `model` running."""
+        used = threshold if threshold is not None else DEFAULT_CONFIDENCE_THRESHOLD
+        if not self.machines.held_here(controller_id):
+            holder = self.machines.holder_elsewhere(controller_id)
+            if holder is None:
+                return machine_test_error(
+                    "machine_offline",
+                    "The machine isn't connected to Switch right now.",
+                    None,
+                )
+            if self._relay_test is None:
+                raise RuntimeError(
+                    "A machine held by another process is tested through the "
+                    "signal bus, and no relay is set (use_test_relay)"
+                )
+            return await self._relay_test(holder, controller_id, model, used)
+        return await self.ask_machine_sample(
+            controller_id=controller_id, model=model, threshold=used
+        )
+
+    async def ask_machine_sample(
+        self, *, controller_id: str, model: str, threshold: float
+    ) -> TestOutcome:
+        """The sample decision on a machine held in this process."""
+        started = time.monotonic()
+        try:
+            answer = await self.machines.ask(
+                controller_id=controller_id,
+                model=model,
+                request=DecideRequest.model_validate(
+                    SAMPLE_REQUEST.model_dump(mode="json")
+                ),
+                threshold=threshold,
+                timeout_seconds=self.timeout_seconds,
+                request_id=uuid.uuid4().hex,
+            )
+        except MachineDecisionError as error:
+            latency = round((time.monotonic() - started) * 1000)
+            code = {
+                "machine_offline": "machine_offline",
+                "machine_not_ready": "machine_not_ready",
+                "timeout": "timeout",
+            }.get(error.reason, "bad_answer")
+            return machine_test_error(code, _machine_test_message(code, error), latency)
+        return TestOutcome(
+            ok=True,
+            agent=answer.agent,
+            model_choice=answer.choice,
+            confidence=answer.confidence,
+            latency_ms=round((time.monotonic() - started) * 1000),
+            backend="machine",
+            error_code=None,
+            error_message=None,
         )
 
     @staticmethod
@@ -771,6 +999,27 @@ class DynamicDecisionClient:
             error_code=None,
             error_message=None,
         )
+
+
+def machine_test_error(code: str, message: str, latency: int | None) -> TestOutcome:
+    return TestOutcome(
+        ok=False,
+        agent=None,
+        model_choice=None,
+        confidence=None,
+        latency_ms=latency,
+        backend="machine",
+        error_code=code,
+        error_message=message,
+    )
+
+
+def _machine_test_message(code: str, error: MachineDecisionError) -> str:
+    return {
+        "machine_offline": f"The machine isn't connected to Switch right now. {error}",
+        "machine_not_ready": f"The decision model on the machine isn't running. {error}",
+        "timeout": f"The machine did not answer in time. {error}",
+    }.get(code, f"The machine did not answer with a decision. {error}")
 
 
 def _test_error_code(

@@ -83,6 +83,10 @@ workspace (`decision_settings`); no row means the server default.
   to the server's decision service, which calls Anthropic with it.
 - **Haiku on Bedrock**: offered only where the operator set
   `DECISION_BEDROCK_ENABLED`; no key is stored.
+- **Run on one of my machines**: the decision model runs on a machine the
+  admin owns and has enrolled in this workspace (a computer running Switch
+  Console, or a headless agent controller). No URL or key; see
+  [On a workspace admin's own machine](#on-a-workspace-admins-own-machine).
 - **Confidence threshold**: between 0 and 1, sent to the service as the
   confidence it needs to name an agent. Empty leaves it to the service.
 
@@ -103,7 +107,54 @@ the service cannot run, or nothing to test.
 
 The same settings are served by the gateway API, for that workspace's admins
 only: `GET`, `PUT` and `DELETE /gateway/decision-settings`, and
-`POST /gateway/decision-settings/test`.
+`POST /gateway/decision-settings/test`. An agent can read and change them for
+its owner on a server running agent management: `get_decision_routing` and
+`set_decision_routing` (machine or server default), with "can manage agents"
+and only when its owner is a workspace admin who owns the machine.
+
+## On a workspace admin's own machine
+
+The decision model can run on one of the admin's own machines instead of a
+hosted service: Qwen3.5-4B (`qwen3.5-4b-q4_k_m`, 4-bit) on llama.cpp, fast on
+Apple Silicon and NVIDIA, slow on a CPU. It suits a workspace whose admin has
+a recent Mac and no GPU server.
+
+- **Who can choose it.** A workspace admin, from the machines they own that
+  are enrolled in this workspace and report decision support (a controller
+  that can serve the model reports the `decision.v1` capability; an older one
+  is listed as "Update this machine's controller"). The operator role alone is
+  not enough: it is not their machine. Nobody else's machine is ever listed.
+- **What the machine does.** Told by its assignment, it downloads the pinned
+  model and llama.cpp release (checking each against its checksum), starts
+  llama-server bound to the machine itself, warms it up and reports
+  `running`. Moving the workspace off it stops the server and keeps the
+  download. Its owner can refuse decision work on the machine locally.
+- **Until it first reports running**, auto-route is unavailable in the
+  workspace, saying "The decision model on <machine> is getting ready
+  (<progress>)", and no room is sent a notice. Rooms behave as they do with
+  no backend.
+- **How a decision is asked.** Switch renders the prompt itself (the decision
+  service's own code, the `switch_decision` base package), sends it over the
+  machine's existing connection to Switch, ahead of anything else queued
+  there, and reads the answer and applies the threshold as the service would.
+  Nothing on the machine listens on the network, and nothing needs a URL or a
+  key. The machine forwards the request to its llama-server and returns the
+  answer; neither keeps nor logs the room's messages. On an Apple Silicon Mac a
+  decision takes about half a second.
+- **Several switch-core processes.** A connection lives in the process holding
+  the machine's socket, so only that process decides the workspace's
+  messages: the process that wrote one wakes it, and room content never
+  crosses processes. With no process holding it, the messages fail at once.
+- **Once it has been ready**, a machine that is offline, busy, or whose model
+  fails takes the failure path below, and the notice names it: "Auto-route is
+  unavailable right now (<machine> is offline); tag an agent to reach it."
+  Decisions resume when it reconnects, with no change of setting.
+- **A removed machine** (revoked) makes auto-route unavailable with "The
+  machine chosen for auto-route was removed…", again without notices. Deleting
+  the owner's account deletes the setting, and the workspace returns to the
+  server default.
+- **Test** asks the machine the fixed sample when it reports the model
+  running; otherwise it says the machine is offline or not ready.
 
 ## In a room
 
@@ -142,11 +193,14 @@ message content is sent anywhere.
 
 A timeout, a refused connection, an answer other than 200, or an answer that
 is not a decision (including one naming an agent that was not a candidate) is
-a failure. A decision of nobody is not.
+a failure; for a model on a machine, so is the machine being offline, busy
+(four decisions in flight already) or its model not running or failing. A
+decision of nobody is not.
 
 - The message goes to nobody, and the server log names the failure.
 - Switch posts "Auto-route is unavailable right now; tag an agent to reach
-  it." in the room, at most once an hour per room. The time is kept in the
+  it." in the room (naming the machine, for a model on one), at most once an
+  hour per room. The time is kept in the
   room (`decision_notice_at`), so restarts and several processes don't repeat
   it.
 - **Triage agent**: a room can name one of its agents with
@@ -193,7 +247,7 @@ under `decision`, and over OTLP they are `decision.*` attributes:
 | `outcome` | `delivered`, `nobody_chosen`, `nobody_failed`, `triage`, `dropped_not_member`, `dropped_not_allowed`, `expired`, `settled_elsewhere` or `unavailable`. |
 | `choice` | The agent that received it, if any. |
 | `reason` | Why it reached nobody, in words. |
-| `backend`, `candidates` | Which kind of backend was asked, and about how many agents. |
+| `backend`, `candidates` | Which kind of backend was asked (`machine` for a model on a machine), and about how many agents. |
 | `model`, `model_choice`, `confidence`, `threshold` | What the model picked and how sure it was, against the threshold. |
 | `latency_ms`, `model_ms`, `wait_ms` | The whole request as Switch timed it; the model's own time as the backend reported it; and the time from the person's message to this record. |
 | `failure` | Why the backend gave no usable answer, when it did not. |
@@ -204,8 +258,10 @@ a search by room finds the record and a search by `decision_id` finds
 everything about one decision.
 
 **Following one decision across the hop.** switch-core sends the decision id
-as `X-Request-Id` to a decision service. The service logs it as `request_id`
-on its own line for the decision, with its model and model time. To follow a
+as `X-Request-Id` to a decision service, which logs it as `request_id` on its
+own line for the decision, with its model and model time; and as the request's
+id to a machine, whose controller logs it as `requestId` on its
+`Decision answered` line. To follow a
 complaint that "my question went to the wrong agent": filter switch-core's logs
 by the room, find the record for the message, then search the decision
 service's logs for its `decision_id`.
@@ -214,8 +270,9 @@ service's logs for its `decision_id`.
 and outcome, failures by reason, what the backend said went wrong behind it
 (`backend_errors`, from the service's `error_kind`), latency beside model time,
 confidence, how each message ended and how long it waited, the size and age of
-the waiting queue, and the "unavailable" notices posted. None carries a room,
-agent, workspace or message.
+the waiting queue, the "unavailable" notices posted, and how many machines are
+in each decision-model state. None carries a room, agent, workspace, machine
+or message.
 
 **Health.** With a server default decision service, `/health/ready` reports a
 `decision` check, and `switch.health.check{check:decision}` follows it. It

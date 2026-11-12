@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { decisionLayout, readLocalSetting } from './decision/local-setting';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
 import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
 import { dataLayout } from './paths';
@@ -34,6 +35,50 @@ afterEach(() => {
 function lastLine(): string {
   return stderr.join('').trimEnd().split('\n').at(-1) ?? '';
 }
+
+describe('decision-model', () => {
+  it('turns decision work on this machine off and on, and shows it', async () => {
+    expect(await main(['decision-model', 'status', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(await main(['decision-model', 'off', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(await readLocalSetting(decisionLayout(dir))).toEqual({ enabled: false, problem: null });
+    expect(await main(['decision-model', 'on', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(await readLocalSetting(decisionLayout(dir))).toEqual({ enabled: true, problem: null });
+    expect(await main(['decision-model', 'maybe', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+  });
+
+  it('removes the downloads, but not while the assignment names the model and it is allowed', async () => {
+    const layout = decisionLayout(dir);
+    mkdirSync(layout.models, { recursive: true });
+    writeFileSync(join(layout.models, 'weights.gguf'), 'x');
+    const store = ControllerStore.open(dataLayout(dir).database);
+    store.saveAssignment(
+      { revision: 1, agents: [], decision: { revision: 1, model: 'qwen3.5-4b-q4_k_m' } },
+      null,
+      '2026-01-01T00:00:00Z'
+    );
+    store.close();
+    expect(await main(['decision-model', 'remove', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/Auto-route uses qwen3\.5-4b-q4_k_m on this machine/);
+    expect(existsSync(layout.models)).toBe(true);
+    expect(await main(['decision-model', 'off', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(await main(['decision-model', 'remove', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(existsSync(layout.models)).toBe(false);
+  });
+
+  it('refuses a SWITCH_CONTROLLER_DECISION_MODEL that is neither on nor off', async () => {
+    vi.stubEnv('SWITCH_CONTROLLER_DECISION_MODEL', 'sometimes');
+    try {
+      expect(await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle])).toBe(
+        EXIT_CONFIGURATION
+      );
+      expect(lastLine()).toBe(
+        "switch-agent-controller: SWITCH_CONTROLLER_DECISION_MODEL must be on or off, not 'sometimes'."
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe('main', () => {
   it('exits 2 for arguments it cannot run with, and says why last', async () => {

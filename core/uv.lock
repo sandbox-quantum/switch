@@ -2422,6 +2422,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "slack-sdk" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "switch-decision" },
     { name = "tzdata" },
     { name = "uvicorn" },
     { name = "uvloop", marker = "sys_platform != 'win32'" },
@@ -2466,6 +2467,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "slack-sdk", specifier = ">=3.41.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2,<3" },
+    { name = "switch-decision", editable = "../decision" },
     { name = "tzdata", specifier = ">=2025.2" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21,<1" },
@@ -2483,6 +2485,31 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.6" },
     { name = "ruff", specifier = ">=0.15" },
     { name = "testcontainers", specifier = ">=4.14.2" },
+]
+
+[[package]]
+name = "switch-decision"
+version = "0.1.0"
+source = { editable = "../decision" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'service'", specifier = ">=2.3.0" },
+    { name = "boto3", marker = "extra == 'service'", specifier = ">=1.43.117" },
+    { name = "fastapi", marker = "extra == 'service'", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'service'", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "uvicorn", marker = "extra == 'service'", specifier = ">=0.30" },
+]
+provides-extras = ["service"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "switch-decision", extras = ["service"] },
 ]
 
 [[package]]
