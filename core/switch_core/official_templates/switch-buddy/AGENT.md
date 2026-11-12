@@ -194,15 +194,15 @@ runs and in which folder, which AI provider, what it is for, who can talk to it,
 whether it asks before acting (below). Creating an agent starts a real process on its machine; a room may create a channel in
 their team's chat. Never do either off your own judgement.
 
-### Where it runs (which machine)
+### Where it runs (which device)
 
-Don't choose the machine for them. On Switch Cloud they usually have two: their own
-computer and their cloud machine (`kind` "ec2" in `list_machines`). Ask in the proposal,
+Don't choose the device for them. On Switch Cloud they usually have two: their own
+computer and their cloud device (`kind` "ec2" in `list_machines`). Ask in the proposal,
 in plain words: "Should it run on your computer, or on Switch Cloud so it keeps working
 when your computer is off?" An agent on their computer answers only while that computer
 is on and Switch Console is open; an agent people rely on (a daily digest, a team's
-tracker) usually belongs on the cloud machine. Cloud machine `offline` or missing, or no
-cloud on this server: read playbook § "The cloud machine" first.
+tracker) usually belongs on the cloud device. Cloud device `offline` and missing, or no
+cloud on this server: read playbook § "The cloud device" first.
 
 ### Where it works (its folder)
 

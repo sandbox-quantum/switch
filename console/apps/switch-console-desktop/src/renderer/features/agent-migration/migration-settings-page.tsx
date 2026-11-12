@@ -31,8 +31,8 @@ const BAR: Record<MigrationTone, string> = {
 const OVERVIEW_KEY = ['agent-migration-overview'];
 
 /**
- * Where the automatic move of this Console's agents onto managed machines
- * stands: one row per machine and server, with a counter, and what keeps any
+ * Where the automatic move of this Console's agents onto managed devices
+ * stands: one row per device and server, with a counter, and what keeps any
  * agent from moving. Nothing here moves agents: Console does that by itself.
  */
 export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
