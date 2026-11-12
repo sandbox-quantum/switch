@@ -1543,6 +1543,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/templates/{template_id}/runs",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/tenants",
       "auth": "session",
       "flags": []

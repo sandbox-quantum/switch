@@ -319,7 +319,11 @@ ROUTES: dict[str, Case] = {
         anyone(ok=404),
         why="Offered only to the domains it lists, and it lists none.",
     ),
-    "GET /gateway/workspace/services": get(f"{G}/workspace/services", admins()),
+    "GET /gateway/workspace/services": get(
+        f"{G}/workspace/services",
+        anyone(),
+        why="Every member reads what the workspace offers; only admins switch it.",
+    ),
     "PUT /gateway/workspace/services/{service}": put(
         f"{G}/workspace/services/github", admins(), json={"enabled": True}
     ),
@@ -792,6 +796,11 @@ ROUTES: dict[str, Case] = {
     ),
     "GET /gateway/templates/{template_id}/content": get(
         f"{G}/templates/{{template}}/content", owner_or_admins(refused=404)
+    ),
+    "POST /gateway/templates/{template_id}/runs": post(
+        f"{G}/templates/{{template}}/runs",
+        owner_or_admins(refused=404),
+        why="Only a template the caller could have run is counted.",
     ),
     "PATCH /gateway/templates/{template_id}": patch(
         f"{G}/templates/{{template}}",

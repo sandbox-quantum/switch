@@ -53,6 +53,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Templates have a page of their own in the new dashboard layout, and say
+  how often each one is run.** Behind `gateway_v2`, Templates leaves the
+  Resources tabs: the workspace's own templates and the ones that come with
+  Switch sit in separate tables, with each template's type, owner (marked
+  "You" for your own), runs and last change, and a menu on every row to run,
+  edit, duplicate or delete it. Edit and Delete follow what the server allows:
+  someone else's template shows them greyed with the owner's name, and an
+  official one cannot be edited or deleted by anyone. Run opens the template's
+  form in Switch Console, in the workspace the dashboard is showing.
+  Duplicate makes a private copy under a free name. The API carries the same
+  facts: every template response has `run_count`, the runs in this workspace
+  counted since this release, and `run_blocked_reason`, why a person should
+  not run it by hand (switch-buddy, which Switch Console sets up itself).
+  `POST /templates/{id}/runs` counts a run of a template the caller may read.
+  Switch Console reports each finished run there, and the agent operation
+  `run_template` counts its own. Runs from before this release are not
+  counted.
 - **`switch-purge-organization` deletes an organization when its owner
   asks.** Run where switch-core runs, it shows what would go and what stays;
   with `--execute --request REFERENCE` it ends the organization's messaging
@@ -191,8 +208,7 @@ version of their own to them without also giving them a release of their own.
   included, grants on another person's connector.
 - **The connector catalogue says who turned a connector off.**
   `GET /gateway/service-connections` adds `organization_locked` and
-  `decided_by` (`organization`, `workspace` or `default`), and
-  `GET /gateway/workspace/services` adds `decided_by`. The catalogue also
+  `decided_by`, named as the workspace's own switches name it. The catalogue also
   carries each connector's `publisher`, `links` (documentation, support,
   privacy) and `mcp_urls`, and the agents list for a connector carries each
   agent's grant and whether it can be granted one.
@@ -315,6 +331,14 @@ version of their own to them without also giving them a release of their own.
   reason. Unarchiving still acts at once.
 
 #### Fixed
+- **A workspace's connector list credits an organization's default to the
+  organization.** It named nobody as having set a connector the organization
+  turned on or off for its workspaces without locking it.
+- **A workspace admin can no longer clear the workspace's own setting for a
+  connector its organization has locked**, as they already couldn't switch
+  it. The workspace's choice is kept for when the organization unlocks it.
+  A switch or clear made while an organization admin changes that connector
+  now waits for the change, so it never acts on a lock that is changing.
 - **Agents can maintain the documents a room template creates.** A
   template's `docs:` made documents no agent had written, and only the agent
   that wrote a document could update or delete it, so every agent got 403.
@@ -556,6 +580,19 @@ version of their own to them without also giving them a release of their own.
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
   "Yours", and every user. A count that cannot be read shows a dash and why.
+- **The new layout's Workspace › Connectors chooses which connectors the
+  workspace may use.** Each connector says whether it is enabled here and
+  what decided that: the organization's lock ("Set by" the organization, with
+  no switch for anyone), the organization's default, the workspace's own
+  choice, or the workspace's default. Workspace and organization admins
+  switch what is not locked, and a workspace that set its own can go back to
+  the default, the organization's where it set one; turning off a connector
+  people or agents use asks first. Members see the same page read-only. Each card says whether it
+  signs in through the organization's app or Switch's, or what stops anyone
+  using it. The workspace's connector list (`GET /workspace/services`) is now
+  readable by every member, with the counts of who a switch reaches left to
+  admins, and says which setting decides each connector, the organization's
+  default, whether the caller may change it, and why it can't be used.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -3180,6 +3217,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A finished template run is counted on the server.** Once a run from a
+  stored or official template has fully succeeded, whichever way it ran,
+  Switch Console reports it, and so does switch-buddy's own setup, once. The
+  web dashboard shows the count beside each template. A server that does not
+  count runs is left alone, and the run is never failed for it.
+- **A Switch Console link can name a workspace and open a template's form.**
+  `workspace=<id>` switches to that workspace before opening the page, and on
+  a link to a template `use=1` opens its Use form. The web dashboard's Run
+  button needs both. A link for a workspace this Switch Console is not signed
+  in to says so and opens nothing.
 - **A service's note on agent access.** The connector page and the connect
   step show it where a service sets one (Sentry).
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on

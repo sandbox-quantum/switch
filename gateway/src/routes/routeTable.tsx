@@ -63,6 +63,7 @@ import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import UsagePage from "../pages/usage/UsagePage";
 import UsersPage from "../pages/users/UsersPage";
+import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspacePage, {
   WorkspaceGeneralPage,
   WorkspaceUsersPage,
@@ -237,7 +238,7 @@ export const ROUTES: readonly AppRoute[] = [
     "workspace",
     "Connectors",
     serviceConnections,
-    <PlannedPage title="Connectors" />,
+    <WorkspaceConnectorsPage />,
   ),
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <RegistrationKeysPage />),
   redirect("/settings/api-keys", CURRENT, "/registration-keys"),

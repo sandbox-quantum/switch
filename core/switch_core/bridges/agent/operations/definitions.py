@@ -2209,13 +2209,27 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        return await _run_document(
+        result = await _run_document(
             content,
             inputs,
             agents or {},
             template_name=name,
             source=source_of(template),
         )
+        await _count_run(template.id)
+        return result
+
+
+async def _count_run(template_id: str) -> None:
+    """Count a run that has already made its agents and rooms. A failure here
+    is not the run's: it is logged, and the run goes uncounted rather than
+    reported as failed to an agent that might then run it again."""
+    try:
+        async with get_protocol().session_factory() as session:
+            await TemplateStore().record_run(session, template_id)
+            await session.commit()
+    except Exception:
+        logger.exception("Could not count a run of template %s", template_id)
 
 
 async def _run_document(

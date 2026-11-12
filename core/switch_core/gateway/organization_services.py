@@ -54,7 +54,10 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.organization_service_store import OrganizationServiceStore
+from switch_core.db.stores.organization_service_store import (
+    OrganizationServiceStore,
+    hold_setting,
+)
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import (
@@ -240,6 +243,7 @@ async def _apply(
 ) -> str | None:
     """Put `setting` (None: no say) in force for `service`, withdrawing it
     wherever that switches it off, as the module describes."""
+    await hold_setting(session, organization_id, service)
     if setting is None:
         await SETTINGS.clear(session, organization_id, service)
     else:

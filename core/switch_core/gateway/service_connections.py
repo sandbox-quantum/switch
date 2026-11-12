@@ -149,9 +149,9 @@ async def list_service_connections(
                 # out of the workspace admin's reach.
                 "organization_locked": switches is not None
                 and switches[definition.slug].locked,
-                # Whose say `workspace_enabled` is: "organization", "workspace"
-                # or "default" (the workspace's own default); null on a server
-                # without the workspace switch.
+                # Which setting `workspace_enabled` comes from, as the
+                # workspace's own switches name it (`Decider`); null on a
+                # server without the workspace switch.
                 "decided_by": None
                 if switches is None
                 else switches[definition.slug].decided_by,

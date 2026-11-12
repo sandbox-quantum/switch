@@ -59,7 +59,7 @@ export function offNotice(
       fixedIn: "organization",
     };
   const why =
-    connection.decided_by === "organization"
+    connection.decided_by === "organization_default"
       ? `Off in ${workspace} by your organization's default.`
       : connection.decided_by === "workspace"
         ? `Switched off in ${workspace} by a workspace admin.`

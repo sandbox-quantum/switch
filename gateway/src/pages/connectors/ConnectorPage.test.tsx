@@ -180,7 +180,7 @@ describe("a connector's page", () => {
   it("says the organization turned it off, and only its admins can change that", async () => {
     signedIn({ admin: true, orgAdmin: true });
     server(
-      serviceConnection({ workspace_enabled: false, organization_locked: true, decided_by: "organization" }),
+      serviceConnection({ workspace_enabled: false, organization_locked: true, decided_by: "organization_locked" }),
       [],
       { people: [], agents: [] },
     );

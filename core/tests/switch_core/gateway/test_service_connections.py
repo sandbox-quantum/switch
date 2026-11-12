@@ -532,7 +532,7 @@ class TestWorkspaceSwitch:
             slug for slug, entry in entries.items() if not entry["workspace_enabled"]
         } == {"datadog"}
         assert entries["datadog"]["decided_by"] == "workspace"
-        assert entries["github"]["decided_by"] == "default"
+        assert entries["github"]["decided_by"] == "workspace_default"
         assert entries["datadog"]["organization_locked"] is False
         assert entries["github"]["consent"] == "read"
         assert entries["atlassian"]["consent"] is None

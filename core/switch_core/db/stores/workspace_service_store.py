@@ -29,21 +29,27 @@ from switch_core.db.models import (
     WorkspaceServiceSetting,
     require_tenant_id,
 )
+from switch_core.db.stores.organization_service_store import hold_setting
 
-# Whose say a service's switch in a workspace comes from: its organization's
-# setting (locked, or unlocked where the workspace set none), the workspace
-# admin's own, or the workspace's default.
-DecidedBy = Literal["organization", "workspace", "default"]
+# Which setting decides whether a service is on in a workspace, in the order
+# `resolve` weighs them.
+Decider = Literal[
+    "organization_locked", "workspace", "organization_default", "workspace_default"
+]
 
 
 @dataclass(frozen=True)
 class ServiceSwitch:
-    """Whether a service is on in the workspace, whether its organization
-    locked it so, out of the workspace admin's reach, and whose say it is."""
+    """Whether a service is on in the workspace, and which setting says so."""
 
     enabled: bool
-    locked: bool
-    decided_by: DecidedBy
+    decided_by: Decider
+
+    @property
+    def locked(self) -> bool:
+        """Whether its organization locked it so, out of the workspace
+        admin's reach."""
+        return self.decided_by == "organization_locked"
 
 
 @dataclass(frozen=True)
@@ -60,16 +66,12 @@ def resolve(
     """The first of: the organization's setting, if locked; the workspace's
     own; the organization's, unlocked; the workspace's default."""
     if organization is not None and organization.locked:
-        return ServiceSwitch(
-            organization.enabled, locked=True, decided_by="organization"
-        )
+        return ServiceSwitch(organization.enabled, "organization_locked")
     if own is not None:
-        return ServiceSwitch(own, locked=False, decided_by="workspace")
+        return ServiceSwitch(own, "workspace")
     if organization is not None:
-        return ServiceSwitch(
-            organization.enabled, locked=False, decided_by="organization"
-        )
-    return ServiceSwitch(default, locked=False, decided_by="default")
+        return ServiceSwitch(organization.enabled, "organization_default")
+    return ServiceSwitch(default, "workspace_default")
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,18 @@ class WorkspaceServiceStore:
             ).items()
             if not switch.enabled
         }
+
+    async def hold_organization_setting(
+        self, session: AsyncSession, service: str
+    ) -> None:
+        """Hold the workspace's organization's say in `service` until this
+        transaction ends (`hold_setting`), so a lock read now is the lock in
+        force at commit; nothing for a workspace in no organization."""
+        organization_id = await session.scalar(
+            select(Tenant.organization_id).where(Tenant.id == require_tenant_id())
+        )
+        if organization_id is not None:
+            await hold_setting(session, organization_id, service)
 
     async def organization_settings(
         self, session: AsyncSession
