@@ -9,6 +9,7 @@ properties:
     levels: [ui]
     owner: platform
     status: checked
+    smoke: true
   - id: ui.no-uncaught-exceptions
     title: No gateway page throws an exception nothing caught
     statement: >
@@ -19,6 +20,7 @@ properties:
     levels: [ui]
     owner: platform
     status: checked
+    smoke: true
   - id: ui.no-unhandled-rejections
     title: No gateway page leaves a rejected promise unhandled
     statement: >
@@ -29,6 +31,7 @@ properties:
     levels: [ui]
     owner: platform
     status: checked
+    smoke: true
   - id: ui.signs-in
     title: The explorer signs in from the login page
     statement: >
@@ -40,6 +43,7 @@ properties:
     levels: [ui]
     owner: platform
     status: checked
+    smoke: true
   - id: ui.stays-signed-in
     title: A signed-in session is not lost while the UI is used
     statement: >

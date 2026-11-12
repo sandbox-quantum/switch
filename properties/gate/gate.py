@@ -104,6 +104,12 @@ class Property(BaseModel):
     spec: str | None = None
     notes: str | None = None
     gaps: dict[Level, str] = {}
+    # Properties this one exists to make hold, which a reader should not count
+    # as separate assurance: a mechanism, not something a user observes.
+    supports: list[str] = []
+    # A check that shows the harness works, not that Switch does: it counts as
+    # no assurance of its own.
+    smoke: bool = False
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -116,6 +122,8 @@ class Property(BaseModel):
                 raise ValueError(f"gap for {level!r}, which is not one of its levels")
             if not reason.strip():
                 raise ValueError(f"gap for {level!r} gives no reason")
+        if self.id in self.supports:
+            raise ValueError("a property cannot support itself")
         if self.status == "checked" and self.gaps:
             raise ValueError("a checked property has no gaps")
         if self.formality == "formal" and self.spec is None:
@@ -411,6 +419,9 @@ def check(root: Path) -> list[str]:
                 problems.append(f"{tagged}: checked at {where}, which it does not list")
 
     for prop in properties:
+        for supported in prop.supports:
+            if supported not in by_id:
+                problems.append(f"{prop.id}: supports {supported}, not in the catalog")
         found = tags.get(prop.id, [])
         checked_at = {tag.level for tag in found}
         for level in prop.levels:
@@ -433,6 +444,7 @@ def table(root: Path) -> str:
     lines = [
         f"{'property':<{width}}  {'status':<8}  "
         + "  ".join(f"{level:<6}" for level in LEVELS)
+        + "  note"
     ]
     for prop in properties:
         checked_at = {tag.level for tag in tags.get(prop.id, [])}
@@ -446,9 +458,13 @@ def table(root: Path) -> str:
                 cells.append("gap")
             else:
                 cells.append("-")
+        note = "smoke" if prop.smoke else ""
+        if prop.supports:
+            note = f"supports {', '.join(prop.supports)}"
         lines.append(
             f"{prop.id:<{width}}  {prop.status:<8}  "
             + "  ".join(f"{cell:<6}" for cell in cells)
+            + f"  {note}".rstrip()
         )
     return "\n".join(lines)
 
