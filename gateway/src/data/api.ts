@@ -2538,6 +2538,12 @@ export interface TemplateSummary {
   /** What the signed-in user may do with it, as the server judges it. */
   can_edit: boolean;
   can_manage: boolean;
+  /** Why a person should not run it by hand (switch-buddy, which Switch
+   * Console sets up itself); null when nothing stands in the way. */
+  run_blocked_reason: string | null;
+  /** How many times it has been run in this workspace, since runs were
+   * first counted. */
+  run_count: number;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -2577,17 +2583,18 @@ export interface TemplateFilter {
   owner_id?: string;
 }
 
-/** The templates the signed-in user may see, narrowed on the server. */
+/** The templates the signed-in user may see, narrowed on the server, or an
+ * error carrying the server's reason. */
 export async function fetchTemplates(
   filter: TemplateFilter = {},
-): Promise<TemplateSummary[] | null> {
+): Promise<TemplateSummary[]> {
   const params = new URLSearchParams();
   const q = filter.q?.trim();
   if (q) params.set("q", q);
   if (filter.kind) params.set("kind", filter.kind);
   if (filter.owner_id) params.set("owner_id", filter.owner_id);
   const qs = params.toString();
-  return fetchJson<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`);
+  return jsonRequest<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`, "GET");
 }
 
 /** One template, or an error carrying the server's reason (403, 404, or the

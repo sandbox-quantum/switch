@@ -107,6 +107,7 @@ const {
   fetchBridges,
   fetchMe,
   ownsOwnerAddressedAgent,
+  recordTemplateRun,
   registerKnownAgent,
   updateAgentDisplayName,
   renameAgent,
@@ -494,6 +495,39 @@ function bodyOf(call: unknown[]): Record<string, unknown> {
   const init = call[1] as { body: string };
   return JSON.parse(init.body) as Record<string, unknown>;
 }
+
+describe('recordTemplateRun', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('counts a run of the template it names', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ template_id: 'official:switch-expert', run_count: 3 }) as never
+    );
+
+    await expect(recordTemplateRun(SERVER, 'official:switch-expert')).resolves.toBe(true);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toMatch(/\/templates\/official%3Aswitch-expert\/runs$/);
+    expect(init.method).toBe('POST');
+  });
+
+  it('says a run went uncounted on a server that does not count runs', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(recordTemplateRun(SERVER, 't-1')).resolves.toBe(false);
+  });
+
+  it('fails on anything else', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'boom') as never);
+    await expect(recordTemplateRun(SERVER, 't-1')).rejects.toMatchObject({ status: 500 });
+  });
+});
 
 describe('room creation', () => {
   beforeEach(() => {

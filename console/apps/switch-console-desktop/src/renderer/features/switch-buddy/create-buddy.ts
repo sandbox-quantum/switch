@@ -65,6 +65,10 @@ async function createBuddyAgent(input: {
     if (result.kind === 'created') {
       const created = result.createdAgents[0];
       if (!created) throw new BuddyNotCreated('The server created no agent for switch-buddy.');
+      void rpc.workspaces.recordTemplateRun({
+        workspaceId: input.workspaceId,
+        templateId: BUDDY_TEMPLATE_ID,
+      });
       return { agentId: created.agentId, name: created.name };
     }
     if (result.problems.some((problem) => problem.code === 'name_taken')) {

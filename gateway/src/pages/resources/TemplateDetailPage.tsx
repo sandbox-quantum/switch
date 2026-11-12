@@ -17,8 +17,10 @@ import {
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import {
   type TemplateDetail,
+  deleteTemplate,
   fetchTemplate,
   fetchTemplateContent,
   updateTemplate,
@@ -30,13 +32,14 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
-import DeleteTemplateDialog from "./DeleteTemplateDialog";
 import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import TemplateFindings from "./TemplateFindings";
 import { formatBytes, templateFilename } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
 
-const LIST_URL = "/resources?tab=templates";
+// The Templates page in the new layout; in today's, where it is a Resources
+// tab, the route redirects there.
+const LIST_URL = "/templates";
 
 export default function TemplateDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -80,8 +83,8 @@ export default function TemplateDetailPage() {
   if (fetchError || !template || !id) {
     return (
       <Box>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/resources")}>
-          Back to resources
+        <Button startIcon={<ArrowBack />} onClick={() => navigate(LIST_URL)}>
+          Back to templates
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {fetchError ?? "Template not found"}
@@ -134,12 +137,17 @@ export default function TemplateDetailPage() {
         )}
       </Stack>
 
-      <DeleteTemplateDialog
+      <ConfirmDialog
         open={deleteOpen}
-        templateId={id}
-        templateLabel={template.name || id}
+        title="Delete template"
+        description={`Delete “${template.name || id}”? Agents and rooms already made from it keep working. This can’t be undone.`}
+        confirmLabel="Delete"
+        tone="destructive"
+        onConfirm={async () => {
+          await deleteTemplate(id);
+          navigate(LIST_URL);
+        }}
         onClose={() => setDeleteOpen(false)}
-        onDeleted={() => navigate(LIST_URL)}
       />
     </Box>
   );
@@ -159,10 +167,12 @@ function InfoSection({ template }: { template: TemplateDetail }) {
         value={template.owner_name ?? template.owner_id}
         mono={!template.owner_name}
       />
-      <Typography variant="body2" color="text.secondary">
+      {/* A div: the chip is one, and may not sit inside a paragraph. */}
+      <Typography variant="body2" color="text.secondary" component="div">
         <strong>Access:</strong> <AccessChip pair={template} />
       </Typography>
       <InfoLine label="Revision" value={String(template.version)} />
+      <InfoLine label="Runs" value={String(template.run_count)} />
       <InfoLine label="Size" value={formatBytes(template.size_bytes)} />
       <InfoLine label="Created" value={formatDateTime(template.created_at)} />
       <InfoLine label="Updated" value={formatDateTime(template.updated_at)} />
@@ -316,14 +326,21 @@ function DocumentSection({
       </Stack>
       {exportError && <Alert severity="error">{exportError}</Alert>}
       {copied && <Alert severity="success">Document copied to the clipboard.</Alert>}
-      {!canEdit && (
-                // Reading someone else's shared template is the ordinary case here,
+      {!canEdit &&
+        // Reading someone else's shared template is the ordinary case here,
         // and a disabled field alone reads as a page that failed to load.
-        <Alert severity="info">
-          This template belongs to {template.owner_name ?? "another user"}. You
-          can copy or download it; only its owner or an admin can change it.
-        </Alert>
-      )}
+        (template.official ? (
+          <Alert severity="info">
+            Maintained by Switch, so nobody can change it. Copy or download it to
+            make your own version.
+          </Alert>
+        ) : (
+          <Alert severity="info">
+            {template.owner_name === null
+              ? "This template belongs to a former member. You can copy or download it; only a workspace admin can change it."
+              : `This template belongs to ${template.owner_name}. You can copy or download it; only they or a workspace admin can change it.`}
+          </Alert>
+        ))}
       <TextField
         label="Name"
         value={name}
@@ -346,13 +363,17 @@ function DocumentSection({
         disabled={!canEdit || saving}
         sx={{ maxWidth: 320 }}
       />
-      <AccessSelect
-        value={access}
-        onChange={setAccess}
-        disabled={!canManage || saving}
-        helpers={TEMPLATE_ACCESS_HELPERS}
-        sx={{ maxWidth: 320 }}
-      />
+      {/* Who may see and change an official template is not anyone's to
+          choose, and its helper text would speak to an owner it has not got. */}
+      {!template.official && (
+        <AccessSelect
+          value={access}
+          onChange={setAccess}
+          disabled={!canManage || saving}
+          helpers={TEMPLATE_ACCESS_HELPERS}
+          sx={{ maxWidth: 320 }}
+        />
+      )}
       <TextField
         label="Document"
         value={content}

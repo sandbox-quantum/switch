@@ -53,6 +53,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Templates have a page of their own in the new dashboard layout, and say
+  how often each one is run.** Behind `gateway_v2`, Templates leaves the
+  Resources tabs: the workspace's own templates and the ones that come with
+  Switch sit in separate tables, with each template's type, owner (marked
+  "You" for your own), runs and last change, and a menu on every row to run,
+  edit, duplicate or delete it. Edit and Delete follow what the server allows:
+  someone else's template shows them greyed with the owner's name, and an
+  official one cannot be edited or deleted by anyone. Run opens the template's
+  form in Switch Console, in the workspace the dashboard is showing.
+  Duplicate makes a private copy under a free name. The API carries the same
+  facts: every template response has `run_count`, the runs in this workspace
+  counted since this release, and `run_blocked_reason`, why a person should
+  not run it by hand (switch-buddy, which Switch Console sets up itself).
+  `POST /templates/{id}/runs` counts a run of a template the caller may read.
+  Switch Console reports each finished run there, and the agent operation
+  `run_template` counts its own. Runs from before this release are not
+  counted.
 - **`switch-purge-organization` deletes an organization when its owner
   asks.** Run where switch-core runs, it shows what would go and what stays;
   with `--execute --request REFERENCE` it ends the organization's messaging
@@ -3134,6 +3151,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A finished template run is counted on the server.** Once a run from a
+  stored or official template has fully succeeded, whichever way it ran,
+  Switch Console reports it, and so does switch-buddy's own setup, once. The
+  web dashboard shows the count beside each template. A server that does not
+  count runs is left alone, and the run is never failed for it.
+- **A Switch Console link can name a workspace and open a template's form.**
+  `workspace=<id>` switches to that workspace before opening the page, and on
+  a link to a template `use=1` opens its Use form. The web dashboard's Run
+  button needs both. A link for a workspace this Switch Console is not signed
+  in to says so and opens nothing.
 - **A service's note on agent access.** The connector page and the connect
   step show it where a service sets one (Sentry).
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on

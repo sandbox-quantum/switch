@@ -793,6 +793,11 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/templates/{template_id}/content": get(
         f"{G}/templates/{{template}}/content", owner_or_admins(refused=404)
     ),
+    "POST /gateway/templates/{template_id}/runs": post(
+        f"{G}/templates/{{template}}/runs",
+        owner_or_admins(refused=404),
+        why="Only a template the caller could have run is counted.",
+    ),
     "PATCH /gateway/templates/{template_id}": patch(
         f"{G}/templates/{{template}}",
         owner_or_admins(refused=404),

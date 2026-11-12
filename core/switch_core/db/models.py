@@ -1787,6 +1787,29 @@ class TemplateInstallResource(TenantScoped, Base):
     notice: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class TemplateRunRecord(TenantScoped, Base):
+    """One run of a template in this workspace, counted for the catalogue.
+
+    ``template_id`` is an ``official:`` id or a stored template's, so there is
+    no foreign key: an official template is not a row. A person's run is
+    reported by the client that ran it, once the whole run has succeeded; an
+    agent's is recorded by the operation that ran it. Nothing here says who
+    ran it, so the rows go with their template (``TemplateStore.delete``) or
+    their workspace, and erasing a person leaves nothing behind in them.
+    """
+
+    __tablename__ = "template_run_records"
+    __table_args__ = (
+        Index("ix_template_run_records_tenant_template", "tenant_id", "template_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Packages ──────────────────────────────────────────────────────────────────
 
 

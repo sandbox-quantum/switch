@@ -143,6 +143,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "provider_connections": "deleted",
     "sign_in_flows": "deleted",
     "template_installs": "deleted",
+    "template_run_records": "deleted",
     "tenant_data_moves": "deleted",
     "tenant_join_domains": "deleted",
     "tenant_retention_policies": "deleted",
