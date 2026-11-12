@@ -12,7 +12,7 @@ import {
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarSections } from '@renderer/lib/components/page-layout';
-import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
+import { useAnyServerFeatureFlag, useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { dashboardOrigin } from '@shared/core/switch-servers/switch-servers';
@@ -25,6 +25,7 @@ import { MessagingAppsSettingsPage } from '../pages/messaging-apps-page';
 import { settingsServer } from '../pages/settings-server';
 import { SystemStatusSettingsPage } from '../pages/system-status-page';
 import {
+  gatewaySettingsPath,
   type SettingsItemId,
   type SettingsPageTab,
   settingsSections,
@@ -86,6 +87,9 @@ export const SettingsPage = observer(function SettingsPage({
   // nothing to move to managed and nothing managed to look after.
   const agentManagement = useAnyServerFeatureFlag('agent_management');
   const { server, user } = settingsServer();
+  // Off until the server's flags are read, so the link opens today's
+  // addresses, which the new layout redirects: it still lands in settings.
+  const { gateway_v2: newGatewayLayout } = useFeatureFlags(server?.id);
   const showConfirm = useShowModal('confirmActionModal');
   // Workspace settings are the gateway's, open to every member there. A
   // Switch this Console runs without Docker serves it once started with its
@@ -119,7 +123,7 @@ export const SettingsPage = observer(function SettingsPage({
           onSuccess: () => startManagedServer(server),
         });
       } else {
-        const page = workspacePage ? 'workspace' : 'organization';
+        const page = gatewaySettingsPath(id, newGatewayLayout);
         void openServerPage(server.id, `${dashboardOrigin(server)}/${page}`);
       }
     } else {

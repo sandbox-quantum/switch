@@ -6,6 +6,7 @@ import {
   splitApiKeys,
 } from '@renderer/features/settings/pages/api-keys';
 import {
+  gatewaySettingsPath,
   resolveSettingsTab,
   type SettingsAudience,
   settingsSections,
@@ -64,6 +65,13 @@ describe('Settings sections', () => {
       'docs',
     ]);
     expect(ids(everyone)[2]).not.toContain('organization-settings');
+  });
+
+  it('opens the settings of the gateway layout the server has on', () => {
+    expect(gatewaySettingsPath('workspace-settings', false)).toBe('workspace');
+    expect(gatewaySettingsPath('organization-settings', false)).toBe('organization');
+    expect(gatewaySettingsPath('workspace-settings', true)).toBe('settings');
+    expect(gatewaySettingsPath('organization-settings', true)).toBe('settings/org');
   });
 
   it('offers your devices and managed agents only with agent management', () => {

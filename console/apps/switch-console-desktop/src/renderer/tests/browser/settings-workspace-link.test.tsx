@@ -2,7 +2,8 @@
  * Settings' "Workspace settings" link opens the web gateway, including the one
  * a Switch this Console runs without Docker serves. A server an older Console
  * started without the gateway's pages is offered the restart that turns them
- * on; one that cannot serve them shows no link.
+ * on; one that cannot serve them shows no link. Both links open the settings
+ * of whichever layout the server's gateway has on.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -19,6 +20,8 @@ vi.hoisted(() => {
 const state = vi.hoisted(() => ({
   adminPages: null as 'served' | 'restart' | 'unavailable' | null,
   native: true,
+  newLayout: false,
+  orgAdmin: false,
   openPage: vi.fn(),
   start: vi.fn(),
   confirms: [] as { title: string; confirmLabel?: string; onSuccess: () => void }[],
@@ -62,7 +65,21 @@ vi.mock('@renderer/features/switch-servers/open-server-page', () => ({
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: () => (args: (typeof state.confirms)[number]) => state.confirms.push(args),
 }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useAnyServerFeatureFlag: () => false }));
+vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspacesStore: {
+    onServerInScope: () => ({
+      id: 'w',
+      serverId: 'local',
+      tenantId: 't',
+      role: 'member',
+      organizationRole: state.orgAdmin ? 'org_admin' : null,
+    }),
+  },
+}));
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
+  useAnyServerFeatureFlag: () => false,
+  useFeatureFlags: () => ({ gateway_v2: state.newLayout }),
+}));
 vi.mock('@renderer/features/settings/pages/account-page', () => ({
   AccountSettingsPage: () => null,
 }));
@@ -97,6 +114,8 @@ let root: Root | null = null;
 beforeEach(() => {
   state.adminPages = null;
   state.native = true;
+  state.newLayout = false;
+  state.orgAdmin = false;
   state.openPage.mockReset();
   state.start.mockReset();
   state.confirms.length = 0;
@@ -116,9 +135,9 @@ async function render() {
   await act(async () => root!.render(<SettingsPage tab="account" onTabChange={() => {}} />));
 }
 
-function link(): HTMLElement | undefined {
+function link(label = 'Workspace settings'): HTMLElement | undefined {
   return [...document.querySelectorAll('button, a')].find((el) =>
-    /Workspace settings/.test(el.textContent ?? '')
+    (el.textContent ?? '').includes(label)
   ) as HTMLElement | undefined;
 }
 
@@ -156,4 +175,27 @@ it('opens the gateway of a server run with Docker', async () => {
 
   await act(async () => link()?.click());
   expect(state.openPage).toHaveBeenCalledWith('local', 'http://localhost:41001/workspace');
+});
+
+it("opens the new layout's settings where the server has it on", async () => {
+  state.adminPages = 'served';
+  state.newLayout = true;
+  await render();
+
+  await act(async () => link()?.click());
+  expect(state.openPage).toHaveBeenCalledWith('local', 'http://localhost:41001/settings');
+});
+
+it("opens the organization's settings in whichever layout the server has on", async () => {
+  state.adminPages = 'served';
+  state.orgAdmin = true;
+  await render();
+
+  await act(async () => link('Organization settings')?.click());
+  expect(state.openPage).toHaveBeenLastCalledWith('local', 'http://localhost:41001/organization');
+
+  state.newLayout = true;
+  await act(async () => root!.render(<SettingsPage tab="account" onTabChange={() => {}} />));
+  await act(async () => link('Organization settings')?.click());
+  expect(state.openPage).toHaveBeenLastCalledWith('local', 'http://localhost:41001/settings/org');
 });

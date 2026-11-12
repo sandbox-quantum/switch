@@ -3388,6 +3388,12 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Workspace settings opens the web dashboard's settings in its new
+  layout.** On a server with the new layout on, Settings › Workspace settings
+  landed on its Users page. It now opens the settings home, on the page you
+  last had open there or else General, and Organization settings opens the
+  organization's. Servers without the new layout open the same pages as
+  before.
 - **A Bash pattern in Disallowed tools no longer removes Bash.** For a
   Claude agent, an entry such as `Bash(curl:*)` took away the whole Bash tool.
   It now denies only the commands it matches, as on the command line. A plain
