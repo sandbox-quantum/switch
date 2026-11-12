@@ -388,6 +388,15 @@ describe("today's layout", () => {
     expect(screen.queryByText("System healthy")).toBeNull();
     expect(screen.queryByRole("link", { name: "Help" })).toBeNull();
   });
+
+  it("keeps changing the password in the account menu, which has no Your account page", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Change password" }));
+    expect(await screen.findByRole("dialog", { name: "Change password" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Your account" })).toBeNull();
+  });
 });
 
 describe("deleting the workspace", () => {

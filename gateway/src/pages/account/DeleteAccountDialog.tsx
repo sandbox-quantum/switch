@@ -92,7 +92,12 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
   const close = () => {
     if (deleting) return;
     if (deleted) {
-      void logout();
+      // The account and its cookie are already gone, so a sign-out call that
+      // fails changes nothing: loading the app again lands signed out too.
+      logout().catch((err) => {
+        console.warn("Signing out after deleting the account failed; reloading", err);
+        window.location.assign("/");
+      });
       return;
     }
     onClose();
@@ -106,7 +111,12 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
       fullWidth
       aria-describedby={descriptionId}
       slotProps={{
-        transition: { onEntering: () => closeRef.current?.focus() },
+        // Back to "checking" once closed, so reopening never shows the last
+        // answer before the new one arrives.
+        transition: {
+          onEntering: () => closeRef.current?.focus(),
+          onExited: () => setCheck({ state: "checking" }),
+        },
         paper: { sx: { borderRadius: "16px" } },
       }}
     >
@@ -152,8 +162,9 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
             >
               {email} will be removed from every workspace you're in. The agents you own stop and
               are deleted, along with your devices, resources, templates and connector accounts.
-              Rooms you created stay, and so do your messages, under the name "Former member". This
-              can't be undone.
+              Rooms you created stay, and so do your messages, under the name "Former member". A
+              workspace only you are in is deleted too, unless rooms are left in it. This can't be
+              undone.
             </DialogContentText>
             {check.state === "unchecked" && (
               <Alert severity="warning" sx={{ mt: 2, overflowWrap: "anywhere" }}>
@@ -183,9 +194,10 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2, borderTop: "1px solid var(--sw-border)" }}>
+        {/* Named apart from the close icon, which is "Close". */}
         {deleted || check.state === "refused" ? (
           <Button variant="outlined" onClick={close}>
-            Close
+            {deleted ? "Done" : "OK"}
           </Button>
         ) : (
           <>

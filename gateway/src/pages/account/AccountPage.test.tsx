@@ -153,7 +153,7 @@ describe("Deleting your account", () => {
     expect(dialog.getByText("You can't delete your account yet")).toBeTruthy();
     expect(dialog.queryByRole("textbox")).toBeNull();
     expect(dialog.queryByRole("button", { name: "Delete account" })).toBeNull();
-    fireEvent.click(dialog.getAllByRole("button", { name: "Close" })[1]);
+    fireEvent.click(dialog.getByRole("button", { name: "OK" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   });
@@ -168,6 +168,7 @@ describe("Deleting your account", () => {
     render(<AccountPage />);
     const dialog = within(await openDelete());
     const field = await dialog.findByLabelText("Type ada@example.test to confirm");
+    expect(dialog.getByText(/A workspace only you are in is deleted too/)).toBeTruthy();
     const confirm = dialog.getByRole("button", { name: "Delete account" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
     fireEvent.change(field, { target: { value: "ada@example" } });
@@ -178,8 +179,31 @@ describe("Deleting your account", () => {
     expect(await dialog.findByText("Your account is deleted")).toBeTruthy();
     expect(calls.find((c) => c.method === "DELETE")?.body).toEqual({ email: "ADA@example.test" });
     expect(auth.logout).not.toHaveBeenCalled();
-    fireEvent.click(dialog.getAllByRole("button", { name: "Close" })[1]);
+    fireEvent.click(dialog.getByRole("button", { name: "Done" }));
     expect(auth.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the page by loading the app again when signing out afterwards fails", async () => {
+    signedIn();
+    auth.logout.mockRejectedValueOnce(new Error("Network down"));
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    answer({
+      "GET /auth/me": me(),
+      "GET /auth/me/deletion": { refusal: null },
+      "DELETE /auth/me": { ok: true },
+    });
+    render(<AccountPage />);
+    const dialog = within(await openDelete());
+    fireEvent.change(await dialog.findByLabelText("Type ada@example.test to confirm"), {
+      target: { value: "ada@example.test" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "Delete account" }));
+    fireEvent.click(await dialog.findByRole("button", { name: "Done" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/"));
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("keeps the dialog open with the reason when the deletion is refused after all", async () => {
