@@ -9,10 +9,11 @@ one:
   `component` is where it escaped (`http`, `websocket` or `task`) and `type`
   is the nearest common exception class it is, by name, from a fixed list
   (`EXCEPTION_TYPES`), or `other`;
-- **one log line with a fixed event name**, `switch.event` =
+- **one WARNING line with a fixed event name**, `switch.event` =
   `runtime.unhandled_exception`, with the same two words and, for a request,
   the route *template*. Never the path, the message or anything from the
-  request: the stack is in the line above.
+  request: the stack is in the ERROR line above, which stays the only ERROR
+  for the exception, so error-count alerts count it once.
 
 The middleware sits on the one app (the gateway is mounted on it), so every
 HTTP request and websocket is covered. The loop's exception handler covers a
@@ -97,7 +98,11 @@ def record_unhandled(
         "type": kind,
         "route": route,
     }
-    logger.error(
+    # A warning, not an error: uvicorn's "Exception in ASGI application" or
+    # asyncio's "Task exception was never retrieved" is already the one ERROR
+    # line for this exception, with its stack, and is what the log alerts
+    # count. A second ERROR here would count every exception twice.
+    logger.warning(
         "%s component=%s type=%s route=%s",
         EVENT,
         where,
