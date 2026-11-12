@@ -28,6 +28,12 @@ TOKEN_INVALID = 190
 #: may be sent until they write again.
 REENGAGEMENT_REQUIRED = 131047
 
+#: Codes Meta documents as temporary — throttling and its own outages — which
+#: come back as HTTP 400 like any refusal, so the status alone cannot tell.
+TRANSIENT_CODES = frozenset(
+    {1, 2, 4, 17, 341, 80007, 130429, 131000, 131016, 131048, 131056, 133004}
+)
+
 
 class WhatsAppGraphError(Exception):
     """Meta refused a Graph API call, in its own words.
@@ -52,6 +58,17 @@ class WhatsAppGraphError(Exception):
         self.error_type = error_type
         self.message = message
         self.details = details
+
+    @property
+    def transient(self) -> bool:
+        """Whether the same call might succeed later: a server error, a
+        throttle, or a bad token someone may yet replace."""
+        return (
+            self.status >= 500
+            or self.status in (401, 429)
+            or self.code == TOKEN_INVALID
+            or self.code in TRANSIENT_CODES
+        )
 
 
 def graph_error(response: httpx.Response) -> WhatsAppGraphError:

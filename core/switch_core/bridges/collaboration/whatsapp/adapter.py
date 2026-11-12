@@ -15,6 +15,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RichContent,
     RichContentFailed,
@@ -34,6 +35,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -273,8 +275,11 @@ class WhatsAppAdapter(PlatformAdapter):
     def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
         """One Meta app is connected at most once. Its webhook address is set
         per app, not per number, so a second bridge on the same app (even for
-        another of its numbers) would take the callback from the first."""
-        return f"WhatsApp Meta app {connection_config['app_id']}"
+        another of its numbers) would take the callback from the first. Read
+        through the config model, so the key is the value `verify_credentials`
+        checked and not its raw spelling."""
+        config = WhatsAppConnectionConfig.model_validate(connection_config)
+        return f"WhatsApp Meta app {config.app_id}"
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
@@ -415,15 +420,9 @@ class WhatsAppAdapter(PlatformAdapter):
         messages = [m for v in values for m in v.get("messages") or []]
         statuses = [s for v in values for s in v.get("statuses") or []]
         errors = [e for v in values for e in v.get("errors") or []]
-        if messages:
-            envelope_type = "message"
-            event_id = _required_str(messages[0], "id", "message")
-        elif statuses:
-            envelope_type = "status"
-            event_id = (
-                f"{_required_str(statuses[0], 'id', 'status')}:"
-                f"{_required_str(statuses[0], 'status', 'status')}"
-            )
+        if messages or statuses:
+            envelope_type = "message" if messages else "status"
+            event_id = _batch_id(messages, statuses)
         elif errors:
             envelope_type = "error"
             event_id = None
@@ -473,8 +472,16 @@ class WhatsAppAdapter(PlatformAdapter):
                 self._log_status(status)
             business_number = _digits(str(metadata.get("display_phone_number", "")))
             contacts = value.get("contacts") or []
+            # The body is taken once, as a whole: a message that fails is not
+            # delivered again, so it must not take the rest of the batch with it.
             for message in value.get("messages") or []:
-                await self._dispatch_message(message, contacts, business_number)
+                try:
+                    await self._dispatch_message(message, contacts, business_number)
+                except Exception:
+                    logger.exception(
+                        "Failed to relay WhatsApp message %s; it is not retried",
+                        message.get("id"),
+                    )
 
     def _log_status(self, status: dict[str, Any]) -> None:
         """Say when WhatsApp could not deliver something this bridge sent.
@@ -604,9 +611,11 @@ class WhatsAppAdapter(PlatformAdapter):
                 if part
             )
             coordinates = f"{location.get('latitude')},{location.get('longitude')}"
+            # Outside the italics: a place name may hold `_` or `*`, and a
+            # closing `_` against the URL would be read as part of it.
             return (
-                f"_shared a location: {place + ' ' if place else ''}"
-                f"https://maps.google.com/?q={coordinates}_"
+                f"_shared a location:_ {place + ' ' if place else ''}"
+                f"https://maps.google.com/?q={coordinates}"
             )
         if kind == "contacts":
             names = [
@@ -722,18 +731,59 @@ class WhatsAppAdapter(PlatformAdapter):
     async def _send_text(
         self, channel_id: str, body: str, thread_root_id: str | None
     ) -> str:
+        """Send `body` in as many messages as it takes, returning the first's id.
+
+        A part after the first that fails leaves what went out in the chat, a
+        notice saying the rest is missing, and `MessagePartlySent`, so the
+        caller records the message as sent rather than sending it all again.
+        """
+        chunks = chunk_message(body)
         first: str | None = None
-        for chunk in chunk_message(body):
-            payload: dict[str, Any] = {
-                "type": "text",
-                "text": {"body": chunk, "preview_url": False},
-            }
-            ref = await self._send(
-                channel_id, payload, thread_root_id if first is None else None
-            )
+        for index, chunk in enumerate(chunks):
+            try:
+                ref = await self._send(
+                    channel_id, _text(chunk), thread_root_id if first is None else None
+                )
+            except (WhatsAppGraphError, BridgeOperationError, httpx.HTTPError) as exc:
+                if first is None:
+                    raise
+                logger.error(
+                    "Failed to send part %d of %d to WhatsApp chat %s: %s",
+                    index + 1,
+                    len(chunks),
+                    channel_id,
+                    exc,
+                )
+                await self._note_truncation(channel_id, index, len(chunks))
+                raise MessagePartlySent(
+                    platform="WhatsApp",
+                    first_ref=first,
+                    delivered=index,
+                    total=len(chunks),
+                ) from exc
             first = first or ref
         assert first is not None
         return first
+
+    async def _note_truncation(
+        self, channel_id: str, delivered: int, total: int
+    ) -> None:
+        try:
+            await self._send(
+                channel_id,
+                _text(
+                    f"⚠️ Only {delivered} of {total} parts of this message could "
+                    "be delivered — WhatsApp refused the rest."
+                ),
+                None,
+            )
+        except (WhatsAppGraphError, BridgeOperationError, httpx.HTTPError):
+            logger.exception(
+                "Failed to post the WhatsApp notice that a message is missing its "
+                "last %d parts; nothing in chat %s says it is cut short",
+                total - delivered,
+                channel_id,
+            )
 
     async def _send(
         self,
@@ -800,7 +850,15 @@ class WhatsAppAdapter(PlatformAdapter):
         )
         overflow_ref: str | None = None
         if kind == "audio" or len(attributed) > MAX_CAPTION:
-            overflow_ref = await self._send_text(channel_id, attributed, thread_root_id)
+            try:
+                overflow_ref = await self._send_text(
+                    channel_id, attributed, thread_root_id
+                )
+            except MessagePartlySent as partial:
+                # The chat already says the caption is cut short; the file
+                # still goes, rather than being lost with the caption's tail.
+                logger.error("Caption for %s sent in part: %s", filename, partial)
+                overflow_ref = partial.first_ref
             attributed = ""
         try:
             media_id = await self._client.upload_media(
@@ -891,6 +949,12 @@ class WhatsAppAdapter(PlatformAdapter):
         indicator, which WhatsApp clears by itself on the reply or after 25
         seconds.
         """
+        if not message_ref.startswith("wamid."):
+            logger.warning(
+                "Cannot mark %s as being worked on: not a WhatsApp message id.",
+                message_ref,
+            )
+            return
         try:
             await self._send(
                 channel_id,
@@ -906,6 +970,13 @@ class WhatsAppAdapter(PlatformAdapter):
         except BridgeOperationError as exc:
             raise ActivityMarkRefused(
                 f"WhatsApp will not react to {message_ref}: {exc}"
+            ) from exc
+        except WhatsAppGraphError as exc:
+            if exc.transient:
+                raise
+            raise ActivityMarkRefused(
+                f"WhatsApp will not {'add' if on else 'remove'} the working "
+                f"reaction on {message_ref}: {exc}"
             ) from exc
         if on:
             await self._mark_read(message_ref, typing=True)
@@ -958,6 +1029,16 @@ class WhatsAppAdapter(PlatformAdapter):
             return await self._send_text(
                 channel_id, _attribute(agent.body_label, text), thread_root_id
             )
+        except MessagePartlySent as partial:
+            # Settled, not failed: a failure is posted again, and the parts
+            # already in the chat would show twice.
+            logger.error(
+                "Card for %s in WhatsApp chat %s sent in part: %s",
+                agent_name,
+                channel_id,
+                partial,
+            )
+            return partial.first_ref
         except (WhatsAppGraphError, BridgeOperationError, httpx.HTTPError) as error:
             raise RichContentFailed(
                 f"WhatsApp could not send the message in chat {channel_id}: {error}",
@@ -993,7 +1074,8 @@ class WhatsAppAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "WhatsApp cannot create a chat: a person starts one by writing to the "
             "business number, and its room is made then."
@@ -1045,6 +1127,10 @@ def _attribute(label: str, content: str) -> str:
     return f"{name}\n{content}" if "\n" in content else f"{name}: {content}"
 
 
+def _text(body: str) -> dict[str, Any]:
+    return {"type": "text", "text": {"body": body, "preview_url": False}}
+
+
 def _address(channel_id: str) -> dict[str, str]:
     """Who a message goes to. A chat is named by the person's phone number,
     or by the business-scoped user id WhatsApp sends instead for someone who
@@ -1084,6 +1170,22 @@ def _change_fields(payload: dict[str, Any]) -> list[str]:
         for entry in payload["entry"]
         for change in entry["changes"]
     ]
+
+
+def _batch_id(messages: list[Any], statuses: list[Any]) -> str:
+    """The receipt key for one webhook body: every message and status it
+    carries, not just the first, so a body holding a message already seen
+    alongside a new one is not taken for a repeat."""
+    parts = sorted(
+        [_required_str(m, "id", "message") for m in messages]
+        + [
+            f"{_required_str(s, 'id', 'status')}:{_required_str(s, 'status', 'status')}"
+            for s in statuses
+        ]
+    )
+    if len(parts) == 1:
+        return parts[0]
+    return "batch:" + hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 def _required_str(item: Any, key: str, what: str) -> str:

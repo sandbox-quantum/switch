@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
+    MessagePartlySent,
     TurnActivity,
 )
 from switch_core.bridges.collaboration.install import (
@@ -273,6 +274,15 @@ class TestTheAdapterDeclaresItself:
         assert WhatsAppAdapter.claimed_workspace(
             {**CONFIG, "phone_number_id": "999"}
         ) == WhatsAppAdapter.claimed_workspace(dict(CONFIG))
+
+    def test_the_claim_is_read_as_the_form_reads_it(self) -> None:
+        assert WhatsAppAdapter.claimed_workspace(
+            {**CONFIG, "app_id": f" {APP_ID} "}
+        ) == WhatsAppAdapter.claimed_workspace(dict(CONFIG))
+        with pytest.raises(ValidationError):
+            WhatsAppAdapter.claimed_workspace(
+                {k: v for k, v in CONFIG.items() if k != "app_id"}
+            )
 
 
 # ── Connection config ─────────────────────────────────────────────────────────
@@ -613,6 +623,27 @@ class TestWebhooksAreRead:
         assert event.envelope_type == "status"
         assert event.external_event_id == "wamid.out1:delivered"
 
+    def test_a_batch_is_identified_by_every_message_it_carries(
+        self, adapter: WhatsAppAdapter
+    ) -> None:
+        def batch(*wamids: str) -> dict[str, Any]:
+            return envelope(
+                {
+                    "messages": [
+                        {"from": PERSON, "id": w, "type": "text", "text": {"body": w}}
+                        for w in wamids
+                    ]
+                }
+            )
+
+        alone = adapter.parse_webhook(post(batch("wamid.in1")))
+        pair = adapter.parse_webhook(post(batch("wamid.in1", "wamid.in2")))
+        reordered = adapter.parse_webhook(post(batch("wamid.in2", "wamid.in1")))
+
+        assert alone.external_event_id == "wamid.in1"
+        assert pair.external_event_id != alone.external_event_id
+        assert pair.external_event_id == reordered.external_event_id
+
     @pytest.mark.parametrize(
         "body",
         [
@@ -824,8 +855,9 @@ class TestInboundMessages:
                 }
             ),
         )
-        assert "shared a location: Office" in heard.messages[0].content
-        assert "51.5,-0.12" in heard.messages[0].content
+        content = heard.messages[0].content
+        assert "Office" in content
+        assert content.endswith("https://maps.google.com/?q=51.5,-0.12")
 
     async def test_an_unsupported_message_is_disclosed(
         self, adapter: WhatsAppAdapter, heard: Heard
@@ -1055,6 +1087,28 @@ class TestOutboundMessages:
         assert all("context" not in s for s in sent[1:])
         assert all(s["text"]["body"].endswith("word") for s in sent)
 
+    async def test_a_reply_cut_short_says_so_and_is_not_sent_again(
+        self, adapter: WhatsAppAdapter, graph: FakeGraph
+    ) -> None:
+        calls = 0
+
+        def second_part_refused(r: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                return graph_refusal(400, 131026, "Message undeliverable")
+            return httpx.Response(200, json={"messages": [{"id": f"wamid.out{calls}"}]})
+
+        graph.on("POST", f"{API}/{PHONE_NUMBER_ID}/messages", second_part_refused)
+        body = "\n\n".join([("word " * 500).strip()] * 4)
+
+        with pytest.raises(MessagePartlySent) as caught:
+            await adapter.send_message(PERSON, "helper", body)
+
+        assert caught.value.first_ref == "wamid.out1"
+        assert caught.value.delivered == 1
+        assert "Only 1 of" in json.loads(graph.requests[-1].content)["text"]["body"]
+
     async def test_outside_the_24_hour_window_the_send_fails_saying_why(
         self, adapter: WhatsAppAdapter, graph: FakeGraph
     ) -> None:
@@ -1214,6 +1268,40 @@ class TestWorkingState:
             await adapter.mark_activity(
                 PERSON, "wamid.in1", agent_name="helper", mark="working", on=True
             )
+
+    async def test_a_reaction_whatsapp_refuses_is_refused_for_good(
+        self, adapter: WhatsAppAdapter, graph: FakeGraph
+    ) -> None:
+        graph.on(
+            "POST",
+            f"{API}/{PHONE_NUMBER_ID}/messages",
+            lambda r: graph_refusal(400, 131009, "Parameter value is not valid"),
+        )
+        with pytest.raises(ActivityMarkRefused):
+            await adapter.mark_activity(
+                PERSON, "wamid.in1", agent_name="helper", mark="working", on=True
+            )
+
+    async def test_a_throttled_reaction_is_left_to_retry(
+        self, adapter: WhatsAppAdapter, graph: FakeGraph
+    ) -> None:
+        graph.on(
+            "POST",
+            f"{API}/{PHONE_NUMBER_ID}/messages",
+            lambda r: graph_refusal(400, 130429, "Rate limit hit"),
+        )
+        with pytest.raises(WhatsAppGraphError):
+            await adapter.mark_activity(
+                PERSON, "wamid.in1", agent_name="helper", mark="working", on=True
+            )
+
+    async def test_a_turn_reference_is_never_reacted_to(
+        self, adapter: WhatsAppAdapter, graph: FakeGraph
+    ) -> None:
+        await adapter.mark_activity(
+            PERSON, "turn:t-1", agent_name="helper", mark="working", on=True
+        )
+        assert graph.requests == []
 
     async def test_a_turn_is_not_posted_as_a_message(
         self, adapter: WhatsAppAdapter, graph: FakeGraph
