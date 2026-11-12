@@ -213,6 +213,22 @@ one open: the app never switches back to it just to describe the run. A template
 run that fails reports nothing: it made nothing, and how many rooms it would have
 made is not known.
 
+**Chats**
+
+| Event | Fields, with example values |
+|---|---|
+| `chat_created` | `server_kind` · `kind`: `direct` / `group` · `agent_count`: `1` · `person_count`: `0` · `on_messaging_app`: `false` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `refused` (the server turned the request down) / `network` / `server_error` / `error` |
+| `chat_message_sent` | `server_kind` · `has_attachment`: `true` · `in_thread`: `false` · `mentions`: `none` / `agent` / `person` / `both` · `outcome` · `failure_reason` |
+| `chat_member_changed` | `server_kind` · `change`: `added` / `removed` · `member_kind`: `person` / `agent` · `outcome` · `failure_reason` |
+| `chat_control_sent` | `server_kind` · `command`: `interrupt` / `reset` / `compact` / `retry` · `outcome` · `failure_reason` |
+| `chat_approval_answered` | `server_kind` · `outcome` · `failure_reason` |
+
+A message sent tells us *"someone sent a message in a thread, with a file, that
+named an agent"*. It does not tell us the text, the file, the chat, or which
+agent or person was named. `mentions` is the kind of who was named, never who.
+A refusal is reported as `refused`, not with the server's code or message.
+Reopening a chat that already exists is not reported as a new one.
+
 **Remote hosts**
 
 | Event | Fields, with example values |

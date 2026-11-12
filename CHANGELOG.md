@@ -3171,6 +3171,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Usage data covers chats.** With sharing on, Switch Console reports a chat
+  created, a message sent, a person or agent added or removed, a control
+  command and an approval answered, each with whether it worked. A message
+  reports whether it had a file, was in a thread and named an agent or a
+  person; never the text, the chat, or who was named. `docs/TELEMETRY.md`
+  lists every field.
 - **A finished template run is counted on the server.** Once a run from a
   stored or official template has fully succeeded, whichever way it ran,
   Switch Console reports it, and so does switch-buddy's own setup, once. The
