@@ -19,6 +19,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
+    SERVICE_ACCOUNT_ADMIN_REFUSAL,
+)
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.sign_in_flows import SignInFlows
@@ -253,6 +257,44 @@ class TestChangingRoles:
             "to": "org_admin",
             "workspace_id": tenant_id,
         }
+
+    async def test_the_service_account_cannot_be_made_org_admin(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """An org admin administers every workspace of the organization, and
+        agents added with the shared registration token act with their
+        owner's role: the row says it can't be granted, and the route refuses
+        when asked anyway."""
+        ada, bob, robot = _name("ada"), _name("bob"), _name("robot")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                bob: ("member", "member"),
+                robot: ("member", "member"),
+            },
+        )
+        async with session_factory() as session:
+            account = await session.get(User, robot)
+            assert account is not None
+            account.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
+            await session.commit()
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            listed = await client.get("/organizations/current/members")
+            promoted = await client.patch(
+                f"/organizations/current/members/{robot}", json={"role": "org_admin"}
+            )
+
+        grants = {row["user_id"]: row["can_grant_org_admin"] for row in listed.json()}
+        assert grants[robot] is False and grants[bob] is True
+        assert promoted.status_code == 409, promoted.text
+        assert promoted.json()["detail"] == SERVICE_ACCOUNT_ADMIN_REFUSAL
+        async with session_factory() as session:
+            member = await session.scalar(
+                select(OrganizationMember).where(OrganizationMember.user_id == robot)
+            )
+            assert member is not None and member.role == "member"
 
     async def test_a_member_cannot_grant_themselves_org_admin(
         self, session_factory: async_sessionmaker[AsyncSession]

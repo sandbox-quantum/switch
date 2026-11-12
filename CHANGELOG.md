@@ -515,11 +515,16 @@ version of their own to them without also giving them a release of their own.
   needs a workspace admin too, and an agent cannot run one, since it runs
   templates without its owner's admin reach. Taking a room out of its group
   still only needs write access to the room.
-- **The registration service account can't be made a workspace admin.**
-  Agents added with the shared registration token are owned by it and act with
-  its role, so making it an admin handed every one of them the workspace.
-  `PATCH /gateway/tenants/{id}/members/{user_id}` now refuses it with 409, and
-  the members list says why.
+- **The registration service account can't be made an admin.** Agents added
+  with the shared registration token are owned by it and act with its role, so
+  making it a workspace admin handed every one of them the workspace, and
+  making it an organization admin handed them every workspace in the
+  organization. `PATCH /gateway/tenants/{id}/members/{user_id}` and
+  `PATCH /gateway/organizations/current/members/{user_id}` now refuse it with
+  409, the workspace members list says why and the organization's never offers
+  it, and an organization whose members come from a WorkOS directory keeps it a
+  member however the directory lists it, recording the conflict in its audit
+  log.
 
 #### Added
 - **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,

@@ -24,7 +24,10 @@ from switch_core.authz import (
     effective_tenant_role,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
+from switch_core.bridges.agent.registration_bootstrap import (
+    SERVICE_ACCOUNT_ADMIN_REFUSAL,
+    is_bootstrap_owner,
+)
 from switch_core.clients.client_lifecycle_service import (
     ClientLifecycleService,
 )
@@ -233,11 +236,6 @@ LAST_ADMIN_REFUSAL = (
     "This is the workspace's last admin. Make someone else an admin first."
 )
 
-SERVICE_ACCOUNT_ROLE_REFUSAL = (
-    "Agents added with the shared registration token act with this account's "
-    "role, so it can't be made an admin."
-)
-
 
 def _member_detail(
     user: User,
@@ -263,7 +261,7 @@ def _member_detail(
             change_refusal = remove_refusal = LAST_ADMIN_REFUSAL
         elif membership.role != "admin" and is_bootstrap_owner(user):
             # Admin is the only other role, so there is nothing to change it to.
-            change_refusal = SERVICE_ACCOUNT_ROLE_REFUSAL
+            change_refusal = SERVICE_ACCOUNT_ADMIN_REFUSAL
     return MemberDetail(
         user_id=user.id,
         name=user.name,
@@ -1879,7 +1877,7 @@ async def update_member_role(
     user = await user_store.get(session, user_id)
     assert user is not None
     if role == "admin" and membership.role != "admin" and is_bootstrap_owner(user):
-        raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ROLE_REFUSAL)
+        raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ADMIN_REFUSAL)
 
     if membership.role == "admin" and role != "admin":
         if await user_store.lock_admins(session) <= 1:
@@ -1903,7 +1901,8 @@ async def update_member_role(
         membership,
         await user_store.organization_role(session, tenant_id, user_id),
         caller_id=admin.id,
-        administers=True,
+        # Read again: an admin who just stepped down no longer administers.
+        administers=await user_store.administers(session, admin),
         admin_count=await user_store.count_admins(session),
     )
 

@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_OWNER_MARKER_META_KEY,
+    SERVICE_ACCOUNT_ADMIN_REFUSAL,
 )
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.connections.adapters.github import GitHubAdapter
@@ -86,10 +87,7 @@ from switch_core.gateway.invite_mail import (
     InviteEmailFailed,
     InviteMailer,
 )
-from switch_core.gateway.tenants import (
-    LAST_ADMIN_REFUSAL,
-    SERVICE_ACCOUNT_ROLE_REFUSAL,
-)
+from switch_core.gateway.tenants import LAST_ADMIN_REFUSAL
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring, Purpose
 from switch_core.organization_directory import LocalDirectory
@@ -1567,11 +1565,11 @@ class TestMemberRoutes:
         row = next(r for r in listed.json() if r["user_id"] == bootstrap_id)
         assert (row["can_change_role"], row["change_role_blocked_reason"]) == (
             False,
-            SERVICE_ACCOUNT_ROLE_REFUSAL,
+            SERVICE_ACCOUNT_ADMIN_REFUSAL,
         )
         assert (row["can_remove"], row["remove_blocked_reason"]) == (True, None)
         assert promoted.status_code == 409, promoted.text
-        assert promoted.json()["detail"] == SERVICE_ACCOUNT_ROLE_REFUSAL
+        assert promoted.json()["detail"] == SERVICE_ACCOUNT_ADMIN_REFUSAL
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, bootstrap_id))
             assert membership is not None and membership.role == "member"
@@ -1599,6 +1597,10 @@ class TestMemberRoutes:
             )
 
         assert response.status_code == (200 if another_admin else 409), response.text
+        if another_admin:
+            # A member now, they may change nobody, themselves included.
+            assert response.json()["can_change_role"] is False
+            assert response.json()["can_remove"] is False
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, admin_id))
             assert membership is not None
