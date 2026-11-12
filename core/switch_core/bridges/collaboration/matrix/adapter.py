@@ -86,6 +86,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -148,9 +149,10 @@ _RETRY_MAX_SECONDS = 60.0
 _TYPING_MS = 30_000
 # Consecutive sync failures after which the connection says so in Console.
 _ATTENTION_AFTER = 3
-# How many times one event is tried while others in its batch reach Switch,
-# before it alone is given up on. A batch none of whose events reach Switch is
-# held for as long as it takes (`_hold_batch`).
+# How many times one event is tried, while others in its batch reach Switch or
+# when the homeserver turned it down for good, before it alone is given up on.
+# A batch none of whose events reach Switch for any other reason is held for as
+# long as it takes (`_hold_batch`).
 _HANDLER_ATTEMPTS = 3
 # The events that, handled without error, have reached Switch.
 _HANDED_TYPES = frozenset({"m.room.message", "m.reaction"})
@@ -160,8 +162,13 @@ _SEND_RATE_BUDGET_SECONDS = 60.0
 # How long a room's encryption state, or the upload limit, is trusted for.
 _ENCRYPTION_TTL_SECONDS = 60.0
 _UPLOAD_LIMIT_TTL_SECONDS = 3600.0
-# Replies whose thread was looked up, so a busy reply chain costs one read.
+# Replies whose thread was looked up, so a busy reply chain costs one read; and
+# reaction targets read, so keycaps on one card cost one read between them.
 _THREAD_CACHE_MAX = 1000
+_CARD_CACHE_MAX = 1000
+# How many events around a plain reply are asked for when checking it is the
+# first reply to a card; a homeserver returns about half of them from before it.
+_FIRST_REPLY_CONTEXT = 100
 
 # The reactions a card offers, one per option, in the order the options are
 # numbered. Ten, because that is how many keycaps there are.
@@ -328,6 +335,14 @@ class _RoomInfo:
 
 
 @dataclass(frozen=True)
+class _Card:
+    """What a press on one of the bot's request cards answers."""
+
+    token: str
+    thread_ref: str | None
+
+
+@dataclass(frozen=True)
 class _Drawn:
     text: str
     controls: tuple[str, ...]
@@ -359,6 +374,21 @@ def _label(event: dict[str, Any]) -> str:
 
 def _reason(error: BaseException) -> str:
     return str(error) or type(error).__name__
+
+
+def _refused_by_homeserver(error: BaseException | None) -> bool:
+    """Whether the homeserver turned down a request about one event for good.
+
+    Not found, forbidden, malformed: asking again gets the same answer, so it is
+    the event that failed, not Switch. A rate limit, a rejected token, a server
+    error or no answer at all says nothing about the event.
+    """
+    return (
+        isinstance(error, MatrixApiError)
+        and 400 <= error.status < 500
+        and not error.rate_limited
+        and not error.rejects_token
+    )
 
 
 class MatrixAdapter(PlatformAdapter):
@@ -496,6 +526,8 @@ class MatrixAdapter(PlatformAdapter):
         self._refused: set[str] = set()
         # event id -> the thread it sits in (None at the top level).
         self._threads: OrderedDict[str, str | None] = OrderedDict()
+        # event id -> the card it is, or None for an event that is not one.
+        self._cards: OrderedDict[str, _Card | None] = OrderedDict()
         self._upload_limit: int | None = None
         self._upload_limit_read_at: float | None = None
         self._batch_attempts = 0
@@ -503,6 +535,7 @@ class MatrixAdapter(PlatformAdapter):
         # Switch, and how many times each failed one has failed.
         self._batch_succeeded = 0
         self._event_failures: dict[str, int] = {}
+        self._event_errors: dict[str, BaseException] = {}
         self._last_handler_error: BaseException | None = None
         # Rooms replaced by an upgrade, whose leave has not gone through yet.
         self._tombstoned: set[str] = set()
@@ -672,6 +705,11 @@ class MatrixAdapter(PlatformAdapter):
                     since = await self._load_position()
                 if since is None:
                     since = await self._first_sync()
+                    if since is None:
+                        await asyncio.sleep(
+                            self._retry_delay(self._batch_attempts, None)
+                        )
+                        continue
                 batch = await self._require_api().sync(
                     since=since,
                     timeout_ms=_SYNC_TIMEOUT_MS,
@@ -691,9 +729,7 @@ class MatrixAdapter(PlatformAdapter):
                     # read again; what was handed over is skipped (`_seen`).
                     await asyncio.sleep(self._retry_delay(self._batch_attempts, None))
                     continue
-                self._batch_attempts = 0
-                self._batch_succeeded = 0
-                self._event_failures.clear()
+                self._batch_done()
                 if outcome.carried:
                     await self._save_position(position)
                 since = position
@@ -753,26 +789,55 @@ class MatrixAdapter(PlatformAdapter):
     def _hold_batch(self, outcome: _BatchOutcome) -> bool:
         """Whether to read the batch again for events Switch could not take.
 
-        When nothing in the batch has reached Switch, across every attempt at
-        it, the failure is Switch's own (its database or transport away), not
-        the events': the batch is held, for as long as it takes, and the
-        connection says so in Console meanwhile. Nothing is skipped.
+        An event is at fault when the homeserver turned down a request about
+        it for good (`_refused_by_homeserver`: a reaction on an event it will
+        not show, an invite withdrawn before it was accepted), or when it keeps
+        failing while others in the batch reached Switch. It is tried
+        `_HANDLER_ATTEMPTS` times, then given up on alone, by id, at error
+        level, and the rest of the batch moves on.
 
-        When other events went through and one keeps failing, it is that
-        event: it is tried `_HANDLER_ATTEMPTS` times, then given up on alone,
-        by id, at error level, and the rest of the batch moves on.
+        Any other failure, when nothing in the batch has reached Switch across
+        every attempt at it, is Switch's own (its database or transport away),
+        not the events': the batch is held, for as long as it takes, and the
+        connection says so in Console meanwhile. Nothing is skipped.
         """
         self._batch_attempts += 1
         self._batch_succeeded += outcome.succeeded
         for label in outcome.failed:
             self._event_failures[label] = self._event_failures.get(label, 0) + 1
-        if self._batch_succeeded == 0:
-            for label in outcome.failed:
-                self._seen.pop(label, None)
+        outage = [
+            label
+            for label in outcome.failed
+            if self._batch_succeeded == 0
+            and not _refused_by_homeserver(self._event_errors.get(label))
+        ]
+        given_up = [
+            label
+            for label in outcome.failed
+            if label not in outage and self._event_failures[label] >= _HANDLER_ATTEMPTS
+        ]
+        newly_given_up = [
+            label
+            for label in given_up
+            if self._event_failures[label] == _HANDLER_ATTEMPTS
+        ]
+        if newly_given_up:
+            logger.error(
+                "Giving up on Matrix events %s after %d attempts; they are not in "
+                "the Switch room",
+                ", ".join(newly_given_up),
+                _HANDLER_ATTEMPTS,
+            )
+        retrying = [label for label in outcome.failed if label not in given_up]
+        if not retrying:
+            return False
+        for label in retrying:
+            self._seen.pop(label, None)
+        if outage:
             cause = self._last_handler_error
             why = f" ({_reason(cause)})" if cause is not None else ""
             self._attention = (
-                f"Switch could not take the {len(outcome.failed)} events that "
+                f"Switch could not take the {len(outage)} events that "
                 f"arrived from Matrix{why}. They "
                 "are held, and tried again until Switch can take them; nothing is "
                 "skipped."
@@ -780,34 +845,25 @@ class MatrixAdapter(PlatformAdapter):
             logger.error(
                 "Could not hand any of %d Matrix events to Switch (%s); holding the "
                 "batch and reading it again (attempt %d)",
-                len(outcome.failed),
-                ", ".join(outcome.failed),
+                len(outage),
+                ", ".join(outage),
                 self._batch_attempts,
             )
-            return True
-        retrying = [
-            label
-            for label in outcome.failed
-            if self._event_failures[label] < _HANDLER_ATTEMPTS
-        ]
-        given_up = [label for label in outcome.failed if label not in retrying]
-        if given_up:
+        else:
             logger.error(
-                "Giving up on Matrix events %s after %d attempts, while others in "
-                "the same batch reached Switch; they are not in the Switch room",
-                ", ".join(given_up),
-                _HANDLER_ATTEMPTS,
+                "Could not hand %d Matrix events to Switch (%s); reading the batch "
+                "again",
+                len(retrying),
+                ", ".join(retrying),
             )
-        if not retrying:
-            return False
-        for label in retrying:
-            self._seen.pop(label, None)
-        logger.error(
-            "Could not hand %d Matrix events to Switch (%s); reading the batch again",
-            len(retrying),
-            ", ".join(retrying),
-        )
         return True
+
+    def _batch_done(self) -> None:
+        """Forget the attempts at a batch that has been dealt with."""
+        self._batch_attempts = 0
+        self._batch_succeeded = 0
+        self._event_failures.clear()
+        self._event_errors.clear()
 
     @staticmethod
     def _retry_delay(failures: int, error: MatrixApiError | None) -> float:
@@ -818,12 +874,15 @@ class MatrixAdapter(PlatformAdapter):
             return min(max(asked, _RETRY_BASE_SECONDS), _RETRY_MAX_SECONDS)
         return min(_RETRY_BASE_SECONDS * 2.0 ** min(failures, 6), _RETRY_MAX_SECONDS)
 
-    async def _first_sync(self) -> str:
+    async def _first_sync(self) -> str | None:
         """Take the current position without reading any room's history.
 
         A bot already in busy rooms would otherwise hand Switch everything
         their timelines still hold. Invites waiting for the bot are answered,
-        since nothing else would ever answer them.
+        since nothing else would ever answer them: an incremental sync lists an
+        invite only when it changes. So the position is stored only once they
+        have been, held to the same rules as a batch (`_hold_batch`); None
+        when they are to be tried again.
         """
         batch = await self._require_api().sync(
             since=None, timeout_ms=0, sync_filter=self._sync_filter(0)
@@ -838,13 +897,20 @@ class MatrixAdapter(PlatformAdapter):
             )
         rooms = batch.get("rooms") or {}
         failed: list[str] = []
+        succeeded: list[str] = []
         for room_id, invite in (rooms.get("invite") or {}).items():
             await self._guarded(
                 room_id,
                 f"invite to {room_id}",
                 self._handle_invite(room_id, invite),
                 failed,
+                succeeded,
             )
+        if failed and self._hold_batch(
+            _BatchOutcome(carried=True, failed=failed, succeeded=len(succeeded))
+        ):
+            return None
+        self._batch_done()
         await self._save_position(position)
         logger.info(
             "Matrix bridge %s started from the current position; earlier "
@@ -876,6 +942,7 @@ class MatrixAdapter(PlatformAdapter):
                 "Could not hand Matrix %s in room %s to Switch", label, room_id
             )
             self._last_handler_error = exc
+            self._event_errors[label] = exc
             failed.append(label)
             return None
         if succeeded is not None:
@@ -958,7 +1025,13 @@ class MatrixAdapter(PlatformAdapter):
     ) -> list[dict[str, Any]]:
         timeline = room.get("timeline") or {}
         events = list(timeline.get("events") or [])
-        if timeline.get("limited") and timeline.get("prev_batch"):
+        # Where the bot joined in this batch, nothing before its join is
+        # relayed (`_after_own_join`), so the gap is not read back.
+        if (
+            timeline.get("limited")
+            and timeline.get("prev_batch")
+            and not any(self._is_own_join(event) for event in events)
+        ):
             try:
                 events = (
                     await self._backfill(room_id, timeline["prev_batch"], since)
@@ -987,17 +1060,7 @@ class MatrixAdapter(PlatformAdapter):
         history its new member may see, which is nothing said to the bridge.
         """
         for index in range(len(events) - 1, -1, -1):
-            event = events[index]
-            content = event.get("content") or {}
-            previous = ((event.get("unsigned") or {}).get("prev_content") or {}).get(
-                "membership"
-            )
-            if (
-                event.get("type") == "m.room.member"
-                and event.get("state_key") == self._user_id
-                and content.get("membership") == "join"
-                and previous != "join"
-            ):
+            if self._is_own_join(events[index]):
                 if index:
                     logger.info(
                         "Not relaying %d events from before the bot joined Matrix "
@@ -1007,6 +1070,19 @@ class MatrixAdapter(PlatformAdapter):
                     )
                 return events[index + 1 :]
         return events
+
+    def _is_own_join(self, event: dict[str, Any]) -> bool:
+        """Whether `event` is the bot joining, not a change to its profile."""
+        content = event.get("content") or {}
+        previous = ((event.get("unsigned") or {}).get("prev_content") or {}).get(
+            "membership"
+        )
+        return (
+            event.get("type") == "m.room.member"
+            and event.get("state_key") == self._user_id
+            and content.get("membership") == "join"
+            and previous != "join"
+        )
 
     async def _handle_state(self, room_id: str, event: dict[str, Any]) -> bool:
         """Act on the state a batch carries ahead of its timeline.
@@ -1032,7 +1108,8 @@ class MatrixAdapter(PlatformAdapter):
 
         A homeserver hands over only the newest events of a busy room; the rest
         are read back here, up to `_BACKFILL_PAGES` pages, so a restart after
-        an outage loses nothing short of that, and says so when it does.
+        an outage loses nothing short of that, and says so when it does. It
+        stops at the bot's own join: nothing before it is relayed.
         """
         api = self._require_api()
         room_filter = {"types": _ROOM_EVENT_TYPES, "lazy_load_members": True}
@@ -1051,6 +1128,8 @@ class MatrixAdapter(PlatformAdapter):
             found.extend(chunk)
             token = page.get("end")
             if not chunk or not token:
+                break
+            if any(self._is_own_join(event) for event in chunk):
                 break
         else:
             logger.warning(
@@ -1140,10 +1219,9 @@ class MatrixAdapter(PlatformAdapter):
             await self._refuse_encrypted(room_id)
             return
         logger.info("The Matrix bot joined room %s, invited by %s", room_id, inviter)
-        if upgraded_from is not None:
-            # The upgrade of a room: the old room's tombstone moves its Switch
-            # room here (`_follow_upgrade`), and adopting it as well would
-            # make a second room for the same conversation.
+        if upgraded_from is not None and await self._upgrade_moves_here(
+            upgraded_from, room_id
+        ):
             logger.info(
                 "Matrix room %s replaces %s; its Switch room follows the upgrade",
                 room_id,
@@ -1158,6 +1236,41 @@ class MatrixAdapter(PlatformAdapter):
                     channel_name=info.name,
                 )
             )
+
+    async def _upgrade_moves_here(self, old_room: str, room_id: str) -> bool:
+        """Whether `old_room`'s tombstone moves its Switch room to `room_id`.
+
+        The `predecessor` an invite carries is only what the new room's
+        creator wrote, so the old room's tombstone is read instead. When it
+        names this room and its sender may invite the bot, `_follow_upgrade`
+        moves the Switch room here, and adopting the room as well would make a
+        second one for the same conversation. Otherwise (the bot is not in the
+        old room, it has no tombstone, the tombstone names another room or
+        would be ignored) nothing else brings the room into Switch, and the
+        invite adopts it as any other.
+        """
+        try:
+            tombstone = await self._require_api().state_event_full(
+                old_room, "m.room.tombstone"
+            )
+        except (MatrixApiError, httpx.HTTPError) as exc:
+            logger.info(
+                "Could not read the tombstone of %s, which Matrix room %s names as "
+                "its predecessor (%s); adopting %s as a room of its own",
+                old_room,
+                room_id,
+                exc,
+                room_id,
+            )
+            return False
+        # Without `format=event` there is no sender to check, so nothing in it
+        # is trusted.
+        content = tombstone.get("content") if tombstone else None
+        if not isinstance(content, dict):
+            return False
+        return content.get("replacement_room") == room_id and self._may_invite(
+            str(tombstone.get("sender") or "") if tombstone else ""
+        )
 
     async def _refuse_encrypted(self, room_id: str) -> None:
         """Say why the room will not be bridged, then leave it.
@@ -1203,11 +1316,17 @@ class MatrixAdapter(PlatformAdapter):
                 exc,
             )
             return
-        self._refused.discard(room_id)
-        self._rooms.pop(room_id, None)
+        self._forget_room(room_id)
 
     def _forget_room(self, room_id: str) -> None:
+        """Drop what is held about a room the bot is no longer in.
+
+        Thread and card lookups and handled events are kept by event id in
+        bounded caches, and a handle's account is the same in every room, so
+        those stay.
+        """
         self._rooms.pop(room_id, None)
+        self._encryption.pop(room_id, None)
         self._refused.discard(room_id)
         self._tombstoned.discard(room_id)
 
@@ -1317,8 +1436,7 @@ class MatrixAdapter(PlatformAdapter):
                 exc,
             )
             return
-        self._tombstoned.discard(room_id)
-        self._rooms.pop(room_id, None)
+        self._forget_room(room_id)
 
     async def _ensure_unencrypted(self, room_id: str) -> None:
         """Refuse to send into an end-to-end encrypted room.
@@ -1354,7 +1472,7 @@ class MatrixAdapter(PlatformAdapter):
         membership = content.get("membership")
         if member == self._user_id:
             if membership in ("leave", "ban"):
-                self._rooms.pop(room_id, None)
+                self._forget_room(room_id)
                 logger.info(
                     "The Matrix bot was removed from room %s by %s",
                     room_id,
@@ -1362,9 +1480,7 @@ class MatrixAdapter(PlatformAdapter):
                 )
                 return True
             return False
-        previous = ((event.get("unsigned") or {}).get("prev_content") or {}).get(
-            "membership"
-        )
+        previous = await self._previous_membership(room_id, event)
         if previous == membership:
             # A profile change: a new display name or avatar, nothing more.
             return False
@@ -1388,6 +1504,40 @@ class MatrixAdapter(PlatformAdapter):
                 )
             )
         return False
+
+    async def _previous_membership(
+        self, room_id: str, event: dict[str, Any]
+    ) -> str | None:
+        """The membership a member event replaced, None for the member's first.
+
+        A sync carries it as `unsigned.prev_content`. An event read back through
+        `/messages` may carry only `unsigned.replaces_state`, the id of the
+        event it replaced, which is then read; one the homeserver will not show
+        is taken as the member's first. Without either, it is the first.
+        """
+        unsigned = event.get("unsigned") or {}
+        if "prev_content" in unsigned:
+            previous = unsigned.get("prev_content")
+            return previous.get("membership") if isinstance(previous, dict) else None
+        replaced = unsigned.get("replaces_state")
+        if not isinstance(replaced, str) or not replaced:
+            return None
+        try:
+            earlier = await self._require_api().event(room_id, replaced)
+        except MatrixApiError as exc:
+            if not _refused_by_homeserver(exc):
+                raise
+            logger.warning(
+                "Could not read %s, the membership %s replaced in Matrix room %s "
+                "(%s); taking it as a join",
+                replaced,
+                event.get("event_id"),
+                room_id,
+                exc,
+            )
+            return None
+        content = earlier.get("content")
+        return content.get("membership") if isinstance(content, dict) else None
 
     async def _room_info(self, room_id: str) -> _RoomInfo:
         info = self._rooms.get(room_id)
@@ -1598,8 +1748,9 @@ class MatrixAdapter(PlatformAdapter):
             and not from_app
             and self._on_command is not None
         ):
-            command, _, args = stripped[1:].partition(" ")
-            if command:
+            parsed = _COMMAND_RE.match(stripped)
+            if parsed:
+                command, args = parsed.group(1), parsed.group(2) or ""
                 await self._on_command(
                     InboundCommand(
                         channel_id=room_id,
@@ -1730,17 +1881,8 @@ class MatrixAdapter(PlatformAdapter):
         target_id = relates.get("event_id")
         if position is None or not target_id or self._on_interaction is None:
             return
-        target = await self._require_api().event(room_id, str(target_id))
-        target_content = target.get("content")
-        if target.get("sender") != self._user_id or not isinstance(
-            target_content, dict
-        ):
-            return
-        marker = target_content.get(_PUBLICATION_KEY)
-        if not isinstance(marker, dict) or marker.get("kind") != "request":
-            return
-        token = marker.get("token")
-        if not isinstance(token, str) or not token:
+        card = await self._card(room_id, str(target_id))
+        if card is None:
             return
         await self._on_interaction(
             InboundInteraction(
@@ -1748,11 +1890,53 @@ class MatrixAdapter(PlatformAdapter):
                 sender_id=sender,
                 sender_name=self._remember(sender),
                 action_id=position_action(position),
-                value=token,
+                value=card.token,
                 message_ref=str(target_id),
-                thread_ref=_thread_of(target_content),
+                thread_ref=card.thread_ref,
             )
         )
+
+    async def _card(self, room_id: str, event_id: str) -> _Card | None:
+        """The bot's request card `event_id`, or None when it is not one.
+
+        Read from the event once and kept (`_CARD_CACHE_MAX`), since an event
+        does not change and every keycap on a card names it. An event the
+        homeserver will not show (purged, or in history the bot may not see)
+        is not a card the bot can answer.
+        """
+        if event_id in self._cards:
+            self._cards.move_to_end(event_id)
+            return self._cards[event_id]
+        try:
+            target = await self._require_api().event(room_id, event_id)
+        except MatrixApiError as exc:
+            if not _refused_by_homeserver(exc):
+                raise
+            logger.debug(
+                "Not reading a reaction to %s in Matrix room %s as an answer: the "
+                "homeserver will not show it (%s)",
+                event_id,
+                room_id,
+                exc,
+            )
+            target = {}
+        content = target.get("content")
+        marker = content.get(_PUBLICATION_KEY) if isinstance(content, dict) else None
+        token = marker.get("token") if isinstance(marker, dict) else None
+        card = (
+            _Card(token=token, thread_ref=_thread_of(content))
+            if target.get("sender") == self._user_id
+            and isinstance(content, dict)
+            and isinstance(marker, dict)
+            and marker.get("kind") == "request"
+            and isinstance(token, str)
+            and token
+            else None
+        )
+        self._cards[event_id] = card
+        while len(self._cards) > _CARD_CACHE_MAX:
+            self._cards.popitem(last=False)
+        return card
 
     # ── Outbound ─────────────────────────────────────────────────────────────
 
@@ -2537,12 +2721,20 @@ class MatrixAdapter(PlatformAdapter):
     async def is_first_reply(
         self, channel_id: str, root_ref: str, message_ref: str
     ) -> bool:
-        """Whether `message_ref` is the oldest reply in the thread under `root_ref`.
+        """Whether `message_ref` is the oldest reply to `root_ref`.
+
+        A reply in the thread under it is found through the thread's
+        relations. A plain reply (`m.in_reply_to` with no thread, which is what
+        Element's Reply sends outside a thread) is in no such index, so the
+        events just before it are read instead, back to the root: it is the
+        first when no other reply to the root comes between them, and not when
+        the root is further back than that window.
 
         Never raises: this runs on the way in, ahead of the relay.
         """
+        api = self._require_api()
         try:
-            page = await self._require_api().relations(
+            page = await api.relations(
                 channel_id,
                 root_ref,
                 "m.thread",
@@ -2551,18 +2743,51 @@ class MatrixAdapter(PlatformAdapter):
                 limit=1,
                 from_token=None,
             )
+            chunk = page.get("chunk") or []
+            if chunk and chunk[0].get("event_id") == message_ref:
+                return True
+            message = await api.event(channel_id, message_ref)
+            content = message.get("content")
+            if not (
+                isinstance(content, dict)
+                and _thread_of(content) is None
+                and _replied_to(content) == root_ref
+            ):
+                return False
+            around = await api.context(
+                channel_id,
+                message_ref,
+                limit=_FIRST_REPLY_CONTEXT,
+                event_filter={"types": ["m.room.message"]},
+            )
         except (MatrixApiError, httpx.HTTPError, RuntimeError) as exc:
             logger.warning(
-                "Could not read the Matrix thread under %s in %s (%s); treating %s "
-                "as not the first reply",
+                "Could not read the replies to %s in %s (%s); treating %s as not "
+                "the first reply",
                 root_ref,
                 channel_id,
                 exc,
                 message_ref,
             )
             return False
-        chunk = page.get("chunk") or []
-        return bool(chunk) and chunk[0].get("event_id") == message_ref
+        # Newest first, back from the reply.
+        for event in around.get("events_before") or []:
+            if event.get("event_id") == root_ref:
+                return True
+            earlier = event.get("content")
+            if isinstance(earlier, dict) and root_ref in (
+                _thread_of(earlier),
+                _replied_to(earlier),
+            ):
+                return False
+        logger.info(
+            "%s in %s replies to %s, which is further back than the events read "
+            "around it; treating it as not the first reply",
+            message_ref,
+            channel_id,
+            root_ref,
+        )
+        return False
 
     # ── Rooms ────────────────────────────────────────────────────────────────
 
@@ -2572,7 +2797,8 @@ class MatrixAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         """Create a room, unencrypted, and return its id.
 
         A public room is one anyone on the homeserver may join, but it is not
@@ -2592,7 +2818,7 @@ class MatrixAdapter(PlatformAdapter):
             "visibility": "private",
             "creation_content": {_CHANNEL_TYPE_KEY: channel_type},
         }
-        return await self._create_room(body)
+        return CreatedChannel(id=await self._create_room(body), name=name)
 
     async def create_dm_channel(
         self,
@@ -2646,7 +2872,7 @@ class MatrixAdapter(PlatformAdapter):
             await self._require_api().leave(external_channel_id)
         except (MatrixApiError, httpx.HTTPError) as exc:
             return RetireOutcome.failed(f"The bot could not leave the room: {exc}")
-        self._rooms.pop(external_channel_id, None)
+        self._forget_room(external_channel_id)
         return RetireOutcome(outcome="left")
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
@@ -2767,8 +2993,14 @@ class MatrixAdapter(PlatformAdapter):
 
 
 # An `@handle` in prose. Not one that is part of a link's label or target,
-# which is what a pill already written looks like.
-_HANDLE_RE = re.compile(r"(?<![\w@\[/])@([A-Za-z0-9._\-]+)(?![A-Za-z0-9_\-\]:])")
+# which is what a pill already written looks like, nor the localpart of a full
+# `@user:server`; `@alice: the build failed` is a handle.
+_HANDLE_RE = re.compile(
+    r"(?<![\w@\[/])@([A-Za-z0-9._\-]+)(?![A-Za-z0-9_\-\]]|:[A-Za-z0-9\[])"
+)
+
+# A `!command`, with its arguments after any whitespace, a line break included.
+_COMMAND_RE = re.compile(r"!(\S+)(?:\s+(.*))?\Z", re.DOTALL)
 
 # What a mention pass must not touch: fenced and inline code, Markdown links and
 # bare URLs, where an `@` is part of the text or the address, not a mention.
@@ -2784,6 +3016,15 @@ def _thread_of(content: dict[str, Any]) -> str | None:
     if isinstance(relates, dict) and relates.get("rel_type") == "m.thread":
         root = relates.get("event_id")
         return str(root) if root else None
+    return None
+
+
+def _replied_to(content: dict[str, Any]) -> str | None:
+    """The event a message's content says it replies to, or None."""
+    relates = content.get("m.relates_to")
+    reply = relates.get("m.in_reply_to") if isinstance(relates, dict) else None
+    if isinstance(reply, dict) and reply.get("event_id"):
+        return str(reply["event_id"])
     return None
 
 

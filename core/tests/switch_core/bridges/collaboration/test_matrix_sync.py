@@ -203,6 +203,73 @@ class TestPosition:
         assert backfill.url.params["to"] == "s1"
         assert backfill.url.params["dir"] == "b"
 
+    async def test_a_room_joined_in_the_batch_is_not_read_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing before the bot's join is relayed, so there is nothing to read."""
+        homeserver = FakeHomeserver(account_data={POSITION: {"next_batch": "s1"}})
+        own_join = {
+            "type": "m.room.member",
+            "state_key": BOT,
+            "event_id": "$botjoin",
+            "sender": BOT,
+            "content": {"membership": "join"},
+        }
+        homeserver.queue(
+            batch(
+                "s2",
+                [own_join, message_event("$after", "hello bot")],
+                limited=True,
+                prev_batch="p1",
+            )
+        )
+        adapter = make_adapter(monkeypatch, homeserver)
+        recorder = Recorder()
+        await start(adapter, recorder)
+        await homeserver.until_syncs(2)
+        await adapter.stop()
+        assert [m.message_ref for m in recorder.messages] == ["$after"]
+        assert not [r for r in homeserver.requests if r.url.path.endswith("/messages")]
+
+    async def test_reading_back_stops_at_the_bots_own_join(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        homeserver = FakeHomeserver(account_data={POSITION: {"next_batch": "s1"}})
+        homeserver.messages_pages.extend(
+            [
+                {
+                    "chunk": [
+                        message_event("$gap", "after the join"),
+                        {
+                            "type": "m.room.member",
+                            "state_key": BOT,
+                            "event_id": "$botjoin",
+                            "sender": BOT,
+                            "content": {"membership": "join"},
+                        },
+                        message_event("$before", "before the join"),
+                    ],
+                    "end": "p2",
+                },
+                {"chunk": [message_event("$older", "long ago")], "end": "p3"},
+            ]
+        )
+        homeserver.queue(
+            batch(
+                "s2", [message_event("$new", "newest")], limited=True, prev_batch="p1"
+            )
+        )
+        adapter = make_adapter(monkeypatch, homeserver)
+        recorder = Recorder()
+        await start(adapter, recorder)
+        await homeserver.until_syncs(2)
+        await adapter.stop()
+        assert [m.message_ref for m in recorder.messages] == ["$gap", "$new"]
+        assert (
+            len([r for r in homeserver.requests if r.url.path.endswith("/messages")])
+            == 1
+        )
+
     async def test_a_revoked_token_says_what_to_do_and_keeps_trying(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -541,6 +608,9 @@ class TestInvites:
         """The old room's tombstone moves its Switch room over; adopting the
         new room on its invite would make a second room for one conversation."""
         homeserver = FakeHomeserver(account_data={POSITION: {"next_batch": "s1"}})
+        homeserver.state[(ROOM, "m.room.tombstone", "")] = {
+            "replacement_room": "!v2:example.org"
+        }
         homeserver.queue(
             {
                 "next_batch": "s2",
@@ -555,6 +625,54 @@ class TestInvites:
         assert homeserver.joined == ["!v2:example.org"]
         assert recorder.app_joins == []
 
+    @pytest.mark.parametrize(
+        "tombstone",
+        [None, {"replacement_room": "!elsewhere:example.org"}],
+        ids=["no-tombstone", "tombstone-names-another-room"],
+    )
+    async def test_a_predecessor_the_old_room_does_not_confirm_is_adopted(
+        self, monkeypatch: pytest.MonkeyPatch, tombstone: dict[str, str] | None
+    ) -> None:
+        """Anyone can write a `predecessor` into a room they create: without the
+        old room's tombstone pointing here, nothing else would bring it in."""
+        homeserver = FakeHomeserver(account_data={POSITION: {"next_batch": "s1"}})
+        if tombstone is not None:
+            homeserver.state[(ROOM, "m.room.tombstone", "")] = tombstone
+        homeserver.queue(
+            {
+                "next_batch": "s2",
+                "rooms": _invite("!v2:example.org", ALICE, upgraded_from=ROOM),
+            }
+        )
+        adapter = make_adapter(monkeypatch, homeserver)
+        recorder = Recorder()
+        await start(adapter, recorder)
+        await homeserver.until_syncs(2)
+        await adapter.stop()
+        assert [j.channel_id for j in recorder.app_joins] == ["!v2:example.org"]
+
+    async def test_an_upgrade_by_someone_who_may_not_invite_the_bot_is_adopted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_follow_upgrade` ignores such a tombstone, so the invite adopts."""
+        homeserver = FakeHomeserver(account_data={POSITION: {"next_batch": "s1"}})
+        homeserver.state[(ROOM, "m.room.tombstone", "")] = {
+            "replacement_room": "!v2:example.org"
+        }
+        homeserver.state_senders[(ROOM, "m.room.tombstone", "")] = "@eve:far.example"
+        homeserver.queue(
+            {
+                "next_batch": "s2",
+                "rooms": _invite("!v2:example.org", ALICE, upgraded_from=ROOM),
+            }
+        )
+        adapter = make_adapter(monkeypatch, homeserver)
+        recorder = Recorder()
+        await start(adapter, recorder)
+        await homeserver.until_syncs(2)
+        await adapter.stop()
+        assert [j.channel_id for j in recorder.app_joins] == ["!v2:example.org"]
+
     async def test_invites_waiting_at_the_first_start_are_answered(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -568,6 +686,72 @@ class TestInvites:
         await adapter.stop()
         assert homeserver.joined == ["!waiting:example.org"]
         assert len(recorder.app_joins) == 1
+
+    async def test_an_invite_that_fails_at_the_first_start_is_tried_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An incremental sync never lists a waiting invite again, so the first
+        position is stored only once it has been answered."""
+        homeserver = FakeHomeserver(
+            initial_sync={"rooms": _invite("!waiting:example.org", ALICE)}
+        )
+        adapter = make_adapter(monkeypatch, homeserver)
+        recorder = Recorder()
+        refused = 0
+
+        async def fails_twice(join: Any) -> None:
+            nonlocal refused
+            if refused < 2:
+                refused += 1
+                raise RuntimeError("database unavailable")
+            recorder.app_joins.append(join)
+
+        recorder.on_app_joined = fails_twice  # type: ignore[method-assign]
+        await start(adapter, recorder)
+        await homeserver.until_syncs(1)
+        await adapter.stop()
+
+        assert len([s for s in homeserver.syncs if "since" not in s]) == 3
+        assert [j.channel_id for j in recorder.app_joins] == ["!waiting:example.org"]
+        assert homeserver.account_data[POSITION] == {"next_batch": "s0"}
+
+    async def test_an_invite_the_homeserver_will_not_let_the_bot_join_is_given_up(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Withdrawn before it was accepted: asking again gets the same answer,
+        so it is the invite that failed, not Switch, and the sync moves on."""
+        homeserver = FakeHomeserver(account_data={POSITION: {"next_batch": "s1"}})
+        homeserver.refusals[("POST", "/join/")] = (403, {"errcode": "M_FORBIDDEN"})
+        homeserver.queue(
+            {"next_batch": "s2", "rooms": _invite("!gone:example.org", ALICE)}
+        )
+        adapter = make_adapter(monkeypatch, homeserver)
+        recorder = Recorder()
+        await start(adapter, recorder)
+        await _until(lambda: homeserver.account_data[POSITION]["next_batch"] == "s2")
+        await adapter.stop()
+
+        assert [s["since"] for s in homeserver.syncs[:3]] == ["s1", "s1", "s1"]
+        assert recorder.app_joins == []
+        [given_up] = [
+            r for r in caplog.records if "Giving up on Matrix events" in r.getMessage()
+        ]
+        assert "invite to !gone:example.org" in given_up.getMessage()
+        assert await adapter.attention() is None
+
+    async def test_a_poison_invite_at_the_first_start_does_not_hold_it_forever(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        homeserver = FakeHomeserver(
+            initial_sync={"rooms": _invite("!gone:example.org", ALICE)}
+        )
+        homeserver.refusals[("POST", "/join/")] = (404, {"errcode": "M_NOT_FOUND"})
+        adapter = make_adapter(monkeypatch, homeserver)
+        await start(adapter, Recorder())
+        await homeserver.until_syncs(1)
+        await adapter.stop()
+        assert len([s for s in homeserver.syncs if "since" not in s]) == 3
+        assert homeserver.account_data[POSITION] == {"next_batch": "s0"}
 
     async def test_an_invite_from_another_homeserver_is_declined_by_default(
         self, monkeypatch: pytest.MonkeyPatch
@@ -739,6 +923,19 @@ class TestEncryptedRooms:
         await homeserver.until_syncs(3)
         await adapter.stop()
         assert homeserver.left == [ROOM]
+
+    async def test_a_room_left_is_forgotten(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        homeserver = FakeHomeserver()
+        adapter = make_adapter(monkeypatch, homeserver, listening=False)
+        await start(adapter, Recorder())
+        await adapter.send_message(ROOM, "coder", "hello")
+        assert ROOM in adapter._encryption
+        await adapter.retire_channel(ROOM)
+        await adapter.stop()
+        assert ROOM not in adapter._encryption
+        assert ROOM not in adapter._rooms
 
     async def test_a_quiet_copy_refuses_to_send_into_an_encrypted_room(
         self, monkeypatch: pytest.MonkeyPatch
@@ -983,6 +1180,44 @@ class TestMembership:
         assert [
             (j.external_user_id, j.external_username) for j in recorder.user_joins
         ] == [("@carol:example.org", "carol")]
+
+    async def test_a_profile_change_read_back_without_prev_content_is_no_join(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/messages` may give only `replaces_state`; the event it names says
+        the member was already in the room."""
+        homeserver = FakeHomeserver(account_data={POSITION: {"next_batch": "s1"}})
+        homeserver.put_event(
+            ROOM,
+            {
+                "type": "m.room.member",
+                "state_key": "@carol:example.org",
+                "event_id": "$joined-long-ago",
+                "sender": "@carol:example.org",
+                "content": {"membership": "join"},
+            },
+        )
+        homeserver.queue(
+            batch(
+                "s2",
+                [
+                    {
+                        "type": "m.room.member",
+                        "state_key": "@carol:example.org",
+                        "event_id": "$rename",
+                        "sender": "@carol:example.org",
+                        "content": {"membership": "join", "displayname": "Carol"},
+                        "unsigned": {"replaces_state": "$joined-long-ago"},
+                    },
+                ],
+            )
+        )
+        adapter = make_adapter(monkeypatch, homeserver)
+        recorder = Recorder()
+        await start(adapter, recorder)
+        await homeserver.until_syncs(2)
+        await adapter.stop()
+        assert recorder.user_joins == []
 
     async def test_the_bot_being_removed_ends_the_room_quietly(
         self, monkeypatch: pytest.MonkeyPatch

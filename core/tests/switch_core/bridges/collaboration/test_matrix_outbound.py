@@ -40,6 +40,7 @@ from tests.switch_core.bridges.collaboration.matrix_fakes import (
     FakeHomeserver,
     Recorder,
     make_adapter,
+    message_event,
     start,
 )
 
@@ -132,6 +133,16 @@ class TestMessages:
             in content["formatted_body"]
         )
         assert "<code>@alice</code>" in content["formatted_body"]
+
+    async def test_a_handle_followed_by_a_colon_is_a_pill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, homeserver = await _adapter(monkeypatch)
+        adapter.prime_mention_targets({"alice": ALICE})
+        await adapter.send_message(
+            ROOM, "coder", adapter.translate_outbound("@alice: the build failed")
+        )
+        assert _last(homeserver)["m.mentions"] == {"user_ids": [ALICE]}
 
     async def test_a_full_user_id_becomes_a_pill_too(
         self, monkeypatch: pytest.MonkeyPatch
@@ -738,16 +749,61 @@ class TestCards:
         assert await adapter.is_first_reply(ROOM, "$card", "$first") is True
         assert await adapter.is_first_reply(ROOM, "$card", "$second") is False
 
+    async def test_a_plain_reply_to_the_card_can_be_the_first_reply(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Element's Reply outside a thread is only `m.in_reply_to`, which the
+        thread's relations do not list."""
+        reply = {"m.relates_to": {"m.in_reply_to": {"event_id": "$card"}}}
+        homeserver = FakeHomeserver()
+        homeserver.put_event(ROOM, message_event("$yes", "yes", **reply))
+        homeserver.put_event(ROOM, message_event("$also", "yes", **reply))
+        homeserver.context_before["$yes"] = [
+            message_event("$chatter", "unrelated"),
+            {"event_id": "$card", "sender": BOT, "content": {"body": "card"}},
+        ]
+        homeserver.context_before["$also"] = [
+            message_event("$yes", "yes", **reply),
+            {"event_id": "$card", "sender": BOT, "content": {"body": "card"}},
+        ]
+        adapter, _ = await _adapter(monkeypatch, homeserver)
+        assert await adapter.is_first_reply(ROOM, "$card", "$yes") is True
+        assert await adapter.is_first_reply(ROOM, "$card", "$also") is False
+
+    async def test_a_plain_reply_after_a_thread_reply_is_not_the_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        homeserver = FakeHomeserver()
+        thread = {"m.relates_to": {"rel_type": "m.thread", "event_id": "$card"}}
+        homeserver.relations[("$card", "m.thread")] = [
+            {"event_id": "$threaded", "origin_server_ts": 1}
+        ]
+        homeserver.put_event(
+            ROOM,
+            message_event(
+                "$late",
+                "yes",
+                **{"m.relates_to": {"m.in_reply_to": {"event_id": "$card"}}},
+            ),
+        )
+        homeserver.context_before["$late"] = [
+            message_event("$threaded", "no", **thread),
+            {"event_id": "$card", "sender": BOT, "content": {"body": "card"}},
+        ]
+        adapter, _ = await _adapter(monkeypatch, homeserver)
+        assert await adapter.is_first_reply(ROOM, "$card", "$late") is False
+
 
 class TestRooms:
     async def test_a_room_is_created_unencrypted_with_its_kind_recorded(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         adapter, homeserver = await _adapter(monkeypatch)
-        room_id = await adapter.create_channel(
+        created = await adapter.create_channel(
             "release", "Release planning", channel_type="channel_private"
         )
-        assert room_id.startswith("!created")
+        assert created.id.startswith("!created")
+        assert created.name == "release"
         [body] = homeserver.created
         assert body["preset"] == "private_chat"
         assert body["visibility"] == "private"

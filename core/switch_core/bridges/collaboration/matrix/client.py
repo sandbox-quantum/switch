@@ -331,6 +331,23 @@ class HomeserverApi:
             params["from"] = from_token
         return await self._request("GET", path, params=params)
 
+    async def context(
+        self,
+        room_id: str,
+        event_id: str,
+        *,
+        limit: int,
+        event_filter: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        params: dict[str, str | int] = {"limit": limit}
+        if event_filter is not None:
+            params["filter"] = json.dumps(event_filter, separators=(",", ":"))
+        return await self._request(
+            "GET",
+            f"/_matrix/client/v3/rooms/{_segment(room_id)}/context/{_segment(event_id)}",
+            params=params,
+        )
+
     # ── Rooms ────────────────────────────────────────────────────────────────
 
     async def send_event(

@@ -108,7 +108,7 @@ Invite the bot to the room like anyone else (in Element: **Invite to this room**
 
 A room with no name that only you and the bot are in is treated as a direct conversation: every message in it is for the room's one agent, without naming it. Any other room is a channel, where you address an agent by name.
 
-When a room is upgraded to a new room version, the bot joins the new room, the Switch room moves with it, and the bot leaves the old room. The upgrade is followed only when the person who upgraded the room could also have invited the bot (see **Accept invites from other homeservers**) and the new room was created as the old one's replacement. If the bot can't join the new room, or the new room is encrypted, it says so in the old one.
+When a room is upgraded to a new room version, the bot joins the new room, the Switch room moves with it, and the bot leaves the old room. The upgrade is followed only when the person who upgraded the room could also have invited the bot (see **Accept invites from other homeservers**) and the new room was created as the old one's replacement. If the bot can't join the new room, or the new room is encrypted, it says so in the old one. An invite to a room that names an older room as its predecessor is adopted like any other unless that older room's own upgrade marker points to it, so a room is never left joined but unbridged.
 
 ## Link your Matrix account
 
@@ -185,7 +185,7 @@ A room gets an **Open in Matrix** link through `matrix.to`, which opens it in wh
 
 Only the Switch process that holds the connection syncs with the homeserver; others only send. Switch keeps its place in the account data of the bot account, under a type named for the connection, and moves it on once each batch of events has reached Switch. After a restart, a move to another process or an outage, it carries on from there and reads back what the homeserver left out of the first batch, up to the 2,000 most recent events in each room. A batch that was being handled when a process stopped is read again, and nothing in it reaches the room twice, because each message is recognised by its Matrix event id.
 
-If Switch can't take any of the events in a batch (its own database unavailable, say), it holds its place and reads the batch again, backing off up to a minute between tries, for as long as it takes; nothing is skipped, and the connection says so on the server's **Home** page meanwhile. If one event keeps failing while others in the same batch get through, that event alone is skipped after three tries, and the server log names it at error level, as it does every room whose history couldn't be read back. If syncing keeps failing, the connection says so on the server's **Home** page until it works again.
+If Switch can't take any of the events in a batch (its own database unavailable, say), it holds its place and reads the batch again, backing off up to a minute between tries, for as long as it takes; nothing is skipped, and the connection says so on the server's **Home** page meanwhile. If one event keeps failing while others in the same batch get through, or the homeserver turns down what the bridge asks about it (an invite withdrawn before the bot could join, say), that event alone is skipped after three tries, and the server log names it at error level, as it does every room whose history couldn't be read back. If syncing keeps failing, the connection says so on the server's **Home** page until it works again.
 
 ## Troubleshooting
 

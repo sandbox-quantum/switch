@@ -278,6 +278,15 @@ class TestCommands:
         assert command.root_id == "$root"
         assert command.sender_name == "alice"
 
+    async def test_a_command_split_from_its_arguments_by_a_line_break(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorder, _, _ = await _deliver(
+            monkeypatch, [message_event("$c", "!invite-agent\n@coder")]
+        )
+        [command] = recorder.commands
+        assert (command.command, command.args) == ("invite-agent", "@coder")
+
     async def test_a_lone_bang_is_just_a_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -573,6 +582,37 @@ class TestReactions:
             homeserver,
         )
         assert recorder.interactions == []
+
+    async def test_a_keycap_on_an_event_the_homeserver_will_not_show_is_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Purged, or before the bot could see: not a card, and not a failure
+        that would hold the batch."""
+        homeserver = FakeHomeserver()
+        homeserver.queue(batch("s3", [message_event("$next", "later")]))
+        recorder, homeserver, _ = await _deliver(
+            monkeypatch,
+            [self._reaction("1\ufe0f\u20e3", target="$purged")],
+            homeserver,
+        )
+        assert recorder.interactions == []
+        assert homeserver.account_data[POSITION] == {"next_batch": "s2"}
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    async def test_keycaps_on_one_card_read_it_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        homeserver = FakeHomeserver()
+        self._card(homeserver)
+        one = self._reaction("1\ufe0f\u20e3")
+        two = self._reaction("2\ufe0f\u20e3")
+        two["sender"] = "@bob:example.org"
+        recorder, homeserver, _ = await _deliver(monkeypatch, [one, two], homeserver)
+        assert len(recorder.interactions) == 2
+        assert (
+            len([r for r in homeserver.requests if r.url.path.endswith("/event/$card")])
+            == 1
+        )
 
     async def test_a_forged_card_from_anyone_but_the_bot_answers_nothing(
         self, monkeypatch: pytest.MonkeyPatch

@@ -65,6 +65,8 @@ class FakeHomeserver:
     events: dict[str, dict[str, Any]] = field(default_factory=dict)
     relations: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
     messages_pages: deque[dict[str, Any]] = field(default_factory=deque)
+    # event id -> the events just before it, newest first (`/context`).
+    context_before: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     media: dict[str, tuple[bytes, str]] = field(default_factory=dict)
     upload_limit: int | None = 1_000_000
     directory: list[dict[str, Any]] = field(default_factory=list)
@@ -283,6 +285,12 @@ class FakeHomeserver:
                 chunk = sorted(chunk, key=lambda e: e.get("origin_server_ts", 0))
             limit = int(request.url.params.get("limit", "100"))
             return httpx.Response(200, json={"chunk": chunk[:limit]})
+        match = re.fullmatch(r"/_matrix/client/v3/rooms/([^/]+)/context/([^/]+)", path)
+        if match:
+            return httpx.Response(
+                200,
+                json={"events_before": self.context_before.get(match.group(2), [])},
+            )
         match = re.fullmatch(r"/_matrix/client/v3/rooms/([^/]+)/messages", path)
         if match:
             page = (
