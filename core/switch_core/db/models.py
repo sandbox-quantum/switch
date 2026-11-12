@@ -3995,6 +3995,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     turn_id: Mapped[str] = mapped_column(Text, nullable=False)
     item_id: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+    subagent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)

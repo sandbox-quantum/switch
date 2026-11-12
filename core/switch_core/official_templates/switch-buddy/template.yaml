@@ -16,7 +16,7 @@ params:
   provider:
     type: provider
     description: The coding agent that runs it. The first one ready on its machine is chosen.
-    default: [claude, codex, opencode, cursor, antigravity, deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid]
+    default: [claude, codex, opencode, cursor, antigravity, deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie]
     input: advanced
   machine:
     type: machine
