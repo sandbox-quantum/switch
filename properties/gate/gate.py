@@ -386,7 +386,9 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
     for path in sorted(root.glob(VITEST_GLOB)):
         label = path.relative_to(root).as_posix()
         for comment in TS_TEST_DOC.finditer(path.read_text(encoding="utf-8")):
-            skipped = TS_NOT_RUN & set(re.sub(r"\([^()]*\)", "", comment["fn"]).split(".")[1:])
+            skipped = TS_NOT_RUN & set(
+                re.sub(r"\([^()]*\)", "", comment["fn"]).split(".")[1:]
+            )
             for tag in TS_TAG.finditer(comment["body"]):
                 if skipped:
                     problems.append(
