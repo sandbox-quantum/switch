@@ -36,6 +36,7 @@ from cronsim import CronSim, CronSimError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.archived_workspace import is_archived
 from switch_core.authz import Principal, can
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
@@ -147,6 +148,26 @@ def scheduled_text(
     )
 
 
+async def skip_missed_runs(
+    session: AsyncSession, schedules: RoomScheduleStore, now: datetime
+) -> int:
+    """Move every schedule of the bound workspace that came due while nothing
+    could send it on to its next run after `now`, as resuming a paused one
+    does: a recurring schedule to its next time, and a one-off that has gone
+    by to none, unsent. For a workspace restored after being archived, whose
+    schedules did not fire meanwhile (`RoomScheduler.fire_due`). Returns how
+    many were moved; the caller commits."""
+    missed = await schedules.due(session, now)
+    for schedule in missed:
+        schedule.next_run_at = (
+            next_cron_run(schedule.cron, schedule.timezone, now)
+            if schedule.cron is not None
+            else None
+        )
+    await session.flush()
+    return len(missed)
+
+
 def own_room_schedules(
     ownership: Ownership,
     session_factory: async_sessionmaker[AsyncSession],
@@ -239,6 +260,10 @@ class RoomScheduler:
             if admin is None:
                 continue
             async with tenant_session(self._sessions, tenant_id) as db:
+                # An archived workspace's schedules wait; the runs missed are
+                # skipped when it is restored (`skip_missed_runs`).
+                if await is_archived(db, tenant_id):
+                    continue
                 due = await self._schedules.due(db, now)
             for schedule in due:
                 try:

@@ -1842,6 +1842,7 @@ class TestCurrentTenantRoute:
             "role": "member",
             "organization_role": None,
             "organization_id": None,
+            "archived_at": None,
             "administers": False,
             "can_delete": False,
             "can_manage_data_protection": False,
@@ -1932,6 +1933,7 @@ class TestOrganizationAdmins:
             "role": "admin",
             "organization_role": "org_admin",
             "organization_id": organization_id,
+            "archived_at": None,
             "administers": True,
             # An organization admin administers it, but deletes it, erases
             # people and sets messages to be deleted only by an admin

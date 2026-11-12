@@ -1389,6 +1389,16 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/archive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/restore",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/ownership/transfer",
       "auth": "session",
       "flags": []

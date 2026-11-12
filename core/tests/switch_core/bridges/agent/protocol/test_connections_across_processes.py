@@ -38,6 +38,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
     KEY_REISSUED,
     PROTOCOL_VERSION,
+    WORKSPACE_ARCHIVED,
     AgentConnection,
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -1330,6 +1331,32 @@ class TestAnAgentWhoseKeyWasReissued:
 
         await _open(b)
         await _eventually(lambda: a.registry.is_live(AGENT))
+
+
+class TestAnAgentWhoseWorkspaceWasArchived:
+    """As for a re-issued key: the rows go, and its connections end wherever
+    their sockets are held, with the ending saying why."""
+
+    async def test_archived_through_the_other_process_its_connection_closes(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        told: list[str] = []
+        a.registry.set_ended_elsewhere_listener(told.append)
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await b.registry.agent_workspace_archived(AGENT)
+
+        await _eventually(lambda: conn.closure is not None)
+        assert conn.closure == WORKSPACE_ARCHIVED
+        assert told == [AGENT]
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
 
 
 class TestADeletedAgent:

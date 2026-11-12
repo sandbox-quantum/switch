@@ -393,6 +393,7 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         _store=OrganizationAppCredentialStore(settings.keyring),
     )
     gateway.state.controller_revoker = management.service
+    gateway.state.workspace_archive = Fake("workspace_archive")
     # Auto-route's decision client, asking nothing: the decision settings
     # routes read and save the workspace's row, and Test meets a service that
     # is down.

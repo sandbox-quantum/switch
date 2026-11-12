@@ -16,6 +16,7 @@ from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from switch_core.archived_workspace import WORKSPACE_ARCHIVED, is_archived
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
@@ -45,6 +46,15 @@ class ApiKeyExpired(Exception):
     def __init__(self, api_key: ApiKey) -> None:
         super().__init__(f"API key {api_key.id} expired at {api_key.expires_at}")
         self.api_key = api_key
+
+
+class WorkspaceArchivedError(Exception):
+    """A presented credential belongs to an archived workspace, whose agents
+    may not connect until it is restored (`workspace_archive.py`)."""
+
+    def __init__(self, tenant_id: str) -> None:
+        super().__init__(f"Workspace {tenant_id} is archived")
+        self.tenant_id = tenant_id
 
 
 # Path prefixes that bypass the Bearer middleware entirely. These are either
@@ -292,6 +302,8 @@ class BearerAuthMiddleware:
         # If no row exists, fall through to OIDC (where applicable).
         try:
             api_key, agent = await self._resolve_api_key(token)
+            if agent is None and api_key is None and self._oidc_validator is not None:
+                agent = await self._try_oidc(token)
         except ApiKeyExpired as exc:
             logger.warning(
                 "Refused API key %s (%s): it expired at %s",
@@ -301,9 +313,12 @@ class BearerAuthMiddleware:
             )
             await _unauthorized(scope, receive, send, "API key expired")
             return
-
-        if agent is None and api_key is None and self._oidc_validator is not None:
-            agent = await self._try_oidc(token)
+        except WorkspaceArchivedError as exc:
+            logger.info("Refused a credential of archived workspace %s", exc.tenant_id)
+            await _controller_refusal("workspace_archived", WORKSPACE_ARCHIVED, 403)(
+                scope, receive, send
+            )
+            return
 
         if agent is not None:
             if (
@@ -546,6 +561,10 @@ class BearerAuthMiddleware:
             api_key, agent = found
             if api_key.expired(datetime.now(UTC)):
                 raise ApiKeyExpired(api_key)
+            # Read only here, where the row is: a remembered key is forgotten
+            # as its workspace is archived (`workspace_archive.py`).
+            if await is_archived(session, tenant_id):
+                raise WorkspaceArchivedError(tenant_id)
             if api_key.type != "agent":
                 agent = None
             session.expunge_all()
@@ -575,6 +594,8 @@ class BearerAuthMiddleware:
         if tenant_id is None:
             return None
         async with tenant_session(self._session_factory, tenant_id) as session:
+            if await is_archived(session, tenant_id):
+                raise WorkspaceArchivedError(tenant_id)
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 

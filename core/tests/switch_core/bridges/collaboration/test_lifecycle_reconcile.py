@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import exc as sa_exc
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration import lifecycle_service as lifecycle_module
 from switch_core.bridges.collaboration.models import BridgeCredentialError
-from switch_core.db.models import CollaborationBridge
+from switch_core.db.models import CollaborationBridge, Tenant
 from tests.switch_core.bridges.collaboration.test_lifecycle_tenant_binding import (
     _make_bridge,
     _make_tenant,
@@ -212,5 +213,126 @@ async def test_a_bridge_whose_credentials_were_rejected_is_not_tried_again(
         assert len(calls) == 1
         assert [name for _, name in service.crashed()] == ["MM"]
         assert service._crash_retries == {}
+    finally:
+        await service.stop_all()
+
+
+async def _set_archived(
+    session_factory: async_sessionmaker[AsyncSession], bridge_id: str, *, archived: bool
+) -> None:
+    """Archive or restore the workspace `bridge_id` is in."""
+    async with session_factory() as session:
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        assert bridge is not None
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == bridge.tenant_id)
+            .values(archived_at=datetime.now(UTC) if archived else None)
+        )
+        await session.commit()
+
+
+async def test_a_bridge_stops_while_its_workspace_is_archived_and_starts_on_restore(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lifecycle_module, "STOP_GRACE_SECONDS", 0.01)
+    bridge_id = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    starts: list[str] = []
+
+    async def run(bridge_id: str, *_: object) -> None:
+        starts.append(bridge_id)
+        await asyncio.Event().wait()
+
+    service._run_bridge = run  # type: ignore[method-assign]
+    try:
+        await service.reconcile_bridge(bridge_id)
+        await asyncio.sleep(0)
+        assert starts == [bridge_id]
+
+        await _set_archived(session_factory, bridge_id, archived=True)
+        await service.reconcile_bridge(bridge_id)
+        assert service._running(bridge_id) is None
+        assert not service._owned.wants(bridge_id)
+        assert bridge_id not in service._started_rows
+
+        # A re-check while it is archived does not start it again either.
+        await service.reconcile_all()
+        await asyncio.sleep(0)
+        assert starts == [bridge_id]
+
+        await _set_archived(session_factory, bridge_id, archived=False)
+        await service.reconcile_bridge(bridge_id)
+        await asyncio.sleep(0)
+        assert starts == [bridge_id, bridge_id]
+        assert service._running(bridge_id) is not None
+    finally:
+        await service.stop_all()
+
+
+async def test_start_all_wants_no_bridge_of_an_archived_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    live = await _bridge(session_factory)
+    archived = await _bridge(session_factory)
+    await _set_archived(session_factory, archived, archived=True)
+    service = _service(session_factory)
+
+    await service.start_all()
+
+    assert service._owned.wants(live)
+    assert not service._owned.wants(archived)
+
+
+async def test_an_archived_workspaces_bridge_is_refused_a_start_not_remembered(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Refused before the row is recorded as started from, so the same row
+    starts it once the workspace is restored."""
+    bridge_id = await _bridge(session_factory)
+    await _set_archived(session_factory, bridge_id, archived=True)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    try:
+        with pytest.raises(ValueError, match="archived workspace"):
+            await service.start(bridge_id)
+
+        assert bridge_id not in service._started_rows
+        assert service._running(bridge_id) is None
+    finally:
+        await service.stop_all()
+
+
+async def test_reconcile_and_announce_tells_every_other_process_too(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Archiving changes the bridge's workspace and not its row, so nothing
+    else would announce it."""
+    monkeypatch.setattr(lifecycle_module, "STOP_GRACE_SECONDS", 0.01)
+    bridge_id = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    announced: list[str] = []
+
+    class _Signals:
+        def changed(self, bridge_id: str) -> None:
+            announced.append(bridge_id)
+
+    async def run(bridge_id: str, *_: object) -> None:
+        await asyncio.Event().wait()
+
+    service._run_bridge = run  # type: ignore[method-assign]
+    service.use_signals(_Signals())  # type: ignore[arg-type]
+    try:
+        await service.reconcile_bridge(bridge_id)
+        await _set_archived(session_factory, bridge_id, archived=True)
+
+        await service.reconcile_and_announce(bridge_id)
+
+        assert service._running(bridge_id) is None
+        assert announced == [bridge_id]
     finally:
         await service.stop_all()

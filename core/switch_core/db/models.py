@@ -185,6 +185,13 @@ class Tenant(Base):
     workspace deletes this row (`accounts/workspace_deletion.py`); a
     `deleted_at` that nothing honours would read as a guarantee the code does
     not make.
+
+    `archived_at` is the one state it has, and everything that reaches into a
+    workspace honours it (`workspace_archive.py`): while it is set, nobody
+    but its organization's `org_admin`s (and the platform operator) may enter
+    the workspace, its agents may not connect, its messaging apps relay
+    nothing, and it can't be joined. `archived_by` is cleared when that
+    account is deleted; the audit logs keep who archived it.
     """
 
     __tablename__ = "tenants"
@@ -208,6 +215,14 @@ class Tenant(Base):
     organization_id: Mapped[str | None] = mapped_column(
         Text,
         ForeignKey("organizations.id", name="fk_tenants_organization"),
+        nullable=True,
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    archived_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_tenants_archived_by"),
         nullable=True,
     )
 

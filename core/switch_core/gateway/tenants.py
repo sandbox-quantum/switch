@@ -14,6 +14,11 @@ from switch_core.accounts.workspace_deletion import (
     WorkspaceDeletionRefused,
     delete_workspace,
 )
+from switch_core.archived_workspace import (
+    WORKSPACE_ARCHIVED,
+    archived_since,
+    is_archived,
+)
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
@@ -413,6 +418,7 @@ async def current_tenant(
         role=role,
         organization_role=organization_role,
         organization_id=tenant.organization_id,
+        archived_at=archived_since(tenant),
         administers=administers_tenant(
             is_operator=user.role == "admin",
             tenant_role=tenant_role,
@@ -629,6 +635,10 @@ async def create_invitation(
     stands, and `email_delivery` tells the admin to share the link instead.
     """
     _require_bound_tenant(tenant_id)
+    # Its admins can't be in it to ask, but its organization's can: nobody
+    # could accept what they made.
+    if await is_archived(session, tenant_id):
+        raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
     role = _member_role(req.role)
     if req.email is not None and mailer is not None and user.role != "admin":
         sent_today = await invitation_store.count_addressed_since(
@@ -1375,6 +1385,8 @@ async def _join_through(
     caller — end here, so they grant membership identically.
     """
     tenant_id = invitation.tenant_id
+    if await is_archived(session, tenant_id):
+        raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
     existing_role = await user_store.tenant_role(session, tenant_id, caller.id)
     if existing_role is None:
         try:
@@ -1440,6 +1452,7 @@ async def _enter(
             session, tenant_id, caller.id
         ),
         organization_id=tenant.organization_id,
+        archived_at=archived_since(tenant),
     )
     # `users` is global, so the caller's row is writable from a session
     # bound to any tenant — this one included.
@@ -1485,6 +1498,9 @@ async def list_my_invitations(
                 continue
             tenant = await session.get(Tenant, tenant_id)
             assert tenant is not None
+            # Not offered while it can't be joined.
+            if tenant.archived_at is not None:
+                continue
             for invitation in invitations:
                 inviter = await user_store.get(session, invitation.created_by)
                 assert inviter is not None
@@ -1691,6 +1707,8 @@ async def list_joinable_tenants(
                 continue
             tenant = await session.get(Tenant, tenant_id)
             assert tenant is not None
+            if tenant.archived_at is not None:
+                continue
             found.append(
                 JoinableTenant(
                     tenant_id=tenant.id,
@@ -1729,6 +1747,8 @@ async def join_tenant_by_domain(
     async with tenant_session(session_factory, tenant_id) as session:
         if not await join_domain_store.is_open_to(session, tenant_id, domain):
             raise HTTPException(status_code=404, detail="Workspace not found")
+        if await is_archived(session, tenant_id):
+            raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
         role = await user_store.tenant_role(session, tenant_id, caller.id)
         if role is None:
             role = "member"

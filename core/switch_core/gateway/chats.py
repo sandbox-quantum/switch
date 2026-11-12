@@ -59,7 +59,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agent_sessions import ApprovalRequestView
-from switch_core.gateway.auth import get_current_user, session_is_current
+from switch_core.gateway.auth import get_current_user, session_still_enters
 from switch_core.gateway.dependencies import get_user_store
 from switch_core.session_activity.listener import Change, RoomSubscription
 
@@ -358,15 +358,16 @@ async def create_chat(
 
 
 def _session_check(
-    service: ChatService, user_store: UserStore, user: User
+    service: ChatService, user_store: UserStore, user: User, tenant_id: str
 ) -> Callable[[], Awaitable[bool]]:
     """What a stream asks at each re-read: whether the session it was opened
-    with still stands, or the account's sessions have been ended since."""
+    with still stands, and may still enter its workspace, or the account's
+    sessions have been ended or the workspace left or archived since."""
     session_version = user.session_version
 
     async def still_current() -> bool:
-        return await session_is_current(
-            service.session_factory, user_store, user.id, session_version
+        return await session_still_enters(
+            service.session_factory, user_store, user.id, session_version, tenant_id
         )
 
     return still_current
@@ -388,7 +389,7 @@ async def chat_events_stream(
             parse_after(after),
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
-            session_current=_session_check(service, user_store, user),
+            session_current=_session_check(service, user_store, user, tenant_id),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
@@ -432,7 +433,7 @@ async def chat_activity_stream(
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
             queue_max=ACTIVITY_QUEUE_MAX,
-            session_current=_session_check(service, user_store, user),
+            session_current=_session_check(service, user_store, user, tenant_id),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},

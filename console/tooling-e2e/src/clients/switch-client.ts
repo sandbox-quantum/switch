@@ -603,6 +603,26 @@ export class SwitchClient {
     );
   }
 
+  /** `POST /gateway/organizations/current/workspaces/{id}/archive` — close one of the organization's workspaces; organization admin only. */
+  async archiveOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/archive`,
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/restore` — open an archived workspace again. */
+  async restoreOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/restore`,
+    );
+  }
+
   /** `POST /gateway/organizations/current/workspaces` — add a workspace to the current organization; the session stays put. */
   async createOrganizationWorkspace(name: string): Promise<WorkspaceMembership> {
     return this.gateway<WorkspaceMembership>(

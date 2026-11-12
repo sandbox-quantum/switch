@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.archived_workspace import archived_since
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -37,11 +38,14 @@ from switch_core.connections.broker import (
     get_service_broker,
 )
 from switch_core.db.audit import (
+    AuditAction,
     OrganizationAuditAction,
     list_organization_audit_events,
+    record_audit_event,
     record_organization_audit_event,
 )
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Organization,
     OrganizationMember,
     Tenant,
@@ -52,6 +56,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -92,6 +97,7 @@ from switch_core.gateway.schemas import (
     OrganizationSummary,
     OrganizationWorkspaceResponse,
     TenantMembershipResponse,
+    WorkspaceArchiveResponse,
     WorkspaceCreateRequest,
 )
 from switch_core.gateway.service_connections import service_refusal
@@ -122,6 +128,7 @@ from switch_core.organization_issues import (
     organization_wide_issues,
     workspace_issues,
 )
+from switch_core.room_schedules import skip_missed_runs
 from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
@@ -343,6 +350,7 @@ async def list_organization_workspaces(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[OrganizationWorkspaceResponse]:
     """The organization's workspaces the caller may enter, and their role in
@@ -351,6 +359,7 @@ async def list_organization_workspaces(
     Workspaces page shows of it: when it was made, its counts, and its admins
     by membership."""
     organization_id = await _current_organization_id(session)
+    current_id = require_tenant_id()
     # Let go of the request's connection while each workspace is read on a
     # session of its own.
     await session.commit()
@@ -361,6 +370,13 @@ async def list_organization_workspaces(
         organization_id,
         is_operator=user.role == "admin",
     )
+    administers = (
+        await organization_access(
+            session, user_store, organization_store, user, operator_restores=False
+        )
+        is not None
+    )
+    await session.commit()
     described: list[OrganizationWorkspaceResponse] = []
     for workspace in workspaces:
         async with tenant_session(session_factory, workspace.id) as bound:
@@ -373,6 +389,11 @@ async def list_organization_workspaces(
                     organization_id,
                 )
                 continue
+            blocked = (
+                _ARCHIVE_ADMINS_ONLY
+                if not administers
+                else _archive_blocked_reason(tenant.id, current_id)
+            )
             described.append(
                 OrganizationWorkspaceResponse(
                     **workspace.model_dump(),
@@ -381,9 +402,160 @@ async def list_organization_workspaces(
                     agents=await agent_store.count(bound),
                     rooms=await room_store.count(bound),
                     admins=await user_store.admin_names(bound, tenant),
+                    can_archive=tenant.archived_at is None and blocked is None,
+                    archive_blocked_reason=(
+                        blocked if tenant.archived_at is None else None
+                    ),
+                    can_restore=tenant.archived_at is not None and administers,
                 )
             )
     return described
+
+
+# Why a workspace can't be archived, as the Workspaces page shows it.
+_ARCHIVE_ADMINS_ONLY = "Only an organization admin can archive a workspace."
+_ARCHIVE_CURRENT = "You're working in this workspace. Switch to another one first."
+_ARCHIVE_DEFAULT = (
+    "Everyone who signs up joins this workspace, so it can't be archived."
+)
+
+
+def _archive_blocked_reason(workspace_id: str, current_id: str) -> str | None:
+    """Why an organization admin may not archive `workspace_id` from
+    `current_id`, the workspace their request is bound to, or None when they
+    may."""
+    if workspace_id == current_id:
+        return _ARCHIVE_CURRENT
+    if workspace_id == TENANT_ZERO_ID:
+        return _ARCHIVE_DEFAULT
+    return None
+
+
+async def _set_archived(
+    session_factory: async_sessionmaker[AsyncSession],
+    access: _OrganizationAccess,
+    user: User,
+    workspace_id: str,
+    *,
+    archived: bool,
+) -> WorkspaceArchiveResponse:
+    """Archive or restore one of the organization's workspaces, on a session
+    bound to it, with both audit logs' records of it in the same commit. One
+    already as asked changes and records nothing."""
+    # Read before the session binds the workspace changed in place of the one
+    # the change was made from.
+    made_here = made_from(access)
+    async with tenant_session(session_factory, workspace_id) as bound:
+        tenant = await bound.get(Tenant, workspace_id, with_for_update=True)
+        if tenant is None or tenant.organization_id != access.organization_id:
+            raise HTTPException(
+                status_code=404, detail="That workspace isn't in this organization."
+            )
+        if (tenant.archived_at is not None) != archived:
+            now = datetime.now(UTC)
+            tenant.archived_at = now if archived else None
+            tenant.archived_by = user.id if archived else None
+            if not archived:
+                # In the commit that opens it, so the scheduler never sees it
+                # open with the runs it missed still due.
+                await skip_missed_runs(bound, RoomScheduleStore(), now)
+            await record_audit_event(
+                bound,
+                tenant_id=workspace_id,
+                actor_user_id=user.id,
+                action=(
+                    AuditAction.TENANT_ARCHIVED
+                    if archived
+                    else AuditAction.TENANT_RESTORED
+                ),
+                target_type="tenant",
+                target_id=workspace_id,
+                details={},
+            )
+            await record_organization_audit_event(
+                bound,
+                organization_id=access.organization_id,
+                actor_user_id=user.id,
+                action=(
+                    OrganizationAuditAction.WORKSPACE_ARCHIVED
+                    if archived
+                    else OrganizationAuditAction.WORKSPACE_RESTORED
+                ),
+                target_type="workspace",
+                target_id=workspace_id,
+                details={"name": tenant.name, **made_here},
+            )
+        response = WorkspaceArchiveResponse(
+            id=tenant.id, name=tenant.name, archived_at=archived_since(tenant)
+        )
+        await bound.commit()
+    return response
+
+
+@router.post("/organizations/current/workspaces/{workspace_id}/archive")
+async def archive_organization_workspace(
+    workspace_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> WorkspaceArchiveResponse:
+    """Archive one of the organization's workspaces: closed, with nothing in
+    it deleted, until it is restored (`workspace_archive.py`). Its
+    organization's admins only, and not the workspace this request is bound
+    to, which they would be shut in, nor the one everyone signing up joins.
+
+    What archiving shuts is shut once it has committed, here and in every
+    other process; asked again of a workspace already archived, that is done
+    again, so a call that failed part way is finished by repeating it."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    blocked = _archive_blocked_reason(workspace_id, require_tenant_id())
+    if blocked is not None:
+        raise HTTPException(status_code=409, detail=blocked)
+    # Let go of the request's connection while the workspace is changed on a
+    # session of its own.
+    await session.commit()
+    response = await _set_archived(
+        session_factory, access, user, workspace_id, archived=True
+    )
+    await request.app.state.workspace_archive.closed(workspace_id)
+    logger.info("User %s archived workspace %s", user.id, workspace_id)
+    return response
+
+
+@router.post("/organizations/current/workspaces/{workspace_id}/restore")
+async def restore_organization_workspace(
+    workspace_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> WorkspaceArchiveResponse:
+    """Restore one of the organization's archived workspaces: its members may
+    enter it again, its agents connect, its bridges and its devices' agents
+    start, and its schedules go on from their next run, the runs missed
+    meanwhile skipped in the same commit. Its organization's
+    admins only. As archiving, done again when repeated."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    await session.commit()
+    response = await _set_archived(
+        session_factory, access, user, workspace_id, archived=False
+    )
+    await request.app.state.workspace_archive.reopened(workspace_id)
+    logger.info("User %s restored workspace %s", user.id, workspace_id)
+    return response
 
 
 @router.post("/organizations/current/workspaces", status_code=201)
@@ -440,6 +612,7 @@ async def create_organization_workspace(
         role="admin",
         organization_role=ORGANIZATION_ADMIN_ROLE,
         organization_id=organization_id,
+        archived_at=None,
     )
 
 

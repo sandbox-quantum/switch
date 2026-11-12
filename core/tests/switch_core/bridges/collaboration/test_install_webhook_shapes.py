@@ -15,12 +15,13 @@ import asyncio
 import json
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.bridges.collaboration import install_routes
@@ -41,6 +42,7 @@ from switch_core.bridges.collaboration.install_routes import (
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
     WebhookTarget,
+    WebhookWorkspaceArchived,
 )
 from switch_core.db.models import (
     Client,
@@ -196,6 +198,7 @@ class _Lifecycle:
 class _Fixture:
     installer: _RelayInstaller
     lifecycle: _Lifecycle
+    service: MessagingInstallService
     client: httpx.AsyncClient
     tenants: dict[str, str]
     bridges: dict[str, str]
@@ -263,6 +266,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
         public_origin=_ORIGIN,
         keyring=_KEYRING,
     )
+    fixture.service = service
     app = FastAPI()
     app.include_router(create_messaging_install_router(service))
     fixture.client = httpx.AsyncClient(
@@ -539,6 +543,61 @@ async def test_one_workspace_down_does_not_fail_another_workspaces_delivery(
     )
 
     assert response.status_code == 200
+    assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
+
+
+async def _archive(harness: RLSHarness, tenant_id: str) -> None:
+    async with harness.owner() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == tenant_id)
+            .values(archived_at=datetime.now(UTC))
+        )
+        await session.commit()
+
+
+async def test_an_archived_workspace_resolves_to_no_bridge(
+    rls_harness: RLSHarness,
+) -> None:
+    """Even with its bridge's adapter still to hand: the workspace's archive
+    is read where its install is, not left to its bridge having stopped."""
+    fixture = await _fixture(rls_harness)
+    await _archive(rls_harness, fixture.tenants["b"])
+
+    with pytest.raises(WebhookWorkspaceArchived, match="archived"):
+        await fixture.service.resolve_by_workspace(
+            platform=_PLATFORM, workspace_id="org-b"
+        )
+    target = await fixture.service.resolve_by_workspace(
+        platform=_PLATFORM, workspace_id="org-a"
+    )
+    assert target.bridge_id == fixture.bridges["a"]
+
+
+async def test_an_archived_workspaces_events_are_dropped_with_a_200(
+    rls_harness: RLSHarness,
+) -> None:
+    """Not a 503, which the platform would retry for as long as the workspace
+    stays archived, and not a refusal it would count against the app."""
+    fixture = await _fixture(rls_harness)
+    await _archive(rls_harness, fixture.tenants["b"])
+
+    alone = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch({"workspace": "org-b", "id": "n-b"}),
+        headers=_SIGNED,
+    )
+    beside = await fixture.client.post(
+        f"/messaging/{_PLATFORM}/notifications",
+        content=_batch(
+            {"workspace": "org-b", "id": "n-b2"}, {"workspace": "org-a", "id": "n-a"}
+        ),
+        headers=_SIGNED,
+    )
+
+    assert alone.status_code == 200
+    assert beside.status_code == 200
+    assert _adapter(fixture, "b").dispatched == []
     assert [p["id"] for p in _adapter(fixture, "a").dispatched] == ["n-a"]
 
 

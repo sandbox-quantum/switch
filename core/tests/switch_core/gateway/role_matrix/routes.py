@@ -348,6 +348,17 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/organizations/current/workspaces": post(
         f"{G}/organizations/current/workspaces", org_admin(), json={"name": "{tag}-ws"}
     ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/archive": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/archive",
+        org_admin(ok=409),
+        why=(
+            "The organization's admin; let through, then refused, since the "
+            "workspace asked is the one the request is bound to."
+        ),
+    ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/restore": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/restore", org_admin()
+    ),
     "GET /gateway/organizations/current/audit-events": get(
         f"{G}/organizations/current/audit-events", org_admin()
     ),

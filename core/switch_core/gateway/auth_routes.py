@@ -48,13 +48,14 @@ from switch_core.gateway.auth import (
     get_current_user,
     hash_password_off_loop,
     initial_tenant_claim,
+    list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
     require_admin,
     session_auth_time,
     set_session_cookie,
     signup_refused_by_edge,
-    tenants_bindable_by,
+    tenants_held_by,
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
@@ -702,7 +703,7 @@ async def _workspaces_to_delete(
 ) -> list[Workspace]:
     memberships = [
         Workspace(id=m.id, name=m.name, role=m.role)
-        for m in await list_tenant_memberships(session_factory, user_store, user_id)
+        for m in await list_held_memberships(session_factory, user_store, user_id)
     ]
     return await deletion.with_former_workspaces(user_id, memberships)
 
@@ -728,7 +729,7 @@ async def update_me(
     # Console chat is their member client's, copied when it was made.
     await rename_member_clients(
         session_factory,
-        await tenants_bindable_by(session_factory, user.id),
+        await tenants_held_by(session_factory, user.id),
         user.id,
         req.name,
     )

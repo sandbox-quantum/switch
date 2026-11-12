@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
@@ -35,6 +36,7 @@ from switch_core.agent_icon import (
     generated_icon_url,
     normalise_icon_url,
 )
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.controller_presence import (
@@ -455,9 +457,13 @@ class ManagementService:
         rows = await self.definitions.list_for_controller(
             session, principal.tenant_id, controller.id
         )
+        archived = await is_archived(session, principal.tenant_id)
         return {
             "revision": controller.assignment_revision,
-            "agents": [assignment_entry(row, agent) for row, agent in rows],
+            "agents": [
+                assignment_entry(row, agent, workspace_archived=archived)
+                for row, agent in rows
+            ],
         }
 
     async def assignment_revision(
@@ -1280,7 +1286,36 @@ class ManagementService:
                 f"agent {row.agent_id} is placed on controller {row.controller_id}, "
                 "which does not exist"
             )
-        self.presence.bind(binding_of(tenant_id, row, controller))
+        self.presence.bind(
+            binding_of(
+                tenant_id,
+                row,
+                controller,
+                workspace_archived=await is_archived(session, tenant_id),
+            )
+        )
+
+    async def workspace_archive_changed(
+        self, session: AsyncSession, tenant_id: str
+    ) -> None:
+        """The workspace was archived or restored, and that has committed:
+        each of its controllers fetches its assignment again, which now has
+        every agent stopped or as its owner set it (`assignment_entry`), and
+        Core's bindings follow, here and in every other process."""
+        controller_ids: set[str | None] = set(
+            await session.scalars(
+                select(AgentController.id).where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.revoked_at.is_(None),
+                )
+            )
+        )
+        revisions = await self._bump_and_collect(session, tenant_id, controller_ids)
+        placed = await self.definitions.list_placed(session, tenant_id)
+        await session.commit()
+        for row in placed:
+            await self._bind(session, tenant_id, row)
+        self._nudge(tenant_id, revisions)
 
     async def check_new_managed_agent(
         self,

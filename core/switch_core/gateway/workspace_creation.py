@@ -264,6 +264,7 @@ async def create_organization_for(
             role="admin",
             organization_role=ORGANIZATION_ADMIN_ROLE,
             organization_id=organization.id,
+            archived_at=None,
         ),
     )
 

@@ -33,6 +33,7 @@ from sqlalchemy import exc as sa_exc
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import messaging_platforms
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
@@ -840,7 +841,7 @@ class CollaborationBridgeLifecycleService:
         bridges: list[CollaborationBridge] = []
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
-                bridges.extend(await self._bridge_store.get_active(session))
+                bridges.extend(await self._serving(session, tenant_id))
 
         logger.info("Wanting %d collaboration bridges", len(bridges))
         for bridge in bridges:
@@ -1211,8 +1212,17 @@ class CollaborationBridgeLifecycleService:
                 raise ValueError(f"Bridge not found: {bridge_id}")
             async with tenant_session(self._session_factory, tenant_id) as session:
                 bridge = await self._bridge_store.get(session, bridge_id)
+                archived = await is_archived(session, tenant_id)
             if bridge is None:
                 raise ValueError(f"Bridge not found: {bridge_id}")
+            # Before the row is recorded as started from, and not as a
+            # refusal remembered: once the workspace is restored, the same row
+            # starts it.
+            if archived:
+                raise ValueError(
+                    f"Bridge {bridge_id} is in an archived workspace, so it does "
+                    "not run until the workspace is restored"
+                )
             # Recorded before anything can fail: a re-check started from the
             # same row does not try again what failed here, as one process
             # tried a failing bridge once until it was edited or restarted.
@@ -1998,8 +2008,19 @@ class CollaborationBridgeLifecycleService:
         bridge: CollaborationBridge | None = None
         if tenant_id is not None:
             async with tenant_session(self._session_factory, tenant_id) as session:
-                bridge = await self._bridge_store.get(session, bridge_id)
+                # An archived workspace's bridge reads as one removed: stopped
+                # and let go of here, and started again from its row once the
+                # workspace is restored.
+                if not await is_archived(session, tenant_id):
+                    bridge = await self._bridge_store.get(session, bridge_id)
         await self._reconcile_row(bridge_id, bridge)
+
+    async def reconcile_and_announce(self, bridge_id: str) -> None:
+        """`reconcile_bridge` here, then the same in every other process: for
+        a change to the bridge's workspace, such as archiving it, rather than
+        to its own row."""
+        await self.reconcile_bridge(bridge_id)
+        self._announce(bridge_id)
 
     async def reconcile_all(self) -> None:
         """`reconcile_bridge` for every bridge stored or running here, reading
@@ -2009,7 +2030,7 @@ class CollaborationBridgeLifecycleService:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 rows.update(
                     (bridge.id, bridge)
-                    for bridge in await self._bridge_store.get_active(session)
+                    for bridge in await self._serving(session, tenant_id)
                 )
         # `_started` too: a bridge that crashed is out of `_bridges` but still
         # counted as expected (`crashed`, `running_count`), so once its row is
@@ -2028,6 +2049,14 @@ class CollaborationBridgeLifecycleService:
                     bridge_id,
                     exc_info=True,
                 )
+
+    async def _serving(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[CollaborationBridge]:
+        """The tenant's active bridges, or none while it is archived."""
+        if await is_archived(session, tenant_id):
+            return []
+        return await self._bridge_store.get_active(session)
 
     async def _reconcile_row(
         self, bridge_id: str, bridge: CollaborationBridge | None

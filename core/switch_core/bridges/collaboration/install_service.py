@@ -67,6 +67,7 @@ from typing import Any, Protocol
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.collaboration.adapter import (
     PlatformAdapter,
     SupportsSharedConnection,
@@ -177,6 +178,13 @@ _RECENT_DROPS_MAX = 1000
 #: room, and a bridge still starting has nothing to provision it with.
 _BRIDGE_START_WAIT = 2.0
 _BRIDGE_START_POLL = 0.05
+
+
+class WebhookWorkspaceArchived(WebhookWorkspaceUnknown):
+    """The workspace resolves to a tenant that is archived, so its bridge does
+    not run and the event goes nowhere. Answered as one for nobody: the
+    platform could not act on a refusal, and would count it against the app
+    every other customer's events come through."""
 
 
 class WebhookBridgeUnavailable(RuntimeError):
@@ -1396,6 +1404,12 @@ class MessagingInstallService:
         async with tenant_session(self._session_factory, tenant_id) as session:
             install = await self._store.get_for_workspace(
                 session, platform=platform, external_workspace_id=workspace_id
+            )
+            archived = await is_archived(session, tenant_id)
+        if archived:
+            raise WebhookWorkspaceArchived(
+                f"{platform} workspace {workspace_id} is installed into tenant "
+                f"{tenant_id}, which is archived"
             )
         if install is None:
             raise WebhookWorkspaceUnknown(

@@ -23,6 +23,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.agent.protocol.controller_presence import (
     Binding,
     ControllerPresence,
@@ -37,18 +38,28 @@ from switch_core.db.tenant_lookup import all_tenant_ids
 
 logger = logging.getLogger(__name__)
 
+# A tenant's placements as a re-check compares them: their fingerprint, and
+# whether the tenant is archived, which stops every binding in it.
+TenantPlacements = tuple[Fingerprint, bool]
+
 
 def binding_of(
-    tenant_id: str, row: AgentDefinitionRow, controller: AgentController
+    tenant_id: str,
+    row: AgentDefinitionRow,
+    controller: AgentController,
+    *,
+    workspace_archived: bool,
 ) -> Binding:
-    """The binding Core keeps for a definition placed on `controller`."""
+    """The binding Core keeps for a definition placed on `controller`: not
+    running while its workspace is archived, as its controller is told
+    (`schemas.assignment_entry`)."""
     assert row.controller_id == controller.id
     return Binding(
         agent_id=row.agent_id,
         controller_id=controller.id,
         tenant_id=tenant_id,
         controller_name=controller.name,
-        running=row.desired_state == "running",
+        running=row.desired_state == "running" and not workspace_archived,
     )
 
 
@@ -75,7 +86,7 @@ async def reconcile_bindings(
     session_factory: async_sessionmaker[AsyncSession],
     definitions: AgentDefinitionStore,
     presence: ControllerPresence,
-    fingerprints: dict[str, Fingerprint] | None = None,
+    fingerprints: dict[str, TenantPlacements] | None = None,
 ) -> None:
     """Bring every binding in `presence` in line with the tables, changing
     only what differs, and close the controllers revoked meanwhile.
@@ -124,6 +135,7 @@ async def reconcile_controller_bindings(
     since = presence.change_mark()
     bindings: list[Binding] = []
     async with tenant_session(session_factory, tenant_id) as session:
+        archived = await is_archived(session, tenant_id)
         controller = await controllers.get(session, tenant_id, controller_id)
         placed = (
             await definitions.list_for_controller(session, tenant_id, controller_id)
@@ -132,7 +144,9 @@ async def reconcile_controller_bindings(
         )
         for row, _agent in placed:
             assert controller is not None
-            bindings.append(binding_of(tenant_id, row, controller))
+            bindings.append(
+                binding_of(tenant_id, row, controller, workspace_archived=archived)
+            )
         placed_here = {binding.agent_id for binding in bindings}
         for agent_id in presence.agents_of(controller_id) - placed_here:
             moved = await definitions.get_for_agent(session, tenant_id, agent_id)
@@ -140,7 +154,9 @@ async def reconcile_controller_bindings(
                 continue
             elsewhere = await controllers.get(session, tenant_id, moved.controller_id)
             if elsewhere is not None:
-                bindings.append(binding_of(tenant_id, moved, elsewhere))
+                bindings.append(
+                    binding_of(tenant_id, moved, elsewhere, workspace_archived=archived)
+                )
     presence.reconcile(
         bindings,
         agent_ids=presence.agents_of(controller_id) | placed_here,
@@ -151,16 +167,20 @@ async def reconcile_controller_bindings(
 async def _unchanged(
     session_factory: async_sessionmaker[AsyncSession],
     definitions: AgentDefinitionStore,
-    fingerprints: dict[str, Fingerprint],
+    fingerprints: dict[str, TenantPlacements],
 ) -> bool:
-    """Whether every tenant's placements read as they did when
-    `fingerprints` were taken, and there are no tenants beyond those."""
+    """Whether every tenant's placements, and whether it is archived, read as
+    they did when `fingerprints` were taken, and there are no tenants beyond
+    those."""
     tenant_ids = await all_tenant_ids(session_factory)
     if set(tenant_ids) != set(fingerprints):
         return False
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
-            now = await definitions.placements_fingerprint(session, tenant_id)
+            now = (
+                await definitions.placements_fingerprint(session, tenant_id),
+                await is_archived(session, tenant_id),
+            )
         if now != fingerprints[tenant_id]:
             return False
     return True
@@ -170,18 +190,18 @@ async def _read_bindings(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     definitions: AgentDefinitionStore,
-) -> tuple[list[Binding], set[str], dict[str, Fingerprint]]:
+) -> tuple[list[Binding], set[str], dict[str, TenantPlacements]]:
     """Every placed definition's binding, the revoked controllers that agents
-    are still placed on, and each tenant's fingerprint of its placements, one
-    query per tenant."""
+    are still placed on, and each tenant's fingerprint of its placements with
+    whether it is archived, two queries per tenant."""
     bindings: list[Binding] = []
     revoked: set[str] = set()
-    fingerprints: dict[str, Fingerprint] = {}
+    fingerprints: dict[str, TenantPlacements] = {}
     for tenant_id in await all_tenant_ids(session_factory):
         async with tenant_session(session_factory, tenant_id) as session:
-            placements, fingerprints[tenant_id] = await definitions.placements(
-                session, tenant_id
-            )
+            placements, fingerprint = await definitions.placements(session, tenant_id)
+            archived = await is_archived(session, tenant_id)
+        fingerprints[tenant_id] = (fingerprint, archived)
         for placement in placements:
             if placement.controller_name is None:
                 raise RuntimeError(
@@ -196,7 +216,7 @@ async def _read_bindings(
                     controller_id=placement.controller_id,
                     tenant_id=tenant_id,
                     controller_name=placement.controller_name,
-                    running=placement.desired_state == "running",
+                    running=placement.desired_state == "running" and not archived,
                 )
             )
     return bindings, revoked, fingerprints

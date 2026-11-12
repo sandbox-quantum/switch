@@ -527,7 +527,17 @@ KEY_REISSUED = Closure(
 
 #: Why an agent's connections were ended by deleting their rows, by the name a
 #: signal carries to the other processes (`connection_rows.py`).
-ENDINGS: dict[str, Closure] = {"deleted": AGENT_DELETED, "key_reissued": KEY_REISSUED}
+#: How an agent's connections end when its workspace is archived. A client that
+#: reopens is refused until the workspace is restored.
+WORKSPACE_ARCHIVED = Closure(
+    code="closed", message="the agent's workspace was archived", room_id=None
+)
+
+ENDINGS: dict[str, Closure] = {
+    "deleted": AGENT_DELETED,
+    "key_reissued": KEY_REISSUED,
+    "workspace_archived": WORKSPACE_ARCHIVED,
+}
 
 
 class ConnectionRows(Protocol):
@@ -1403,6 +1413,13 @@ class AgentConnectionRegistry:
         each process closes what it holds when it reads them, even one that
         missed being told."""
         await self._end_agent(agent_id, "key_reissued")
+
+    async def agent_workspace_archived(self, agent_id: str) -> None:
+        """End the connections of an agent whose workspace was archived, here
+        and in every other process, as `agent_key_reissued` does: the caller
+        deleted their rows (`AgentConnectionStore.delete_agent`), and the
+        agent is refused when it tries again (`bridges/agent/auth.py`)."""
+        await self._end_agent(agent_id, "workspace_archived")
 
     async def _end_agent(self, agent_id: str, ending: str) -> None:
         if self._rows is not None:

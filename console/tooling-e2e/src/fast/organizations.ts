@@ -8,8 +8,9 @@ import type { FastScenario } from './scenario.ts';
  * in its first workspace, adds a second, and sees both, in an organization
  * listed beside those they were already in, with nothing left for its admin
  * to fix, no Switch Trust policy connected, and each new workspace counted
- * with its one user and no agents. A plain member of the default workspace
- * may not add one there, or read its organization's guardrails.
+ * with its one user and no agents. It archives the second and restores it,
+ * and may not archive the one it is in. A plain member of the default
+ * workspace may not add one there, or read its organization's guardrails.
  *
  * Users and workspaces cannot be deleted, so this runs only on a stack thrown
  * away after the run.
@@ -26,6 +27,8 @@ export const organizations: FastScenario = {
       'DELETE /gateway/organizations/current/guardrails',
       'GET /gateway/organizations/current/workspaces',
       'POST /gateway/organizations/current/workspaces',
+      'POST /gateway/organizations/current/workspaces/{workspace_id}/archive',
+      'POST /gateway/organizations/current/workspaces/{workspace_id}/restore',
       'GET /gateway/tenants/counts',
     ],
     lane: 'fast',
@@ -95,6 +98,24 @@ export const organizations: FastScenario = {
     expect(workspaces.map((row) => row.id)).not.toContain(defaultWorkspace);
 
     expect(await founder.organizationIssues(), 'nothing to fix in a new organization').toEqual([]);
+
+    const archived = await founder.archiveOrganizationWorkspace(second.id);
+    expect(archived.archived_at, 'archived').not.toBeNull();
+    expect(
+      (await founder.organizationWorkspaces()).find((row) => row.id === second.id),
+      'an organization admin still sees an archived workspace'
+    ).toBeDefined();
+    expect(
+      (await founder.restoreOrganizationWorkspace(second.id)).archived_at,
+      'restored'
+    ).toBeNull();
+    try {
+      await founder.archiveOrganizationWorkspace(workspace.id);
+      throw new Error('the workspace the session is in was archived');
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      expect(error.status, 'archiving the workspace you are in').toBe(409);
+    }
 
     expect(
       await founder.organizationGuardrails(),

@@ -54,6 +54,7 @@ from switch_core.db.models import (
     Invitation,
     MessagingInstall,
     Organization,
+    OrganizationMember,
     PendingDecision,
     Room,
     ServerConnector,
@@ -76,6 +77,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_messaging_install,
     tenant_of_room,
     tenant_of_server_connector,
+    tenants_bindable_by_user,
     tenants_inviting_email,
     tenants_of_organization,
     tenants_of_user,
@@ -127,7 +129,10 @@ _ADDED_SINCE = {
 # the schema reveals. So the revision that last wrote the body is named here
 # and compared against the module, while the creating revision above goes on
 # owning the drop.
-_REDEFINED_SINCE = {"tenant_of_messaging_install": "a7f2c3e9b481"}
+_REDEFINED_SINCE = {
+    "tenant_of_messaging_install": "a7f2c3e9b481",
+    "tenants_bindable_by_user": "e2c7a94f1b38",
+}
 
 
 def _revision_module(revision: str) -> ModuleType:
@@ -491,6 +496,49 @@ class TestWhatTheyAnswer:
         assert sorted(
             await tenants_of_user(rls_harness.restricted, fixture.user_in_both)
         ) == sorted([fixture.tenant_a, fixture.tenant_b])
+
+    async def test_an_archived_workspace_is_bindable_only_by_its_org_admins(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A member keeps the membership row, so `tenants_of_user` still lists
+        it and Restore gives the workspace back; only binding it is refused.
+        The organization's `org_admin` still binds it, to restore it."""
+        fixture = await _two_populated_tenants(rls_harness)
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with rls_harness.owner() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="O")
+            )
+            await session.flush()
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id,
+                    user_id=fixture.user_in_both,
+                    role="org_admin",
+                )
+            )
+            tenant_a = await session.get(Tenant, fixture.tenant_a)
+            assert tenant_a is not None
+            tenant_a.organization_id = organization_id
+            tenant_a.archived_at = datetime.now(UTC)
+            await session.commit()
+
+        restricted = rls_harness.restricted
+        assert await tenants_bindable_by_user(restricted, fixture.user_a) == []
+        assert await tenants_of_user(restricted, fixture.user_a) == [fixture.tenant_a]
+        assert await tenants_bindable_by_user(
+            restricted, fixture.user_in_both
+        ) == sorted([fixture.tenant_a, fixture.tenant_b])
+
+        async with rls_harness.owner() as session:
+            tenant_a = await session.get(Tenant, fixture.tenant_a)
+            assert tenant_a is not None
+            tenant_a.archived_at = None
+            await session.commit()
+
+        assert await tenants_bindable_by_user(restricted, fixture.user_a) == [
+            fixture.tenant_a
+        ]
 
     async def test_an_api_key_hash_resolves_to_its_tenant(
         self, rls_harness: RLSHarness

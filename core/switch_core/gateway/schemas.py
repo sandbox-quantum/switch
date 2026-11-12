@@ -1188,6 +1188,10 @@ class TenantMembershipResponse(BaseModel):
     # None only for a workspace from before organizations that no migration
     # has given one yet.
     organization_id: str | None
+    # When the workspace was archived, None while it is not. Only its
+    # organization's `org_admin`s, and the operator, are told of one: nobody
+    # else may enter it (`workspace_archive.py`).
+    archived_at: str | None
 
 
 class OrganizationWorkspaceResponse(TenantMembershipResponse):
@@ -1202,6 +1206,20 @@ class OrganizationWorkspaceResponse(TenantMembershipResponse):
     agents: int
     rooms: int
     admins: list[str]
+    # Whether the caller may archive it now, and why not when they may not;
+    # restoring an archived one is any of the organization's admins'.
+    can_archive: bool
+    archive_blocked_reason: str | None
+    can_restore: bool
+
+
+class WorkspaceArchiveResponse(BaseModel):
+    """A workspace archived or restored: when it was archived, None once
+    restored."""
+
+    id: str
+    name: str
+    archived_at: str | None
 
 
 class WorkspaceCountsResponse(BaseModel):

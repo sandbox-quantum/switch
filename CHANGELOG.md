@@ -53,6 +53,19 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **An organization's admins can archive one of its workspaces, and restore
+  it.** An archived workspace keeps everything in it but is closed: its
+  members can no longer open it and are told it is archived (their open
+  dashboard and Console connections close too), while the organization's
+  admins still can. Its agents can't connect and those connected are cut
+  off, every agent on its devices is told to stop (nothing is revoked, so
+  Restore starts them again), its messaging apps stop relaying, invite links
+  and domain joins into it are refused, and its room schedules pause, with
+  the runs missed meanwhile skipped on Restore. The workspace you are in and
+  the one everyone joins on signing up can't be archived. Both changes are
+  recorded in the workspace's and the organization's audit logs.
+  `GET /organizations/current/workspaces` also reports each workspace's
+  counts, admins and archive state.
 - **Templates have a page of their own in the new dashboard layout, and say
   how often each one is run.** Behind `gateway_v2`, Templates leaves the
   Resources tabs: the workspace's own templates and the ones that come with
