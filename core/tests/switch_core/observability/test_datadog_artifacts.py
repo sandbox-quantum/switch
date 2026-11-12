@@ -91,7 +91,12 @@ def test_monitors_are_individually_importable() -> None:
 
 # Every replica reports the same server-wide value for these, so a sum would
 # multiply the reading by the number of pods.
-_READ_WITH_MAX = ("switch.decision.pending",)
+_READ_WITH_MAX = (
+    "switch.decision.pending",
+    "switch.workos.cursor_age",
+    "switch.workos.recheck.",
+    "switch.workos.full_check.",
+)
 
 
 @pytest.mark.parametrize(
@@ -138,3 +143,16 @@ def test_the_signal_board_stays_readable_at_a_glance() -> None:
             len(request.get("formulas", [])) for request in chart.get("requests", [])
         )
         assert series <= 5, f"{chart.get('title')} draws {series} series"
+
+
+def test_monitors_on_the_workos_mirror_are_imported_only_where_it_runs() -> None:
+    """Only a server with ORGANIZATION_DIRECTORY=workos reports the mirror's
+    gauges, and these monitors fire on no data. `apply.sh` imports a monitor
+    tagged requires:workos-directory only with WORKOS_DIRECTORY set, so one
+    left untagged would fire for ever on every other server."""
+    monitors = _load("monitors.json")
+    assert isinstance(monitors, list)
+    for monitor in monitors:
+        reads_mirror = "switch.workos." in monitor["query"]
+        tagged = "requires:workos-directory" in monitor["tags"]
+        assert reads_mirror == tagged, monitor["name"]

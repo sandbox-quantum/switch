@@ -1493,6 +1493,123 @@
         "width": 12,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**WorkOS directory.** Only with `ORGANIZATION_DIRECTORY=workos`, and only from the process holding the mirror; elsewhere these stay empty. Cursor age is how long since a pass read WorkOS's membership events through: up to 30 s is normal, and while it grows, people removed in WorkOS keep their access here. The recheck holds organizations whose change failed, checked on every pass. The full check runs at start and daily. A deleted organization counts once when WorkOS deletes the organization a Switch organization follows; that Switch organization is then no longer followed and waits for an operator to remove it.",
+        "background_color": "blue",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 131,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "WorkOS mirror cursor age (s), read with max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.workos.cursor_age{$env,$service}",
+            "display_type": "line"
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 300",
+            "display_type": "error dashed",
+            "label": "alert: 300 s"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 133,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Oldest organization in the WorkOS recheck (s), read with max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.workos.recheck.oldest_age{$env,$service}",
+            "display_type": "line"
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 900",
+            "display_type": "error dashed",
+            "label": "alert: 900 s"
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 133,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Since the last full WorkOS check (s), read with max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.workos.full_check.age{$env,$service}",
+            "display_type": "line"
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 93600",
+            "display_type": "error dashed",
+            "label": "alert: 26 h"
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 133,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "WorkOS organizations deleted while followed",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.workos.organization_deleted{$env,$service}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 137,
+        "width": 4,
+        "height": 4
+      }
     }
   ]
 }

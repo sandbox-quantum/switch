@@ -134,7 +134,14 @@ name and title so a second run updates in place:
 ```bash
 DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> ./apply.sh
 DRY_RUN=1 ...   # print what would change
+WORKOS_DIRECTORY=1 ...   # also the WorkOS directory monitors
 ```
+
+The monitors tagged `requires:workos-directory` are imported only with
+`WORKOS_DIRECTORY=1`. They read the WorkOS mirror's metrics, which only a server
+with `ORGANIZATION_DIRECTORY=workos` reports, and the first fires on no data;
+on any other server it would fire for ever. A test keeps every monitor on a
+`switch.workos.*` metric tagged.
 
 The application key needs monitor and dashboard write access. `dashboard.json`
 and `multi-pod-dashboard.json` are not touched by it; import those by hand with
@@ -254,6 +261,31 @@ latency short of what users feel. Decisions have an explicit target of under a
 second, and a person sees nothing at all until the decision is made, so a slow
 decision is felt directly. The long window and warning severity keep it a
 notice rather than a page.
+
+## The WorkOS directory
+
+On a server whose organizations come from WorkOS, the mirror applies changes
+made there (a removal, a demotion) to Switch. Four monitors watch it, and the
+"WorkOS directory" section at the bottom of `dashboard.json` draws their
+gauges with the limits:
+
+- **Membership changes are not reaching Switch** (P2): no pass has read the
+  events through for 5 minutes, or nothing has reported the cursor age for 15,
+  meaning no process runs the mirror. People removed in WorkOS keep their
+  access in Switch meanwhile.
+- **An organization is stuck in the recheck** (P2): an organization has been
+  rechecked in full on every pass for 15 minutes because checking it keeps
+  failing.
+- **The daily check hasn't finished** (P3): no full check of every linked
+  organization for 26 hours, the backstop for what WorkOS sends no event for.
+- **A WorkOS organization that Switch follows was deleted** (P3): the Switch
+  organization keeps everything and is no longer checked; remove it if the
+  customer is leaving (`docs/old/workos-directory.md`, "When a customer
+  leaves").
+
+Only the cursor-age monitor fires on no data: the other gauges come from
+the same process, so a missing mirror would otherwise post three alerts for one
+cause.
 
 ## What is deliberately not alerted on
 

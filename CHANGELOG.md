@@ -66,6 +66,22 @@ version of their own to them without also giving them a release of their own.
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
   shows as a rate instead of hundreds of thousands of log lines.
+- **The WorkOS directory mirror reports whether it is keeping up.** With
+  `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
+  `switch.workos.cursor_age` (seconds since it last read WorkOS's events
+  through), `switch.workos.recheck.oldest_age` (how long an organization has
+  been waiting for a full recheck) and `switch.workos.full_check.age`
+  (seconds since every linked organization was last checked in full).
+  `deploy/observability/` adds three monitors on them, imported with
+  `WORKOS_DIRECTORY=1`, and a dashboard section. A removal made in WorkOS
+  that isn't reaching Switch now raises an alert instead of going unnoticed.
+- **A WorkOS organization deleted while Switch follows it is counted and
+  alerted on, and no longer checked.** `switch.workos.organization_deleted`
+  counts each one, with a monitor of its own, and the mirror stops checking
+  that organization against WorkOS, where it used to retry it on every pass.
+  The Switch organization keeps its members, rooms and agents, and its
+  admins still see the "organization deleted" notice. Delete it with
+  `switch-purge-organization`, as `docs/old/workos-directory.md` describes.
 - **New accounts can be refused by country.** `GATEWAY_SIGNUP_REFUSED_HEADER`
   (chart: `switchCore.signup.refusedHeader`) names a request header that the
   edge in front of Switch, such as a WAF rule matching on the client's
@@ -194,6 +210,18 @@ version of their own to them without also giving them a release of their own.
   manual `upgrade` steps; a running machine is not stopped for it. The
   instance is replaced only once its data volume is set to survive
   termination; until then it starts as before.
+- **Member changes that also apply in Switch Trust ask first.** On an
+  organization whose members come from WorkOS and whose changes are sent
+  there, making someone Org Admin, making an Org Admin a Viewer, and removing
+  someone each open a confirmation that says what the change also does in
+  Switch Trust, which reads the same membership: an Org Admin there has
+  billing permissions, a demotion makes the person a Viewer there and drops
+  the role they had, and a removal takes them out of the organization there
+  and revokes their API keys. Cancelling sends nothing. A change made again
+  after the sign-in it waited on is not asked about twice. On such an
+  organization the lower organization role is shown as Viewer, the name
+  Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
+  Organizations kept in Switch are unaffected.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.

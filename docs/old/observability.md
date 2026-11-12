@@ -302,6 +302,21 @@ stale number.
 Each message's decision record — one log line, with its fields as `decision.*`
 — is described in `docs/old/decision-routing.md`.
 
+## The WorkOS directory mirror
+
+With `ORGANIZATION_DIRECTORY=workos`, the process holding the mirror
+(`workos_mirror.py`) reports `switch.workos.cursor_age`,
+`switch.workos.recheck.oldest_age` and `switch.workos.full_check.age`, each in
+seconds and with no attributes. They are ages rather than timestamps because a
+Datadog monitor can't subtract a timestamp from now, and they are computed when
+the metrics are collected, so a pass stuck waiting on WorkOS keeps the cursor
+age growing instead of freezing it. No other process reports them, so their
+absence means nobody runs the mirror; read them with max, which also covers
+the moment the hold changes hands. It also counts
+`switch.workos.organization_deleted`, a WorkOS organization deleted while a
+Switch organization follows it. What each means is in
+`docs/old/workos-directory.md`.
+
 ## Health: two routes, on purpose
 
 | Route | Answers | Used by |

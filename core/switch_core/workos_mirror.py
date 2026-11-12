@@ -20,6 +20,20 @@ in WorkOS to a linked organization's members, applied in Switch
   stop the rest; an organization with a failure is re-checked on every pass.
   A Switch member with no WorkOS identity can't be compared, and is logged
   and left.
+- **A deleted WorkOS organization.** Removes nobody: that is too much to take
+  away on one event. It is recorded as a directory conflict, which shows the
+  organization's admins a notice and counts
+  `switch.workos.organization_deleted`, and the mirror stops following the
+  organization: no more checks against what WorkOS no longer has. The link
+  stays, since the notice reads it; an operator removes the organization.
+- **What it reports.** While a process runs it, three gauges, read when the
+  metrics are collected so a pass stuck on WorkOS keeps them growing: how
+  long since a pass last read the events through (`switch.workos.cursor_age`),
+  how long the oldest organization has waited in the recheck
+  (`switch.workos.recheck.oldest_age`), and how long since every linked
+  organization was last checked in full (`switch.workos.full_check.age`). A
+  process that doesn't run it reports none of them, so their absence means
+  nobody does.
 - **Where the events are read from.** Until the first event, from when the
   mirror started, moved forward on every empty pass so it stays inside what
   WorkOS keeps (90 days). If WorkOS refuses the cursor anyway (the mirror
@@ -42,7 +56,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable
+import time
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -67,6 +82,14 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import organization_session
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.tenant_lookup import directory_organizations
+from switch_core.observability.catalogue import (
+    WORKOS_CURSOR_AGE,
+    WORKOS_FULL_CHECK_AGE,
+    WORKOS_ORGANIZATION_DELETED,
+    WORKOS_RECHECK_OLDEST_AGE,
+)
+from switch_core.observability.metrics import GaugeReading, metrics
+from switch_core.organization_issues import directory_organization_deleted
 from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.tenant_context import no_tenant
@@ -107,18 +130,28 @@ class WorkOSMirror:
         dependencies: MirrorDependencies,
         leases: OwnershipLeaseStore,
         issuer: str,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._session_factory = session_factory
         self._directory = directory
         self._dependencies = dependencies
         self._leases = leases
         self._issuer = issuer
+        self._clock = clock
         self._attempts: dict[str, int] = {}
-        # Organizations to check in full on every pass until that succeeds.
-        self._recheck: set[str] = set()
-        # The linked organizations as of the last pass, and the WorkOS
-        # organization each follows, read again only when they change.
+        # Organizations to check in full on every pass until that succeeds,
+        # each with when it started waiting.
+        self._recheck: dict[str, float] = {}
+        # While this process runs the mirror: since when, and when a pass last
+        # read the events through and a full check last finished.
+        self._running_since: float | None = None
+        self._last_read_through: float | None = None
+        self._last_full_check: float | None = None
+        # The ids of the organizations linked as of the last pass, read again
+        # only when they change, and the WorkOS organization of each one still
+        # followed: not one whose WorkOS organization was deleted.
         self._linked_now: dict[str, str] | None = None
+        self._linked_ids: set[str] = set()
 
     async def poll_once(self, fence: Fence) -> int:
         """Re-check what is due, then apply the events since the cursor, page
@@ -138,6 +171,18 @@ class WorkOSMirror:
         except EventCursorRejected as error:
             await self._restart(fence, cursor, error.message)
             return 0
+        read = await self._apply_events(fence, cursor, linked, events, polled_at)
+        self._last_read_through = self._clock()
+        return read
+
+    async def _apply_events(
+        self,
+        fence: Fence,
+        cursor: DirectoryEventCursor,
+        linked: dict[str, str],
+        events: list[dict[str, Any]],
+        polled_at: datetime,
+    ) -> int:
         if not events:
             if cursor.after is None:
                 await self._write_cursor(
@@ -173,11 +218,45 @@ class WorkOSMirror:
         """Compare every linked organization's members with WorkOS's, and
         apply the differences."""
         await self._check_all(fence, await self._linked(), only=None)
+        self._last_full_check = self._clock()
 
     async def run(self, fence: Fence) -> None:
         """Poll the events every `POLL_INTERVAL_SECONDS`, and check every
         organization when starting and every `CHECK_INTERVAL_SECONDS`, until
         the fence is lost."""
+        self._running_since = self._clock()
+        self._last_read_through = None
+        self._last_full_check = None
+        try:
+            await self._run(fence)
+        finally:
+            self._running_since = None
+
+    def readings(self) -> Iterator[GaugeReading]:
+        """The mirror's gauges, while this process runs it."""
+        since = self._running_since
+        if since is None:
+            return
+        now = self._clock()
+        read_through = self._last_read_through
+        full_check = self._last_full_check
+        yield GaugeReading(
+            WORKOS_CURSOR_AGE,
+            now - (since if read_through is None else read_through),
+            {},
+        )
+        yield GaugeReading(
+            WORKOS_RECHECK_OLDEST_AGE,
+            now - min(self._recheck.values()) if self._recheck else 0.0,
+            {},
+        )
+        yield GaugeReading(
+            WORKOS_FULL_CHECK_AGE,
+            now - (since if full_check is None else full_check),
+            {},
+        )
+
+    async def _run(self, fence: Fence) -> None:
         with no_tenant():
             since_check = CHECK_INTERVAL_SECONDS
             while True:
@@ -229,7 +308,7 @@ class WorkOSMirror:
                 organization_id,
             )
             if organization_id is not None:
-                self._recheck.add(organization_id)
+                self._to_recheck([organization_id])
         else:
             self._attempts.pop(event_id, None)
 
@@ -251,6 +330,7 @@ class WorkOSMirror:
             await self._organization_deleted(
                 fence, organization_id, workos_organization_id
             )
+            following.pop(workos_organization_id, None)
             return
         subject = data.get("user_id")
         if not isinstance(subject, str):
@@ -291,11 +371,12 @@ class WorkOSMirror:
                 )
                 complete = False
             if complete:
-                self._recheck.discard(organization_id)
+                self._recheck.pop(organization_id, None)
             else:
-                self._recheck.add(organization_id)
+                self._to_recheck([organization_id])
         # One unlinked since has nothing left to check.
-        self._recheck &= set(linked)
+        for organization_id in set(self._recheck) - set(linked):
+            del self._recheck[organization_id]
 
     async def _check(
         self, fence: Fence, organization_id: str, workos_organization_id: str
@@ -358,7 +439,7 @@ class WorkOSMirror:
     ) -> None:
         """Deleting a linked organization in WorkOS removes nobody here: that
         is too much to take away on one event. It is reported for an operator
-        to unlink or remove."""
+        to remove, and no longer followed."""
         logger.error(
             "WorkOS organization %s, which organization %s follows, was deleted; "
             "its members are left as they are",
@@ -383,6 +464,10 @@ class WorkOSMirror:
                 },
             )
             await session.commit()
+        metrics().increment(WORKOS_ORGANIZATION_DELETED, {})
+        self._recheck.pop(organization_id, None)
+        if self._linked_now is not None:
+            self._linked_now.pop(organization_id, None)
 
     async def _restart(
         self, fence: Fence, cursor: DirectoryEventCursor, reason: str
@@ -412,7 +497,7 @@ class WorkOSMirror:
                     },
                 )
                 await session.commit()
-        self._recheck |= set(await self._linked())
+        self._to_recheck(await self._linked())
 
     async def _linked(self) -> dict[str, str]:
         """Each linked organization's WorkOS organization, by its id. Which
@@ -422,9 +507,10 @@ class WorkOSMirror:
         link is never changed in place: `workos_linking.py` refuses). An
         organization linked since the last pass is checked in full: an
         operator links it from another process, and its members would
-        otherwise wait for the daily check."""
+        otherwise wait for the daily check. One whose WorkOS organization was
+        deleted is not followed."""
         ids = await directory_organizations(self._session_factory)
-        if self._linked_now is not None and set(ids) == set(self._linked_now):
+        if self._linked_now is not None and set(ids) == self._linked_ids:
             return self._linked_now
         linked: dict[str, str] = {}
         for organization_id in ids:
@@ -436,12 +522,21 @@ class WorkOSMirror:
                         Organization.id == organization_id
                     )
                 )
-            if workos_organization_id is not None:
+                deleted = await directory_organization_deleted(session, organization_id)
+            if workos_organization_id is not None and not deleted:
                 linked[organization_id] = workos_organization_id
         if self._linked_now is not None:
-            self._recheck |= set(linked) - set(self._linked_now)
+            self._to_recheck(set(linked) - self._linked_ids)
         self._linked_now = linked
+        self._linked_ids = set(ids)
         return linked
+
+    def _to_recheck(self, organization_ids: Iterable[str]) -> None:
+        """Check `organization_ids` in full on every pass; one already waiting
+        keeps the time it started."""
+        now = self._clock()
+        for organization_id in organization_ids:
+            self._recheck.setdefault(organization_id, now)
 
     async def _users_of(self, subjects: list[str]) -> dict[str, str]:
         """The Switch account linked to each of WorkOS users `subjects` that

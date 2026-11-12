@@ -779,6 +779,45 @@ DECISION_NOTICES = _spec(
     "per room).",
 )
 
+# ── WorkOS directory mirror ──────────────────────────────────────────────────
+# Reported only by the process running the mirror (`workos_mirror.py`), and
+# only under `ORGANIZATION_DIRECTORY=workos`: no reading means nobody runs it.
+# Read with max, which also covers the moment a hold changes hands.
+WORKOS_CURSOR_AGE = _spec(
+    "switch.workos.cursor_age",
+    "gauge",
+    "s",
+    "Seconds since a pass of the WorkOS mirror last read the membership events "
+    "through. Grows while passes fail, WorkOS refuses where the mirror reads "
+    "from, or an event keeps failing, so a removal made in WorkOS waits. Up to "
+    "30 s is normal.",
+)
+WORKOS_RECHECK_OLDEST_AGE = _spec(
+    "switch.workos.recheck.oldest_age",
+    "gauge",
+    "s",
+    "Seconds the longest-waiting organization has been in the WorkOS mirror's "
+    "full recheck, checked on every pass after a change for it failed. 0 when "
+    "none waits.",
+)
+WORKOS_FULL_CHECK_AGE = _spec(
+    "switch.workos.full_check.age",
+    "gauge",
+    "s",
+    "Seconds since the WorkOS mirror last finished checking every linked "
+    "organization's members in full, which it does when it starts and once a "
+    "day.",
+)
+WORKOS_ORGANIZATION_DELETED = _spec(
+    "switch.workos.organization_deleted",
+    "sum",
+    "{organization}",
+    "WorkOS organizations deleted while a Switch organization followed them. "
+    "The Switch organization keeps its members, rooms and agents, and is left "
+    "for an operator to remove.",
+)
+
+
 # ── Health ───────────────────────────────────────────────────────────────────
 # One series per dependency, so a dashboard shows which one broke.
 HEALTH_CHECK = _spec(
@@ -856,6 +895,10 @@ CATALOGUE: dict[str, MetricSpec] = {
         DECISION_PENDING,
         DECISION_PENDING_OLDEST_AGE,
         DECISION_NOTICES,
+        WORKOS_CURSOR_AGE,
+        WORKOS_RECHECK_OLDEST_AGE,
+        WORKOS_FULL_CHECK_AGE,
+        WORKOS_ORGANIZATION_DELETED,
         HEALTH_CHECK,
     )
 }

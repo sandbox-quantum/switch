@@ -87,6 +87,22 @@ rest. If WorkOS no longer has the events from where the mirror stopped (it
 keeps 90 days), the mirror starts again from now, records that in the
 server's audit log, and checks every linked organization in full.
 
+The process running the mirror reports three gauges, read when its metrics
+are collected (`docs/old/observability.md`):
+
+- `switch.workos.cursor_age`: seconds since a pass last read the events
+  through. Up to 30 s is normal. It grows while passes fail, while WorkOS
+  refuses where the mirror reads from, and while one event keeps failing,
+  which is when a removal made in WorkOS isn't reaching Switch.
+- `switch.workos.recheck.oldest_age`: how long the longest-waiting
+  organization has been in the full recheck, 0 when none waits.
+- `switch.workos.full_check.age`: seconds since every linked organization
+  was last checked in full.
+
+Only that process reports them, so no reading means no process is running
+the mirror. `deploy/observability/monitors.json` alerts on each; import those
+monitors with `WORKOS_DIRECTORY=1` (see its README).
+
 For each person it matches (by the WorkOS user their account signs in as):
 
 - **Added or made `org_admin` in WorkOS:** added, or made Org Admin, as at
@@ -115,7 +131,13 @@ rule", naming what:
 Someone WorkOS lists who has never signed in to Switch is added when they
 first do. A member with no WorkOS identity (an account nobody linked) can't be
 compared, and is logged and left. Deleting a linked organization in WorkOS
-removes nobody: it is logged and recorded for an operator to deal with.
+removes nobody, since one event would take away a whole organization. It is
+logged at `error`, recorded in the organization's audit log, counted in
+`switch.workos.organization_deleted` (which has its own monitor), and the
+mirror stops following the organization: it is no longer checked against
+WorkOS, now or after a restart. The link stays, since the admins' notice
+(below) reads it. What happens next is an operator's call (see "When a
+customer leaves").
 
 The organization's admins see what is still wrong at the top of its
 Organization page, until it is fixed: no admin (shown to the platform
@@ -167,6 +189,26 @@ sign in there: unless WorkOS already has that person as `org_admin`, they are
 told to have someone made one in the organization's account settings.
 
 Adding someone new to a linked organization from Switch is still refused.
+
+## When a customer leaves
+
+Deleting a customer's organization in WorkOS doesn't delete anything in
+Switch. Remove the memberships in WorkOS before the organization, so the
+mirror takes each person out as their membership goes. Once the WorkOS
+organization is deleted, delete the Switch organization with
+`switch-purge-organization`, run where switch-core runs and with its
+configuration, naming it by that WorkOS organization's id:
+
+```
+switch-purge-organization org_01EXAMPLE                                  # dry run: what goes, what stays
+switch-purge-organization org_01EXAMPLE --execute --request "REQUEST-1"  # delete it
+```
+
+The purge deletes the organization's workspaces, with their rooms, agents
+and connections, and the accounts that belonged to nothing else. It keeps
+the workspaces' audit history for the usual two years. If it exits 3, it is
+waiting for something outside Switch; run the same command again later.
+`docs/design/data-retention.md` says what it deletes and keeps.
 
 ## In the dashboard
 

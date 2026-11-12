@@ -1571,29 +1571,28 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
     protocol.install_service = install_service
+    workos_mirror: WorkOSMirror | None = None
     if isinstance(organization_directory, WorkOSDirectory):
         # Checked present with the directory (`_validate_organization_directory`).
         assert config.gateway_oidc_issuer_url is not None
-        own_workos_mirror(
-            ownership,
-            WorkOSMirror(
-                session_factory,
-                organization_directory,
-                MirrorDependencies(
-                    revocation=AccessRevocation(
-                        agent_store=agent_store,
-                        api_key_store=api_key_store,
-                        broker=service_broker,
-                        protocol=protocol,
-                        sign_in_flows=gateway_app.state.sign_in_flows,
-                    ),
-                    organization_store=organization_store,
-                    user_store=user_store,
+        workos_mirror = WorkOSMirror(
+            session_factory,
+            organization_directory,
+            MirrorDependencies(
+                revocation=AccessRevocation(
+                    agent_store=agent_store,
+                    api_key_store=api_key_store,
+                    broker=service_broker,
+                    protocol=protocol,
+                    sign_in_flows=gateway_app.state.sign_in_flows,
                 ),
-                OwnershipLeaseStore(),
-                config.gateway_oidc_issuer_url,
+                organization_store=organization_store,
+                user_store=user_store,
             ),
+            OwnershipLeaseStore(),
+            config.gateway_oidc_issuer_url,
         )
+        own_workos_mirror(ownership, workos_mirror)
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
@@ -1627,6 +1626,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
+            if workos_mirror is not None:
+                metrics().register_observer(workos_mirror.readings)
             decision_task = None
             if config.decision_routing_enabled:
                 pending_gauge = PendingDecisionGauge(

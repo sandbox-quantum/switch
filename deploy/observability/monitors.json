@@ -444,6 +444,99 @@
     "priority": 3
   },
   {
+    "name": "[Switch] WorkOS membership changes are not reaching Switch",
+    "type": "query alert",
+    "query": "max(last_5m):max:switch.workos.cursor_age{service:switch-core} > 300",
+    "message": "{{#is_alert}}For over 5 minutes no pass of the WorkOS mirror has read the membership events through, or no process is running the mirror at all (no data for 15 minutes). People removed or demoted in your organization's account settings keep their access in Switch until it catches up.\n\n**Check:** switch-core's logs for \"WorkOS mirror\": WorkOS answering with errors, the API key refused, or one event failing on every pass (it is passed over after 5 tries). With no data, whether any switch-core pod is up and holds the `workos_mirror` lease.\n\nDashboard: the WorkOS directory section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: WorkOS membership changes are not reaching Switch.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now",
+      "requires:workos-directory"
+    ],
+    "options": {
+      "notify_no_data": true,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 300
+      },
+      "no_data_timeframe": 15
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] an organization is stuck in the WorkOS recheck",
+    "type": "query alert",
+    "query": "min(last_5m):max:switch.workos.recheck.oldest_age{service:switch-core} > 900",
+    "message": "{{#is_alert}}An organization has waited over 15 minutes in the WorkOS mirror's full recheck: a change for it failed and checking it against WorkOS keeps failing. Its members in Switch may not match your organization's account settings, including people who should have been removed.\n\n**Check:** switch-core's logs for \"Checking organization\" and \"Applying WorkOS's membership\", which name the organization and the error.\n\nDashboard: the WorkOS directory section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: an organization is stuck in the WorkOS recheck.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now",
+      "requires:workos-directory"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 900
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch] the daily WorkOS check hasn't finished",
+    "type": "query alert",
+    "query": "max(last_15m):max:switch.workos.full_check.age{service:switch-core} > 93600",
+    "message": "{{#is_alert}}The WorkOS mirror hasn't finished checking every linked organization in full for over 26 hours. That check is the backstop for changes WorkOS sends no event for and for members with no WorkOS identity.\n\n**Check:** switch-core's logs for \"daily check\": a failure reading the linked organizations, or a mirror restarting before it gets through.\n\nDashboard: the WorkOS directory section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: the daily WorkOS check hasn't finished.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now",
+      "requires:workos-directory"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 93600
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch] a WorkOS organization that Switch follows was deleted",
+    "type": "query alert",
+    "query": "sum(last_5m):default_zero(sum:switch.workos.organization_deleted{service:switch-core}.as_count()) > 0",
+    "message": "{{#is_alert}}WorkOS deleted an organization that a Switch organization follows. Switch removed nobody: the Switch organization keeps its members, workspaces, rooms and agents, its admins see an \"organization deleted\" notice, and the mirror no longer checks it.\n\n**Check:** switch-core's logs for \"was deleted; its members are left as they are\", which names both organizations. If the customer is leaving, delete the Switch organization with `switch-purge-organization`, named by that WorkOS organization's id (docs/old/workos-directory.md, \"When a customer leaves\"). Otherwise, find out who deleted it in WorkOS: changes to that organization's members no longer reach Switch.\n\nDashboard: the WorkOS directory section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: a WorkOS organization that Switch follows was deleted.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now",
+      "requires:workos-directory"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 3
+  },
+  {
     "name": "[Switch] requests are failing with unhandled errors",
     "type": "log alert",
     "query": "logs(\"service:switch-core \\\"Exception in ASGI application\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
