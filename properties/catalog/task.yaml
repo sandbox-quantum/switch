@@ -1,0 +1,9 @@
+properties:
+  - id: task.lifecycle
+    title: A task only moves forward
+    statement: A task moves only delegate, ongoing, finalised; finalised is terminal.
+    kind: safety
+    formality: semi-formal
+    levels: [model, code]
+    owner: platform
+    status: proposed

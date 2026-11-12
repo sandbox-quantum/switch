@@ -46,6 +46,7 @@ dependencies = [
     "uvloop>=0.21,<1 ; sys_platform != 'win32'",
     "cronsim>=2.6,<3",
     "tzdata>=2025.2",
+    "antithesis>=0.4,<1",
 ]
 
 # Repo coordinates point at the public switch repo — see RELEASING.md.
@@ -79,6 +80,7 @@ dev = [
     "pytest-xdist>=3.6",
     "pytest-split>=0.10",
     "pytest-timeout>=2.3",
+    "hypothesis>=6.170.15",
 ]
 
 [tool.ruff]
@@ -102,6 +104,7 @@ markers = [
     "integration: boots real Postgres + Tuwunel via testcontainers (slow; excluded from the default run — use `just test-integration`)",
     "benchmark: boots real Postgres and serves the agent bridge on a socket to measure it (slow, and reports numbers rather than asserting them; excluded from the default run — use `just bench`)",
     "no_ambient_tenant: opt out of session_factory's default tenant-zero binding, for tests asserting what is or is not bound",
+    "property(id): the property in properties/catalog that this test checks (see properties/README.md)",
     "collaboration_bridges: build the integration harness with the real collaboration bridge lifecycle rather than the no-bridges stand-in",
 ]
 

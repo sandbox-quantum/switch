@@ -1,0 +1,11 @@
+properties:
+  - id: bridge.roundtrip-exactly-once
+    title: A bridged message crosses once in each direction
+    statement: >
+      A post from a collaboration platform appears in its room once, and an
+      agent's reply appears on the platform once.
+    kind: safety
+    formality: semi-formal
+    levels: [system]
+    owner: platform
+    status: proposed

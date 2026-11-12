@@ -30,6 +30,9 @@
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
 # file, the controller's state and the agent's working directory go to a
 # temporary directory, so the output holds nothing secret by construction.
+# The fast lane reads the database after each scenario with
+# properties/history/check.sh and fails the scenario on a delivery property its
+# rows break.
 # On exit the output is scanned for every secret the run used, and
 # .secret-scan-passed is written there only if none turned up: CI uploads the
 # output only when that file exists.
@@ -66,6 +69,8 @@ for port in 4173 5432 8000 8065 8081; do
 done
 
 rm -rf "$OUT"; mkdir -p "$OUT"
+# Absolute, for what is handed to the server and to `uv run --project`, which do not start here.
+OUT="$(cd "$OUT" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/switch-e2e.XXXXXX")"
 chmod 700 "$WORK"
 ENV_FILE="$WORK/stack.env"
@@ -161,6 +166,9 @@ echo "Starting switch-core from this checkout…"
 # JSON, so the harness can read back what the server logged during each
 # scenario (SWITCH_E2E_SERVER_LOG): one record per line, timed to the
 # millisecond. `jq -r '"\(.timestamp) \(.status) \(.message)"'` reads it.
+# The server's assertions (Antithesis SDK local mode) are logged here, and read
+# after the fast lane by properties/history/assertions.py.
+ANTITHESIS_SDK_LOCAL_OUTPUT="$OUT/assertions.jsonl" \
 GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
   >"$OUT/switch-core.log" 2>&1 &
 SERVER_PID=$!
@@ -263,6 +271,8 @@ status=0
   export SWITCH_E2E_SECRETS_FILE="$SECRETS"
   # What the server logs, so a scenario during which it logs an error fails.
   export SWITCH_E2E_SERVER_LOG="$OUT/switch-core.log"
+  # The delivery history check, which reads the stack's database (DB_* above).
+  [ "$LANE" = fast ] && export SWITCH_E2E_HISTORY_CHECK="$REPO/properties/history/check.sh"
   # Screenshots of failed pages, and agentic transcripts and verdicts.
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
   # The follow-up window the server was started with, for the scenario that waits it out.
@@ -280,6 +290,18 @@ status=0
     pnpm exec vitest run --reporter=verbose --reporter=junit \
       --outputFile.junit="$OUT/junit.xml" ${VITEST_ARGS[@]+"${VITEST_ARGS[@]}"}
 ) || status=$?
+
+# The assertions the server made while the whole fast lane ran (not a filtered
+# run, which may never reach them): an `always` that was false or an
+# `unreachable` that was reached fails the run, and so does an assertion the lane
+# is known to reach going uncalled, which says the code is no longer there. The
+# `sometimes` the lane cannot reach (retention, a leave) are not required.
+if [ "$LANE" = fast ] && [ ${#VITEST_ARGS[@]} -eq 0 ]; then
+  echo "Checking the run's assertions…"
+  uv run --project core python "$REPO/properties/history/assertions.py" "$OUT/assertions.jsonl" \
+    --called "reached: an event is not stored for an agent that left the room or already has it" \
+    || status=1
+fi
 
 if [ "$status" != 0 ]; then
   echo "The $LANE lane failed. switch-core log: $OUT/switch-core.log" >&2

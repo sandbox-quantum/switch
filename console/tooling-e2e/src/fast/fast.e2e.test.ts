@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { describeEnv } from '../core/env.ts';
+import { HistoryCheck } from '../core/history.ts';
 import { RunContext } from '../core/run.ts';
 import { admit, assertValidHeaders } from '../core/scenario.ts';
 import {
@@ -26,6 +27,7 @@ import { probeSessionRoutes } from './session-required.ts';
 assertValidHeaders(FAST_SCENARIOS.map((scenario) => scenario.header));
 
 const run = new RunContext();
+const historyCheck = HistoryCheck.fromEnv(process.env);
 let lane: LaneResolution;
 let watch: ServerLogWatch;
 
@@ -65,6 +67,17 @@ describe('fast lane', () => {
           await scenario.run({ env, names, switchClient, mattermost, fixtures, log });
         } catch (error) {
           failure = error;
+        }
+        // Before teardown, which deletes the agents and with them their own
+        // events, and whether or not the scenario failed: a failing run's
+        // history is the one most worth reading.
+        if (historyCheck !== null) {
+          try {
+            await historyCheck.verify(names.tag);
+          } catch (error) {
+            if (failure === null) failure = error;
+            else log(`history: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
         leftovers = await fixtures.teardown();
       } finally {
@@ -161,6 +174,16 @@ describe('fast lane, derived checks', () => {
     if (!env.keepArtifacts) expect(leftovers, 'teardown left artefacts behind').toEqual([]);
     expectNoServerErrors(serverErrors, observer.tag, 'while this ran');
   }, 180_000);
+
+  // A check over an empty history passes anything, so say the run gave it agents' own events.
+  it('the history checks saw agents\' own events', async (context) => {
+    if (historyCheck === null) return context.skip('SWITCH_E2E_HISTORY_CHECK is not set');
+    if (historyCheck.checks === 0) return context.skip('no scenario ran, so no history was checked');
+    expect(
+      historyCheck.mostEvents,
+      'when each scenario was checked none had left an agent an own event, so the checks looked at no delivery'
+    ).toBeGreaterThan(0);
+  });
 
   // Last, so they see whatever the run left the server in.
   it('the server is still ready after the run', async (context) => {

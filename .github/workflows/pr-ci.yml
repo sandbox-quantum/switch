@@ -72,6 +72,7 @@ jobs:
       console: ${{ steps.filter.outputs.console }}
       gateway: ${{ steps.filter.outputs.gateway }}
       artifacts: ${{ steps.filter.outputs.artifacts }}
+      properties: ${{ steps.filter.outputs.properties }}
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
       decision: ${{ steps.filter.outputs.decision }}
@@ -143,6 +144,7 @@ jobs:
               - *shared
               - 'core/**'
               - 'console/tooling-e2e/**'
+              - 'properties/history/**'
               - 'console/pnpm-lock.yaml'
               - 'deploy/local/**'
               - '.env.example'
@@ -152,6 +154,21 @@ jobs:
             # actually find a new head — not on every backend-touching push.
             migrations:
               - 'core/switch_core/migrations/versions/**'
+            # The property catalog and every checker that names a property in
+            # it, wherever the checker lives.
+            properties:
+              - *shared
+              - 'properties/**'
+              - '.github/actions/setup-quint/**'
+              - 'core/tests/switch_core/properties/**'
+              - 'console/tooling-e2e/src/explore/spec/**'
+              # What the models in properties/specs follow, so a change to it
+              # runs them (and `properties/specs/README.md` maps each to its
+              # state).
+              - 'core/switch_core/bridges/agent/protocol/event_buffer.py'
+              - 'core/switch_core/bridges/agent/protocol/stream.py'
+              - 'core/switch_core/delivery/router.py'
+              - 'core/switch_core/db/stores/message_store.py'
             # The published Helm charts (switch, and the hosted controller's)
             # and what the release does to them before publishing (pins the
             # image digests into values.yaml).
@@ -183,7 +200,9 @@ jobs:
     name: Backend (core)
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    # ubuntu-latest is 26.04, which Playwright does not support yet (its
+    # `install --with-deps chromium` refuses it), so this job stays on 24.04.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -461,6 +480,55 @@ jobs:
 
       - name: Registry, generated modules and declared versions agree
         run: uv run --project core python scripts/gen_artifacts.py --check
+
+  properties:
+    name: Property catalog
+    # Reads the catalog and the checkers' tags and runs nothing, so it needs
+    # only Python with PyYAML and Pydantic and is its own small job. The checkers themselves run where
+    # their code does: the Quint models and the history checker, and the
+    # Hypothesis tests in the backend tests.
+    needs: changes
+    if: ${{ needs.changes.outputs.properties == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: The catalog and its checkers agree
+        run: uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' python properties/gate/gate.py check
+
+      - name: Property coverage
+        run: |
+          {
+            echo '```'
+            uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' python properties/gate/gate.py table
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  properties-model:
+    name: Property models
+    # Quint models of the concurrent parts of Switch (properties/specs): TLC
+    # searches every state each model can reach in the bounds configs.qnt
+    # gives, and a second pass checks that each invariant fails on the bug it
+    # is there for. Needs only the models, so a change elsewhere does not run it.
+    needs: changes
+    if: ${{ needs.changes.outputs.properties == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Quint
+        uses: ./.github/actions/setup-quint
+
+      - name: Every invariant holds, and fails on its bug
+        run: python3 properties/specs/run.py
 
   chart:
     name: Helm chart

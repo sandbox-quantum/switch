@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
+from antithesis.assertions import always, sometimes
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -719,6 +720,11 @@ class EventBuffer:
             )
             return None
         await savepoint.commit()
+        sometimes(
+            len(stored) < len(events),
+            "reached: an event is not stored for an agent that left the room or already has it",
+            {"room_id": room_id, "events": len(events), "stored": len(stored)},
+        )
         return {agent_id: int(seq) for agent_id, seq in stored.items()}
 
     def _claim(self, tenant_id: str, agent_id: str) -> Any:
@@ -744,7 +750,8 @@ class EventBuffer:
     def _own_event_insert(values: Any) -> Any:
         """An insert into `agent_events` of the row `values` selects, that
         does nothing when an event from the same source is already stored
-        (`uq_agent_events_source`), and returns the stored number."""
+        (`uq_agent_events_source`), and returns the stored number.
+        """
         return (
             insert(AgentEventRow)
             .from_select(
@@ -2439,6 +2446,11 @@ class EventBuffer:
         own events numbered after `after_seq`, naming the rooms they were in
         and the number to resume after."""
         rooms = await self.rooms_dropped_after(tenant_id, agent_id, after_seq)
+        sometimes(
+            bool(rooms),
+            "reached: a reader resumes from below a drop mark",
+            {"agent_id": agent_id, "after_seq": after_seq},
+        )
         if rooms:
             await self._expired(tenant_id, agent_id, after_seq, rooms)
 
@@ -2467,16 +2479,29 @@ class EventBuffer:
         placed at 0 would find the deleted numbers ahead of it on every read.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
-            oldest = await session.scalar(
-                select(func.min(AgentEventRow.seq)).where(
-                    AgentEventRow.agent_id == agent_id
+            # One statement, so a retention pass that commits between two reads
+            # cannot show an oldest kept and a deleted-through from different moments.
+            oldest, dropped_through = (
+                await session.execute(
+                    select(
+                        select(func.min(AgentEventRow.seq))
+                        .where(AgentEventRow.agent_id == agent_id)
+                        .scalar_subquery(),
+                        select(func.max(AgentEventDrop.dropped_through))
+                        .where(AgentEventDrop.agent_id == agent_id)
+                        .scalar_subquery(),
+                    )
                 )
-            )
-            dropped_through = await session.scalar(
-                select(func.max(AgentEventDrop.dropped_through)).where(
-                    AgentEventDrop.agent_id == agent_id
-                )
-            )
+            ).one()
+        always(
+            oldest is None or dropped_through is None or dropped_through < oldest,
+            "delivery.no-silent-loss: retention kept nothing at or below what it recorded deleting",
+            {
+                "agent_id": agent_id,
+                "oldest": oldest,
+                "dropped_through": dropped_through,
+            },
+        )
         return max(dropped_through or 0, (oldest or 0) - 1, 0)
 
 

@@ -1,0 +1,31 @@
+properties:
+  - id: bus.room-seq-dense
+    title: A room's rows are numbered densely and become visible in order
+    statement: >
+      Within a room, `seq` is handed out one above the previous under the
+      room's advisory lock, and a reader never sees seq n+1 committed while n
+      is not yet visible, apart from rows retention removed from the front.
+    kind: safety
+    formality: formal
+    spec: delivery.qnt::RoomSeqDense
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      `MessageStore._next_seq` takes `pg_advisory_xact_lock` on the room; a
+      reader works from its own cursor, so a gap that fills in later would be
+      skipped for good.
+    gaps:
+      system: a finished run cannot show it, because retention and erasing a person delete rows and leave holes; it needs the commit order (the assertion log)
+  - id: bus.lost-wakeup-only-delays
+    title: A lost announcement delays a read and nothing more
+    statement: >
+      Every committed row is read by every consumer subscribed to its room,
+      even if announcements are dropped or coalesced or the `LISTEN`
+      connection reconnects.
+    kind: liveness
+    formality: semi-formal
+    levels: [model, system]
+    owner: platform
+    status: proposed
+    notes: The rule `messages/notify.py` is written to; the model leaves wake-ups out of the first slice.
