@@ -812,6 +812,7 @@ class TeamsAdapter(PlatformAdapter):
     #: in the channel where everyone sees it.
     private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
     private_channel_needs_owner: ClassVar[bool] = True
+    adds_creator_to_public_channel: ClassVar[bool] = False
     docs_slug: ClassVar[str | None] = "microsoft-teams"
     # Graph delivers a channel's messages to every subscription made for it,
     # so only the process holding the bridge makes, adopts and renews them.

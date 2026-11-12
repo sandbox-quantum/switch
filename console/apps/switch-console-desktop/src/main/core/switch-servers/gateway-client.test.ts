@@ -543,6 +543,7 @@ describe('room creation', () => {
         channelIdsRefused: null,
         privateChannels: null,
         privateChannelNeedsLinkedAccount: false,
+        publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -566,6 +567,7 @@ describe('room creation', () => {
         channelIdsRefused: null,
         privateChannels: null,
         privateChannelNeedsLinkedAccount: false,
+        publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -631,6 +633,25 @@ describe('room creation', () => {
     expect(current.privateChannelNeedsLinkedAccount).toBe(true);
     expect(older.privateChannels).toBeNull();
     expect(older.privateChannelNeedsLinkedAccount).toBe(false);
+  });
+
+  it('carries whether a new public channel puts its creator in it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'slack',
+          display_name: 'Slack',
+          status: 'active',
+          public_channel_adds_creator: true,
+        },
+        { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Older', status: 'active' },
+      ]) as never
+    );
+
+    const [current, older] = await fetchBridges(SERVER);
+    expect(current.publicChannelAddsCreator).toBe(true);
+    expect(older.publicChannelAddsCreator).toBe(false);
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {

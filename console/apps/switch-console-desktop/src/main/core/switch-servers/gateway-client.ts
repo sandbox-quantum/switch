@@ -750,12 +750,26 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me', 'DELETE', email);
+}
+
+/**
+ * Wipe the signed-in account and everything it owns on a server that allows
+ * test-account resets, confirmed by its email. A server that does not, or
+ * refuses, is raised with its own reason.
+ */
+export async function resetMyTestAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me/reset-test-account', 'POST', email);
+}
+
+async function confirmByEmail(
+  server: SwitchServer,
+  path: string,
+  method: 'DELETE' | 'POST',
+  email: string
+): Promise<void> {
   try {
-    await gatewayFetch(server, '/auth/me', {
-      authenticated: true,
-      method: 'DELETE',
-      body: { email },
-    });
+    await gatewayFetch(server, path, { authenticated: true, method, body: { email } });
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
@@ -1831,6 +1845,8 @@ type BridgeJson = {
   // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  // Absent on a server predating it, which put nobody in a public channel.
+  public_channel_adds_creator?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1855,6 +1871,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelIdsRefused: b.channel_ids_refused ?? null,
     privateChannels: b.private_channels_supported ?? null,
     privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
+    publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
