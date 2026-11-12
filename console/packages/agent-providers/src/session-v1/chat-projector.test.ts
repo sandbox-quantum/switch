@@ -40,7 +40,16 @@ const context = {
 };
 
 describe('chat projection', () => {
-  it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'kimi'] as const)(
+  it.each([
+    'claude',
+    'codex',
+    'opencode',
+    'antigravity',
+    'cursor',
+    'kiro',
+    'junie',
+    'kimi',
+  ] as const)(
     'projects %s text with bounded full replacements and immediate final state',
     (provider) => {
       const projector = new ChatProjector(session(provider), null);
@@ -279,5 +288,104 @@ describe('service tokens in streamed text', () => {
     );
     expect(parts.join('')).toBe(`${'a'.repeat(4096 - 10)}[REDACTED] done`);
     for (const part of parts) expect(part).not.toContain(TOKEN.slice(-8));
+  });
+});
+
+describe('subagent projection', () => {
+  function child(
+    id: string,
+    status: 'in_progress' | 'completed' | 'failed',
+    at: number,
+    nativeChildId = id
+  ): ProviderRuntimeEvent {
+    return {
+      provider: 'claude',
+      sessionId: 'session',
+      turnId: 'turn',
+      eventId: `event-${id}-${at}`,
+      createdAt: new Date(at).toISOString(),
+      type: status === 'in_progress' ? 'item.updated' : 'item.completed',
+      item: {
+        id,
+        type: 'subagent',
+        status,
+        title: 'Review changes',
+        toolName: 'Reviewer',
+        nativeChildId,
+        text: 'Private child transcript',
+        payload: { private: 'raw payload' },
+      },
+    };
+  }
+
+  it('keeps child identity, hides output, coalesces updates and ignores stale starts', () => {
+    const projector = new ChatProjector(session('claude'), null);
+    projector.bindTurn('turn', context);
+    const first = projector.ingest(child('spawn', 'in_progress', 1000, 'child-a'), 0);
+    expect(first).toMatchObject([
+      {
+        type: 'item.upsert',
+        item: {
+          itemId: '["turn","subagent","child-a"]',
+          kind: 'tool-activity',
+          subagent: true,
+          title: 'Reviewer: Review changes',
+          text: '',
+          status: 'in-progress',
+          revision: 1,
+        },
+      },
+    ]);
+    expect(JSON.stringify(first)).not.toContain('Private');
+    expect(JSON.stringify(first)).not.toContain('raw payload');
+    const done = projector.ingest(child('finish', 'completed', 2000, 'child-a'), 1);
+    expect(done).toMatchObject([
+      { item: { itemId: '["turn","subagent","child-a"]', revision: 2, status: 'completed' } },
+    ]);
+    expect(projector.ingest(child('spawn', 'in_progress', 1000, 'child-a'), 1000)).toEqual([]);
+    expect(projector.ingest(child('finish', 'completed', 2000, 'child-a'), 1000)).toEqual([]);
+    expect(projector.ingest(child('another', 'in_progress', 3000), 1000)).toHaveLength(1);
+  });
+
+  it('restores revisions after replay and keeps sibling failures independent', () => {
+    const projector = new ChatProjector(session('claude'), null);
+    projector.bindTurn('turn', context);
+    const first = projector.ingest(child('a', 'in_progress', 1000), 0);
+    const recovered = new ChatProjector(session('claude'), null);
+    recovered.restore(first.flatMap((body) => (body.type === 'item.upsert' ? [body.item] : [])));
+    recovered.bindTurn('turn', context);
+    expect(recovered.ingest(child('a', 'failed', 2000), 0)).toMatchObject([
+      { item: { revision: 2, status: 'failed' } },
+    ]);
+    expect(recovered.ingest(child('b', 'in_progress', 2000), 0)).toMatchObject([
+      { item: { revision: 1, status: 'in-progress' } },
+    ]);
+  });
+
+  it('coalesces rapid child description changes and flushes the latest revision', () => {
+    const projector = new ChatProjector(session('claude'), null);
+    projector.bindTurn('turn', context);
+    projector.ingest(child('a', 'in_progress', 1000), 0);
+    const update = child('a', 'in_progress', 1100);
+    if (update.type !== 'item.updated') throw new Error('Expected child update');
+    update.item.title = 'Checking tests';
+    expect(projector.ingest(update, 10)).toEqual([]);
+    update.item.title = 'Checking formatting';
+    expect(projector.ingest(update, 20)).toEqual([]);
+    expect(projector.flush(250, false)).toMatchObject([
+      { item: { title: 'Reviewer: Checking formatting', revision: 2 } },
+    ]);
+    expect(projector.flush(500, false)).toEqual([]);
+  });
+
+  it('redacts child descriptions before they enter the shared journal', () => {
+    const redactions = new Redactions();
+    redactions.add('demo-private-value');
+    const projector = new ChatProjector(session('claude'), redactions);
+    projector.bindTurn('turn', context);
+    const event = child('a', 'in_progress', 1000);
+    if (event.type !== 'item.updated') throw new Error('Expected child update');
+    event.item.title = 'Inspect demo-private-value';
+    expect(JSON.stringify(projector.ingest(event, 0))).not.toContain('demo-private-value');
   });
 });

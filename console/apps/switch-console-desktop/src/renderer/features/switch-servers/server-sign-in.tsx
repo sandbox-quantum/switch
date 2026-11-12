@@ -133,7 +133,7 @@ export function useServerSignIn(serverId: string): ServerSignIn {
     setError(null);
     try {
       const ok = await run();
-      if (!ok) setError(switchServersStore.errorText ?? 'Could not sign in.');
+      if (!ok) setError(switchServersStore.signInError(serverId) ?? 'Could not sign in.');
       if (ok) warmCloudMachine(serverId);
       return ok;
     } finally {
@@ -152,7 +152,8 @@ export function useServerSignIn(serverId: string): ServerSignIn {
     setSubmitting(true);
     try {
       const machine = await switchServersStore.signup({ serverId, email: email.trim(), password });
-      if (!machine) setError(switchServersStore.errorText ?? 'Could not create the account.');
+      if (!machine)
+        setError(switchServersStore.signInError(serverId) ?? 'Could not create the account.');
       return machine;
     } finally {
       setSubmitting(false);

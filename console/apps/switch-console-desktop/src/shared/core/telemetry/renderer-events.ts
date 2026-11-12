@@ -100,6 +100,8 @@ export type RendererTelemetryEvents = {
       | 'goose'
       | 'qwen'
       | 'droid'
+      | 'cline'
+      | 'junie'
       | 'kimi'
       | 'none';
   };

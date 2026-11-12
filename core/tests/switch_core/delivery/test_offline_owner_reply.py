@@ -206,6 +206,7 @@ class TestUnavailableReplyRouting:
             "copilot": "copilot login",
             "kiro": "kiro-cli login",
             "mistral-vibe": "vibe-acp --setup",
+            "junie": "junie",
             "kimi": "kimi login",
         }
         for agent_type, command in sign_in.items():

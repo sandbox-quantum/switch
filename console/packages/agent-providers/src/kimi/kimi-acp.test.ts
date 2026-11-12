@@ -281,11 +281,16 @@ it('reports unknown when the provider list cannot be read', async () => {
   ).toBe('unknown');
 });
 
+const noConnection = () => {
+  throw new Error('Kimi sign-in check asked for the connection');
+};
+
 it('treats a model defined in the environment as signed in without running the CLI', async () => {
   const result = await kimiAcp.checkSignIn!({
     binaryPath: '/nonexistent/kimi',
     cwd: '/work',
     env: { KIMI_MODEL_NAME: 'kimi-for-coding', KIMI_MODEL_API_KEY: 'k' },
+    connection: noConnection,
     handshake: async () => {
       throw new Error('not called');
     },
@@ -300,6 +305,7 @@ it('treats a model defined in the environment as signed in without running the C
     binaryPath: '/nonexistent/kimi',
     cwd: '/work',
     env: { KIMI_MODEL_NAME: 'kimi-for-coding', KIMI_CODE_HOME: home },
+    connection: noConnection,
     handshake: async () => {
       throw new Error('not called');
     },
@@ -334,6 +340,7 @@ it.skipIf(process.platform === 'win32')(
         binaryPath,
         cwd: home,
         env: { KIMI_CODE_HOME: home },
+        connection: noConnection,
         handshake: notCalled,
         request: notCalled,
       });

@@ -20,6 +20,8 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'goose',
   'qwen',
   'droid',
+  'cline',
+  'junie',
   'kimi',
 ];
 

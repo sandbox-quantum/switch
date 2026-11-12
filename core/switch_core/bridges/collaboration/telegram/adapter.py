@@ -43,6 +43,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    CardRejectedError,
     ChannelNotBindable,
     MessagePartlySent,
     PlatformAdapter,
@@ -106,6 +107,7 @@ from switch_core.bridges.collaboration.telegram.install import (
     ALREADY_OUT,
     is_connect_press,
 )
+from switch_core.bridges.collaboration.telegram.ui_card import ui_spec_to_html
 from switch_core.observability.catalogue import BRIDGE_THROTTLE_HELD
 from switch_core.observability.metrics import metrics
 from switch_core.room_wide_mention import (
@@ -113,6 +115,14 @@ from switch_core.room_wide_mention import (
     defuse_mass_mention_words_in_prose,
 )
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import (
+    ANSWERER_NAME_MAX,
+    UI_POSITION_PREFIX,
+    ButtonProps,
+    LinkButtonProps,
+    UISpec,
+    card_buttons,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +161,12 @@ _MAX_CALLBACK_BYTES = 64
 # turn ids are, and the prefix is the only part of the payload this bridge can
 # make smaller.
 _INTERRUPT_PREFIX = "sx"
+
+# And what a press on an agent's card (`ui_spec`) hands back: the button's
+# position on the card (`card_buttons`). Its action and value can be longer
+# than the payload allows, so core reads them off the card the press is on.
+_UI_CARD_PREFIX = "su"
+_UI_CARD_ROW = 3
 
 # Bot API 9.4 gave an inline button a colour, and `danger` is the red one it
 # reserves for a destructive action. python-telegram-bot did not take the field
@@ -234,18 +250,36 @@ def _parse_interrupt(data: str) -> str | None:
     return turn_id
 
 
+def _settled_line(name: str, label: str) -> str:
+    return (
+        f"\n✅ {html.escape(name, quote=False)} chose {html.escape(label, quote=False)}"
+    )
+
+
+def _ui_card_keyboard(
+    groups: list[list[InlineKeyboardButton]],
+) -> InlineKeyboardMarkup | None:
+    rows = [
+        g[i : i + _UI_CARD_ROW] for g in groups for i in range(0, len(g), _UI_CARD_ROW)
+    ]
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
 def _press_action(data: str) -> tuple[str, str] | None:
     """The Switch action a press carries and what it names, or None if not ours.
 
-    Two keyboards arrive here and they name different things — a card's button
-    names the card, a stop names the turn — but they leave by the same door,
-    because what happens next is the same for both: hand the press to the
-    shared inbound path, then close the press on the presser's own client with
-    whatever came back.
+    Three keyboards arrive here and they name different things — a card's
+    button names the card, an agent card's button its position on the card, a
+    stop names the turn — but they leave by the same door, because what happens
+    next is the same for all: hand the press to the shared inbound path, then
+    close the press on the presser's own client with whatever came back.
     """
     turn_id = _parse_interrupt(data)
     if turn_id is not None:
         return INTERRUPT_ACTION, turn_id
+    prefix, separator, card_position = data.partition(":")
+    if prefix == _UI_CARD_PREFIX and separator:
+        return f"{UI_POSITION_PREFIX}{card_position}", ""
     press = _parse_callback(data)
     if press is None:
         return None
@@ -1176,6 +1210,133 @@ class TelegramAdapter(PlatformAdapter):
         agent = await self.agent_rendering(sender_name)
         body = self._attribute(sender_name, agent.body_label, content)
         return await self._send_text(channel_id, body, thread_root_id)
+
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as one HTML message with its buttons as an inline keyboard.
+
+        The card replaces the body, as on Slack: the body repeats the card's
+        key facts for readers that cannot draw it, and the notification
+        preview starts with the agent's name and the card's title either way.
+
+        A card that does not fit one message, or that Telegram refuses, raises
+        `CardRejectedError` before anything is posted, so the caller sends
+        `fallback_text`.
+        """
+        text, groups = await self._ui_card(sender_name, spec)
+        # A card with Buttons gains a line naming who answered it.
+        answer = max(
+            (
+                len(_settled_line("&" * ANSWERER_NAME_MAX, b.label))
+                for b in card_buttons(spec)
+            ),
+            default=0,
+        )
+        if len(text) + answer > MAX_MESSAGE:
+            raise CardRejectedError(
+                f"The card is {len(text)} characters of Telegram HTML, and "
+                f"{answer} more kept for its answer, over {MAX_MESSAGE}"
+            )
+        positions = {b.id: i for i, b in enumerate(card_buttons(spec), 1)}
+        rows: list[list[InlineKeyboardButton]] = []
+        for group in groups:
+            row = []
+            for button in group:
+                if not isinstance(button, ButtonProps):
+                    row.append(InlineKeyboardButton(text=button.label, url=button.url))
+                    continue
+                style = button.style if button.style in ("primary", "danger") else None
+                row.append(
+                    InlineKeyboardButton(
+                        text=button.label,
+                        callback_data=f"{_UI_CARD_PREFIX}:{positions[button.id]}",
+                        api_kwargs={"style": style} if style else None,
+                    )
+                )
+            rows.append(row)
+        anchor = await self._anchor_kwargs(channel_id, thread_root_id)
+        try:
+            sent = await self._require_bot().send_message(
+                chat_id=self._chat_id(channel_id),
+                text=text,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=_ui_card_keyboard(rows),
+                **anchor,
+            )
+        except (BadRequest, Forbidden, ChatMigrated) as error:
+            raise CardRejectedError(str(error)) from error
+        except TelegramError as error:
+            # Not raised: the post may have landed, and a retry as text would
+            # then post the message twice.
+            logger.error(
+                "Failed to send a card to Telegram chat %s: %s", channel_id, error
+            )
+            return None
+        return self._ref(sent)
+
+    async def _ui_card(
+        self, sender_name: str, spec: UISpec
+    ) -> tuple[str, list[list[ButtonProps | LinkButtonProps]]]:
+        """The card's attributed HTML, and its buttons as one group per `Actions`."""
+        agent = await self.agent_rendering(sender_name)
+        card, groups = ui_spec_to_html(spec, self.translate_outbound)
+        text = self._attribute(
+            sender_name, agent.body_label, self.defuse_mass_mentions(card)
+        )
+        return text, groups
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Redraw the card from its room message with who chose what under it;
+        a card takes one answer, so only its link buttons stay."""
+        ref = interaction.message_ref
+        if ref is None:
+            logger.warning(
+                "Cannot mark the card press in %s as done: the press names no "
+                "message, so its buttons stay pressable",
+                interaction.channel_id,
+            )
+            return
+        card, groups = await self._ui_card(author, spec)
+        text = card + _settled_line(interaction.sender_display_name, label)
+        links = [
+            [
+                InlineKeyboardButton(text=b.label, url=b.url)
+                for b in group
+                if isinstance(b, LinkButtonProps)
+            ]
+            for group in groups
+        ]
+        chat_id, message_id = self._parse_message_ref(ref)
+        try:
+            await self._require_bot().edit_message_text(
+                chat_id=self._chat_id(chat_id or interaction.channel_id),
+                message_id=int(message_id),
+                text=self._clamp(text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=_ui_card_keyboard(links),
+            )
+        except TelegramError as error:
+            logger.error(
+                "Failed to mark the card press on Telegram message %s: %s", ref, error
+            )
 
     async def send_attachment(
         self,
@@ -2613,6 +2774,10 @@ class TelegramAdapter(PlatformAdapter):
                     channel_id=str(chat.id),
                     sender_id=str(user.id),
                     sender_name=name,
+                    sender_display_name=" ".join(
+                        part for part in (user.first_name, user.last_name) if part
+                    )
+                    or name,
                     action_id=action_id,
                     value=value,
                     message_ref=self._ref(message),

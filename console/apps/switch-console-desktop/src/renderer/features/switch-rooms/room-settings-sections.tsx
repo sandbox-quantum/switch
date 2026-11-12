@@ -36,9 +36,19 @@ import { roomDetailKey } from './room-participants';
  * nobody else may read is still readable by whoever takes part in it.
  */
 export const ACCESS_LABELS: Record<RoomAccess, string> = {
-  public: 'Everyone in the workspace can see and change it',
-  read_only: 'Everyone can see it; owner and admins change it',
-  private: 'Only those taking part and admins see it; owner and admins change it',
+  public: 'Public — read & write',
+  read_only: 'Public — read only',
+  private: 'Private',
+};
+
+/** What each access setting means, in full: shown under the choice and on
+ * hover, in the same words as the gateway's room pages. */
+export const ACCESS_HELPERS: Record<RoomAccess, string> = {
+  public:
+    'Everyone in the workspace can see and change it. Only its owner and admins can change its access.',
+  read_only: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
+  private:
+    'Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.',
 };
 
 /** The access settings in the order they are offered, most open first. */
@@ -120,7 +130,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
   return (
     <div className="grid grid-cols-2 gap-4">
       <div className="flex flex-col gap-1.5">
-        <span className="text-sm text-foreground-muted">Who can see and change it</span>
+        <span className="text-sm text-foreground-muted">Access</span>
         {permissions.canManage ? (
           <Select
             value={access}
@@ -138,7 +148,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
               )
             }
           >
-            <SelectTrigger className="w-full" aria-label="Who can see and change it">
+            <SelectTrigger className="w-full" aria-label="Access">
               <SelectValue>{ACCESS_LABELS[access]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -152,17 +162,8 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
         ) : (
           <span className="text-sm text-foreground">{ACCESS_LABELS[access]}</span>
         )}
-        <span className="min-h-4 text-xs text-foreground-muted">
-          {accessState.phase === 'idle' ? (
-            permissions.canManage ? (
-              'Only the room’s owner and workspace admins change this.'
-            ) : (
-              'The room’s owner or a workspace admin can change this.'
-            )
-          ) : (
-            <WriteStatus state={accessState} />
-          )}
-        </span>
+        <span className="text-xs text-foreground-muted">{ACCESS_HELPERS[access]}</span>
+        {accessState.phase !== 'idle' && <WriteStatus state={accessState} />}
       </div>
 
       <div className="flex flex-col gap-1.5">

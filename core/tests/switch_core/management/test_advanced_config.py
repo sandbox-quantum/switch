@@ -17,7 +17,7 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
         DefinitionV1(provider="gemini")
     assert (
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
-        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, kimi"
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie, kimi"
         in str(raised.value)
     )
 
@@ -39,6 +39,8 @@ def test_the_served_provider_list() -> None:
         ("goose", "Goose"),
         ("qwen", "Qwen Code"),
         ("droid", "Factory Droid"),
+        ("cline", "Cline CLI"),
+        ("junie", "Junie"),
         ("kimi", "Kimi Code"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
@@ -68,6 +70,8 @@ def test_the_served_schema() -> None:
         "goose",
         "qwen",
         "droid",
+        "cline",
+        "junie",
         "kimi",
     }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
@@ -97,6 +101,7 @@ def test_the_served_schema() -> None:
     assert providers["goose"] == {"fields": []}
     assert providers["qwen"] == {"fields": []}
     assert providers["droid"] == {"fields": []}
+    assert providers["junie"] == {"fields": []}
     assert providers["kimi"] == {"fields": []}
     claude = {field["key"]: field for field in providers["claude"]["fields"]}
     assert claude["isolation"] == {

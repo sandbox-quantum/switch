@@ -1,5 +1,6 @@
 # Persistent local SDK host
 
+The host runs Claude, Codex, OpenCode, Antigravity, Cursor and Junie outside Electron.
 The host runs Claude, Codex, OpenCode, Antigravity, Cursor and Kimi Code outside Electron.
 It owns provider processes, a durable command inbox and a replayable chat journal.
 Closing a client leaves execution running. Restarting the host resumes the native
