@@ -48,15 +48,15 @@ function label(machine: CloudMachine, now: number): string {
 
 function problem(machine: CloudMachine, now: number): string | null {
   if (machine.stopped_by_admin)
-    return "An administrator stopped the machine. Contact them to have it released.";
+    return "An administrator stopped your cloud device. Contact them to have it released.";
   if (isBeingDeleted(machine, now)) return null;
-  if (machine.error_code === "disk_full") return "The machine's disk is full.";
+  if (machine.error_code === "disk_full") return "Your cloud device's disk is full.";
   if (machine.state !== "error") return null;
   if (machine.error_code === "machine_needs_attention")
-    return "The machine needs attention. Contact your administrator.";
+    return "Your cloud device needs attention. Contact your administrator.";
   if (machine.error_code === "machine_connect_timeout")
-    return "The machine did not connect in time. Retry, and if it fails again contact your administrator.";
-  return machine.error ?? "The machine could not start.";
+    return "Your cloud device did not connect in time. Retry, and if it fails again contact your administrator.";
+  return machine.error ?? "Your cloud device could not start.";
 }
 
 function actions(machine: CloudMachine, now: number): CloudMachineAction[] {
