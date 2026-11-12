@@ -47,6 +47,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelRetirement,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -117,8 +118,10 @@ _MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 # Reading back what was missed. After a dropped socket: everything since it
 # dropped, with a margin for clocks. After a restart, when this process has no
 # record of when the last one stopped listening: the last few minutes in the
-# spaces Switch already knows. Switch writes a post once however many times it
-# is delivered, so a message read back that was already handled writes nothing.
+# spaces Switch already knows. Switch writes a post, and a command, once however
+# many times it is delivered (its row id is derived from the Webex message id),
+# so a message read back that was already handled writes nothing and a command
+# does not run twice.
 _RECONNECT_MARGIN = timedelta(seconds=30)
 _RESTART_WINDOW = timedelta(minutes=5)
 _CATCH_UP_ROOMS = 100
@@ -146,6 +149,14 @@ def _parse_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _address_of(person: dict[str, Any]) -> str | None:
+    emails = person.get("emails")
+    email = (
+        emails[0] if isinstance(emails, list) and emails else person.get("personEmail")
+    )
+    return email.lower() if isinstance(email, str) and "@" in email else None
+
+
 def _handle_from(person: dict[str, Any], fallback: str) -> str:
     """The name a person goes by in Switch: their address's local part.
 
@@ -154,12 +165,9 @@ def _handle_from(person: dict[str, Any], fallback: str) -> str:
     the one thing Webex always has for a person, and its local part is what
     people already recognise as theirs.
     """
-    emails = person.get("emails")
-    email = (
-        emails[0] if isinstance(emails, list) and emails else person.get("personEmail")
-    )
-    if isinstance(email, str) and "@" in email:
-        return email.split("@", 1)[0].lower()
+    address = _address_of(person)
+    if address is not None:
+        return address.split("@", 1)[0]
     name = person.get("displayName")
     return str(name) if isinstance(name, str) and name.strip() else fallback
 
@@ -288,8 +296,13 @@ class WebexAdapter(PlatformAdapter):
         self._cards_editable = True
         # person id -> the name Webex shows for them.
         self._names: _Bounded = _Bounded()
+        self._handling: set[str] = set()
         self._known_channels: set[str] = set()
         self._catching_up = asyncio.Lock()
+        # Where the read-back after a restart starts; None once it has run.
+        self._restart_since: datetime | None = None
+        self._socket_opened = False
+        self._side_tasks: set[asyncio.Task[None]] = set()
 
     # ── Credentials and failures ────────────────────────────────────────────
 
@@ -355,6 +368,7 @@ class WebexAdapter(PlatformAdapter):
         emails = me.get("emails")
         if isinstance(emails, list) and emails and isinstance(emails[0], str):
             self._bot_email = emails[0].lower()
+        self._restart_since = datetime.now(UTC) - _RESTART_WINDOW
         if not self._listening:
             logger.info("Webex bridge is quiet here; another process holds its socket")
             return
@@ -391,6 +405,8 @@ class WebexAdapter(PlatformAdapter):
         stream, self._stream = self._stream, None
         if stream is not None:
             await stream.stop()
+        for task in list(self._side_tasks):
+            task.cancel()
         if self._owns_http:
             await self._http.aclose()
 
@@ -403,8 +419,29 @@ class WebexAdapter(PlatformAdapter):
     async def ensure_channel_subscriptions(
         self, channels: list[tuple[str, str]]
     ) -> None:
-        """Note the spaces Switch knows, for reading back after a restart."""
-        self._known_channels.update(channel_id for channel_id, _ in channels)
+        """Note the spaces Switch knows, for reading back after a restart.
+
+        The bridge starts the adapter before it lists its spaces, so the
+        socket may already be open, its read-back skipped for want of any
+        space to read; the spaces named now are then read back here.
+        """
+        new = {channel_id for channel_id, _ in channels} - self._known_channels
+        self._known_channels.update(new)
+        if new and self._socket_opened and self._restart_since is not None:
+            self._spawn(self._restart_catch_up(new))
+
+    def _spawn(self, work: Awaitable[None]) -> None:
+        async def guarded() -> None:
+            try:
+                await work
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Reading back missed Webex messages failed")
+
+        task = asyncio.create_task(guarded())
+        self._side_tasks.add(task)
+        task.add_done_callback(self._side_tasks.discard)
 
     # ── Inbound ─────────────────────────────────────────────────────────────
 
@@ -471,15 +508,19 @@ class WebexAdapter(PlatformAdapter):
 
     async def _on_socket_open(self, down_since: datetime | None) -> None:
         """Read back what was said while nothing here was listening."""
-        if down_since is None:
-            since = datetime.now(UTC) - _RESTART_WINDOW
-            only = set(self._known_channels)
-            if not only:
-                return
-        else:
-            since = down_since - _RECONNECT_MARGIN
-            only = None
-        await self._catch_up(since, only)
+        if down_since is not None:
+            await self._catch_up(down_since - _RECONNECT_MARGIN, None)
+            return
+        self._socket_opened = True
+        await self._restart_catch_up(set(self._known_channels))
+
+    async def _restart_catch_up(self, channels: set[str]) -> None:
+        """Read back the last few minutes in `channels`, once after a start."""
+        since = self._restart_since
+        if since is None or not channels:
+            return
+        self._restart_since = None
+        await self._catch_up(since, channels)
 
     async def _catch_up(self, since: datetime, only: set[str] | None) -> int:
         async with self._catching_up:
@@ -507,7 +548,16 @@ class WebexAdapter(PlatformAdapter):
                     created = _parse_time(message.get("created"))
                     if created is None or created < since:
                         continue
-                    if await self._handle_message(message):
+                    try:
+                        handed = await self._handle_message(message)
+                    except Exception:
+                        logger.exception(
+                            "Could not hand on Webex message %s read back from space %s",
+                            message.get("id"),
+                            room_id,
+                        )
+                        continue
+                    if handed:
                         relayed += 1
             if relayed:
                 logger.info(
@@ -520,10 +570,27 @@ class WebexAdapter(PlatformAdapter):
         """Hand one Webex message to Switch. False when it was not handed on."""
         message_id = str(message.get("id") or "")
         room_id = str(message.get("roomId") or "")
-        person_id = str(message.get("personId") or "")
-        if not message_id or not room_id or message_id in self._seen:
+        if (
+            not message_id
+            or not room_id
+            or message_id in self._seen
+            or message_id in self._handling
+        ):
             return False
+        # Remembered only once handed on: one that fails is read back again
+        # by the next catch-up rather than lost.
+        self._handling.add(message_id)
+        try:
+            handed = await self._relay(message, message_id, room_id)
+        finally:
+            self._handling.discard(message_id)
         self._seen.remember(message_id, True)
+        return handed
+
+    async def _relay(
+        self, message: dict[str, Any], message_id: str, room_id: str
+    ) -> bool:
+        person_id = str(message.get("personId") or "")
         if same_entity(person_id, self._bot_id):
             return False
         channel_type: ChannelType = (
@@ -646,11 +713,13 @@ class WebexAdapter(PlatformAdapter):
         if same_entity(person_id, self._bot_id):
             return
         token, position = press
+        handle = await self._handle(person_id, None)
         await self._on_interaction(
             InboundInteraction(
                 channel_id=str(action.get("roomId") or ""),
                 sender_id=person_id,
-                sender_name=await self._handle(person_id, None),
+                sender_name=handle,
+                sender_display_name=await self._name(person_id) or handle,
                 action_id=position_action(position),
                 value=token,
                 message_ref=str(action.get("messageId") or "") or None,
@@ -704,22 +773,21 @@ class WebexAdapter(PlatformAdapter):
         if known:
             return str(known)
         if isinstance(email, str) and "@" in email:
-            handle = email.split("@", 1)[0].lower()
+            address: str | None = email.lower()
+            handle = email.lower().split("@", 1)[0]
         else:
             try:
-                handle = _handle_from(await self._client.person(person_id), person_id)
+                person = await self._client.person(person_id)
             except WebexApiError as exc:
                 logger.info("Could not read Webex person %s: %s", person_id, exc)
                 return person_id
+            address = _address_of(person)
+            handle = _handle_from(person, person_id)
         claimed = self._mention_targets.get(handle)
-        if (
-            claimed is not None
-            and not same_entity(claimed, person_id)
-            and isinstance(email, str)
-        ):
-            handle = (
-                email.lower()
-            )  # two people share a local part; the address does not
+        if claimed is not None and not same_entity(claimed, person_id):
+            # Two people share a local part (or a display name); the address
+            # does not, and without one the person's id is theirs alone.
+            handle = address or person_id
         self._handles.remember(person_id, handle)
         self._mention_targets.setdefault(handle, person_id)
         return handle
@@ -776,7 +844,12 @@ class WebexAdapter(PlatformAdapter):
     async def _post(
         self, channel_id: str, parts: list[str], thread_root_id: str | None
     ) -> str | None:
-        """Post `parts` in order; the first one's id is the message's."""
+        """Post `parts` in order; the first one's id is the message's.
+
+        Webex threads are one level deep and refuse a reply to a reply with a
+        400. A 400 on a reply whose parent is itself a reply is taken as that
+        and the reply goes under the parent's root; any other 400 is raised.
+        """
         first: str | None = None
         parent = thread_root_id
         for part in parts:
@@ -786,24 +859,22 @@ class WebexAdapter(PlatformAdapter):
             try:
                 sent = await self._client.post_message(body)
             except WebexApiError as exc:
-                if parent and exc.status == 400:
-                    parent = await self._thread_root(parent)
-                    if parent:
-                        body["parentId"] = parent
-                    else:
-                        body.pop("parentId", None)
-                    sent = await self._client.post_message(body)
-                else:
+                if not parent or exc.status != 400:
                     raise
+                root = await self._thread_root(parent)
+                if root is None:
+                    raise
+                parent = body["parentId"] = root
+                try:
+                    sent = await self._client.post_message(body)
+                except WebexApiError as retry_exc:
+                    raise retry_exc from exc
             first = first or str(sent.get("id") or "") or None
         return first
 
     async def _thread_root(self, message_id: str) -> str | None:
-        """The root a reply to `message_id` has to go under, or None for none.
-
-        Webex threads are one level deep and refuse a reply to a reply, so a
-        reply aimed at one goes to the root that one is under.
-        """
+        """The root `message_id` is a reply under, or None when it is not a
+        reply (or Webex won't say)."""
         try:
             message = await self._client.message(message_id)
         except WebexApiError:
@@ -867,7 +938,8 @@ class WebexAdapter(PlatformAdapter):
             )
         label = await self._label(sender_name)
         text = f"{label}\n{self.translate_outbound(caption)}" if caption else label
-        fields = {"roomId": channel_id, "markdown": chunk(text)[0]}
+        first, *rest = chunk(text)
+        fields = {"roomId": channel_id, "markdown": first}
         if thread_root_id:
             fields["parentId"] = thread_root_id
         try:
@@ -875,19 +947,49 @@ class WebexAdapter(PlatformAdapter):
         except WebexApiError as exc:
             logger.warning("Webex refused a file in space %s: %s", channel_id, exc)
             return None
-        return str(sent.get("id") or "") or None
+        ref = str(sent.get("id") or "") or None
+        if rest:
+            # A caption too long for the file's message goes on after it.
+            try:
+                await self._post(channel_id, rest, thread_root_id)
+            except WebexApiError as exc:
+                logger.warning(
+                    "Webex took file %s but refused the rest of its caption: %s",
+                    ref,
+                    exc,
+                )
+        return ref
+
+    def _showing(self, message_ref: str) -> str:
+        """The message showing `message_ref` now: itself, or the card posted
+        again in its place (`_repost`)."""
+        return str(self._reposted.get(message_ref) or message_ref)
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
+        message_ref = self._showing(message_ref)
         if self._edits.get(message_ref, 0) >= _EDIT_LIMIT:
             logger.info(
                 "Not editing Webex message %s: it has had all ten edits", message_ref
             )
             return
+        markdown = new_content
+        if len(markdown.encode()) > MAX_MESSAGE_BYTES:
+            # An edit changes one message; the parts a long post was split
+            # into are not tracked, so the edit is cut, visibly, to fit.
+            logger.warning(
+                "Edit to Webex message %s is longer than one message allows; "
+                "cutting it short",
+                message_ref,
+            )
+            note = "\n\n_(cut short: too long for one edited Webex message)_"
+            markdown = (
+                chunk(new_content, MAX_MESSAGE_BYTES - len(note.encode()))[0] + note
+            )
         try:
             await self._client.edit_message(
-                message_ref, {"roomId": channel_id, "markdown": chunk(new_content)[0]}
+                message_ref, {"roomId": channel_id, "markdown": markdown}
             )
         except WebexApiError as exc:
             logger.warning("Webex refused an edit to %s: %s", message_ref, exc)
@@ -895,6 +997,7 @@ class WebexAdapter(PlatformAdapter):
         self._edits.remember(message_ref, self._edits.get(message_ref, 0) + 1)
 
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
+        message_ref = self._showing(message_ref)
         try:
             await self._client.delete_message(message_ref)
         except WebexApiError as exc:
@@ -1177,7 +1280,7 @@ class WebexAdapter(PlatformAdapter):
             replace(content, notify_external_id=None),
             notify=False,
         )
-        message_ref = str(self._reposted.get(message_ref) or message_ref)
+        message_ref = self._showing(message_ref)
         if self._drawn.get(message_ref) == body:
             return
         card = "attachments" in body
@@ -1197,9 +1300,11 @@ class WebexAdapter(PlatformAdapter):
                 text=text,
             )
         try:
-            await self._client.edit_message(message_ref, body, wait_out_throttle=False)
+            edited = await self._client.edit_message(
+                message_ref, body, wait_out_throttle=False
+            )
         except WebexApiError as exc:
-            if card and exc.status == 400:
+            if card and exc.refuses_editing_files:
                 logger.info(
                     "Webex refused to edit card %s (%s); cards are posted again "
                     "from now on",
@@ -1213,6 +1318,17 @@ class WebexAdapter(PlatformAdapter):
                 exc, f"Webex refused the edit to {message_ref}", text
             ) from exc
         self._edits.remember(message_ref, edits + 1)
+        if card and not edited.get("attachments"):
+            # Webex took the edit's text but not its card, which would leave
+            # an answered card showing its buttons.
+            logger.warning(
+                "Webex edited card %s without its card; cards are posted again "
+                "from now on",
+                message_ref,
+            )
+            self._cards_editable = False
+            await self._repost(channel_id, message_ref, body, text, thread_root_id)
+            return
         self._drawn.remember(message_ref, body)
 
     async def _repost(
@@ -1251,10 +1367,16 @@ class WebexAdapter(PlatformAdapter):
     # ── Spaces and people ───────────────────────────────────────────────────
 
     async def create_channel(
-        self, name: str, topic: str, *, channel_type: ChannelType = "channel_public"
-    ) -> str:
+        self,
+        name: str,
+        topic: str,
+        *,
+        channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         try:
-            room = await self._client.create_room(name.strip()[:128] or "Switch")
+            title = name.strip()[:128] or "Switch"
+            room = await self._client.create_room(title)
         except WebexApiError as exc:
             raise BridgeOperationError(
                 f"Webex would not create the space: {exc}"
@@ -1263,7 +1385,7 @@ class WebexAdapter(PlatformAdapter):
         self._rooms.remember(room_id, room)
         if topic.strip():
             await self.admin_message(room_id, topic.strip())
-        return room_id
+        return CreatedChannel(id=room_id, name=str(room.get("title") or title))
 
     async def create_dm_channel(
         self, *, agent_name: str, user_name: str, user_external_id: str

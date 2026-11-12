@@ -275,3 +275,43 @@ async def test_a_bot_with_no_device_yet_registers_one(server: Server) -> None:
     finally:
         await stream.stop()
     assert registry.registered == 1
+
+
+def _close_once_authorised(server: Server) -> Callable[[ServerConnection], Any]:
+    """Accept the socket, wait for its authorisation, then close it."""
+
+    async def script(connection: ServerConnection) -> None:
+        opened = server.connections
+        await _until(lambda: len(server.authorizations()) >= opened)
+        await connection.close(1011, "going away")
+
+    return script
+
+
+async def _connections_in(server: Server, seconds: float) -> int:
+    stream = _stream(Registry(server.url), Heard())
+    stream.start()
+    try:
+        await asyncio.sleep(seconds)
+    finally:
+        await stream.stop()
+    return server.connections
+
+
+async def test_a_socket_webex_closes_at_once_keeps_backing_off(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Opening is not enough to start the backoff over: each reconnect lists
+    # devices and reads back what was missed, so one Webex accepts and closes
+    # straight away must not be retried every second.
+    monkeypatch.setattr(webex_socket, "_STABLE_AFTER", 60.0)
+    server.scripts = [_close_once_authorised(server)]
+    assert await _connections_in(server, 0.5) < 12
+
+
+async def test_a_socket_that_stayed_up_reconnects_quickly(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(webex_socket, "_STABLE_AFTER", 0.0)
+    server.scripts = [_close_once_authorised(server)]
+    assert await _connections_in(server, 0.5) >= 12

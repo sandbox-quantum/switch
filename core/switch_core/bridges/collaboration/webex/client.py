@@ -48,9 +48,10 @@ _SCAN_WAIT_CAP = 5.0
 class WebexApiError(Exception):
     """Webex refused a request, or answered one in a way this cannot use.
 
-    `status` is the HTTP status and the whole of how a caller tells refusals
-    apart; the message is Webex's own explanation, kept because it is the
-    part an operator can act on, and never matched against.
+    `status` is the HTTP status and how a caller tells refusals apart; the
+    message is Webex's own explanation, kept because it is the part an
+    operator can act on. It is matched against only where the status cannot
+    tell two refusals apart (`refuses_editing_files`).
     """
 
     def __init__(
@@ -77,6 +78,15 @@ class WebexApiError(Exception):
     @property
     def gone(self) -> bool:
         return self.status in (404, 410)
+
+    @property
+    def refuses_editing_files(self) -> bool:
+        """Whether this is an organisation's refusal of any edit to a message
+        that carries a file or a card ("Support for editing messages with
+        files via Developer APIs currently disabled"). It is a 400, as a
+        malformed or oversized edit is, so only its explanation tells it apart.
+        """
+        return self.status == 400 and "editing messages with files" in str(self).lower()
 
 
 class WebexFileTooLarge(Exception):

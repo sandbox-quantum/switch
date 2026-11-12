@@ -9,6 +9,7 @@ socket itself).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -498,12 +499,56 @@ async def test_after_a_restart_only_known_spaces_are_read_back(
     webex.rooms[ROOM]["lastActivity"] = datetime.now(UTC).isoformat()
     webex.add_message("aaaa0000-0000-4000-8000-000000000033", text="while restarting")
 
-    await adapter._on_socket_open(None)  # no space known yet: nothing to read
-    assert inbox.messages == []
-
     await adapter.ensure_channel_subscriptions([(ROOM, "payments")])
     await adapter._on_socket_open(None)
     assert [m.content for m in inbox.messages] == ["while restarting"]
+
+
+async def test_spaces_listed_after_the_socket_opened_are_still_read_back(
+    webex: FakeWebex,
+) -> None:
+    # The bridge starts the adapter before it lists its spaces, so the socket
+    # can open with no space known yet.
+    adapter, inbox = await _started(webex)
+    webex.rooms[ROOM]["lastActivity"] = datetime.now(UTC).isoformat()
+    webex.add_message("aaaa0000-0000-4000-8000-000000000034", text="during deploy")
+
+    await adapter._on_socket_open(None)
+    assert inbox.messages == []
+
+    await adapter.ensure_channel_subscriptions([(ROOM, "payments")])
+    await asyncio.gather(*adapter._side_tasks)
+    assert [m.content for m in inbox.messages] == ["during deploy"]
+
+    # Read back once: spaces listed later are not read again.
+    await adapter.ensure_channel_subscriptions([(DM, "ada")])
+    assert not adapter._side_tasks
+
+
+async def test_a_message_that_failed_to_hand_on_is_read_back_again(
+    webex: FakeWebex,
+) -> None:
+    adapter, inbox = await _started(webex)
+    webex.rooms[ROOM]["lastActivity"] = datetime.now(UTC).isoformat()
+    webex.add_message("aaaa0000-0000-4000-8000-000000000035", text="first")
+    webex.add_message("aaaa0000-0000-4000-8000-000000000036", text="second")
+    calls = 0
+
+    async def flaky(event: InboundMessage) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("database blip")
+        inbox.messages.append(event)
+
+    adapter._on_message = flaky
+    since = datetime.now(UTC) - timedelta(minutes=1)
+    # One message failing does not stop the rest of the read-back.
+    await adapter._on_socket_open(since)
+    assert [m.content for m in inbox.messages] == ["second"]
+    # Nor is the failed one remembered as handled.
+    await adapter._on_socket_open(since)
+    assert [m.content for m in inbox.messages] == ["second", "first"]
 
 
 # ── Speaking on Webex ────────────────────────────────────────────────────────
@@ -529,6 +574,19 @@ async def test_a_reply_to_a_reply_goes_under_its_root(webex: FakeWebex) -> None:
     )
     await adapter.send_message(ROOM, "coder", "answer", thread_root_id=reply)
     assert webex.posts()[-1]["parentId"] == "the-root"
+
+
+async def test_a_refused_reply_under_a_root_is_not_moved_out_of_its_thread(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    root = webex.add_message("aaaa0000-0000-4000-8000-000000000041", text="root")
+    webex.refuse(
+        "POST", "/messages", _json_response(400, {"message": "markdown too long"})
+    )
+    assert await adapter.send_message(ROOM, "coder", "x", thread_root_id=root) is None
+    # Not posted again without its parent, into the main space.
+    assert len(webex.posts()) == 1
 
 
 async def test_a_long_reply_is_split_within_webexs_limit(webex: FakeWebex) -> None:
@@ -566,6 +624,29 @@ async def test_edits_stop_at_webexs_ten(webex: FakeWebex) -> None:
     for n in range(12):
         await adapter.update_message(ROOM, "msg-1", f"version {n}")
     assert len(webex.edits()) == 10
+
+
+async def test_an_edit_too_long_for_one_message_is_cut_visibly(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    await adapter.update_message(ROOM, "msg-1", "\n\n".join(["word " * 400] * 8))
+    [(_, body)] = webex.edits()
+    assert len(body["markdown"].encode()) <= MAX_MESSAGE_BYTES
+    assert body["markdown"].endswith(
+        "_(cut short: too long for one edited Webex message)_"
+    )
+
+
+async def test_a_long_caption_goes_on_after_the_file(webex: FakeWebex) -> None:
+    adapter, _ = await _started(webex)
+    caption = "\n\n".join(["word " * 400] * 8)
+    await adapter.send_attachment(
+        ROOM, "coder", "a.txt", "text/plain", b"data", caption, "root-1"
+    )
+    rest = [p for p in webex.posts() if isinstance(p, dict)]
+    assert rest
+    assert all(p["parentId"] == "root-1" for p in rest)
 
 
 async def test_deleting_what_is_already_gone_is_fine(webex: FakeWebex) -> None:
@@ -869,10 +950,11 @@ async def test_deleting_a_room_takes_the_bot_out_of_the_space(webex: FakeWebex) 
 
 async def test_a_new_space_gets_its_topic_as_a_first_message(webex: FakeWebex) -> None:
     adapter, _ = await _started(webex)
-    room_id = await adapter.create_channel(
+    created = await adapter.create_channel(
         "payments-refactor", "Refactor the payments client"
     )
-    assert webex.rooms[room_id]["title"] == "payments-refactor"
+    assert created.name == "payments-refactor"
+    assert webex.rooms[created.id]["title"] == "payments-refactor"
     assert webex.posts()[0]["markdown"] == "Refactor the payments client"
 
 
@@ -957,3 +1039,60 @@ async def test_the_bot_knows_its_own_activity_when_named_by_address(
         await adapter._on_activity(activity)
     assert inbox.messages == []
     assert not any(path.startswith("/messages/") for _, path, _ in webex.sent)
+
+
+async def test_a_card_edit_refused_for_another_reason_keeps_cards_editable(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    webex.refuse("PUT", "/messages/", _json_response(400, {"message": "too big"}))
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    assert len(webex.posts()) == 1
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    assert len(webex.edits()) == 2
+
+
+async def test_a_card_edit_webex_takes_without_its_card_is_posted_again(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    webex.refuse(
+        "PUT", "/messages/", _json_response(200, {"id": ref, "markdown": "text only"})
+    )
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    _, again = webex.posts()
+    assert "actions" not in again["attachments"][0]["content"]
+    assert ("DELETE", f"/messages/{ref}", None) in webex.sent
+
+
+async def test_deleting_a_card_posted_again_deletes_the_one_showing(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    ref = await adapter.post_rich(ROOM, "coder", _card())
+    _refuse_card_edits(webex)
+    await adapter.update_rich(ROOM, "coder", ref, _answered(), None)
+    showing = adapter._showing(ref)
+    assert showing != ref
+    await adapter.delete_message(ROOM, ref)
+    assert webex.sent[-1] == ("DELETE", f"/messages/{showing}", None)
+
+
+async def test_two_people_sharing_a_local_part_stay_two_people(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    other = wid("PEOPLE", "ada1ada1-0000-4000-8000-000000000009")
+    webex.people[other] = {
+        "id": other,
+        "type": "person",
+        "displayName": "Ada K",
+        "emails": ["ada@elsewhere.example"],
+    }
+    assert await adapter._handle(ADA, "ada@example.com") == "ada"
+    # Without an address on the message, the person is looked up.
+    assert await adapter._handle(other, None) == "ada@elsewhere.example"
+    assert adapter._mention_targets["ada"] == ADA

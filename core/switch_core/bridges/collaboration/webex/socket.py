@@ -60,6 +60,12 @@ DEVICE: dict[str, str] = {
 _BACKOFF_FIRST = 1.0
 _BACKOFF_CAP = 60.0
 
+# A socket counts as having worked, and the backoff starts over, once it has
+# stayed open this long. One Webex accepts and then closes
+# straight away (a revoked token, a device it no longer knows) keeps backing
+# off, since every reconnect lists devices and reads back missed messages.
+_STABLE_AFTER = 30.0
+
 # What the socket may carry in one frame. Activities are small; this is a
 # ceiling against a misbehaving peer rather than a budget.
 _MAX_FRAME = 4 * 1024 * 1024
@@ -176,7 +182,9 @@ class WebexEventStream:
     async def _run(self) -> None:
         backoff = _BACKOFF_FIRST
         fresh = False
+        loop = asyncio.get_running_loop()
         while not self._stopping.is_set():
+            opened_at: float | None = None
             try:
                 device = await self._device(fresh=fresh)
                 fresh = False
@@ -206,8 +214,8 @@ class WebexEventStream:
                     )
                     self._socket = socket
                     logger.info("Webex event socket is open")
+                    opened_at = loop.time()
                     self._spawn(self._on_connected(self.down_since))
-                    backoff = _BACKOFF_FIRST
                     async for frame in socket:
                         await self._receive(socket, frame)
                 if not self._stopping.is_set():
@@ -247,6 +255,8 @@ class WebexEventStream:
                 if self._socket is not None:
                     self.down_since = datetime.now(UTC)
                 self._socket = None
+                if opened_at is not None and loop.time() - opened_at >= _STABLE_AFTER:
+                    backoff = _BACKOFF_FIRST
             if self._stopping.is_set():
                 break
             delay = backoff * (0.5 + random.random() / 2)  # noqa: S311 - jitter, not security
