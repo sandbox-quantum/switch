@@ -20,7 +20,8 @@ stays attached when this process takes the socket over or hands it on.
 It opens the shared socket with the right intents, routes each guild message,
 each global slash invocation and each press on a card's button to the bridge its
 guild resolves to (fresh per event, no tenant cached — guards G1/G3), and
-registers the command set globally once for the application. Removal / out-of-band-join handling lands after.
+registers the command set globally once for the application. Member and
+permission changes are gathered per guild and routed the same way (`members.py`).
 """
 
 from __future__ import annotations
