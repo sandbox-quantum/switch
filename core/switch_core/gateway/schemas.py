@@ -769,6 +769,11 @@ class BridgeDetail(BaseModel):
     # a list of its own.
     private_channels_supported: bool = True
     private_channel_needs_linked_account: bool = False
+    # Whether a new public channel here has the person asking put in it, when
+    # they have a confirmed linked account on the platform. It is made without
+    # them when they have none. False on Teams, where it would add them to the
+    # whole team.
+    public_channel_adds_creator: bool = False
     # Why no existing channel can be bound to a room by id on this connection,
     # or None when one can. Set for a connection whose chats arrive only one
     # way, so the room form can say so instead of offering the choice.

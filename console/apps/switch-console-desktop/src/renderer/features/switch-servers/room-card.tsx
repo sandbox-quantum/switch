@@ -8,7 +8,7 @@ import {
   User,
 } from 'lucide-react';
 import { roomTitle } from '@renderer/features/switch-rooms/room-labels';
-import { ACCESS_LABELS } from '@renderer/features/switch-rooms/room-settings-sections';
+import { ACCESS_HELPERS } from '@renderer/features/switch-rooms/room-settings-sections';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -106,7 +106,7 @@ export function RoomCard({
                     </span>
                   }
                 />
-                <TooltipContent>{ACCESS_LABELS[card.access]}</TooltipContent>
+                <TooltipContent>{ACCESS_HELPERS[card.access]}</TooltipContent>
               </Tooltip>
             </>
           )}

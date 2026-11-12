@@ -543,7 +543,7 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'admin')",
             name="ck_cloud_machine_stop_reason",
         ),
         Index(
@@ -778,7 +778,7 @@ class AuditEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
-class OrganizationAuditEvent(OrganizationScoped, Base):
+class OrganizationAuditEvent(Base):
     """One change to an organization as a whole: its members, their roles,
     its workspaces. The organization's counterpart of `AuditEvent`, with the
     same rules: written in the transaction of the change it records,
@@ -788,6 +788,10 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
     A change inside one workspace stays in that workspace's `audit_events`;
     this holds what no single workspace owns, so an organization's admins
     read it in one place whichever workspace the change was made from.
+
+    `organization_id` carries no foreign key, as `AuditEvent.tenant_id`
+    does not: deleting an organization leaves its history behind. It is still
+    scoped by the policy (`rls_ddl.ORGANIZATION_HISTORY_TABLES`).
     """
 
     __tablename__ = "organization_audit_events"
@@ -799,6 +803,9 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
         ),
     )
 
+    organization_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default=require_organization_id
+    )
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False

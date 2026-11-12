@@ -1142,6 +1142,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/auth/me/reset-test-account",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/auth/oidc/exchange",
       "auth": "none",
       "flags": []

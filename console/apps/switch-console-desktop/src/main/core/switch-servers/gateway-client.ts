@@ -859,12 +859,26 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me', 'DELETE', email);
+}
+
+/**
+ * Wipe the signed-in account and everything it owns on a server that allows
+ * test-account resets, confirmed by its email. A server that does not, or
+ * refuses, is raised with its own reason.
+ */
+export async function resetMyTestAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me/reset-test-account', 'POST', email);
+}
+
+async function confirmByEmail(
+  server: SwitchServer,
+  path: string,
+  method: 'DELETE' | 'POST',
+  email: string
+): Promise<void> {
   try {
-    await gatewayFetch(server, '/auth/me', {
-      authenticated: true,
-      method: 'DELETE',
-      body: { email },
-    });
+    await gatewayFetch(server, path, { authenticated: true, method, body: { email } });
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
@@ -1940,6 +1954,8 @@ type BridgeJson = {
   // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  // Absent on a server predating it, which put nobody in a public channel.
+  public_channel_adds_creator?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1964,6 +1980,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelIdsRefused: b.channel_ids_refused ?? null,
     privateChannels: b.private_channels_supported ?? null,
     privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
+    publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
@@ -3888,23 +3905,6 @@ export async function fetchArchivedRooms(server: SwitchServer): Promise<RemoteRo
 }
 
 /**
- * The messaging-app usernames Switch knows on one bridge
- * (`GET /collaborations/{id}/users`) — the people a bridged room can be given.
- */
-export async function fetchBridgeUserNames(
-  server: SwitchServer,
-  bridgeId: string
-): Promise<string[]> {
-  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
-    authenticated: true,
-  });
-  const users = (await res.json()) as ExternalUserSummaryJson[];
-  return [...new Set(users.map((user) => user.external_username))].sort((a, b) =>
-    a.localeCompare(b)
-  );
-}
-
-/**
  * Change a room's auto-route setting (`PUT /rooms/{id}/auto-route`), the same
  * store `!auto-route` writes; a field left out is left alone. Answers with the
  * setting as it now stands.
@@ -4282,6 +4282,7 @@ export async function getConnectionCatalog(
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
+    agent_access_note: entry.agent_access_note,
     loopback_ports: entry.loopback_ports,
     key: entry.key,
     external_identity: entry.external_identity,
@@ -4305,6 +4306,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: null,

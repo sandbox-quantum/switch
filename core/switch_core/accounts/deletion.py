@@ -223,6 +223,82 @@ def _reference_type_heir(slug: str, user_id: str) -> Select[tuple[str]]:
     )
 
 
+async def workspaces_naming(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    skip: set[str],
+) -> list[str]:
+    """Every workspace outside `skip` that still holds a row naming
+    `user_id`, membership aside: what a former member left behind."""
+    found = []
+    for tenant_id in sorted(await all_tenant_ids(session_factory)):
+        if tenant_id in skip:
+            continue
+        async with tenant_session(session_factory, tenant_id) as session:
+            if await session.scalar(_holds_rows_in_workspace(tenant_id, user_id)):
+                found.append(tenant_id)
+    return found
+
+
+async def delete_account_rows(
+    session_factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    user: User,
+    admin_email: str,
+) -> None:
+    """Delete the `users` row and what only it holds outside every
+    workspace, once no workspace row names the account any more. Invitations
+    to its address go in every workspace, in their own transactions; the rest
+    is on `session`, which the caller commits."""
+    for tenant_id in sorted(await all_tenant_ids(session_factory)):
+        async with (
+            tenant_session(session_factory, tenant_id) as own,
+            own.begin(),
+        ):
+            await own.execute(
+                delete(Invitation).where(
+                    Invitation.tenant_id == tenant_id,
+                    func.lower(Invitation.email) == user.email.lower(),
+                )
+            )
+    await _hand_over_server_settings(session, user.id, admin_email)
+    await session.execute(delete(OidcIdentity).where(OidcIdentity.user_id == user.id))
+    await session.execute(
+        delete(CloudMachine).where(
+            CloudMachine.owner_id == user.id, CloudMachine.state == "deleted"
+        )
+    )
+    await session.execute(delete(User).where(User.id == user.id))
+
+
+async def _hand_over_server_settings(
+    session: AsyncSession, user_id: str, admin_email: str
+) -> None:
+    """A service app the person last saved for the whole server stays, as
+    last saved by the server's administrator account, which outlives every
+    other account."""
+    saved = await session.scalar(
+        select(ServiceAppCredential.service)
+        .where(ServiceAppCredential.updated_by == user_id)
+        .limit(1)
+    )
+    if saved is None:
+        return
+    admin_id = await session.scalar(
+        select(User.id).where(func.lower(User.email) == admin_email.lower())
+    )
+    if admin_id is None:
+        raise RuntimeError(
+            f"The server's administrator account ({admin_email}) is missing, "
+            "so the service apps a deleted account last saved have nobody to pass to."
+        )
+    await session.execute(
+        update(ServiceAppCredential)
+        .where(ServiceAppCredential.updated_by == user_id)
+        .values(updated_by=admin_id)
+    )
+
+
 class TenantClients(Protocol):
     """Stops the clients the server runs for a deleted workspace, here and in
     every other process. The client lifecycle's."""
@@ -296,16 +372,11 @@ class AccountDeletion:
     ) -> list[Workspace]:
         """`workspaces`, the person's memberships, plus every other workspace
         that still holds a row naming them, as `FORMER_MEMBER`."""
-        member_of = {workspace.id for workspace in workspaces}
         former: list[Workspace] = []
-        for tenant_id in sorted(await all_tenant_ids(self.session_factory)):
-            if tenant_id in member_of:
-                continue
+        for tenant_id in await workspaces_naming(
+            self.session_factory, user_id, {workspace.id for workspace in workspaces}
+        ):
             async with tenant_session(self.session_factory, tenant_id) as session:
-                if not await session.scalar(
-                    _holds_rows_in_workspace(tenant_id, user_id)
-                ):
-                    continue
                 tenant = await session.get(Tenant, tenant_id)
                 if tenant is None:
                     raise RuntimeError(f"Workspace {tenant_id} vanished during lookup")
@@ -318,11 +389,9 @@ class AccountDeletion:
         self, session: AsyncSession, user: User, workspaces: list[Workspace]
     ) -> str | None:
         """Why the account cannot be deleted now, or None when it can."""
-        if is_server_administrator(user, self.admin_email):
-            return (
-                "This is Switch's administrator account, which can't be "
-                "deleted. Switch recreates it every time it starts."
-            )
+        reason = await self.refusal_besides_machines(user, workspaces)
+        if reason is not None:
+            return reason
         machine = await session.scalar(
             select(CloudMachine.id).where(
                 CloudMachine.owner_id == user.id, CloudMachine.state != "deleted"
@@ -333,6 +402,18 @@ class AccountDeletion:
                 "Your account has a cloud machine. Deleting an account with a "
                 "cloud machine isn't supported yet."
             )
+        return None
+
+    async def refusal_besides_machines(
+        self, user: User, workspaces: list[Workspace]
+    ) -> str | None:
+        """`refusal`, for a caller that tears the account's cloud machines
+        down itself."""
+        if is_server_administrator(user, self.admin_email):
+            return (
+                "This is Switch's administrator account, which can't be "
+                "deleted. Switch recreates it every time it starts."
+            )
         for workspace in workspaces:
             reason = await self._workspace_refusal(user, workspace)
             if reason is not None:
@@ -341,7 +422,7 @@ class AccountDeletion:
 
     async def _workspace_refusal(self, user: User, workspace: Workspace) -> str | None:
         async with tenant_session(self.session_factory, workspace.id) as session:
-            organization_refusal = await self._organization_refusal(
+            organization_refusal = await self.organization_refusal(
                 session, user, workspace.id
             )
             if organization_refusal is not None:
@@ -376,7 +457,7 @@ class AccountDeletion:
                     )
         return None
 
-    async def _organization_refusal(
+    async def organization_refusal(
         self, session: AsyncSession, user: User, tenant_id: str
     ) -> str | None:
         """Refuse the last `org_admin` of the organization `tenant_id` belongs
@@ -428,17 +509,9 @@ class AccountDeletion:
             for workspace in workspaces:
                 await self._leave_workspace(user, workspace, actor_id)
                 completed.append(workspace)
-            await self._delete_invitations_to(user.email)
-            await self._hand_over_server_settings(session, user_id)
-            await session.execute(
-                delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
+            await delete_account_rows(
+                self.session_factory, session, user, self.admin_email
             )
-            await session.execute(
-                delete(CloudMachine).where(
-                    CloudMachine.owner_id == user_id, CloudMachine.state == "deleted"
-                )
-            )
-            await session.execute(delete(User).where(User.id == user_id))
             await session.commit()
         except Exception as error:
             raise AccountDeletionIncomplete(user_id, completed) from error
@@ -507,33 +580,6 @@ class AccountDeletion:
                     )
                 )
                 await session.commit()
-
-    async def _hand_over_server_settings(
-        self, session: AsyncSession, user_id: str
-    ) -> None:
-        """A service app the person last saved for the whole server stays, as
-        last saved by the server's administrator account, which outlives every
-        other account."""
-        saved = await session.scalar(
-            select(ServiceAppCredential.service)
-            .where(ServiceAppCredential.updated_by == user_id)
-            .limit(1)
-        )
-        if saved is None:
-            return
-        admin_id = await session.scalar(
-            select(User.id).where(func.lower(User.email) == self.admin_email.lower())
-        )
-        if admin_id is None:
-            raise RuntimeError(
-                f"The server's administrator account ({self.admin_email}) is missing, "
-                "so the service apps a deleted account last saved have nobody to pass to."
-            )
-        await session.execute(
-            update(ServiceAppCredential)
-            .where(ServiceAppCredential.updated_by == user_id)
-            .values(updated_by=admin_id)
-        )
 
     async def _leave_workspace(
         self, user: User, workspace: Workspace, actor_id: str
@@ -705,22 +751,6 @@ class AccountDeletion:
             name=FORMER_MEMBER_NAME,
         )
         await erasures.retire_member_client(session, member.id, FORMER_MEMBER_NAME)
-
-    async def _delete_invitations_to(self, email: str) -> None:
-        """Delete every invitation addressed to `email`, in every workspace,
-        live or not: they would otherwise keep the address of someone who
-        has left Switch."""
-        for tenant_id in sorted(await all_tenant_ids(self.session_factory)):
-            async with (
-                tenant_session(self.session_factory, tenant_id) as session,
-                session.begin(),
-            ):
-                await session.execute(
-                    delete(Invitation).where(
-                        Invitation.tenant_id == tenant_id,
-                        func.lower(Invitation.email) == email.lower(),
-                    )
-                )
 
     async def _close_if_empty(
         self, user_id: str, tenant_id: str, actor_id: str

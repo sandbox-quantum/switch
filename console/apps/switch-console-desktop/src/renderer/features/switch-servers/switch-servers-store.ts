@@ -750,6 +750,12 @@ export class SwitchServersStore {
     await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
   }
 
+  /** Wipe the signed-in test account on `serverId`, as `deleteAccount` does. */
+  async resetTestAccount(serverId: string, email: string): Promise<void> {
+    await rpc.switchServers.resetTestAccount({ serverId, email });
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+  }
+
   private clearError(): void {
     runInAction(() => {
       this.error = null;
