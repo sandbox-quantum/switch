@@ -172,6 +172,7 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("clients", "user_id"): "cleared",
     ("organization_app_credentials", "updated_by"): "database clears",
     ("organization_service_settings", "updated_by"): "database clears",
+    ("organization_trust_settings", "updated_by"): "database clears",
     ("tenant_retention_policies", "updated_by_user_id"): "database clears",
     ("person_erasures", "requested_by_user_id"): "database clears",
     ("hidden_official_templates", "hidden_by"): "database clears",
