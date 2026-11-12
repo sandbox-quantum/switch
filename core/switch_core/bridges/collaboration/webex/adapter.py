@@ -73,6 +73,7 @@ class WebexAdapter(PlatformAdapter):
     supports_channel_creation: ClassVar[bool] = True
     supports_directory_search: ClassVar[bool] = False
     draws_session_activity: ClassVar[bool] = False
+    channel_on_delete: ClassVar[str] = "kept"
 
     def __init__(self, *, config: WebexConnectionConfig) -> None:
         super().__init__()
