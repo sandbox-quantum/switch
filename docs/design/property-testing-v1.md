@@ -573,6 +573,10 @@ whoever owns that code should say what they are first.
 Found by the checks and not yet fixed, kept here until there is somewhere better
 to track them.
 
+- **`unlink_rooms` answers 500 for a link that does not exist.** The agent
+  operation raises `LookupError`, which `refusal_status` does not map, so the
+  HTTP door lets it escape. It is a "not found" and should be a 4xx. The
+  agent-surface machine lists it in `KNOWN_RAISES`; remove the entry when fixed.
 - **Nine routes answer 500 or 503 to fuzzed input**, accepted in
   `properties/http/baseline.json` so the nightly stays useful: `DELETE
   /messaging-apps/installs/{install_id}`, `GET /hosted-controller/machines`,
