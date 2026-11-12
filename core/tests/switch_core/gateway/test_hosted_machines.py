@@ -54,13 +54,14 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     app = controller_app
     controller_id, agent_ids = await enrolled(app, agents=1)
     expected = json.loads((FIXTURES / "machine_summary_sleeping.json").read_text())
-    # The v1/v2 switch: with v2 on, the summary also names the backend; with it
-    # off, it is exactly as before v2, without Your cloud's figures.
+    # The fixture is the v2-off shape, which Switch Console's own test parses
+    # too. With v2 on, the summary also names the backend and carries the
+    # cloud figures; with it off, it is exactly the fixture and none of them.
+    v2_only = ("room", "awake", "ai_calls_today")
+    assert not set(v2_only) & set(expected)
     if process_hosted_v2():
         expected["backend"] = "vm"
-    else:
-        for key in ("room", "awake", "ai_calls_today"):
-            del expected[key]
+        expected.update(dict.fromkeys(v2_only))
     await update_machine(
         app.factory,
         app.machine_id,
@@ -76,6 +77,8 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     assert listed.status_code == 200, listed.text
     (summary,) = listed.json()["machines"]
     assert set(summary) == set(expected)
+    if not process_hosted_v2():
+        assert not set(v2_only) & set(summary)
     assert set(summary["disk"]) == set(expected["disk"])
     assert set(summary["memory"]) == set(expected["memory"])
     varying = ("machine_id", "heartbeat_at", "agents", "controller_id")
