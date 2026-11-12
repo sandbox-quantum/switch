@@ -2267,6 +2267,91 @@ async def _cmd_list_references(
     await _reply(client, room, event, "\n".join(lines))
 
 
+async def _cmd_get_document(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    target = event.args.strip()
+    if not target:
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!get-document <name or id>`. Use `!list-documents` to see all documents.",
+        )
+        return
+
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    async with client.session_factory() as session:
+        direct = await client._document_store.list_for_room(session, meta.room_id)
+        sources = await _package_sources(client, session, meta.room_id, "document")
+        direct_ids = {d.id for d in direct}
+        fetched = await client._document_store.get_many(
+            session, [i for i in sources if i not in direct_ids]
+        )
+        doc_by_id = {d.id: d for d in fetched}
+        docs = [*direct, *(doc_by_id[i] for i in sources if i in doc_by_id)]
+
+        stripped = target.strip('"\'')
+        matched = next(
+            (
+                d
+                for d in docs
+                if d.id == target
+                or d.name.lower() == target.lower()
+                or d.id == stripped
+                or d.name.lower() == stripped.lower()
+            ),
+            None,
+        )
+
+        if matched is None:
+            await _reply(
+                client,
+                room,
+                event,
+                f"Document '{target}' not found in this room. Use `!list-documents` to see available documents.",
+            )
+            return
+
+        content = getattr(matched, "content", "") or ""
+        desc = (
+            f"\n_{matched.description}_\n"
+            if getattr(matched, "description", None)
+            else ""
+        )
+        header = f"**{matched.name}**{desc}\n"
+
+        if len(content) > 1800:
+            snippet = content[:1800] + "\n\n... (truncated)"
+            await _reply(
+                client,
+                room,
+                event,
+                f"{header}```\n{snippet}\n```",
+            )
+        elif content.strip():
+            await _reply(
+                client,
+                room,
+                event,
+                f"{header}```\n{content}\n```",
+            )
+        else:
+            await _reply(
+                client,
+                room,
+                event,
+                f"{header}_(empty document)_",
+            )
+
+
 async def _cmd_room_url(
     client: AgentRecipient,
     room: RoomRef,
@@ -2453,6 +2538,13 @@ COMMANDS: list[Command] = [
         "list-documents",
         "List the room's internal documents.",
         _cmd_list_documents,
+        admin_owned=True,
+    ),
+    Command(
+        "get-document",
+        "View an internal document in this room. Usage: `!get-document <name or id>`.",
+        _cmd_get_document,
+        args_spec=(CommandArg("name_or_id", "Document name or ID", required=True),),
         admin_owned=True,
     ),
     Command(

@@ -4960,7 +4960,7 @@ class AgentCore:
         await self._announce_document(
             agent_id,
             room.transport_room_id,
-            f"\U0001f4c4 created room document \u201c{document_name}\u201d.",
+            f"\U0001f4c4 created room document \u201c{document_name}\u201d. Use `!get-document {document_name}` to view it in this channel.",
         )
         return document_id
 
