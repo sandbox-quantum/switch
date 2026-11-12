@@ -24,6 +24,7 @@ import {
   normalizeServerUrl,
   nodeWebSocket,
 } from './api';
+import { checkSummary, CliOutput, formatStatus, plain, type StatusView } from './cli-output';
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
 import { formatChecks, runDoctor } from './doctor';
@@ -123,14 +124,24 @@ const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 const MAX_NAME = 200;
 const MAX_DESCRIPTION = 500;
 
+function writeResult(
+  status: 'ok' | 'warn' | 'fail' | 'info',
+  text: string,
+  ...notes: string[]
+): void {
+  process.stdout.write(new CliOutput(process.stdout, process.env).message(status, text, notes));
+}
+
 const USAGE = `Usage: switch-agent-controller <command> [options]
 
-Commands:
+Enrollment:
   enroll --server <agent-bridge-url> --code <code> [--name <name>]
       [--description <text>] [--data-dir <dir>]
       Enroll this machine with a one-time code from Switch. --name defaults to
       the host name; --description says what the machine is for (optional,
       at most 500 characters, editable later in the gateway).
+
+Running agents:
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin] [--agent-runtime default|separate-user]
@@ -154,12 +165,16 @@ Commands:
   precheck --out <file> --probe-dir <dir> [--shared-host-bundle <path>]
       Check every provider's installation and sign-in as run would, with no
       enrollment, writing the results to <file> as each comes back.
+
+Machine details:
   set-info [--name <name>] [--description <text>] [--data-dir <dir>]
       Rename this machine and/or change its description on the server, with
       this controller's own credential. Either or both; --description ""
       clears the description. The same limits as at enrollment.
-  status [--data-dir <dir>] [--shared-host-bundle <path>]
+  status [--json] [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
+
+Services:
   install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
       Run this controller as a service of this user: a systemd user unit on
       Linux, a launchd agent on macOS. It starts now and again at each login
@@ -187,12 +202,16 @@ Commands:
   uninstall-service --separate-users [--user <name>]
       As root: stop the controller and its agents, and remove what the setup
       made. The agents' directories are kept.
-  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>]
+
+Diagnostics and updates:
+  doctor [--json] [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>]
       Check this machine can run agents: Node, enrollment, the credential, the
       server, the provider CLIs and their sign-in, the service, and updates.
   update [--check] [--data-dir <dir>]
       Install the newest release with npm, and restart the service if it runs.
       --check only says whether there is one.
+  help, --help, -h
+      Show this help. --version and --protocol print only their value.
 
 When Switch names a release for this controller, run installs it once no
 session runs and exits 7 for its service to start it again on it. run and
@@ -211,6 +230,7 @@ The data directory defaults to SWITCH_CONTROLLER_DATA_DIR, then the OS default.
 The shared host bundle defaults to SWITCH_CONTROLLER_SHARED_HOST_BUNDLE, then
 the one built in the workspace.
 Log level: SWITCH_CONTROLLER_LOG_LEVEL (debug, info, warn, error; default info).
+status and doctor --json print versioned JSON instead of human-readable output.
 Exit codes: 0 stopped, 1 error that may pass, 2 configuration error,
 3 revoked, 4 taken over by another instance, 5 the server needs a newer
 controller, 6 the server knows no controller by this credential, 7 restarting
@@ -304,11 +324,18 @@ async function enrollCommand(args: string[]): Promise<number> {
       name,
       enrolledAt: new Date().toISOString(),
     });
-    process.stdout.write(
-      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
+    writeResult(
+      'ok',
+      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.`,
+      `Data: ${dataDir}`,
+      `Run as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}`,
+      `Run in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}`
     );
     const warning = secrets.startupWarning();
-    if (warning) process.stderr.write(`Warning: ${warning}\n`);
+    if (warning)
+      process.stderr.write(
+        `${new CliOutput(process.stderr, process.env).result('warn', warning)}\n`
+      );
     return EXIT_OK;
   } finally {
     store.close();
@@ -712,7 +739,11 @@ async function runCommand(args: string[]): Promise<number> {
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: {
+      json: { type: 'boolean' },
+      'data-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+    },
     strict: true,
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
@@ -728,47 +759,51 @@ async function statusCommand(args: string[]): Promise<number> {
           now: Date.now,
         })
       : null;
-    const out: string[] = [`Data directory: ${dataDir}`];
-    if (separateUsers)
-      out.push(
-        `Agents:         each as a user of its own, in ${separateUsers.agentsDir} (${separateUserNames(separateUsers.uid).controllerUnit})`
-      );
     const identity = store.identity();
+    const view: StatusView = {
+      version: VERSION,
+      platform: process.platform,
+      dataDir,
+      identity,
+      agentUsers: separateUsers
+        ? {
+            directory: separateUsers.agentsDir,
+            count: separateUsers.agentUsers,
+            unit: separateUserNames(separateUsers.uid).controllerUnit,
+          }
+        : null,
+      secretStore: secrets.description,
+      relayPort: null,
+      revokedAt: null,
+      credential: 'not-checked',
+      assignment: { state: 'none', revision: null, detail: null },
+      agents: [],
+    };
+    const print = () =>
+      process.stdout.write(
+        values.json
+          ? `${JSON.stringify({ schemaVersion: 1, command: 'status', ...view }, null, 2)}\n`
+          : `${formatStatus(view, new CliOutput(process.stdout, process.env))}\n`
+      );
     if (!identity) {
-      out.push('Not enrolled.');
-      process.stdout.write(`${out.join('\n')}\n`);
+      print();
       return 1;
     }
-    out.push(
-      `Controller:     ${identity.controllerId} ("${identity.name}")`,
-      `Server:         ${identity.server}`,
-      `Enrolled at:    ${identity.enrolledAt}`,
-      `Secret store:   ${secrets.description}`
-    );
-    const relayPort = store.relayPort();
-    out.push(
-      `Relay:          ${relayPort === null ? 'never started' : `http://127.0.0.1:${relayPort} (where agents were last pointed)`}`
-    );
-    const revokedAt = store.revokedAt();
-    if (revokedAt) out.push(`Revoked at:     ${revokedAt}`);
-    else if (!(await secrets.get(CONTROLLER_CREDENTIAL)))
-      out.push('Credential:     not in this data directory (missing, or handed over at run time)');
+    view.relayPort = store.relayPort();
+    view.revokedAt = store.revokedAt();
+    if (!view.revokedAt)
+      view.credential = (await secrets.get(CONTROLLER_CREDENTIAL)) ? 'present' : 'missing';
     const cached = store.cachedAssignment();
     if (cached.kind === 'none') {
-      out.push('Assignment:     not pulled yet');
-      process.stdout.write(`${out.join('\n')}\n`);
+      print();
       return 0;
     }
     if (cached.kind === 'unreadable') {
-      out.push(
-        `Assignment:     saved by an earlier version and not readable by this one (${cached.detail}); pulled again when the controller next runs`
-      );
-      process.stdout.write(`${out.join('\n')}\n`);
+      view.assignment = { state: 'unreadable', revision: null, detail: cached.detail };
+      print();
       return 0;
     }
-    out.push(
-      `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
-    );
+    view.assignment = { state: 'ready', revision: cached.assignment.revision, detail: null };
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
       let observation = emptyObservation();
@@ -789,16 +824,23 @@ async function statusCommand(args: string[]): Promise<number> {
         relayAttached: false,
         nowMs: Date.now(),
       });
-      out.push(
-        '',
-        `  ${entry.definition.name} (${entry.agent_id})`,
-        `    provider ${entry.definition.provider}, desired ${entry.desired_state}, revision ${entry.revision}, applied ${row?.appliedRevision ?? 'never'}`,
-        unreadable && separateUsers
-          ? `    ${await unitSummary(separateUsers, store.agentUser(entry.agent_id))}; the rest needs the agents' group (${unreadable})`
-          : `    ${mapped.process}${mapped.reason ? ` [${mapped.reason}]` : ''}${mapped.detail ? `: ${mapped.detail}` : ''}`
-      );
+      view.agents.push({
+        id: entry.agent_id,
+        name: entry.definition.name,
+        provider: entry.definition.provider,
+        desired: entry.desired_state,
+        revision: entry.revision,
+        appliedRevision: row?.appliedRevision ?? null,
+        process: unreadable ? 'unavailable' : mapped.process,
+        reason: unreadable ? null : (mapped.reason ?? null),
+        detail: unreadable ? null : (mapped.detail ?? null),
+        observationProblem:
+          unreadable && separateUsers
+            ? `${await unitSummary(separateUsers, store.agentUser(entry.agent_id))}; the rest needs the agents' group (${unreadable})`
+            : null,
+      });
     }
-    process.stdout.write(`${out.join('\n')}\n`);
+    print();
     return 0;
   } finally {
     store.close();
@@ -951,9 +993,7 @@ async function installServiceCommand(args: string[]): Promise<number> {
     },
     runSecretCommand
   );
-  process.stdout.write(
-    [`Installed and started: ${report.file}`, ...report.notes, releasesNote, ''].join('\n')
-  );
+  writeResult('ok', `Installed and started: ${report.file}`, ...report.notes, releasesNote);
   return EXIT_OK;
 }
 
@@ -1018,7 +1058,7 @@ async function installSeparateUsersCommand(values: {
     },
     runSecretCommand
   );
-  process.stdout.write(['Agents now run as users of their own.', ...report.notes, ''].join('\n'));
+  writeResult('ok', 'Agents now run as users of their own.', ...report.notes);
   return EXIT_OK;
 }
 
@@ -1039,9 +1079,7 @@ async function uninstallServiceCommand(args: string[]): Promise<number> {
         'uninstall-service --separate-users needs --user <name> when not run through sudo.'
       );
     const report = await uninstallSeparateUsers(user, runSecretCommand);
-    process.stdout.write(
-      ['Removed the setup for agents as users of their own.', ...report.notes, ''].join('\n')
-    );
+    writeResult('ok', 'Removed the setup for agents as users of their own.', ...report.notes);
     return EXIT_OK;
   }
   if (values.user !== undefined)
@@ -1051,14 +1089,12 @@ async function uninstallServiceCommand(args: string[]): Promise<number> {
   const releasesDir = serviceReleasesDir(dataDir);
   const current = await readCurrent(releasesDir);
   if (current.kind !== 'missing') await rm(releasesDir, { recursive: true, force: true });
-  process.stdout.write(
-    [
-      removed ? 'Stopped and removed the service.' : 'No service was installed.',
-      ...(current.kind !== 'missing'
-        ? [`Removed the releases it installed for itself, in ${releasesDir}.`]
-        : []),
-      '',
-    ].join('\n')
+  writeResult(
+    removed ? 'ok' : 'info',
+    removed ? 'Stopped and removed the service.' : 'No service was installed.',
+    ...(current.kind !== 'missing'
+      ? [`Removed the releases it installed for itself, in ${releasesDir}.`]
+      : [])
   );
   return EXIT_OK;
 }
@@ -1067,6 +1103,7 @@ async function doctorCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
+      json: { type: 'boolean' },
       'data-dir': { type: 'string' },
       'shared-host-bundle': { type: 'string' },
       'env-file': { type: 'string' },
@@ -1118,7 +1155,11 @@ async function doctorCommand(args: string[]): Promise<number> {
       },
       latest: () => latestRelease(fetch, releasesRepository(process.env)),
     });
-    process.stdout.write(`${formatChecks(checks)}\n`);
+    process.stdout.write(
+      values.json
+        ? `${JSON.stringify({ schemaVersion: 1, command: 'doctor', dataDir, checks, summary: checkSummary(checks) }, null, 2)}\n`
+        : `${formatChecks(checks, new CliOutput(process.stdout, process.env))}\n`
+    );
     return checks.some((check) => check.status === 'fail') ? 1 : EXIT_OK;
   } finally {
     store.close();
@@ -1133,16 +1174,22 @@ async function updateCommand(args: string[]): Promise<number> {
   });
   const latest = await latestRelease(fetch, releasesRepository(process.env));
   if (!latest) {
-    process.stdout.write('No switch-agent-controller release is published yet.\n');
+    writeResult(
+      'warn',
+      'No switch-agent-controller release is published yet.',
+      'Check the configured releases repository and try again later.'
+    );
     return 1;
   }
   if (!isNewer(latest.version, VERSION)) {
-    process.stdout.write(`This is the latest release, ${VERSION}.\n`);
+    writeResult('ok', `This is the latest release, ${VERSION}.`);
     return EXIT_OK;
   }
   if (values.check) {
-    process.stdout.write(
-      `${latest.version} is available (this is ${VERSION}). Install it with: switch-agent-controller update\n`
+    writeResult(
+      'info',
+      `${latest.version} is available (this is ${VERSION}).`,
+      'Install it with: switch-agent-controller update'
     );
     return EXIT_OK;
   }
@@ -1153,7 +1200,7 @@ async function updateCommand(args: string[]): Promise<number> {
     );
   assertTrustedKeys(TRUSTED_RELEASE_KEYS);
   const dataDir = resolveDataDir(values['data-dir']);
-  process.stdout.write(`Installing ${latest.version} from ${latest.packageUrl}\n`);
+  writeResult('info', `Installing ${latest.version} from ${latest.packageUrl}`);
   const { file, sha256 } = await downloadPackage({
     fetch,
     url: latest.packageUrl,
@@ -1170,7 +1217,7 @@ async function updateCommand(args: string[]): Promise<number> {
     keys: TRUSTED_RELEASE_KEYS,
     signal: null,
   });
-  process.stdout.write(`The package is signed with trusted release key ${keyId}.\n`);
+  writeResult('ok', `The package is signed with trusted release key ${keyId}.`);
   try {
     await npmInstall(updateNpm(dataDir), prefix, file, null);
   } catch (error) {
@@ -1182,13 +1229,14 @@ async function updateCommand(args: string[]): Promise<number> {
   }
   const releasesDir = serviceReleasesDir(dataDir);
   if (prefix && (await readCurrent(releasesDir)).kind === 'link')
-    process.stdout.write(
-      `${await ensureReleases({ releasesDir, prefix, version: latest.version, owner: null })}\n`
+    writeResult(
+      'info',
+      await ensureReleases({ releasesDir, prefix, version: latest.version, owner: null })
     );
   if ((await serviceState(dataDir, runSecretCommand)) === 'running') {
     await restartService(dataDir, runSecretCommand);
-    process.stdout.write(`Installed ${latest.version} and restarted the service.\n`);
-  } else process.stdout.write(`Installed ${latest.version}.\n`);
+    writeResult('ok', `Installed ${latest.version} and restarted the service.`);
+  } else writeResult('ok', `Installed ${latest.version}.`);
   return EXIT_OK;
 }
 
@@ -1226,7 +1274,7 @@ export async function main(argv: string[]): Promise<number> {
       case '-h':
       case '--help':
       case 'help':
-        process.stdout.write(USAGE);
+        process.stdout.write(new CliOutput(process.stdout, process.env).help(USAGE));
         return command === undefined ? EXIT_CONFIGURATION : EXIT_OK;
       case '--version':
         process.stdout.write(`${VERSION}\n`);
@@ -1238,6 +1286,12 @@ export async function main(argv: string[]): Promise<number> {
         throw new UsageError(`Unknown command '${command}'.`);
     }
   } catch (error) {
+    if ((command === 'status' || command === 'doctor') && rest.includes('--json')) {
+      process.stdout.write(
+        `${JSON.stringify({ schemaVersion: 1, command, error: { exitCode: exitCodeFor(error), message: errorMessage(error) } }, null, 2)}\n`
+      );
+      return exitCodeFor(error);
+    }
     reportFailure(error);
     return exitCodeFor(error);
   }
@@ -1273,9 +1327,10 @@ async function systemServiceState(unit: string): Promise<'running' | 'stopped'> 
 
 /** The last line is the reason: a parent that supervises this process shows it. */
 function reportFailure(error: unknown): void {
+  const message = errorMessage(error).split('\n').map(plain).join('\n');
   if (error instanceof UsageError || isParseArgsError(error))
-    process.stderr.write(`${USAGE}\nswitch-agent-controller: ${errorMessage(error)}\n`);
+    process.stderr.write(`${USAGE}\nswitch-agent-controller: ${message}\n`);
   else if (error instanceof ControllerApiError)
-    process.stderr.write(`switch-agent-controller: ${error.code}: ${error.message}\n`);
-  else process.stderr.write(`switch-agent-controller: ${errorMessage(error)}\n`);
+    process.stderr.write(`switch-agent-controller: ${plain(error.code)}: ${message}\n`);
+  else process.stderr.write(`switch-agent-controller: ${message}\n`);
 }
