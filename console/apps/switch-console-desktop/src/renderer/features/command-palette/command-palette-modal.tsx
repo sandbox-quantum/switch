@@ -12,7 +12,7 @@ import { getSessionStore } from '@renderer/features/sessions/stores/session-sele
 import { useAgentManagementMode } from '@renderer/features/sidebar/sidebar-grouped-list';
 import { agentExpandKey } from '@renderer/features/sidebar/sidebar-store';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
-import { isConsoleDirectChat } from '@renderer/features/switch-servers/room-filters';
+import { isHiddenDirectChat } from '@renderer/features/switch-servers/room-filters';
 import { serverIcon } from '@renderer/features/switch-servers/server-icon';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -307,7 +307,7 @@ export function CommandPaletteModal({
     matchRooms(
       switchRoomsStore.listedRoomsInAllWorkspaces.filter((room) => {
         const serverId = switchRoomsStore.roomServerId(room.id);
-        return !(serverId && agentChatsFlag(serverId) && isConsoleDirectChat(room));
+        return !isHiddenDirectChat(room, serverId !== null && agentChatsFlag(serverId) === true);
       }),
       debouncedQuery
     )

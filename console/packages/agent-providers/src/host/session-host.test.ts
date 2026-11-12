@@ -13,7 +13,13 @@ import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
-import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './session-host';
+import {
+  HostedSession,
+  recentTurns,
+  type RoomReply,
+  unpostedReply,
+  usageLimitReply,
+} from './session-host';
 
 // Every step here is a journal write flushed to disk, and Windows runners take
 // many times longer over that. The waits have no deadline of their own (see
@@ -141,7 +147,7 @@ async function start(provider: Session['provider']) {
   await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root, host };
 }
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen', 'junie'] as const)(
   'serializes and deduplicates %s commands across recovery',
   async (provider) => {
     const { root, host, adapter } = await start(provider);
@@ -1297,7 +1303,7 @@ it('resumes a stopped native conversation only once per explicit operation witho
   expect(again.adapter.startSession).not.toHaveBeenCalled();
 });
 
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen', 'junie'] as const)(
   'starts %s without waiting for model discovery',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'startup-models-'));
@@ -1833,6 +1839,31 @@ it('tells the room to !reset when the provider refused the turn for size', async
   await host.shutdown();
 });
 
+it('tells the room the agent stopped at its usage limit, and when it resets, though it had posted', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, root, adapter } = await startReplying(reply);
+  await host.command(roomMessage('limited', 'thread'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  host.agentPostedToRoom();
+  const notice = "You've hit your 5-hour limit · resets 8:40am";
+  emit({
+    type: 'turn.completed',
+    turnId: 'limited',
+    outcome: 'error',
+    message: notice,
+    usageLimit: { resetsAt: Date.UTC(2026, 10, 11, 8, 40) },
+    usage: [],
+  });
+  await until(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: 'thread',
+    body: `I stopped before finishing: my provider's usage limit was reached. It resets at 2026-11-11 08:40 UTC. Address me again after it resets to continue.\n\nThe provider said: ${notice}`,
+  });
+  expect(host.snapshot().turns[0]?.status).toBe('error');
+  expect(await roomReplyRecords(root)).toEqual([{ type: 'room-reply', commandId: 'limited' }]);
+});
+
 it('leaves a room turn alone when the agent posted to the room during it', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);
@@ -1956,6 +1987,15 @@ it('leads with a !reset hint when the provider refuses the request for size', ()
   expect(unpostedReply('error', 'Prompt is too long')).toContain(hint);
   expect(unpostedReply('error', 'Other error')).toBe(
     'I finished without replying. The turn failed: Other error'
+  );
+});
+
+it('says the agent stopped at its usage limit, without a reset time the provider did not give', () => {
+  expect(usageLimitReply({ resetsAt: null }, null)).toBe(
+    "I stopped before finishing: my provider's usage limit was reached. Address me again after it resets to continue."
+  );
+  expect(usageLimitReply({ resetsAt: null }, 'Try again at 8:40 AM.')).toBe(
+    "I stopped before finishing: my provider's usage limit was reached. Address me again after it resets to continue.\n\nThe provider said: Try again at 8:40 AM."
   );
 });
 
@@ -2133,6 +2173,57 @@ it("tells its owner when the provider asks to run a connector's tool, and only t
         : []
   );
   expect(order).toEqual(['bash', 'notice', 'search', 'add_comment']);
+});
+
+it('journals child progress, replays it after restart and never reruns the original work', async () => {
+  const { root, host, adapter, emit } = await start('claude');
+  await host.command(message('with-children'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+  emit({
+    type: 'item.started',
+    turnId: 'with-children',
+    item: {
+      id: 'spawn',
+      nativeChildId: 'child-a',
+      type: 'subagent',
+      status: 'in_progress',
+      title: 'Review changes',
+    },
+  });
+  await until(() =>
+    expect(
+      host.snapshot().items.some((item) => item.kind === 'tool-activity' && item.subagent)
+    ).toBe(true)
+  );
+  emit({
+    type: 'item.completed',
+    turnId: 'with-children',
+    item: {
+      id: 'complete',
+      nativeChildId: 'child-a',
+      type: 'subagent',
+      status: 'completed',
+      title: 'Review changes',
+    },
+  });
+  await until(() =>
+    expect(
+      host.snapshot().items.find((item) => item.kind === 'tool-activity' && item.subagent)?.status
+    ).toBe('completed')
+  );
+  const children = host
+    .snapshot()
+    .items.filter((item) => item.kind === 'tool-activity' && item.subagent);
+  expect(children).toHaveLength(1);
+  expect(children[0].revision).toBe(2);
+  await host.shutdown();
+  const recovered = setup('claude');
+  const reopened = await startHost(root, recovered.config, recovered.adapter);
+  hosts.push(reopened);
+  expect(
+    reopened.snapshot().items.filter((item) => item.kind === 'tool-activity' && item.subagent)
+  ).toEqual(children);
+  expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
 });
 
 describe('retrying a room message', () => {

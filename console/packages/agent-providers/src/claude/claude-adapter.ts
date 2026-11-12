@@ -23,6 +23,7 @@ import {
   resolveWindowsCommandPath,
 } from '@switch-console/shared/windows-spawn';
 import type {
+  AgentLaunchDefinition,
   ConversationHistoryTurn,
   ModelSelection,
   ProviderAdapter,
@@ -45,6 +46,7 @@ import type {
   ProviderRuntimeEvent,
   TokenUsage,
   TurnOutcome,
+  UsageLimit,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
@@ -58,13 +60,17 @@ import {
   outcomeForResult,
   parseAskUserQuestionInput,
   PERMISSION_MODE_BY_RUNTIME_MODE,
+  rateLimitErrorText,
+  rejectedLimit,
   requestTypeForTool,
+  resultHitUsageLimit,
   resultMessageText,
   textFromToolResultContent,
   toMcpServerConfig,
   toolNameForItem,
   toolTitle,
   truncate,
+  usageLimitNotice,
 } from './claude-mapping';
 import { claudeConfigDir, configDirSessionStore, savedConversationPath } from './cli-conversations';
 
@@ -179,6 +185,12 @@ interface ActiveTurn {
   turnId: string;
   /** Message uuids this turn is still waiting on a `result` for. */
   outstanding: Set<string>;
+  /** The CLI's notice, in its usage-limit wording, when it stopped this turn at the limit. */
+  usageLimitNotice: string | null;
+  /** The text of a message the CLI flagged `rate_limit` in this turn. */
+  rateLimitText: string | null;
+  /** The limit the CLI last reported as rejected in this turn. */
+  rejectedLimit: UsageLimit | null;
 }
 
 interface TextBlockState {
@@ -224,6 +236,7 @@ interface SessionState {
    * the session is still at work after the turn ends.
    */
   subagentTasks: Map<string, { backgrounded: boolean }>;
+  childActivity: Map<string, { turnId: string; item: ProviderItem; resultSeen: boolean }>;
 }
 
 /** Task types that are agents doing work, rather than shells or tool calls. */
@@ -332,6 +345,35 @@ function spawnClaudeOnWindows(
 function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined {
   const raw = model?.options?.effort;
   return EFFORT_LEVELS.find((level) => level === raw);
+}
+
+/**
+ * An agent definition's denies, split by where Claude Code honours them.
+ *
+ * The definition's own `disallowedTools` takes only tool names: Claude Code
+ * reads `Bash(curl:*)` there as `Bash` and removes the whole tool. A rule with
+ * content is a permission rule, so it goes to the session's `disallowedTools`
+ * (the CLI's `--disallowedTools`), where it denies only the calls it matches.
+ */
+export function splitAgentDenies(definition: AgentLaunchDefinition): {
+  definition: AgentLaunchDefinition;
+  denyRules: string[];
+} {
+  const denies = definition.disallowedTools;
+  if (!denies) return { definition, denyRules: [] };
+  const denyRules = denies.filter(isPermissionRule);
+  if (denyRules.length === 0) return { definition, denyRules };
+  const { disallowedTools: _denies, ...rest } = definition;
+  const toolNames = denies.filter((entry) => !isPermissionRule(entry));
+  return {
+    definition: toolNames.length > 0 ? { ...rest, disallowedTools: toolNames } : rest,
+    denyRules,
+  };
+}
+
+/** `Tool(content)`: a rule that matches some of a tool's calls, not the tool. */
+function isPermissionRule(entry: string): boolean {
+  return /^[^()\s]+\(.*\)$/s.test(entry.trim());
 }
 
 /**
@@ -481,6 +523,9 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     filterShadowedWarningOnce();
 
+    const agent =
+      input.agentName && input.agentDefinition ? splitAgentDenies(input.agentDefinition) : null;
+
     const options: Options = {
       cwd: input.cwd,
       env: input.env,
@@ -500,9 +545,8 @@ export class ClaudeAdapter implements ProviderAdapter {
           }
         : {}),
       ...(input.agentName ? { agent: input.agentName } : {}),
-      ...(input.agentName && input.agentDefinition
-        ? { agents: { [input.agentName]: input.agentDefinition } }
-        : {}),
+      ...(input.agentName && agent ? { agents: { [input.agentName]: agent.definition } } : {}),
+      ...(agent && agent.denyRules.length > 0 ? { disallowedTools: agent.denyRules } : {}),
       ...(input.model ? { model: input.model.id } : {}),
       ...(effort ? { effort } : {}),
       ...(input.resume ? { resume: nativeSessionId } : { sessionId: nativeSessionId }),
@@ -553,6 +597,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       usage: new CumulativeUsage(),
       unreportedUsage: [],
       subagentTasks: new Map(),
+      childActivity: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -600,7 +645,13 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (session.turn) {
       session.turn.outstanding.add(uuid);
     } else {
-      session.turn = { turnId: input.turnId, outstanding: new Set([uuid]) };
+      session.turn = {
+        turnId: input.turnId,
+        outstanding: new Set([uuid]),
+        usageLimitNotice: null,
+        rateLimitText: null,
+        rejectedLimit: null,
+      };
       this.emit(session, { type: 'session.state.changed', status: 'running' });
       this.emit(session, { type: 'turn.started', turnId: input.turnId });
     }
@@ -861,9 +912,20 @@ export class ClaudeAdapter implements ProviderAdapter {
       case 'stream_event':
         this.handleStreamEvent(session, message.event, message.parent_tool_use_id);
         return;
-      case 'assistant':
+      case 'assistant': {
+        const turn = session.turn;
+        if (turn && message.parent_tool_use_id === null) {
+          turn.usageLimitNotice = usageLimitNotice(message) ?? turn.usageLimitNotice;
+          turn.rateLimitText = rateLimitErrorText(message) ?? turn.rateLimitText;
+        }
         this.handleAssistantMessage(session, message.message, message.parent_tool_use_id);
         return;
+      }
+      case 'rate_limit_event': {
+        const limit = rejectedLimit(message.rate_limit_info);
+        if (limit !== null && session.turn) session.turn.rejectedLimit = limit;
+        return;
+      }
       case 'user':
         this.handleToolResults(session, message.message.content);
         return;
@@ -882,6 +944,7 @@ export class ClaudeAdapter implements ProviderAdapter {
    */
   private trackSubagentTasks(session: SessionState, message: SDKMessage): void {
     const tasks = session.subagentTasks;
+    this.reportChildTask(session, message);
     if (message.type === 'result') {
       // A foreground task blocks the turn it runs in, so none outlives it.
       for (const [taskId, task] of tasks) if (!task.backgrounded) tasks.delete(taskId);
@@ -917,6 +980,49 @@ export class ClaudeAdapter implements ProviderAdapter {
       default:
         return;
     }
+  }
+
+  private reportChildTask(session: SessionState, message: SDKMessage): void {
+    if (message.type !== 'system') return;
+    if (message.subtype === 'task_started') {
+      if (!isSubagentTask(message) || !session.turn) return;
+      const prior = message.tool_use_id ? session.toolItems.get(message.tool_use_id) : undefined;
+      const child = {
+        turnId: session.turn.turnId,
+        item: {
+          ...prior,
+          id: message.tool_use_id ?? message.task_id,
+          type: 'subagent' as const,
+          status: 'in_progress' as const,
+          title: truncate(message.description),
+          toolName: message.subagent_type ?? prior?.toolName,
+        },
+        resultSeen: message.tool_use_id === undefined,
+      };
+      session.childActivity.set(message.task_id, child);
+      this.emit(session, { type: 'item.updated', turnId: child.turnId, item: child.item });
+      return;
+    }
+    if (message.subtype !== 'task_updated' && message.subtype !== 'task_notification') return;
+    const child = session.childActivity.get(message.task_id);
+    if (!child) return;
+    const status = message.subtype === 'task_updated' ? message.patch.status : message.status;
+    if (message.subtype === 'task_updated' && message.patch.description)
+      child.item = { ...child.item, title: truncate(message.patch.description) };
+    const ended =
+      status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped';
+    // A subagent stopped or killed ended on purpose: declined, not failed.
+    if (ended)
+      child.item = {
+        ...child.item,
+        status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'declined',
+      };
+    this.emit(session, {
+      type: ended ? 'item.completed' : 'item.updated',
+      turnId: child.turnId,
+      item: child.item,
+    });
+    if (ended && child.resultSeen) session.childActivity.delete(message.task_id);
   }
 
   private handleStreamEvent(
@@ -1026,7 +1132,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         });
         return;
       }
-      if (block.type !== 'tool_use') return;
+      // A subagent's own steps stay with the subagent: only its card shows.
+      if (block.type !== 'tool_use' || parentToolUseId !== null) return;
       const id = block.id;
       const name = block.name;
       if (typeof id !== 'string' || typeof name !== 'string') return;
@@ -1060,6 +1167,18 @@ export class ClaudeAdapter implements ProviderAdapter {
       const started = session.toolItems.get(toolUseId);
       if (!started) continue;
       session.toolItems.delete(toolUseId);
+      const child = [...session.childActivity.values()].find(
+        (child) => child.item.id === toolUseId
+      );
+      if (child) {
+        child.resultSeen = true;
+        if (child.item.status !== 'in_progress') {
+          for (const [taskId, entry] of session.childActivity)
+            if (entry === child) session.childActivity.delete(taskId);
+        }
+        // A background tool result acknowledges the launch, not child completion.
+        continue;
+      }
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
       const text = textFromToolResultContent(block.content);
       this.emit(session, {
@@ -1100,7 +1219,16 @@ export class ClaudeAdapter implements ProviderAdapter {
     const single = result.user_message_uuid;
     if (consumed.length === 0 && single !== undefined) consumed.push(single);
 
-    const outcome = outcomeForResult(result);
+    const resultOutcome = outcomeForResult(result);
+    const rejected = turn.rejectedLimit !== null;
+    const notice =
+      turn.usageLimitNotice ??
+      (rejected && turn.rateLimitText !== null
+        ? turn.rateLimitText || 'The provider usage limit was reached.'
+        : null);
+    const limited =
+      resultOutcome !== 'interrupted' && (notice !== null || resultHitUsageLimit(result, rejected));
+    const outcome: TurnOutcome = limited ? 'error' : resultOutcome;
     if (consumed.length === 0) {
       turn.outstanding.clear();
     } else {
@@ -1116,7 +1244,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.textBlocks.clear();
     session.streamedMessageIds.clear();
     session.streamMessageId = null;
-    const message = turnStatusMessage(result, outcome);
+    const usageLimit: UsageLimit | null = limited
+      ? { resetsAt: turn.rejectedLimit?.resetsAt ?? null }
+      : null;
+    const message = (limited ? notice : null) ?? turnStatusMessage(result, outcome);
     if (outcome === 'error') {
       this.emit(session, { type: 'runtime.error', message: message ?? 'Claude turn failed.' });
     }
@@ -1125,6 +1256,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       turnId: turn.turnId,
       outcome,
       ...(message ? { message } : {}),
+      ...(usageLimit ? { usageLimit } : {}),
       usage: this.takeUsage(session),
       raw: { source: 'claude', payload: result },
     });

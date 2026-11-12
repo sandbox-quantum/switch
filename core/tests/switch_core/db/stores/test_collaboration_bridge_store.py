@@ -6,10 +6,15 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, CollaborationBridge, Tenant
+from switch_core.db.models import (
+    Client,
+    CollaborationBridge,
+    Tenant,
+    TenantNotBoundError,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 
 async def _make_bridge(session: AsyncSession) -> str:
@@ -250,6 +255,64 @@ async def test_set_default_does_not_demote_another_tenants_default(
         own_default = await store.get(session, own_bridge)
         assert own_default is not None
         assert own_default.is_default is True
+
+
+@pytest.mark.asyncio
+async def test_get_all_and_get_active_return_only_the_bound_tenants_bridges(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The suite connects as the owner, which row-level security exempts, so
+    this pins the store's own filter rather than the policy."""
+    store = CollaborationBridgeStore()
+    other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+
+    async with session_factory() as session:
+        session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
+        own_bridge = await _make_bridge(session)
+        await session.commit()
+
+    async with tenant_session(session_factory, other_tenant) as other_session:
+        other_bridge = await _make_bridge(other_session)
+        await other_session.commit()
+
+    async with session_factory() as session:
+        assert [b.id for b in await store.get_all(session)] == [own_bridge]
+        assert [b.id for b in await store.get_active(session)] == [own_bridge]
+
+    async with tenant_session(session_factory, other_tenant) as other_session:
+        assert [b.id for b in await store.get_all(other_session)] == [other_bridge]
+        assert [b.id for b in await store.get_active(other_session)] == [other_bridge]
+
+
+@pytest.mark.asyncio
+async def test_get_active_leaves_out_the_bound_tenants_inactive_bridges(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        active = await _make_bridge(session)
+        inactive = await _make_bridge(session)
+        await store.update_status(session, inactive, "inactive")
+        await session.commit()
+
+    async with session_factory() as session:
+        assert sorted(b.id for b in await store.get_all(session)) == sorted(
+            [active, inactive]
+        )
+        assert [b.id for b in await store.get_active(session)] == [active]
+
+
+@pytest.mark.asyncio
+async def test_listing_bridges_with_no_tenant_bound_raises(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    with no_tenant():
+        async with session_factory() as session:
+            with pytest.raises(TenantNotBoundError):
+                await store.get_all(session)
+            with pytest.raises(TenantNotBoundError):
+                await store.get_active(session)
 
 
 @pytest.mark.asyncio

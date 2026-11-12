@@ -367,7 +367,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab"}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -383,6 +383,12 @@ class TestOnlyTheOperator:
         assert apps[AIRTABLE]["redirect_uris"] == [AIRTABLE_CALLBACK]
         assert apps[AIRTABLE]["redirect_uri"] == AIRTABLE_CALLBACK
         assert apps[AIRTABLE]["needs_public_url"] is True
+        # GitLab's application lists the scopes of both levels, which the
+        # operator ticks when creating it.
+        gitlab = f"{PUBLIC}/gateway/service-connections/gitlab/flows/callback"
+        assert apps["gitlab"]["redirect_uris"] == [gitlab]
+        assert apps["gitlab"]["needs_public_url"] is True
+        assert apps["gitlab"]["scopes"] == ["mcp", "read_api", "read_user", "api"]
         assert apps[AIRTABLE]["scopes"] == [
             "data.records:read",
             "schema.bases:read",
@@ -391,7 +397,11 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
-        assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
+        assert [entry["slug"] for entry in body["registered"]] == [
+            "atlassian",
+            "notion",
+            "sentry",
+        ]
 
     async def test_an_unknown_service_is_not_found(
         self, world: World, operator

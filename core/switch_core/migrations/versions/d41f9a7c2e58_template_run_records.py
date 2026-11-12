@@ -11,9 +11,9 @@ The row-level-security DDL is a verbatim copy of ``switch_core/db/rls_ddl.py``
 as it stood when this migration was written, copied rather than imported for
 the reason ``265ed188ad6f`` gives.
 
-Revision ID: c8e2f4a61b37
-Revises: 689d7d8ff913
-Create Date: 2026-11-10 12:00:00.000000
+Revision ID: d41f9a7c2e58
+Revises: c8e2f4a6b1d3
+Create Date: 2026-11-12 12:00:00.000000
 
 """
 
@@ -22,8 +22,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "c8e2f4a61b37"
-down_revision: str | None = "689d7d8ff913"
+revision: str = "d41f9a7c2e58"
+down_revision: str | None = "c8e2f4a6b1d3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

@@ -141,17 +141,30 @@ spec:
             httpGet:
               path: /health/ready
               port: 8000
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            # Six failures at ten seconds: long enough to ride out a database
-            # failover, short enough that a real outage stops being served.
-            failureThreshold: 6
+            # Often, so a new pod takes traffic within seconds of being able
+            # to: during a roll the pods left serve alone until it does.
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            # Thirty failures at two seconds: long enough to ride out a
+            # database failover, short enough that a real outage stops being
+            # served.
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 30
             periodSeconds: 30
+            # A busy event loop can take longer than the default second to
+            # answer, and restarting that pod hands its work over again.
+            timeoutSeconds: 5
+          # The server answers only once boot is done, which can wait for the
+          # pods booting before it (`db/boot_lock.py`); liveness starts after.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 5
+            failureThreshold: 60
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
           {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}

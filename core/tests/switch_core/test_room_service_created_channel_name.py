@@ -9,9 +9,19 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+import pytest
+from slack_sdk.errors import SlackApiError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.collaboration.models import CreatedChannel
+from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
+    CreatedChannel,
+)
+from switch_core.bridges.collaboration.slack.adapter import (
+    SlackAdapter,
+    SlackConnectionConfig,
+)
 from switch_core.db.models import Client, CollaborationBridge, Room
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -43,6 +53,8 @@ class _Provisioning:
 class _Adapter:
     """Makes a channel the platform names differently from what it was asked:
     the name was taken, so it carries a suffix."""
+
+    adds_creator_to_public_channel = False
 
     def __init__(self) -> None:
         self.asked: list[str] = []
@@ -229,3 +241,38 @@ async def test_attaching_an_existing_channel_records_nothing(
         room_id, bridge_id, "channel_public", external_channel_id="C-EXISTING"
     )
     assert await _naming(session_factory, room_id) == ("Payments Team", None, None)
+
+
+class _SlackWithoutScope:
+    def __init__(self) -> None:
+        self.creates = 0
+
+    async def conversations_create(self, **kwargs: Any) -> Any:
+        self.creates += 1
+        body = {"ok": False, "error": "missing_scope", "needed": "channels:manage"}
+        raise SlackApiError("missing_scope", response=body)
+
+
+async def test_a_channel_slack_refuses_fails_the_room_with_slacks_reason(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc, bridge_id = await _service(session_factory)
+    slack = SlackAdapter(
+        config=SlackConnectionConfig(
+            bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
+        )
+    )
+    web = _SlackWithoutScope()
+    slack._web_client = web  # type: ignore[assignment]
+    svc._collab_lifecycle.get(bridge_id).adapter = slack  # type: ignore[attr-defined]
+    name = f"Refused {uuid.uuid4().hex[:8]}"
+
+    with pytest.raises(BridgeOperationError, match="channels:manage"):
+        await svc.create_room(
+            RoomCreateConfig(name=name, description="d", bridge_id=bridge_id)
+        )
+
+    assert web.creates == 1
+    async with session_factory() as session:
+        rooms = await session.execute(select(Room).where(Room.name == name))
+        assert rooms.scalars().all() == []

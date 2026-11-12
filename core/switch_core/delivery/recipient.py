@@ -72,7 +72,7 @@ from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine, TenantMember
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.standing import organization_admin_of
-from switch_core.db.stores.hosted_machine_store import owner_stopped
+from switch_core.db.stores.hosted_machine_store import admin_stopped, owner_stopped
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
     ADDRESSING_UNCLAIMED_MESSAGE,
@@ -408,6 +408,7 @@ class CloudMachineState:
     state: str
     revision: int
     owner_stopped: bool
+    admin_stopped: bool
 
     @classmethod
     def of(cls, machine: CloudMachine) -> CloudMachineState:
@@ -415,6 +416,7 @@ class CloudMachineState:
             state=machine.state,
             revision=machine.revision,
             owner_stopped=owner_stopped(machine),
+            admin_stopped=admin_stopped(machine),
         )
 
 
@@ -433,6 +435,15 @@ def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> st
     return (
         f"My device, **{machine}**, is stopped, so I can't answer. "
         f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
+    )
+
+
+def _cloud_machine_admin_stopped_message(machine: str) -> str:
+    """A managed agent whose Switch cloud machine a server administrator
+    stopped: neither a message nor its owner can start it again."""
+    return (
+        f"My device, **{machine}**, was stopped by a server administrator, so "
+        "I can't answer until they release it."
     )
 
 
@@ -1507,6 +1518,8 @@ class AgentRecipient:
             return _machine_removed_message(binding.controller_name, owner)
         if not controllers.is_live(self.agent.id):
             machine = await self._wake_cloud_machine(binding.controller_id)
+            if machine is not None and machine.admin_stopped:
+                return _cloud_machine_admin_stopped_message(binding.controller_name)
             if machine is None or machine.state == "error":
                 return _machine_offline_message(binding.controller_name, owner)
             if machine.owner_stopped:
