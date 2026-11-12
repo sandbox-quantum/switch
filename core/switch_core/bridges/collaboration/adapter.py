@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.install import InboundWebhook, WebhookReq
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
+    ChannelMembers,
     ChannelRetirement,
     ChannelType,
     CreatedChannel,
@@ -42,6 +43,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -746,6 +748,10 @@ class PlatformAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_user_left_handler: called when a person leaves a bridged
+        # channel or is taken out of it. Unset on an adapter running without
+        # a bridge core behind it, where a departure is dropped.
+        self._on_user_left: Callable[[InboundUserLeave], Awaitable[None]] | None = None
         # Set by set_interaction_handler. Called when someone operates a control
         # on a message this bridge posted. Left unset on a platform with no such
         # controls, and on an adapter running without a bridge core behind it.
@@ -1908,6 +1914,29 @@ class PlatformAdapter(ABC):
         """
         ...
 
+    async def remove_users_from_channel(
+        self, channel_id: str, user_external_ids: list[str]
+    ) -> list[str]:
+        """Take the given people out of a channel; return the ids that could
+        not be.
+
+        The base cannot remove anyone and says so for every id: a platform
+        whose bot may not take people out (Telegram, which cannot add them
+        either) keeps it. As with adding, one refusal does not stop the rest.
+        """
+        return list(user_external_ids)
+
+    async def list_channel_members(self, channel_id: str) -> ChannelMembers | None:
+        """Who is in a channel, for lining its room up with it, or None on a
+        platform that cannot list a channel's members (Telegram).
+
+        People only: bots, the app itself and Switch's agents are left out.
+        A listing cut short says so (`complete` False) rather than passing
+        for the whole channel, as the caller removes whoever is missing from
+        a complete one.
+        """
+        return None
+
     @abstractmethod
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Give the agent its platform handle, or bring an existing one in
@@ -2190,6 +2219,21 @@ class PlatformAdapter(ABC):
         platforms with interactive message controls ever call it, and an adapter
         that never does needs no change to go on working."""
         self._on_interaction = handler
+
+    def set_user_left_handler(
+        self, handler: Callable[[InboundUserLeave], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a person leaving a bridged channel.
+
+        A setter rather than another argument to `start`, as for
+        interactions: a platform that never reports departures needs no
+        change to go on working."""
+        self._on_user_left = handler
+
+    async def _user_left(self, leave: InboundUserLeave) -> None:
+        """Hand a departure to the bridge core, if one is listening."""
+        if self._on_user_left is not None:
+            await self._on_user_left(leave)
 
     def set_activity_resolver(
         self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]

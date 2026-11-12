@@ -289,6 +289,34 @@ class InboundUserJoin(BaseModel):
     channel_name: str | None = None
 
 
+class InboundUserLeave(BaseModel):
+    """A person left a bridged channel, or was taken out of it.
+
+    `removed_by_name` is what the platform calls whoever removed them, where
+    the platform says and it was not the person themselves; None when they
+    left on their own or the platform did not say.
+    """
+
+    channel_id: str
+    external_user_id: str
+    external_username: str | None = None
+    removed_by_name: str | None = None
+
+
+class ChannelMembers(BaseModel):
+    """Who a platform says is in a channel, for lining a room up with it.
+
+    `complete` is False when the listing stopped short (a page failed, a
+    limit was hit): then it is good for adding people and never for removing
+    them, since someone missing from it may simply not have been reached.
+    `members` maps each person's platform id to their name; bots, the app
+    itself and Switch's agents are left out by the adapter.
+    """
+
+    members: dict[str, str]
+    complete: bool
+
+
 class InboundAppJoin(BaseModel):
     """The bridge app/bot itself was added to a channel. Unlike an agent join
     there is no agent behind it (Slack is a single-app bridge), so this triggers

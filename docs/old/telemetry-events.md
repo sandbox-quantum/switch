@@ -1024,6 +1024,7 @@ only when there was something to detach or remove.
 | `room_role_defined` | `exclusive` (boolean) |
 | `room_role_deleted` | none |
 | `room_users_added` | `user_count` (number): people added to a bridged room who are now in it; the one person added to a Switch Console chat, including an owner an agent puts in a room it made; or the people a Console chat is created with, not counting the person who created it. Not sent when nobody was added |
+| `room_users_removed` | `user_count` (number); `removed_by_kind` (`user` \| `platform`) |
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
@@ -1384,10 +1385,10 @@ reason.
   paused or stopped run. `operation` and `reason` are fixed lists; which agent
   and which template stay in the server log.
 - `room_link_created` / `room_link_removed`, `room_role_defined` /
-  `room_role_deleted`, `room_users_added`. A role is defined in the gateway, by
-  an agent's `define_role`, or with the room it belongs to (an agent's
-  `create_room`, or a template); one per role. An agent's `delete_role` is a
-  `room_role_deleted` too.
+  `room_role_deleted`, `room_users_added` / `room_users_removed`. A role is
+  defined in the gateway, by an agent's `define_role`, or with the room it
+  belongs to (an agent's `create_room`, or a template); one per role. An
+  agent's `delete_role` is a `room_role_deleted` too.
 - `reference_detached_from_room` / `document_detached_from_room` /
   `package_detached_from_room` — the inverse of the attach events, so a
   resource tried and dropped is distinguishable from one never used.

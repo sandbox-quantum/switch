@@ -74,6 +74,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -3030,6 +3031,11 @@ class TelegramAdapter(PlatformAdapter):
             )
             return
 
+        left = getattr(message, "left_chat_member", None)
+        if left is not None:
+            await self._handle_member_left(left, author, chat_id)
+            return
+
         if author is None:
             # A channel post names a person only when the channel shows its
             # authors' profiles, and then it arrives with a sender and is
@@ -3238,6 +3244,34 @@ class TelegramAdapter(PlatformAdapter):
                     channel_name=channel_name,
                 )
             )
+
+    async def _handle_member_left(self, member: Any, author: Any, chat_id: str) -> None:
+        """Someone left the group, or was taken out of it.
+
+        Telegram says so with a service message naming who went
+        (`left_chat_member`), sent by whoever removed them, or by the person
+        themselves when they left. It reaches the bot wherever it sees the
+        chat's messages, which is the only way Switch hears of a departure
+        here: Telegram cannot list a group's members, and tells only an admin
+        bot of other people's status changes.
+
+        The bot itself leaving is told by `my_chat_member`, not here.
+        """
+        if member.id == self._bot_user_id:
+            return
+        removed_by = (
+            self._display_name(author)
+            if author is not None and author.id != member.id
+            else None
+        )
+        await self._user_left(
+            InboundUserLeave(
+                channel_id=chat_id,
+                external_user_id=str(member.id),
+                external_username=self._display_name(member),
+                removed_by_name=removed_by,
+            )
+        )
 
     async def _handle_start(
         self, text: str, chat_id: str, channel_type: ChannelType

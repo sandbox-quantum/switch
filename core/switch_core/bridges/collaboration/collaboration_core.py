@@ -42,6 +42,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
@@ -594,6 +595,9 @@ class CollaborationCore:
             self._adapter.set_activity_resolver(
                 self._activity_publisher.activity_shown_at
             )
+        self._adapter.set_user_left_handler(
+            self._traced("user_left", self._handle_user_left_channel)
+        )
         await self._adapter.start(
             on_message=self._traced("message", self._handle_inbound_message),
             on_command=self._traced("command", self._handle_inbound_command),
@@ -2657,6 +2661,26 @@ class CollaborationCore:
             external_username=join.external_username,
             room_id=room_id,
             transport_room_id=transport_room_id,
+        )
+
+    async def _handle_user_left_channel(self, leave: InboundUserLeave) -> None:
+        """Called by the adapter when a person leaves a bridged channel or is
+        taken out of it on the platform. They are taken out of the channel's
+        room, which stops their delivery and ends what being in the room let
+        them do.
+
+        Someone Switch never put in the room, or a channel with no room, is
+        nothing to undo. Nor is the platform asked to remove them: it just
+        said they are gone.
+        """
+        room_ids = self._channel_to_room.get(leave.channel_id)
+        if room_ids is None:
+            return
+        room_id, _ = room_ids
+        if leave.external_user_id not in self._human_actors:
+            return
+        await self._room_service.remove_people_from_room(
+            room_id, [leave.external_user_id], removed_by=leave.removed_by_name
         )
 
     # ── Human actor lifecycle ─────────────────────────────────────────────────────

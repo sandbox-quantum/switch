@@ -180,6 +180,9 @@ class _StartableAdapter:
     def set_channel_migration_handler(self, handler: Any) -> None:
         return None
 
+    def set_user_left_handler(self, handler: Any) -> None:
+        pass
+
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
         return None
 

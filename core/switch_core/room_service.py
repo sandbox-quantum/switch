@@ -44,6 +44,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats import is_console_chat
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import (
+    Client,
     ExternalUser,
     ExternalUserClaim,
     Room,
@@ -53,6 +54,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
@@ -226,6 +228,9 @@ class RoomService:
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
     _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
+    _people_left_listeners: tuple[
+        Callable[[str, str, list[str]], Awaitable[None]], ...
+    ] = ()
 
     def __init__(
         self,
@@ -1780,6 +1785,98 @@ class RoomService:
         if added := max(len(user_names) - len(unresolved), 0):
             emit_safely(self._telemetry, "room_users_added", {"user_count": added})
         return unresolved
+
+    def on_people_left(
+        self, listener: Callable[[str, str, list[str]], Awaitable[None]]
+    ) -> None:
+        """Be told `(tenant_id, room_id, client_ids)` after people are taken
+        out of a room, whether they left on their platform or were removed
+        through Switch. For what a departure revokes on the server (a room
+        admin's standing, say), which must not depend on any agent hearing
+        about it. Only people: agents are removed through
+        `remove_agents_from_room`."""
+        self._people_left_listeners = (*self._people_left_listeners, listener)
+
+    async def remove_people_from_room(
+        self,
+        room_id: str,
+        external_user_ids: list[str],
+        *,
+        removed_by: str | None = None,
+        from_channel: bool = False,
+    ) -> list[str]:
+        """Take people out of a bridged room, by their account on its bridge.
+
+        `removed_by` is who asked, written into the room's history with each
+        departure; None when they left on their own. `from_channel` also takes
+        them out of the platform channel, so the next look at the channel's
+        members does not put them straight back: for a removal asked for in
+        Switch, not for one the platform reported, where they are gone
+        already.
+
+        Returns the ids the platform would not remove from its channel (every
+        one on a platform that cannot, such as Telegram). They are still taken
+        out of the Switch room. Someone Switch never saw in the room is
+        nothing to remove, and is not an error.
+        """
+        async with self._session_factory() as session:
+            room = await self._room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+        if not room.bridge_id or not room.external_channel_id:
+            raise ValueError(f"Room {room_id} is not bridged")
+        if not external_user_ids:
+            return []
+
+        not_on_platform: list[str] = []
+        if from_channel:
+            collaboration_core = self._collab_lifecycle.get(room.bridge_id)
+            if collaboration_core is None:
+                raise ValueError(f"Bridge not running: {room.bridge_id}")
+            not_on_platform = (
+                await collaboration_core.adapter.remove_users_from_channel(
+                    room.external_channel_id, external_user_ids
+                )
+            )
+
+        removed: list[str] = []
+        with tenant_scope(room.tenant_id):
+            async with tenant_session(self._session_factory, room.tenant_id) as session:
+                targets: list[tuple[str, str]] = []
+                for external_user_id in dict.fromkeys(external_user_ids):
+                    person = await ExternalUserStore().get_by_external_id(
+                        session, room.bridge_id, external_user_id
+                    )
+                    if person is None:
+                        continue
+                    client = await session.get(Client, person.client_id)
+                    if client is not None:
+                        targets.append((client.id, client.transport_user_id))
+            for client_id, transport_user_id in targets:
+                await self._provisioning.kick_user(
+                    room.transport_room_id, transport_user_id, removed_by=removed_by
+                )
+                removed.append(client_id)
+
+        if removed:
+            logger.info("Removed %d people from room %s", len(removed), room_id)
+            self.room_changed(room.tenant_id, room.id)
+            for listener in self._people_left_listeners:
+                try:
+                    await listener(room.tenant_id, room.id, removed)
+                except Exception:
+                    logger.exception(
+                        "A people-left listener failed for room %s", room_id
+                    )
+            emit_safely(
+                self._telemetry,
+                "room_users_removed",
+                {
+                    "user_count": len(removed),
+                    "removed_by_kind": "platform" if removed_by is None else "user",
+                },
+            )
+        return not_on_platform
 
     async def link_bridge_to_room(
         self,
