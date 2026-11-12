@@ -2,7 +2,7 @@
 
 They are not rows: the server lists them beside the stored templates and
 serves them by an ``official:`` id, so every workspace sees the version this
-release ships and nobody can change or delete one. A template a deployment
+release ships and nobody can change one. A template a deployment
 can only use where agents are managed comes in two documents, and the
 server's ``agent_management`` feature flag picks which it serves.
 switch-buddy only makes sense as a managed agent, and is served only with both
@@ -24,6 +24,14 @@ created from an older one are brought up to it when the server starts
 (``management/template_updates.py``). Revisions are recorded at release time,
 with the other versions (see ``revisions.py``); between releases a changed
 template is served under its last revision.
+
+The room templates are simpler: one document each in ``rooms/``, named by
+its slug, and never revised, so nothing they made is ever updated. Each
+creates a room and the agents that work in it, on the deployer's machines,
+so they are served only with ``agent_management`` on. A workspace admin may
+remove one from their workspace (``hidden_official_templates``). A version 2
+document has no place for a name or description, so ``rooms/catalogue.yaml``
+holds them, by slug.
 """
 
 from __future__ import annotations
@@ -42,6 +50,8 @@ OFFICIAL_PREFIX = "official:"
 REVISIONS_FILE = "revisions.json"
 
 _HERE = Path(__file__).parent
+_ROOMS = _HERE / "rooms"
+_CATALOGUE = _ROOMS / "catalogue.yaml"
 
 
 @dataclass(frozen=True)
@@ -63,6 +73,8 @@ class OfficialTemplate:
     read_visibility: str = "public"
     write_visibility: str = "private"
     version: int = 1
+    # A workspace admin may remove it from their workspace.
+    removable: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,6 +173,38 @@ def document_in(folder: Path, agent_management: bool) -> str:
     )
 
 
+@cache
+def _room_templates() -> tuple[OfficialTemplate, ...]:
+    catalogue: dict[str, dict[str, str]] = yaml.safe_load(
+        _CATALOGUE.read_text(encoding="utf-8")
+    )
+    paths = sorted(p for p in _ROOMS.glob("*.yaml") if p != _CATALOGUE)
+    unlisted = {p.stem for p in paths} ^ set(catalogue)
+    if unlisted:
+        raise RuntimeError(
+            f"{_CATALOGUE} and the room templates beside it must name the same "
+            f"slugs; these are on one side only: {sorted(unlisted)}"
+        )
+    templates = []
+    for path in paths:
+        entry = catalogue[path.stem]
+        if not entry.get("name") or not entry.get("description"):
+            raise RuntimeError(
+                f"{_CATALOGUE} gives '{path.stem}' no name or no description"
+            )
+        templates.append(
+            OfficialTemplate(
+                id=f"{OFFICIAL_PREFIX}{path.stem}",
+                name=entry["name"],
+                description=entry["description"],
+                kind="room",
+                content=path.read_text(encoding="utf-8"),
+                removable=True,
+            )
+        )
+    return tuple(templates)
+
+
 def official_templates(
     agent_management: bool, switch_buddy: bool
 ) -> list[OfficialTemplate]:
@@ -177,7 +221,7 @@ def official_templates(
         )
         for shipped in _SHIPPED
         if (shipped.served == "buddy") == (agent_management and switch_buddy)
-    ]
+    ] + (list(_room_templates()) if agent_management else [])
 
 
 @cache

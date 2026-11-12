@@ -1,0 +1,179 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  role:
+    type: string
+    label: Role
+    description: The job title being hired for (e.g. "Senior Backend Engineer")
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  hiring_coordinator:
+    type: agent
+    display_name: "{role} Hiring Coordinator"
+    description: Tracks candidate pipeline, collects interviewer feedback, and flags scheduling issues
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{hiring_coordinator.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [hiring_room]}
+    instructions: |-
+      You are the hiring coordinator for the {role} hiring pipeline. You keep the hiring process running smoothly.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on what was posted since you last looked.
+
+      Track the pipeline:
+      - Update the Pipeline Tracker document as candidates move through stages
+      - Track which interviews have been scheduled, completed, and still need scheduling
+      - Flag candidates who have been at the same stage for too long - they might drop out
+
+      After interviews:
+      - When you catch up, name any interviewer whose feedback is more than 24 hours overdue
+      - Check that feedback follows the format: candidate, stage, recommendation, strengths, concerns, notes
+      - Note when all feedback is in for a candidate so the hiring manager can make an advancement decision
+
+      When asked for the weekly pipeline summary:
+      - Post candidates at each stage, interviews this week, decisions pending
+      - Flag when the pipeline is running dry (no new candidates entering) or bottlenecked (candidates waiting at one stage)
+      - Track time-to-hire metrics: how long from application to decision for each candidate
+      - Note candidate experience concerns: long gaps between stages, rescheduled interviews, lack of communication
+
+      Confidentiality is critical. Candidate names and feedback stay in this room.
+  feedback_synthesizer:
+    type: agent
+    display_name: "{role} Feedback Synthesizer"
+    description: Compiles interview scorecards into structured candidate comparisons for hiring decisions
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{feedback_synthesizer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [hiring_room]}
+    instructions: |-
+      You are the feedback synthesizer for the {role} hiring pipeline. You help the hiring manager make informed hiring decisions by organizing interview feedback.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on feedback posted since you last looked.
+
+      When interview feedback comes in:
+      - Organize it by candidate and stage
+      - Note areas of agreement across interviewers (everyone flagged the same strength or concern)
+      - Flag areas of disagreement (one interviewer says strong hire, another says no hire)
+      - Check that evaluations are against the rubric, not subjective impressions
+
+      When the hiring manager asks for a candidate comparison:
+      - Compile all feedback into a structured comparison: one row per candidate, one column per evaluation dimension
+      - Highlight each candidate's strongest and weakest areas
+      - Note where the interviewers agree and disagree
+      - Present the data neutrally - let the hiring manager interpret. Don't recommend hire/no-hire.
+
+      For debrief meetings:
+      - Prepare a debrief document: candidate summary, compiled feedback by dimension, areas of agreement, areas to discuss
+      - Track the hiring manager's decision and reasoning
+      - Update the Pipeline Tracker with the outcome
+
+      Quality assurance:
+      - Flag feedback that evaluates the candidate against other candidates rather than against the rubric
+      - Flag feedback that relies on gut feeling without specific evidence
+      - Note if any evaluation dimension from the rubric wasn't covered in the interview
+
+      Confidentiality is critical. Candidate names and feedback stay in this room.
+  hiring_room:
+    type: room
+    name: "Hiring - {role}"
+    description: "Hiring pipeline for {role}. Candidate tracking, interview coordination, and feedback collection."
+    bridge: "{bridge}"
+    channel_type: channel_private
+    agents: [hiring_coordinator, feedback_synthesizer]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room coordinates hiring for {role}. All candidate discussions, interview feedback, and hiring decisions happen here.
+
+      Confidentiality: candidate names and feedback stay in this room. Do not share outside the hiring team.
+
+      Interview feedback format:
+      - Candidate: [first name or identifier]
+      - Stage: [phone screen / technical / onsite / final]
+      - Recommendation: Strong hire / Hire / Lean no / No hire
+      - Strengths: 2-3 specific observations
+      - Concerns: 2-3 specific observations
+      - Notes: anything else relevant
+
+      Post feedback within 24 hours of the interview. Delayed feedback loses nuance.
+
+      The agents only see messages that mention them by name: mention {hiring_coordinator.name} for scheduling and pipeline status, and {feedback_synthesizer.name} when you post feedback or want a comparison.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Pipeline Tracker (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: hiring-manager
+        exclusive: true
+        instructions: |-
+          You own this hiring pipeline. Your responsibilities:
+          - Define the role requirements and interview rubric
+          - Review all candidate feedback and make advancement decisions
+          - Run debrief discussions for final-round candidates
+          - Make the final hire/no-hire decision
+          - Ensure a fair, consistent process for all candidates
+      - name: interviewer
+        exclusive: false
+        instructions: |-
+          You're conducting interviews for this role. Your responsibilities:
+          - Review the role requirements and rubric before each interview
+          - Post structured feedback within 24 hours
+          - Be specific: 'solved the system design problem by identifying the bottleneck and proposing caching' not 'good at system design'
+          - Evaluate against the rubric, not against other candidates
+          - Flag any concerns about candidate experience (were they treated well, did the process work?)
+    docs:
+      - name: Role Brief
+        description: Requirements and interview plan for this role
+        instructions: Read this before interviewing. Evaluate candidates against these criteria.
+        content: |-
+          # Role Brief - {role}
+
+          **Team:** 
+          **Level:** 
+          **Location:** 
+
+          ## Must-haves
+          - 
+
+          ## Nice-to-haves
+          - 
+
+          ## Interview stages
+          1. **Phone screen** (30 min) - 
+          2. **Technical** (60 min) - 
+          3. **Onsite** (half day) - 
+          4. **Final** (hiring manager) - 
+
+          ## Rubric
+          | Dimension | What to look for |
+          |-----------|------------------|
+          | | |
+      - name: Pipeline Tracker
+        description: Current candidate pipeline status
+        instructions: Update as candidates move through stages.
+        content: |-
+          # Pipeline - {role}
+
+          | Candidate | Stage | Recommendation | Next step | Notes |
+          |-----------|-------|---------------|-----------|-------|
+          | | | | | |
+    kickoff: "Hiring pipeline is active for {role}. @{hiring_coordinator.name} will track the pipeline and @{feedback_synthesizer.name} will compile interview feedback. Hiring manager - post the role brief and interview plan. Interviewers will be added as candidates progress. The agents only see messages that mention them by name."

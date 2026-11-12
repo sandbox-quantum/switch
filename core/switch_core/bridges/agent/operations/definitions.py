@@ -2102,11 +2102,14 @@ async def list_templates(
     query: str | None = None,
     kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List the templates saved on this workspace that you can use.
+    """List the templates on this workspace that you can use.
 
-    That is every shared template plus your owner's private ones. Each row
-    says who saved it (a person, or which agent) and ``can_edit``: whether
-    you may change or delete it, which is true only for templates you saved.
+    That is the templates that come with Switch (ids starting ``official:``,
+    saved by "Switch"), less any a workspace admin removed from the
+    workspace, then every shared template plus your owner's private ones.
+    Each row says who saved it (a person, or which agent) and ``can_edit``:
+    whether you may change or delete it, which is true only for templates
+    you saved.
 
     Args:
         query: Only templates whose name or description contains this.

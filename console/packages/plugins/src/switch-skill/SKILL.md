@@ -650,8 +650,11 @@ the schema the server checks documents against. Write new templates in its
 version 2: every resource under `resources:` with a key and a `type`,
 resources naming each other by key, and `if:` as the one conditional.
 
-- **`list_templates`**: what you can use, every shared template plus your
-  owner's private ones. Each row says who saved it and `can_edit`.
+- **`list_templates`**: what you can use: the templates that come with
+  Switch (`official:` ids, among them ready-made rooms for common team
+  workflows such as incidents, sprints and launches), less any a workspace
+  admin removed, then every shared template plus your owner's private ones.
+  Each row says who saved it and `can_edit`.
 - **`get_template`**: one template's document, its `params` (the inputs to
   fill) and `agent_slots` (the agents it would create, each with its
   machine, provider, model, connections and whether an existing agent may

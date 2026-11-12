@@ -1810,6 +1810,34 @@ class TemplateRunRecord(TenantScoped, Base):
     )
 
 
+class HiddenOfficialTemplate(Base):
+    """A template that comes with Switch which a workspace admin removed
+    from their workspace (see ``official_templates``): it is not listed,
+    read or run there. Other workspaces still have it.
+
+    ``tenant_id`` joins the primary key, as on ``tenant_join_domains``, so a
+    template is removed from a workspace once. ``hidden_by`` is cleared when
+    that admin's account goes; the template stays removed.
+    """
+
+    __tablename__ = "hidden_official_templates"
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("tenants.id", name="fk_hidden_official_templates_tenant"),
+        primary_key=True,
+        default=require_tenant_id,
+    )
+    # The slug, as in ``official:<slug>``.
+    slug: Mapped[str] = mapped_column(Text, primary_key=True)
+    hidden_by: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    hidden_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Packages ──────────────────────────────────────────────────────────────────
 
 
