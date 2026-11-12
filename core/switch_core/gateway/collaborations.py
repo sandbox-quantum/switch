@@ -403,13 +403,19 @@ async def create_bridge(
     )
     await session.commit()
 
-    return await _detail(
+    detail = await _detail(
         bridge,
         room_count=0,
         collab_lifecycle=collab_lifecycle,
         administers=True,
         is_default=is_default,
     )
+    adapter = collab_lifecycle.adapter_class(bridge.type)
+    if adapter is not None:
+        detail.setup_values = (
+            adapter.setup_values(bridge.connection_config or {}) or None
+        )
+    return detail
 
 
 @router.post("/{bridge_id}/default")

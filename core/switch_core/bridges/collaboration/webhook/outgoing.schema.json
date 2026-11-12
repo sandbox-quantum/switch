@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "File": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[^/\\\\\\x00-\\x1f]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "mime_type": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Mime Type",
+          "type": "string"
+        },
+        "data_base64": {
+          "maxLength": 6990508,
+          "title": "Data Base64",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "mime_type",
+        "data_base64"
+      ],
+      "title": "File",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "event_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "connection.check",
+        "publication.lookup",
+        "message.create",
+        "message.update",
+        "message.delete",
+        "typing",
+        "activity",
+        "request"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "channel_id": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Channel Id"
+    },
+    "message_id": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Message Id"
+    },
+    "thread_id": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thread Id"
+    },
+    "group_id": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Group Id"
+    },
+    "sender_name": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sender Name"
+    },
+    "text": {
+      "default": "",
+      "maxLength": 32000,
+      "title": "Text",
+      "type": "string"
+    },
+    "attachments": {
+      "items": {
+        "$ref": "#/$defs/File"
+      },
+      "maxItems": 5,
+      "title": "Attachments",
+      "type": "array"
+    },
+    "marker": {
+      "anyOf": [
+        {
+          "maxLength": 1000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Marker"
+    },
+    "is_typing": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Is Typing"
+    }
+  },
+  "required": [
+    "event_id",
+    "type"
+  ],
+  "title": "Outgoing",
+  "type": "object"
+}

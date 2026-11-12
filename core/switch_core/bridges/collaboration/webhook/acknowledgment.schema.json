@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "event_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "found": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Found"
+    }
+  },
+  "required": [
+    "version",
+    "event_id"
+  ],
+  "title": "Acknowledgment",
+  "type": "object"
+}

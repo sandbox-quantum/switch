@@ -310,6 +310,9 @@ class _NoRunningBridges:
     def get_adapter(self, bridge_id: str) -> None:
         return None
 
+    def adapter_class(self, bridge_type: str):
+        return None
+
     def supports_channel_creation(self, bridge_type: str) -> bool:
         """Answered from the registered adapter class in production, so it holds
         for a stopped bridge — which is the whole point of it not coming from a

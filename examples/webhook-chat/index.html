@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Switch webhook demo</title>
+<style>
+:root{font:16px system-ui;color:#e7edf8;background:#101722}body{max-width:860px;margin:32px auto;padding:0 20px}h1{font-size:28px}small,label{color:#aab9ce}label{display:grid;gap:6px;margin:12px 0}input,textarea,select,button{font:inherit;border:1px solid #425269;border-radius:7px;padding:10px;background:#192435;color:#e7edf8}input,textarea{box-sizing:border-box;width:100%}button{cursor:pointer;background:#254d79}button:disabled{opacity:.5}#messages{display:grid;gap:12px;margin:24px 0}article{padding:16px;background:#192435;border:1px solid #2e4159;border-radius:10px}article.activity,article.request{border-left:4px solid #70c7e7}article>strong{color:#8cd7ee}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}pre{white-space:pre-wrap;padding:10px;background:#101722}code{background:#101722;padding:2px 4px;border-radius:3px}summary{cursor:pointer}#error{color:#ffb7a7;white-space:pre-wrap}#status{color:#8bdab1}form{display:grid;gap:10px}a{color:#8cd7ee}.files{display:flex;gap:8px;flex-wrap:wrap}.row{display:flex;gap:12px;align-items:center}button.reply{font-size:12px;padding:5px 10px;background:transparent}
+</style></head>
+<body>
+<h1>Switch · Custom chat</h1><p>A local demonstration of the webhook platform. No model calls are made by this app.</p>
+<label>Demo admin token <input id="admin" type="password" autocomplete="off" placeholder="Printed by the demo server"></label>
+<button id="unlock">Open chat</button>
+<details id="setup"><summary>Connect this chat to Switch</summary>
+<p>In Switch Console, connect <strong>Custom app (webhook)</strong> with receiver URL <code id="receiver"></code>. Then paste the address and one-time secrets below.</p>
+<form id="configure"><label>Switch inbound webhook URL<input id="url" required placeholder="https://switch.example/messaging/bridges/…/events"></label>
+<label>Inbound token<input id="token" type="password" required autocomplete="off"></label>
+<label>Signing secret<input id="secret" type="password" required autocomplete="off"></label>
+<button>Save connection</button></form></details>
+<p id="status" role="status"></p><p id="delivery-error" role="alert"></p><p id="error" role="alert"></p>
+<div id="messages" aria-live="polite"></div>
+<form id="send"><label>Reply in thread<select id="thread"><option value="">New message</option></select></label>
+<label>Message<textarea id="text" rows="3" placeholder="!invite-agent @your-agent, or @your-agent hello"></textarea></label>
+<label>Attach files (five files, 5 MiB total)<input id="files" type="file" multiple></label>
+<button>Send</button></form>
+<script>
+const el = id => document.getElementById(id);
+el('receiver').textContent = location.origin + '/receive';
+let polling;
+let last = '';
+async function api(path, options = {}) {
+  const response = await fetch(path, {...options, headers: {'Authorization': 'Bearer ' + el('admin').value, 'Content-Type': 'application/json', ...options.headers}});
+  if (!response.ok) { let detail; try { detail = (await response.json()).detail; } catch {} throw new Error(detail || 'HTTP ' + response.status); }
+  return response;
+}
+function problem(error) { el('error').textContent = String(error.message || error); }
+function inline(parent, text) {
+  const pieces = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  for (const piece of pieces) {
+    if (piece.startsWith('`') && piece.endsWith('`')) { const code = document.createElement('code'); code.textContent = piece.slice(1, -1); parent.append(code); }
+    else if (piece.startsWith('**') && piece.endsWith('**')) { const strong = document.createElement('strong'); strong.textContent = piece.slice(2, -2); parent.append(strong); }
+    else parent.append(document.createTextNode(piece));
+  }
+}
+function body(parent, text) {
+  const sections = text.split('```');
+  sections.forEach((section, index) => {
+    if (index % 2) { const pre = document.createElement('pre'); pre.textContent = section.replace(/^[A-Za-z0-9_-]*\n/, ''); parent.append(pre); }
+    else inline(parent, section);
+  });
+}
+async function refresh() {
+  try {
+    const data = await (await api('/messages')).json();
+    el('status').textContent = data.configured ? 'Connected · ' + data.outbox.filter(x => x.state === 'pending').length + ' pending deliveries' : 'Not connected yet';
+    const failed = data.outbox.filter(x => x.error).map(x => x.error);
+    el('delivery-error').textContent = failed.join('\n');
+    const serialized = JSON.stringify(data.messages);
+    if (serialized === last) return;
+    last = serialized;
+    const selected = el('thread').value;
+    el('messages').replaceChildren();
+    el('thread').replaceChildren(new Option('New message', ''));
+    for (const message of data.messages) {
+      const article = document.createElement('article'); article.className = message.type === 'request' ? 'request' : message.type === 'activity' ? 'activity' : '';
+      const name = document.createElement('strong'); name.textContent = message.sender_name || 'Switch'; article.append(name);
+      if (message.thread_id) { const thread = document.createElement('small'); thread.textContent = ' · thread reply'; article.append(thread); }
+      const content = document.createElement('div'); content.className = 'body'; body(content, message.text || ''); article.append(content);
+      const files = document.createElement('div'); files.className = 'files';
+      (message.attachments || []).forEach((file, index) => {
+        const download = document.createElement('button'); download.textContent = '↓ ' + file.name;
+        download.onclick = async () => { try { const response = await api('/file/' + encodeURIComponent(message.message_id) + '/' + index); const url = URL.createObjectURL(await response.blob()); const anchor = document.createElement('a'); anchor.href = url; anchor.download = file.name; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } catch (error) { problem(error); } };
+        files.append(download);
+      }); article.append(files);
+      const reply = document.createElement('button'); reply.className = 'reply'; reply.textContent = 'Reply'; reply.onclick = () => { el('thread').value = message.thread_id || message.message_id; el('text').focus(); }; article.append(reply);
+      el('messages').append(article);
+      el('thread').append(new Option((message.sender_name || 'Switch') + ': ' + (message.text || '(file)').slice(0, 50), message.message_id));
+    }
+    el('thread').value = selected;
+  } catch (error) { problem(error); }
+}
+el('unlock').onclick = async () => { clearInterval(polling); last = ''; el('error').textContent = ''; await refresh(); polling = setInterval(refresh, 1500); };
+el('configure').onsubmit = async event => { event.preventDefault(); try { await api('/configure', {method: 'POST', body: JSON.stringify({inbound_url: el('url').value, inbound_token: el('token').value, signing_secret: el('secret').value})}); el('token').value = ''; el('secret').value = ''; el('setup').open = false; await refresh(); if (!polling) polling = setInterval(refresh, 1500); } catch (error) { problem(error); } };
+el('send').onsubmit = async event => {
+  event.preventDefault(); el('error').textContent = '';
+  try {
+    const chosen = [...el('files').files];
+    if (chosen.length > 5 || chosen.reduce((size, file) => size + file.size, 0) > 5 * 1024 * 1024) throw new Error('At most five files totaling 5 MiB are supported');
+    const attachments = await Promise.all(chosen.map(file => new Promise((resolve, reject) => { const reader = new FileReader(); reader.onerror = reject; reader.onload = () => resolve({name: file.name, mime_type: file.type || 'application/octet-stream', data_base64: String(reader.result).split(',')[1]}); reader.readAsDataURL(file); })));
+    await api('/send', {method: 'POST', body: JSON.stringify({text: el('text').value, thread_id: el('thread').value || null, attachments})}); el('text').value = ''; el('files').value = ''; await refresh();
+  } catch (error) { problem(error); }
+};
+</script></body></html>

@@ -1836,6 +1836,7 @@ type BridgeJson = {
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
+  setup_values?: Record<string, string> | null;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1860,6 +1861,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
+    ...(b.setup_values ? { setupValues: b.setup_values } : {}),
   };
 }
 

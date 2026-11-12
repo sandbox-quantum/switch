@@ -788,6 +788,7 @@ class BridgeDetail(BaseModel):
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    setup_values: dict[str, str] | None = None
     # What the caller may do with it: change its settings, Teams placement
     # and confirmation rules, or delete it — a workspace admin. That chats
     # still connected through it must be disconnected first is answered when

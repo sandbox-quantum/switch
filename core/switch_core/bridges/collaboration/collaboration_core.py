@@ -30,8 +30,10 @@ from switch_core.bridges.collaboration.adapter import (
     PrivateNoticeRefused,
     SupportsSharedConnection,
     agent_identity,
+    outbound_delivery_scope,
 )
 from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
     ChannelInUse,
     ChannelType,
     InboundAgentJoin,
@@ -1221,6 +1223,10 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            if getattr(self._adapter, "confirms_webhook_delivery", False):
+                raise BridgeOperationError(
+                    "The message sender is not ready; retry delivery"
+                )
             return None
 
         content = self._adapter.translate_inbound(msg.content)
@@ -1313,6 +1319,10 @@ class CollaborationCore:
                     msg.sender_name,
                     transport_room_id,
                 )
+                if getattr(self._adapter, "confirms_webhook_delivery", False):
+                    raise BridgeOperationError(
+                        "The room did not accept the message; retry delivery"
+                    )
                 return None
             # Tell the sender what happened only now that the message is
             # actually confirmed to have reached the room — posting this
@@ -1460,6 +1470,10 @@ class CollaborationCore:
                     msg.sender_name,
                     transport_room_id,
                 )
+                if getattr(self._adapter, "confirms_webhook_delivery", False):
+                    raise BridgeOperationError(
+                        "The room did not accept the attachment; retry delivery"
+                    )
             if index == 0:
                 first_event_id = event_id
 
@@ -1610,6 +1624,10 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            if getattr(self._adapter, "confirms_webhook_delivery", False):
+                raise BridgeOperationError(
+                    "The message sender is not ready; retry delivery"
+                )
             return
 
         # Where the command's result should thread. A command typed inside an
@@ -1661,6 +1679,8 @@ class CollaborationCore:
                 transport_room_id,
                 exc,
             )
+            if getattr(self._adapter, "confirms_webhook_delivery", False):
+                raise
             return
 
         # No bridged room event for the thread root yet: map the command event
@@ -1909,9 +1929,15 @@ class CollaborationCore:
                     "existing room found to adopt",
                     channel_id,
                 )
+                if getattr(self._adapter, "confirms_webhook_delivery", False):
+                    raise BridgeOperationError(
+                        "Could not find the channel room; retry delivery"
+                    )
             return adopted
         except Exception:
             logger.exception("Failed to auto-create room for channel %s", channel_id)
+            if getattr(self._adapter, "confirms_webhook_delivery", False):
+                raise
             return None
         room = result.room
 
@@ -2982,14 +3008,15 @@ class CollaborationCore:
         if not await self._claim_outbound(channel_id, event.event_id):
             return
         try:
-            message_ref = await self._post_outbound_message(
-                channel_id,
-                event,
-                sender_name,
-                thread_root_ref,
-                admin_marker=admin_marker if is_system else None,
-                is_system=is_system,
-            )
+            with outbound_delivery_scope(event.event_id):
+                message_ref = await self._post_outbound_message(
+                    channel_id,
+                    event,
+                    sender_name,
+                    thread_root_ref,
+                    admin_marker=admin_marker if is_system else None,
+                    is_system=is_system,
+                )
         except MessagePartlySent as partial:
             message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
@@ -3224,33 +3251,34 @@ class CollaborationCore:
             return
         message_ref: str | None
         try:
-            if data is None or len(data) > self._max_attachment_bytes:
-                if data is not None:
-                    logger.warning(
-                        "[BRIDGE-OUT] attachment %s is %d bytes, over the "
-                        "%d-byte relay cap",
-                        filename,
-                        len(data),
-                        self._max_attachment_bytes,
+            with outbound_delivery_scope(event.event_id):
+                if data is None or len(data) > self._max_attachment_bytes:
+                    if data is not None:
+                        logger.warning(
+                            "[BRIDGE-OUT] attachment %s is %d bytes, over the "
+                            "%d-byte relay cap",
+                            filename,
+                            len(data),
+                            self._max_attachment_bytes,
+                        )
+                    note = f"_sent an attachment that couldn't be relayed: {filename}_"
+                    body = f"{caption}\n{note}" if caption else note
+                    message_ref = await self._adapter.send_message(
+                        channel_id,
+                        sender_name,
+                        self._adapter.translate_outbound(body),
+                        thread_root_id=thread_root_ref,
                     )
-                note = f"_sent an attachment that couldn't be relayed: {filename}_"
-                body = f"{caption}\n{note}" if caption else note
-                message_ref = await self._adapter.send_message(
-                    channel_id,
-                    sender_name,
-                    self._adapter.translate_outbound(body),
-                    thread_root_id=thread_root_ref,
-                )
-            else:
-                message_ref = await self._adapter.send_attachment(
-                    channel_id,
-                    sender_name,
-                    filename,
-                    mimetype,
-                    data,
-                    caption=caption,
-                    thread_root_id=thread_root_ref,
-                )
+                else:
+                    message_ref = await self._adapter.send_attachment(
+                        channel_id,
+                        sender_name,
+                        filename,
+                        mimetype,
+                        data,
+                        caption=caption,
+                        thread_root_id=thread_root_ref,
+                    )
         except MessagePartlySent as partial:
             message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
@@ -3376,13 +3404,14 @@ class CollaborationCore:
         if not await self._claim_outbound(channel_id, claim_event_id):
             return
         try:
-            message_ref = await self._adapter.send_attachments(
-                channel_id,
-                sender_name,
-                [pending.parts[i] for i in sorted(pending.parts)],
-                caption=pending.caption,
-                thread_root_id=thread_root_ref,
-            )
+            with outbound_delivery_scope(claim_event_id):
+                message_ref = await self._adapter.send_attachments(
+                    channel_id,
+                    sender_name,
+                    [pending.parts[i] for i in sorted(pending.parts)],
+                    caption=pending.caption,
+                    thread_root_id=thread_root_ref,
+                )
         except MessagePartlySent as partial:
             message_ref = self._partly_posted(claim_event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):

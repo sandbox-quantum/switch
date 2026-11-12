@@ -4,7 +4,9 @@ import logging
 import math
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +77,23 @@ if TYPE_CHECKING:
     from switch_core.db.models import Agent
 
 logger = logging.getLogger(__name__)
+
+_OUTBOUND_DELIVERY: ContextVar[tuple[str, list[int]] | None] = ContextVar(
+    "outbound_delivery", default=None
+)
+
+
+@contextmanager
+def outbound_delivery_scope(event_id: str) -> Iterator[None]:
+    token = _OUTBOUND_DELIVERY.set((event_id, [0]))
+    try:
+        yield
+    finally:
+        _OUTBOUND_DELIVERY.reset(token)
+
+
+def outbound_delivery_state() -> tuple[str, list[int]] | None:
+    return _OUTBOUND_DELIVERY.get()
 
 
 @dataclass(frozen=True)
@@ -514,6 +533,9 @@ class PlatformAdapter(ABC):
     #: Most adapters dial out to their platform and are handed events on a
     #: connection they opened; they leave this False.
     receives_webhooks: ClassVar[bool] = False
+    # For senders that retry until delivery is confirmed, including after a restart.
+    confirms_webhook_delivery: ClassVar[bool] = False
+    webhook_body_limit: ClassVar[int | None] = None
 
     #: Whether this platform draws agents' session activity: each turn step by
     #: step, and the approval and question cards a session waits on.
@@ -915,6 +937,21 @@ class PlatformAdapter(ABC):
         the event loop that carries every live client in switch-core.
         """
         return connection_config
+
+    @classmethod
+    def setup_values(cls, connection_config: dict[str, object]) -> dict[str, str]:
+        """Values returned only to the admin creating this connection."""
+        return {}
+
+    @classmethod
+    async def verify_connection(
+        cls, connection_config: dict[str, object], policy: OutboundPolicy
+    ) -> None:
+        await cls.verify_credentials(connection_config)
+
+    def outbound_delivery(self, event_id: str) -> AbstractContextManager[None]:
+        """Stable source identity for a platform that supports idempotent posts."""
+        return outbound_delivery_scope(event_id)
 
     @classmethod
     def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:

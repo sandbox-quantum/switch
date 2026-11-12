@@ -699,6 +699,7 @@ export type RemoteBridge = {
   /** That address, or null where the connection takes none or the server has
    * no public origin configured (`MESSAGING_PUBLIC_URL`) to build it from. */
   webhookUrl: string | null;
+  setupValues?: Record<string, string>;
 };
 
 /**
