@@ -680,6 +680,272 @@ class TestCoreCallback:
         assert "GATEWAY_PUBLIC_URL" in refused.json()["detail"]
 
 
+class Browser:
+    """The gateway's side of a sign-in started on the web: a browser signed
+    in to Switch as `user`, holding whatever cookies Core sets on it."""
+
+    def __init__(self, client: httpx.AsyncClient, user: User) -> None:
+        self.client = client
+        self.user = user
+        self.flow_cookies: dict[str, str] = {}
+
+    def cookies(self) -> dict[str, str]:
+        return {**cookies_for(self.user), **self.flow_cookies}
+
+    async def start(self, service: str = "example") -> httpx.Response:
+        return await self.client.post(
+            f"/gateway/service-connections/{service}/flows/web",
+            cookies=cookies_for(self.user),
+        )
+
+    async def leave(self, authorize_url: str) -> httpx.Response:
+        """Follow the authorize step, keeping the cookie it marks the browser with."""
+        left = await self.client.get(
+            authorize_url.removeprefix(PUBLIC), cookies=self.cookies()
+        )
+        self.flow_cookies.update(left.cookies)
+        return left
+
+    async def back(self, callback_url: str) -> httpx.Response:
+        parts = urlsplit(callback_url)
+        return await self.client.get(
+            f"{parts.path}?{parts.query}", cookies=self.cookies()
+        )
+
+
+def _returned_to_page(response: httpx.Response, state: str) -> None:
+    assert response.status_code == 303, response.text
+    assert response.headers["location"] == f"/connectors/example?sign_in={state}"
+
+
+async def _web_status(browser: Browser, state: str) -> dict:
+    status = await browser.client.get(
+        f"{FLOWS}/{state}", cookies=cookies_for(browser.user)
+    )
+    assert status.status_code == 200, status.text
+    return status.json()
+
+
+class TestWeb:
+    """A sign-in started in the gateway, which Core finishes at its callback
+    for the person whose browser it is, then returns to the connector page."""
+
+    async def test_connects_from_the_browser_and_returns_to_the_connector_page(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            browser = Browser(client, ada)
+            started = await browser.start()
+            assert started.status_code == 200, started.text
+            state = started.json()["id"]
+            assert started.json()["url"] == f"{PUBLIC}{FLOWS}/authorize?state={state}"
+
+            left = await browser.leave(started.json()["url"])
+            assert left.status_code == 307, left.text
+            callback = world.vendor.authorize(left.headers["location"])
+            assert callback.startswith(f"{PUBLIC}{FLOWS}/callback?")
+
+            returned = await browser.back(callback)
+            _returned_to_page(returned, state)
+            assert "max-age=0" in returned.headers["set-cookie"].lower()
+            assert await _web_status(browser, state) == {
+                "status": "connected",
+                "account": "ada@example.test",
+                "error": None,
+                "warning": None,
+            }
+            # The page reads the outcome once, then drops the flow.
+            dropped = await client.delete(f"{FLOWS}/{state}", cookies=cookies_for(ada))
+            assert dropped.status_code == 204
+
+        # The same record a sign-in from Switch Console writes.
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.account_id, connection.external_identity) == (
+            "acct-1",
+            "ada@example.test",
+        )
+        assert (connection.consent, connection.status) == ("write", "active")
+        assert await _flow_ids(session_factory) == set()
+
+    async def test_only_the_browser_of_whoever_started_it_finishes_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        """Someone starts a sign-in and sends the link to another person: had
+        it finished in their browser, their account at the vendor would be
+        connected as the person who started it."""
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            mallory = Browser(client, ada)
+            started = await mallory.start()
+            url = started.json()["url"]
+            state = started.json()["id"]
+
+            # The link refuses another person's browser, and one signed in to
+            # nothing, before either reaches the vendor.
+            victim = Browser(client, grace)
+            assert (await victim.leave(url)).status_code == 403
+            anonymous = await client.get(url.removeprefix(PUBLIC))
+            assert anonymous.status_code == 403
+            assert world.vendor.authorizations == []
+
+            # Nor can another person's browser bring a code back with the
+            # owner's cookie.
+            left = await mallory.leave(url)
+            callback = world.vendor.authorize(left.headers["location"])
+            victim.flow_cookies = dict(mallory.flow_cookies)
+            refused = await victim.back(callback)
+            assert refused.status_code == 403
+            assert "started by someone else" in refused.text
+            assert world.vendor.token_requests == []
+            assert await _connection(session_factory, grace.id) is None
+            assert await _connection(session_factory, ada.id) is None
+
+            # The refusal spent nothing: the owner's browser still finishes.
+            _returned_to_page(await mallory.back(callback), state)
+        assert await _connection(session_factory, ada.id) is not None
+
+    async def test_the_browser_must_be_the_one_that_left(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            browser = Browser(client, ada)
+            started = await browser.start()
+            state = started.json()["id"]
+            left = await browser.leave(started.json()["url"])
+            callback = world.vendor.authorize(left.headers["location"])
+            browser.flow_cookies = {}
+            _returned_to_page(await browser.back(callback), state)
+            status = await _web_status(browser, state)
+        assert status["status"] == "failed"
+        assert (
+            status["error"] == "Example sign-in could not be verified. Connect again."
+        )
+        assert world.vendor.token_requests == []
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_a_cancelled_sign_in_says_so_on_the_page(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            browser = Browser(client, ada)
+            started = await browser.start()
+            state = started.json()["id"]
+            await browser.leave(started.json()["url"])
+            declined = f"{PUBLIC}{FLOWS}/callback?state={state}&error=access_denied"
+            _returned_to_page(await browser.back(declined), state)
+            status = await _web_status(browser, state)
+        assert (status["status"], status["error"]) == (
+            "failed",
+            "Example sign-in was cancelled.",
+        )
+
+    async def test_an_account_linked_to_someone_else_says_why_on_the_page(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            for user in (grace, ada):
+                browser = Browser(client, user)
+                started = await browser.start()
+                state = started.json()["id"]
+                left = await browser.leave(started.json()["url"])
+                returned = await browser.back(
+                    world.vendor.authorize(left.headers["location"])
+                )
+                _returned_to_page(returned, state)
+            status = await _web_status(browser, state)
+        assert status["status"] == "failed"
+        assert "already linked to another Switch user" in status["error"]
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_switch_console_cannot_complete_a_web_sign_in(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            browser = Browser(client, ada)
+            started = await browser.start()
+            left = await browser.leave(started.json()["url"])
+            callback = urlsplit(world.vendor.authorize(left.headers["location"]))
+            console = Console(client, ada)
+            console.state = started.json()["id"]
+            code = parse_qs(callback.query)["code"][0]
+            assert (await console.complete(code)).status_code == 400
+        assert world.vendor.token_requests == []
+
+    async def test_a_sign_in_that_returns_only_to_console_cannot_start_on_the_web(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback]",
+            public_url=PUBLIC,
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Browser(client, ada).start()
+        assert refused.status_code == 409
+        assert "Connect it from Switch Console" in refused.json()["detail"]
+        assert await _flow_ids(session_factory) == set()
+
+    @pytest.mark.parametrize(
+        ("public_url", "web"),
+        [
+            (
+                PUBLIC,
+                {
+                    "google-workspace": True,
+                    "github": True,
+                    "atlassian": False,
+                    "datadog": False,
+                    "asana": False,
+                },
+            ),
+            (None, {"google-workspace": False, "github": True, "atlassian": False}),
+        ],
+    )
+    async def test_the_list_says_which_can_be_connected_on_the_web(
+        self, session_factory, tmp_path, public_url, web
+    ) -> None:
+        """Google returns sign-ins to Core, which needs the public address;
+        GitHub's App always returns to Core; Atlassian returns only to
+        Console's listener; a key is pasted; a placeholder can't connect."""
+        world = _world(session_factory, tmp_path / "catalog", public_url=public_url)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            listed = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+        assert listed.status_code == 200, listed.text
+        by_slug = {c["slug"]: c["web_sign_in"] for c in listed.json()["connections"]}
+        assert {slug: by_slug[slug] for slug in web} == web
+
+
 class TestRefusals:
     async def test_a_switched_off_service_cannot_be_connected(
         self, session_factory, tmp_path

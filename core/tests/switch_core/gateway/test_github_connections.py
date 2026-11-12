@@ -18,16 +18,24 @@ from switch_core.connections.loader import CATALOG
 from switch_core.connections.organization_apps import OrganizationApp
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     ServiceConnection,
     ServiceTokenIssuance,
     SignInFlow,
+    TenantMember,
     User,
     require_tenant_id,
 )
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
-from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_config, get_session
+from switch_core.gateway.auth import create_jwt, get_current_user
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_session,
+    get_session_factory,
+    get_user_store,
+)
 from switch_core.gateway.github_connections import APP_CHANGED, router
 from switch_core.keys import Keyring
 from switch_core.providers.github import GitHubConnections, GitHubError, GitHubReach
@@ -132,6 +140,8 @@ def _process(
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
     app.dependency_overrides[get_session] = sessions
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_user_store] = UserStore
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(keyring=TEST_KEYRING)
     return app
 
@@ -236,6 +246,103 @@ async def test_browser_handoff_completes_through_console_and_saves_encrypted(
     assert (await client.delete(BASE)).status_code == 200
     github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
     assert (await client.get(BASE)).json()["status"] == "not_connected"
+
+
+async def _signed_in(factory, user) -> str:
+    """The user a member of the workspace, and their Switch session cookie."""
+    async with factory() as session:
+        session.add(
+            TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="member")
+        )
+        await session.commit()
+    return create_jwt(
+        user.id,
+        user.email,
+        user.role,
+        TEST_KEYRING,
+        TENANT_ZERO_ID,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
+
+
+async def test_connects_from_the_web_and_returns_to_the_connector_page(github_app):
+    client, github, identity, factory = github_app
+    client.cookies.set("switch_auth", await _signed_in(factory, identity["user"]))
+    started = await client.post(BASE + "/flows/web")
+    assert started.status_code == 200, started.text
+    state = started.json()["id"]
+    assert started.json()["url"] == (
+        f"https://switch.example.com{BASE}/authorize?state={state}"
+    )
+    left = await client.get(started.json()["url"])
+    assert left.status_code == 307, left.text
+    assert parse_qs(urlsplit(left.headers["location"]).query)["state"] == [state]
+
+    returned = await client.get(
+        BASE + "/callback", params={"state": state, "code": "SYNTHETIC-CODE"}
+    )
+    assert returned.status_code == 303, returned.text
+    assert returned.headers["location"] == f"/connectors/github?sign_in={state}"
+    assert (await client.get(BASE + f"/flows/{state}")).json() == {
+        "status": "connected",
+        "login": "example-user",
+        "error": None,
+        "warning": None,
+    }
+    async with factory() as session:
+        row = await session.scalar(
+            select(ServiceConnection).where(ServiceConnection.service == "github")
+        )
+    assert row is not None and row.external_identity == "example-user"
+    # Switch Console cannot complete it: nothing holds its secret, and the
+    # code was already used here.
+    assert (await complete(client, state)).status_code == 400
+
+
+async def test_a_web_sign_in_finishes_only_in_its_owners_browser(github_app):
+    client, github, identity, factory = github_app
+    session_cookie = await _signed_in(factory, identity["user"])
+    client.cookies.set("switch_auth", session_cookie)
+    started = await client.post(BASE + "/flows/web")
+    state = started.json()["id"]
+    left = await client.get(started.json()["url"])
+    assert left.status_code == 307
+
+    # Sent on to another browser, signed in to nothing: the link and the
+    # return both refuse it, and GitHub is never asked for a token.
+    client.cookies.delete("switch_auth")
+    refused = await client.get(
+        BASE + "/callback", params={"state": state, "code": "SYNTHETIC-CODE"}
+    )
+    assert refused.status_code == 403
+    assert (await client.get(started.json()["url"])).status_code == 403
+    github.exchange.assert_not_called()
+
+    client.cookies.set("switch_auth", session_cookie)
+    returned = await client.get(
+        BASE + "/callback", params={"state": state, "code": "SYNTHETIC-CODE"}
+    )
+    assert returned.status_code == 303
+    assert (await client.get(BASE + f"/flows/{state}")).json()["status"] == "connected"
+
+
+async def test_a_cancelled_web_sign_in_says_so_on_the_page(github_app):
+    client, github, identity, factory = github_app
+    client.cookies.set("switch_auth", await _signed_in(factory, identity["user"]))
+    started = await client.post(BASE + "/flows/web")
+    state = started.json()["id"]
+    await client.get(started.json()["url"])
+    returned = await client.get(
+        BASE + "/callback", params={"state": state, "error": "access_denied"}
+    )
+    assert returned.headers["location"] == f"/connectors/github?sign_in={state}"
+    status = (await client.get(BASE + f"/flows/{state}")).json()
+    assert (status["status"], status["error"]) == (
+        "failed",
+        "GitHub authorization was cancelled.",
+    )
+    github.exchange.assert_not_called()
 
 
 async def test_callback_rejects_missing_cookie_and_replayed_completion(github_app):

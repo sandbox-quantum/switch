@@ -17,6 +17,12 @@ exchanges it, reads the account and writes the connection through
 failed with the reason, holding no token, until it expires or Console drops
 it.
 
+A flow started from the gateway (`start_web`) finishes in the browser
+instead: it leaves and returns through Core as a **core** flow does, and at
+the callback Core exchanges the code itself, for the person whose Switch
+session the browser carries, and sends the browser back to the connector's
+page. Nothing holds its completion secret, so Console cannot complete it.
+
 Flows are rows in `sign_in_flows` (`connections/sign_in_flows.py`), as
 GitHub's are, so any switch-core process can take any step: ten minutes each,
 at most 256 per workspace, one per person.
@@ -27,6 +33,8 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass
 from urllib.parse import urlencode
+
+from fastapi import Request
 
 from switch_core.connections.adapters import (
     ReauthorizationRequiredError,
@@ -58,6 +66,11 @@ KIND = "service"
 # characters.
 MAX_CODE_LENGTH = 8192
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
+WEB_INTERRUPTED = "Sign-in was interrupted. Connect again."
+# Marks a flow started from the gateway, in its details: it returns to the
+# browser, not to a listener, so it has no port.
+RETURNS_TO_WEB = {"returns_to": "web"}
+NO_LISTENER = 0
 
 
 def client_changed(name: str) -> str:
@@ -91,12 +104,25 @@ class ServiceFlow:
         return self.stored.tenant_id
 
     @property
+    def user_id(self) -> str:
+        return self.stored.user_id
+
+    @property
     def name(self) -> str:
         return str(self.stored.details["name"])
 
     @property
     def mode(self) -> RedirectMode:
         return "core" if self.stored.mode == "core" else "loopback"
+
+    @property
+    def on_web(self) -> bool:
+        """Started from the gateway: it finishes at Core's callback."""
+        return self.stored.details.get("returns_to") == "web"
+
+    @property
+    def interrupted(self) -> str:
+        return WEB_INTERRUPTED if self.on_web else INTERRUPTED
 
     @property
     def status(self) -> str:
@@ -129,6 +155,14 @@ class Exchange:
     account: Identity
 
 
+def get_service_flows(request: Request) -> ServiceFlows:
+    """The flows `gateway/app.py` installs on the gateway."""
+    flows = getattr(request.app.state, "service_flows", None)
+    if not isinstance(flows, ServiceFlows):
+        raise RuntimeError("No service sign-in flows are installed on this app.")
+    return flows
+
+
 class ServiceFlows:
     def __init__(self, public_url: str | None, flows: SignInFlows) -> None:
         self._public_url = public_url
@@ -141,6 +175,20 @@ class ServiceFlows:
             if mode == "loopback" or self._public_url is not None:
                 return mode
         return None
+
+    def web_ready(self, definition: ConnectionDefinition) -> bool:
+        """Whether a sign-in to `definition` can start and finish in the
+        browser: GitHub's always returns to Core, and an OAuth entry's does
+        where its vendor returns sign-ins to Core's own callback and this
+        server has the public address that callback is at."""
+        if definition.adapter == "github":
+            return True
+        oauth = definition.auth.oauth
+        return (
+            oauth is not None
+            and "core" in oauth.redirect
+            and self._public_url is not None
+        )
 
     def authorize_url(self, service: str, state: str) -> str:
         """Core's own step in front of the vendor's, in core mode."""
@@ -175,6 +223,57 @@ class ServiceFlows:
                 f"{', '.join(str(p) for p in ports)} of this computer. Close "
                 "whatever is using them, and connect again."
             )
+        return await self._start(
+            definition=definition,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            state=state,
+            mode=mode,
+            port=port,
+            completion_secret=completion_secret,
+            owner_label=owner_label,
+            marks={},
+        )
+
+    async def start_web(
+        self,
+        *,
+        definition: ConnectionDefinition,
+        tenant_id: str,
+        user_id: str,
+        owner_label: str,
+    ) -> ServiceFlow:
+        """A flow the gateway starts, which finishes at Core's callback."""
+        if not self.web_ready(definition):
+            raise FlowError(
+                f"{definition.name} can't be connected from the web here. "
+                "Connect it from Switch Console."
+            )
+        return await self._start(
+            definition=definition,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            state=secrets.token_urlsafe(32),
+            mode="core",
+            port=NO_LISTENER,
+            completion_secret=secrets.token_urlsafe(32),
+            owner_label=owner_label,
+            marks=RETURNS_TO_WEB,
+        )
+
+    async def _start(
+        self,
+        *,
+        definition: ConnectionDefinition,
+        tenant_id: str,
+        user_id: str,
+        state: str,
+        mode: RedirectMode,
+        port: int,
+        completion_secret: str,
+        owner_label: str,
+        marks: dict[str, str],
+    ) -> ServiceFlow:
         access = definition.access
         assert access is not None
         # Connecting asks for everything a grant may need: write where the
@@ -204,6 +303,7 @@ class ServiceFlows:
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
+                    **marks,
                 },
                 completion_secret=completion_secret,
             )
@@ -271,6 +371,22 @@ class ServiceFlows:
     async def deliver(self, flow: ServiceFlow, code: str, nonce: str) -> str:
         """The browser is back at Core's callback, in core mode: where it
         takes the code on to Console's listener. Once per flow."""
+        if flow.on_web:
+            raise FlowError("The sign-in could not be verified.")
+        await self._back_from_vendor(flow, code, nonce)
+        taken = await self._flows.advance(
+            flow.stored, expect=("authorizing",), to="delivered", changes={}
+        )
+        if taken is None:
+            raise FlowError("The sign-in could not be verified.")
+        return f"{loopback_redirect(flow.port)}?" + urlencode(
+            {"code": code, "state": flow.state}
+        )
+
+    async def _back_from_vendor(self, flow: ServiceFlow, code: str, nonce: str) -> None:
+        """The browser is back at Core's callback: it is the one that left
+        through Core, and the vendor either issued a code or the person
+        cancelled, which ends the flow."""
         if (
             flow.mode != "core"
             or flow.status != "authorizing"
@@ -287,14 +403,28 @@ class ServiceFlows:
                 changes={"error": error},
             )
             raise FlowError(error)
-        taken = await self._flows.advance(
-            flow.stored, expect=("authorizing",), to="delivered", changes={}
-        )
-        if taken is None:
+
+    async def finish_web(
+        self, flow: ServiceFlow, *, code: str, nonce: str, adapter: OAuthAdapter
+    ) -> Exchange:
+        """The browser is back at Core's callback with a flow the gateway
+        started: Core exchanges the code there and then. The caller has
+        checked whose session the browser carries. As `complete`, the flow
+        stays `checking` until the caller settles it."""
+        if not flow.on_web:
             raise FlowError("The sign-in could not be verified.")
-        return f"{loopback_redirect(flow.port)}?" + urlencode(
-            {"code": code, "state": flow.state}
+        unverified = f"{flow.name} sign-in could not be verified. Connect again."
+        try:
+            await self._back_from_vendor(flow, code, nonce)
+        except FlowError:
+            await self.ended(flow, unverified)
+            raise
+        checking = await self._flows.advance(
+            flow.stored, expect=("authorizing",), to="checking", changes={}
         )
+        if checking is None:
+            raise FlowError(unverified)
+        return await self._exchange(flow, checking, code, adapter)
 
     async def complete(
         self,
@@ -312,7 +442,8 @@ class ServiceFlows:
             f"{flow.name} sign-in could not be verified. Connect again."
         )
         if (
-            not flow.stored.holds_secret(completion_secret)
+            flow.on_web
+            or not flow.stored.holds_secret(completion_secret)
             or flow.status != ready_for
             or not code
             or len(code) > MAX_CODE_LENGTH
@@ -323,6 +454,13 @@ class ServiceFlows:
         )
         if checking is None:
             raise refused
+        return await self._exchange(flow, checking, code, adapter)
+
+    async def _exchange(
+        self, flow: ServiceFlow, checking: StoredFlow, code: str, adapter: OAuthAdapter
+    ) -> Exchange:
+        """Exchange a `checking` flow's code and read the account it signed
+        in; a failure settles the flow with why."""
         try:
             recorded = flow.stored.details.get("client_id")
             if recorded is not None and recorded != await adapter.client_id():
@@ -345,7 +483,7 @@ class ServiceFlows:
             await self.failed(checking, str(error))
             raise FlowError(str(error)) from None
         except BaseException:
-            await self.failed(checking, INTERRUPTED)
+            await self.failed(checking, flow.interrupted)
             raise
         return Exchange(flow=checking, signed_in=signed_in, account=account)
 
@@ -380,6 +518,14 @@ class ServiceFlows:
         why, for Console to show, rather than waiting until it expires."""
         await self._flows.advance(
             flow.stored, expect=("pending",), to="failed", changes={"error": error}
+        )
+
+    async def ended(self, flow: ServiceFlow, error: str) -> None:
+        """The browser came back from the vendor and the sign-in cannot go
+        on: the flow ends with why, for the page it returns to. Nothing
+        changes once it has ended otherwise."""
+        await self._flows.advance(
+            flow.stored, expect=("authorizing",), to="failed", changes={"error": error}
         )
 
     async def failed(self, flow: StoredFlow, error: str) -> None:

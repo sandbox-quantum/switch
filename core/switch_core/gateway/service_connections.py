@@ -28,6 +28,7 @@ from switch_core.connections.broker import (
     effective_tools,
     get_service_broker,
 )
+from switch_core.connections.flows import ServiceFlows, get_service_flows
 from switch_core.connections.loader import CATALOG, AccessLevel, ConnectionDefinition
 from switch_core.db.models import (
     Agent,
@@ -99,6 +100,7 @@ async def list_service_connections(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
 ) -> dict[str, Any]:
     """Every catalog service, with the person's connection to it."""
     connections = {
@@ -169,6 +171,10 @@ async def list_service_connections(
                 "agent_access_note": (
                     None if definition.token is None else definition.token.note
                 ),
+                # Whether a sign-in can start and finish in the browser, from
+                # the gateway; false where it returns only to Switch Console's
+                # listener, and for a key.
+                "web_sign_in": definition.enabled and flows.web_ready(definition),
                 # The ports Switch Console's listener may take a sign-in back
                 # on, for a vendor that matches them; null for any port.
                 "loopback_ports": (
