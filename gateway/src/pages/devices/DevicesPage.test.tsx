@@ -194,6 +194,28 @@ describe("DevicesPage", () => {
     expect(row.queryByRole("button")).toBeNull();
   });
 
+  it("holds the cloud device's actions while one is on its way", async () => {
+    signedInAs("member");
+    serve([], [], [cloud({ state: "ready" })]);
+    const answered = vi.mocked(fetch);
+    let release: (response: Response) => void = () => {};
+    const served = answered.getMockImplementation();
+    answered.mockImplementation(async (input, init) =>
+      String(input).endsWith("/lifecycle")
+        ? new Promise<Response>((resolve) => {
+            release = resolve;
+          })
+        : (served as typeof fetch)(input, init),
+    );
+    render(<DevicesPage />);
+
+    await menuOf("cloud:m1", "Switch cloud");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Stop/ }));
+    expect(await menuOf("cloud:m1", "Switch cloud")).toContain("StopWaiting for your cloud device to answer.");
+    release(new Response(JSON.stringify({ machine: cloud({ desired_state: "stopped" }) }), { status: 200 }));
+    expect(await screen.findByText("Stopping your cloud device.")).toBeTruthy();
+  });
+
   it("shows a cloud device still being set up", async () => {
     signedInAs("member");
     serve([], [], [cloud({ state: "provisioning" })]);

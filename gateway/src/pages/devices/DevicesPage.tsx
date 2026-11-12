@@ -186,6 +186,9 @@ function Devices({
   const [unmanageOpen, setUnmanageOpen] = useState(false);
   const [deleting, setDeleting] = useState<ManagedAgentTableRow | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // A cloud machine's change in flight: another sent before it answers would
+  // name the revision it had before, and be refused.
+  const [cloudBusy, setCloudBusy] = useState(false);
   const latest = useRef(0);
 
   const load = useCallback(async () => {
@@ -296,7 +299,15 @@ function Devices({
           actions.push({
             label: meta.label,
             icon: meta.icon,
-            onClick: () => void act(meta.done, () => cloudMachineLifecycle(machine.machine_id, action, machine.revision)),
+            disabledReason: cloudBusy ? "Waiting for your cloud device to answer." : null,
+            onClick: async () => {
+              setCloudBusy(true);
+              try {
+                await act(meta.done, () => cloudMachineLifecycle(machine.machine_id, action, machine.revision));
+              } finally {
+                setCloudBusy(false);
+              }
+            },
           });
         }
       }
@@ -327,7 +338,7 @@ function Devices({
       }
       return actions;
     },
-    [act, loadOwn, machineOf, userId],
+    [act, cloudBusy, loadOwn, machineOf, userId],
   );
 
   const agentActions = useCallback(
