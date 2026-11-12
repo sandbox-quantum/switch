@@ -1,13 +1,10 @@
 import { z } from 'zod';
-import { KV } from '@main/db/kv';
 import { log } from '@main/lib/logger';
 import { ALL_COMMAND_DEFS, type CommandId } from '@shared/commands';
-import { ONBOARDING_STEP_IDS } from '@shared/core/onboarding/checklist';
 import { ADD_SERVER_CHOICES, ADD_SERVER_STEPS } from '@shared/core/switch-servers/add-server-steps';
 import { VIEW_IDS } from '@shared/core/views/view-ids';
-import { noteBuddyStep } from './activation';
 import type { TelemetryEventMap, TelemetryEventName } from './events';
-import { telemetryService, trackEvent } from './telemetry-service';
+import { trackEvent } from './telemetry-service';
 
 /**
  * The command ids that exist, as a set to check a received value against.
@@ -27,8 +24,8 @@ const commandId = z.custom<CommandId>(
  * Most of what the app reports happens in the main process, where a call site is
  * type-checked against the catalogue and reviewed. These are the exceptions:
  * moments that exist only in the interface — which screen was opened, which
- * command was run, where someone stopped in a checklist — and there is no way to
- * observe them from the other side.
+ * command was run, where someone stopped in the first run — and there is no way
+ * to observe them from the other side.
  *
  * This is a gate, not a second emitter. Nothing here builds or sends a payload:
  * a validated call goes to the same `trackEvent`, the same consent check and the
@@ -48,9 +45,6 @@ const RENDERER_TELEMETRY_SCHEMAS = {
     invoked_by: z.enum(['palette', 'shortcut']),
   }),
   deeplink_opened: z.object({ resolved: z.boolean(), cold_start: z.boolean() }),
-  onboarding_step_started: z.object({ step_id: z.enum(ONBOARDING_STEP_IDS) }),
-  onboarding_checklist_dismissed: z.object({}),
-  onboarding_completed: z.object({}),
   add_server_step: z.object({
     step: z.enum(ADD_SERVER_STEPS),
     choice: z.enum(ADD_SERVER_CHOICES),
@@ -78,7 +72,6 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'install',
       'sign_in',
       'check_again',
-      'created',
       'create_failed',
       'opened_existing',
       'intro_opened',
@@ -103,7 +96,6 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'none',
     ]),
   }),
-  buddy_message_sent: z.object({ nth: z.enum(['1', '2', '3', '4', '5', '6+']) }),
   renderer_crashed: z.object({}),
 } as const satisfies {
   [K in RendererTelemetryEvent]: z.ZodType<TelemetryEventMap[K]>;
@@ -113,7 +105,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
  * What this gate lets through is exactly what the catalogue declares.
  *
  * Comparing `RendererTelemetryEvents` to `TelemetryEventMap` would prove
- * nothing — the catalogue *defines* those eight events as the shared shapes
+ * nothing — the catalogue *defines* those events as the shared shapes
  * (see `./events`), so the two sides are the same type by construction and any
  * such assertion is a tautology. The pair that can genuinely disagree is the
  * schema and the shape: a schema is hand-written, and one that forgets a
@@ -162,75 +154,15 @@ export type RendererTelemetryEvent =
   | 'view_opened'
   | 'command_executed'
   | 'deeplink_opened'
-  | 'onboarding_step_started'
-  | 'onboarding_completed'
-  | 'onboarding_checklist_dismissed'
   | 'add_server_step'
   | 'onboarding_page'
   | 'buddy_step'
-  | 'buddy_message_sent'
   | 'renderer_crashed';
 
 export type RendererTelemetryRequest = {
   name: RendererTelemetryEvent;
   properties: Record<string, unknown>;
 };
-
-/**
- * Events that describe a state rather than a moment, and so are reported once
- * for the life of an install.
- *
- * Finishing onboarding is the case this exists for: it is derived from a server
- * and a room existing, so it is true from the instant it becomes true and true
- * again on every later launch. Without this it would be counted once per
- * start-up forever, and "people who finished setting up" would grow without
- * anyone finishing anything.
- *
- * The record lives here, beside the emitter, rather than in the user's settings:
- * it is our bookkeeping, and writing it as a setting would report a setting the
- * user never changed.
- */
-const ONCE_PER_INSTALL = new Set<RendererTelemetryEvent>(['onboarding_completed']);
-
-const reportedOnce = new KV<Record<string, boolean>>('telemetry:reported');
-
-/**
- * Whether this once-only event has already been sent, claiming it if not.
- *
- * The in-memory guard matters as much as the stored one: the renderer can ask
- * several times in the same tick — a condition becoming true re-renders
- * everything watching it — and the database write does not land in time to stop
- * the second caller.
- *
- * The consent check comes first, and is the reason this is not simply a claim.
- * The record is never given back, so claiming before the gate spends it on a
- * send the gate then discards — and the event is retired for the life of the
- * install. That is not a corner case: the app renders behind the first-run
- * consent prompt, so on the very first launch of a build the interface reports
- * a finished checklist while the answer is still unset, which is `no` until it
- * is `yes`. Every install that already had a server, an agent and a room would
- * have burned the record before anyone could agree to anything.
- *
- * Nothing is claimed while a send would be refused, so the event stays available
- * and is reported the next time the condition holds and consent is in place.
- */
-const claimedThisRun = new Set<RendererTelemetryEvent>();
-
-async function claimOnce(name: RendererTelemetryEvent): Promise<boolean> {
-  if (claimedThisRun.has(name)) return false;
-  if (!(await telemetryService.canSend())) return false;
-  if (claimedThisRun.has(name)) return false;
-  claimedThisRun.add(name);
-  if ((await reportedOnce.get(name)) === true) return false;
-  // `setOrThrow`, because the ordinary `set` logs a failed write and returns:
-  // the caller would then send the event with no durable record of having done
-  // so, and report it again on the next launch. Letting the write throw hands
-  // the decision to the caller below, which keeps this run quiet and leaves the
-  // record unclaimed for the next one — a report that may be missed, rather
-  // than one that is certainly duplicated.
-  await reportedOnce.setOrThrow(name, true);
-  return true;
-}
 
 /**
  * Report an event the interface observed, if it is one it may report.
@@ -263,20 +195,5 @@ export function trackFromRenderer(request: RendererTelemetryRequest): void {
     return;
   }
 
-  const properties = parsed.data as TelemetryEventMap[RendererTelemetryEvent];
-  if (request.name === 'buddy_step')
-    noteBuddyStep((properties as TelemetryEventMap['buddy_step']).action);
-  if (!ONCE_PER_INSTALL.has(request.name)) {
-    trackEvent(request.name, properties);
-    return;
-  }
-
-  void claimOnce(request.name)
-    .then((first) => {
-      if (first) trackEvent(request.name, properties);
-    })
-    .catch(() => {
-      // A record we cannot read is not a reason to report a second time: the
-      // duplicate is the failure mode this exists to prevent.
-    });
+  trackEvent(request.name, parsed.data as TelemetryEventMap[RendererTelemetryEvent]);
 }

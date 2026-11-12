@@ -4,7 +4,8 @@ This is the privacy boundary, enforced rather than documented: an event or a
 property not declared here cannot be sent, and no path forwards an arbitrary
 string. :func:`validate` holds two rules — the property set is exact (a
 property that does not apply carries an explicit ``none``, so a missing key is
-always a bug) and values are closed.
+a bug, unless the property is declared :func:`optional`) and values are
+closed.
 
 ``docs/old/telemetry-events.md`` says why each event exists; this says what is
 allowed on the wire.
@@ -77,6 +78,27 @@ def one_of(*values: str) -> _OneOf:
     return _OneOf(frozenset(values))
 
 
+@dataclass(frozen=True)
+class _Optional(PropertyType):
+    """A property an event leaves out when its value is not known.
+
+    For a number that has no honest stand-in: an age whose timestamp could not
+    be read, a room size whose room could not be looked up. A sentinel such as
+    -1 is summed and averaged like any other value unless every chart filters
+    it, where an absent property is skipped by every aggregation. A caller
+    passes None, and the service leaves the key out.
+    """
+
+    kind: PropertyType
+
+    def check(self, value: object) -> str | None:
+        return self.kind.check(value)
+
+
+def optional(kind: PropertyType) -> _Optional:
+    return _Optional(kind)
+
+
 class TelemetryCatalogueError(Exception):
     """An event does not match the catalogue.
 
@@ -146,20 +168,20 @@ AGENT_TYPE = one_of(
 # agent registered without declaring one at all.
 KNOWN_AGENT_TYPE = one_of("claude-code", "codex", "opencode", "other", "none")
 
-# The runtime as `agent_message_sent` reports it. That event looks the sending
-# agent up after the fact, so it has a third answer: `unknown`, for a lookup
-# that failed or found no agent.
+# The runtime as `message_sent` reports it for an agent's message. That event
+# looks the sending agent up after the fact, so it has a third answer:
+# `unknown`, for a lookup that failed or found no agent.
 LOOKED_UP_AGENT_TYPE = one_of(*KNOWN_AGENT_TYPE.values, "unknown")
 
 ACTOR_KIND = one_of("user", "agent", "system")
 
-# Who said a message. `user` is a person on a messaging platform; `bot` is an
-# integration posting there (a Slack app, a Discord bot or webhook, a
-# Mattermost bot account, another Switch server's agent), which until this
-# value existed was counted as `user`. `platform` is Switch itself speaking — a
-# template's kickoff, or a request it carries on a person's behalf — and
-# `unknown` a sender whose client could not be looked up.
-SENDER_KIND = one_of("user", "bot", "agent", "platform", "unknown")
+# Who said a message. `user` is a person on a messaging platform and `member`
+# a person in Switch Console; `bot` is an integration posting on a platform (a
+# Slack app, a Discord bot or webhook, a Mattermost bot account, another
+# Switch server's agent). `platform` is Switch itself speaking — a template's
+# kickoff, or a request it carries on a person's behalf — and `unknown` a
+# sender whose client could not be looked up.
+SENDER_KIND = one_of("user", "member", "bot", "agent", "platform", "unknown")
 
 OUTCOME = one_of("success", "failure")
 
@@ -234,28 +256,17 @@ _SNAPSHOT_COUNTS = (
     "user_count",
     "user_internal_count",
     # Switch accounts, not chat identities — see `chat_identity_*` for those.
-    # Superseded by `account_active_*`, which is the same count; kept for one
-    # stable release so charts can move across.
+    # The period events' `account_active` counts these per period, and adds
+    # accounts that used Switch Console chat.
     "user_active_1d",
     "user_active_7d",
     "user_internal_active_1d",
     "user_internal_active_7d",
     "chat_identity_count",
-    # Superseded by `person_identity_active_*` plus `bot_identity_active_*`:
-    # this counts an integration's identity as a person. Kept for one stable
-    # release.
+    # Counts an integration's identity as a person; the period events'
+    # `person_identity_active` and `bot_identity_active` split the two.
     "chat_identity_active_1d",
     "chat_identity_active_7d",
-    # Who used a room with an agent, split three ways. People: chat identities
-    # that never posted as an app, linked to a Switch account or not (the
-    # headline). Bots: identities whose platform marked their posts as an
-    # app's. Accounts: Switch accounts whose linked identity spoke (the floor).
-    "person_identity_active_1d",
-    "person_identity_active_7d",
-    "bot_identity_active_1d",
-    "bot_identity_active_7d",
-    "account_active_1d",
-    "account_active_7d",
     # `room_count` is the headline: rooms a *person* made. The other two keep
     # agent scratch rooms and adopted channels out of it.
     "room_count",
@@ -313,6 +324,26 @@ _SNAPSHOT_COUNTS = (
     "api_key_count",
 )
 
+# What each period event counts (`snapshot.PeriodCounts`), read from the
+# database for the whole period. `is_partial` says the period began before the
+# deployment was installed or before telemetry was last switched on: it is the
+# first of its length the deployment reports, dated no earlier than that.
+_PERIOD_COUNTS: Mapping[str, PropertyType] = {
+    "room_active": NUMBER,
+    "person_identity_active": NUMBER,
+    "bot_identity_active": NUMBER,
+    "account_active": NUMBER,
+    "agent_active": NUMBER,
+    # From the message table, so it can be set against the message events
+    # received to see how many were lost on the way.
+    "message_count": NUMBER,
+    "turn_human_to_agent": NUMBER,
+    "turn_agent_to_human": NUMBER,
+    "turn_agent_to_agent": NUMBER,
+    "is_partial": BOOLEAN,
+    "tenant_failed_count": NUMBER,
+}
+
 # Every milestone answers "how long after install did this first happen", so
 # they share a property and differ only in what else they carry.
 _SINCE_INSTALL: Mapping[str, PropertyType] = {"seconds_since_install": NUMBER}
@@ -332,15 +363,11 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     },
     # One per finished UTC day, ISO week and calendar month, dated to its
     # middle: distinct use over exactly that period, so the events of one
-    # period kind add up across deployments where the snapshot's trailing
-    # `*_7d` counts, summed over days, count each room up to seven times.
-    "usage_period": {
-        "period": one_of("day", "week", "month"),
-        "room_active": NUMBER,
-        "person_identity_active": NUMBER,
-        "account_active": NUMBER,
-        "tenant_failed_count": NUMBER,
-    },
+    # kind add up across deployments where the snapshot's trailing `*_7d`
+    # counts, summed over days, count each room up to seven times.
+    "usage_day_counted": dict(_PERIOD_COUNTS),
+    "usage_week_counted": dict(_PERIOD_COUNTS),
+    "usage_month_counted": dict(_PERIOD_COUNTS),
     # ── Accounts, workspaces and cloud machines ─────────────────────────────
     # Switch Cloud's funnel, though any server that has them sends them:
     # `deployment_kind`, on every event, says which kind of server it was.
@@ -356,8 +383,11 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "change": one_of("new", "joined_workspace", "unretained", "restarted"),
     },
     # `provisioning_seconds` is from the claim to the first controller report,
-    # for a new machine; -1 for a later start, which nothing times.
-    "cloud_machine_ready": {"new_machine": BOOLEAN, "provisioning_seconds": NUMBER},
+    # for a new machine; left out for a later start, which nothing times.
+    "cloud_machine_ready": {
+        "new_machine": BOOLEAN,
+        "provisioning_seconds": optional(NUMBER),
+    },
     "cloud_machine_failed": {
         "reason": one_of(
             "not_scheduled",
@@ -368,11 +398,14 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
             "reported",
         ),
     },
-    "cloud_machine_woken": {
-        "trigger": one_of("message", "agent_placed", "owner"),
-        "stopped_by": one_of("idle", "owner", "unknown"),
-    },
-    "cloud_machine_stopped": {"reason": one_of("idle", "owner")},
+    # A person's starts and stops apart from Switch's own, so the two can be
+    # told apart by name: Switch waking a machine it put to sleep because its
+    # agent was addressed or placed, and putting it to sleep when idle, are
+    # not anyone using it.
+    "cloud_machine_woken": {"trigger": one_of("message", "agent_placed")},
+    "cloud_machine_idle_stopped": {},
+    "cloud_machine_started": {"stopped_by": one_of("idle", "owner", "unknown")},
+    "cloud_machine_stopped": {},
     # ── Milestones ───────────────────────────────────────────────────────────
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.
@@ -394,10 +427,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         **_SINCE_INSTALL,
         "known_agent_type": KNOWN_AGENT_TYPE,
     },
-    # An agent's first live connection, which is all this ever measured.
-    # Superseded by `first_agent_connected`, the same moment under an honest
-    # name; kept for one stable release.
-    "first_session_started": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
+    # An agent's first live connection. Released servers sent the same moment
+    # as `first_session_started`, which is no longer sent; on a deployment that
+    # sent it, this is claimed in its place (`SUPERSEDED_MILESTONES`).
     "first_agent_connected": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
     # The first coding-agent session a host reported (`session_started`): an
     # agent doing work, not just coming online. A deployment that had already
@@ -429,7 +461,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     },
     "room_archived": {
         "bridge_platform": BRIDGE_PLATFORM,
-        "age_days": NUMBER,
+        "age_days": optional(NUMBER),
         "was_ever_active": TRISTATE,
     },
     "room_agents_added": {"agent_count": NUMBER, "added_by_kind": ACTOR_KIND},
@@ -441,19 +473,19 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
         "created_by_kind": ACTOR_KIND,
-        "age_days": NUMBER,
+        "age_days": optional(NUMBER),
         "was_ever_active": TRISTATE,
         "agent_count": NUMBER,
     },
     "agent_deleted": {
         "known_agent_type": KNOWN_AGENT_TYPE,
-        "age_days": NUMBER,
+        "age_days": optional(NUMBER),
         "room_count": NUMBER,
         "had_parent": BOOLEAN,
     },
     "connector_removed": {
         "bridge_platform": BRIDGE_PLATFORM,
-        "age_days": NUMBER,
+        "age_days": optional(NUMBER),
         # Removed having never connected is a failed setup; removed after
         # months is a decision. `unknown` when the durable record itself
         # could not be read — that is not evidence either way, and reporting
@@ -472,9 +504,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # An agent coming online: its first live connection. No "start source": the
     # server sees an authenticated connection whether a person launched the
     # session or Console spawned it. `session_started` is the one that says.
-    # Superseded by `agent_connected`, the same event under a name that says
-    # what it is; kept for one stable release.
-    "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
+    # Released servers sent it as `agent_session_started`.
     "agent_connected": {"known_agent_type": KNOWN_AGENT_TYPE},
     # A coding-agent session starting, as its host reports it once, when the
     # session is new. `start_source` is what the launcher stamped on it: `user`
@@ -487,15 +517,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "known_agent_type": KNOWN_AGENT_TYPE,
     },
     # No runtime: the connection registry is the only thing that knows a
-    # session ended and it holds none. Starts carry it.
-    # Superseded by `agent_disconnected`, the same event renamed; kept for one
-    # stable release.
-    "agent_session_ended": {
-        "duration_seconds": NUMBER,
-        "reason": one_of(
-            "normal", "heartbeat_lapsed", "replaced", "room_claimed", "error"
-        ),
-    },
+    # session ended and it holds none. Starts carry it. Dated to the last
+    # connection closing, not to the end of the grace that confirmed it.
+    # Released servers sent it as `agent_session_ended`.
     "agent_disconnected": {
         "duration_seconds": NUMBER,
         "reason": one_of(
@@ -504,8 +528,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     },
     "connector_added": {
         "bridge_platform": BRIDGE_PLATFORM,
-        "seconds_since_install": NUMBER,
-        "seconds_since_configured": NUMBER,
+        # Left out where the deployment has no install clock.
+        "seconds_since_install": optional(NUMBER),
+        "seconds_since_configured": optional(NUMBER),
         # Registered by the deployment's setup step (the bundled Mattermost)
         # rather than by a person. Filter these out to measure onboarding.
         "is_preconfigured": BOOLEAN,
@@ -530,33 +555,37 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         # milliseconds, on both outcomes — a failure's latency is the more
         # interesting of the two, because a timeout and a refusal look identical
         # in the failure code and nothing alike in the time.
-        "duration_ms": NUMBER,
+        "duration_ms": optional(NUMBER),
     },
     # ── Messages ─────────────────────────────────────────────────────────────
     # One per message, unlike everything above. They carry no identifier, so
     # they answer "how much, and between whom", never "who": distinct people
-    # come from the snapshot's `user_*` and `chat_identity_*` counts. A multi-file post is one
+    # come from the period counts and the snapshot. A multi-file post is one
     # message, not one per file.
     #
-    # Everything a participant chose to say in a room — the population the
-    # tenant is metered for. Notices Switch posts on someone's behalf are not
-    # in it. The room sizes are its members right now, so averaging them over
-    # these events gives the room size a typical message is said to — once
-    # `bridge_platform = unknown` is filtered out, since a room that could not
-    # be read reports its sizes as -1.
-    "room_message_sent": {
+    # Everything a participant chose to say in a room, on a messaging
+    # platform or in Switch Console — the population the tenant is metered
+    # for. Notices Switch posts on someone's behalf are not in it.
+    # `known_agent_type` is the sending agent's runtime, carried only when an
+    # agent said it. The room sizes are its members right now, so averaging
+    # them over these events gives the room size a typical message is said to;
+    # `room_user_count` separates an agent answering people from agents
+    # talking among themselves. A room that could not be read leaves its
+    # sizes out.
+    "message_sent": {
         "sender_kind": SENDER_KIND,
+        "known_agent_type": optional(LOOKED_UP_AGENT_TYPE),
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
-        "room_user_count": NUMBER,
-        "room_agent_count": NUMBER,
+        "room_user_count": optional(NUMBER),
+        "room_agent_count": optional(NUMBER),
         "has_attachment": BOOLEAN,
         "in_thread": BOOLEAN,
     },
     # A message an agent was asked to act on: addressed to it and let through
     # its addressing policy and budget, whether or not the agent was there to
     # take it. One per agent addressed, so a message naming two agents is two
-    # of these and one `room_message_sent`; a multi-file post delivered in two
+    # of these and one `message_sent`; a multi-file post delivered in two
     # pieces is not counted again. `agent_live` is whether the agent had a live
     # session for the room when it arrived: false for one that was offline or
     # still starting, and always for a session_passive agent, which reads its
@@ -568,18 +597,6 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "channel_type": CHANNEL_TYPE,
         "has_attachment": BOOLEAN,
         "agent_live": BOOLEAN,
-    },
-    # A message an agent posted: its replies, and anything else it chose to
-    # say. Also a `room_message_sent` with `sender_kind = agent`; a separate
-    # event so it can carry the runtime. `room_user_count` separates an agent
-    # answering people from agents talking among themselves.
-    "agent_message_sent": {
-        "known_agent_type": LOOKED_UP_AGENT_TYPE,
-        "bridge_platform": BRIDGE_PLATFORM,
-        "channel_type": CHANNEL_TYPE,
-        "room_user_count": NUMBER,
-        "has_attachment": BOOLEAN,
-        "in_thread": BOOLEAN,
     },
     # ── Decision routing ─────────────────────────────────────────────────────
     # One per message auto-route asked a decision service about. Which agent,
@@ -607,27 +624,31 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "created_by_kind": ACTOR_KIND,
     },
     "reference_attached_to_room": {"reference_type": REFERENCE_TYPE},
-    "reference_deleted": {"reference_type": REFERENCE_TYPE, "age_days": NUMBER},
+    "reference_deleted": {
+        "reference_type": REFERENCE_TYPE,
+        "age_days": optional(NUMBER),
+    },
     "document_created": {
         "scope": DOCUMENT_SCOPE,
         "created_by_kind": ACTOR_KIND,
         "has_instructions": BOOLEAN,
     },
     "document_attached_to_room": {},
-    "document_deleted": {"scope": DOCUMENT_SCOPE, "age_days": NUMBER},
-    "package_created": {"created_by_kind": ACTOR_KIND},
+    "document_deleted": {"scope": DOCUMENT_SCOPE, "age_days": optional(NUMBER)},
+    # No `created_by_kind`: only a person can make one.
+    "package_created": {},
     "package_attached_to_room": {"reference_count": NUMBER, "document_count": NUMBER},
-    "package_deleted": {"age_days": NUMBER},
+    "package_deleted": {"age_days": optional(NUMBER)},
     "api_key_created": {"key_type": API_KEY_TYPE},
-    "api_key_revoked": {"key_type": API_KEY_TYPE, "age_days": NUMBER},
+    "api_key_revoked": {"key_type": API_KEY_TYPE, "age_days": optional(NUMBER)},
     "room_group_created": {"has_parent": BOOLEAN},
-    "room_group_deleted": {"room_count": NUMBER, "age_days": NUMBER},
+    "room_group_deleted": {"room_count": NUMBER, "age_days": optional(NUMBER)},
     # The schema, not an instance: registering one extends what Switch can
     # point at.
     "reference_type_created": {},
-    "reference_type_deleted": {"age_days": NUMBER},
+    "reference_type_deleted": {"age_days": optional(NUMBER)},
     "template_created": {"template_kind": TEMPLATE_KIND},
-    "template_deleted": {"template_kind": TEMPLATE_KIND, "age_days": NUMBER},
+    "template_deleted": {"template_kind": TEMPLATE_KIND, "age_days": optional(NUMBER)},
     # An agent asked for something and was told no, on purpose. Which rule
     # people run into is what a finer rights model is designed from; who and
     # what stays in the server log (see `agent_refusals`).
@@ -679,7 +700,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "invitation_sent": {
         "delivery": one_of("sent", "not_configured", "failed", "not_requested")
     },
-    "invitation_accepted": {"age_hours": NUMBER},
+    "invitation_accepted": {"age_hours": optional(NUMBER)},
     "bridge_disconnected": {
         # Which side of the bridge: always "collaboration" today; "agent" is
         # declared so the agent bridge can report the same events.
@@ -696,6 +717,10 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
 
 
 PropertyValue = str | int | float | bool
+
+# What a caller hands over: None for an optional property it does not know,
+# which is left off the wire.
+EmittedValue = PropertyValue | None
 
 
 def wire_name(event: str) -> str:
@@ -722,14 +747,15 @@ def event_spec(event: str) -> Mapping[str, PropertyType] | None:
     }
 
 
-def validate(event: str, properties: Mapping[str, PropertyValue]) -> None:
+def validate(event: str, properties: Mapping[str, EmittedValue]) -> None:
     """Raise unless `properties` is exactly what `event` declares.
 
     Checks the three things that would each, on their own, let something
     unintended reach the relay: an event nobody declared, a property nobody
     declared, and a value outside the set its property allows. A missing
     property is checked too — not for privacy but for the charts, since an
-    event whose keys vary between emissions cannot be grouped on them.
+    event whose keys vary between emissions cannot be grouped on them. Only a
+    property declared `optional` may be missing, or None.
     """
     spec = event_spec(event)
     if spec is None:
@@ -747,7 +773,8 @@ def validate(event: str, properties: Mapping[str, PropertyValue]) -> None:
             "in the catalogue: this is the check that stops an identifier or a "
             "free-text value reaching the relay by accident."
         )
-    if missing := sorted(declared - given):
+    required = {name for name, kind in spec.items() if not isinstance(kind, _Optional)}
+    if missing := sorted(required - given):
         raise TelemetryCatalogueError(
             f"{event!r} is missing {missing}. Every event of a name carries the "
             "same keys every time — pass the explicit 'none'/0/False rather "
@@ -755,5 +782,13 @@ def validate(event: str, properties: Mapping[str, PropertyValue]) -> None:
         )
 
     for name, value in properties.items():
-        if reason := spec[name].check(value):
+        kind = spec[name]
+        if value is None:
+            if isinstance(kind, _Optional):
+                continue
+            raise TelemetryCatalogueError(
+                f"{event!r}.{name} is required and was None. Only a property "
+                "declared optional may be left out."
+            )
+        if reason := kind.check(value):
             raise TelemetryCatalogueError(f"{event!r}.{name}: {reason}.")

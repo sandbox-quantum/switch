@@ -66,17 +66,8 @@ from switch_core.official_templates import (
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.snapshot import normalise_template_kind
 from switch_core.template_lint import lint_template
-
-
-def _kind(value: str | None) -> str:
-    """A template's kind as the catalogue spells it.
-
-    The column is free text, so only the three the product uses are named and
-    an operator's own kind reports as `other`.
-    """
-    return value if value in ("room", "group", "agent") else "other"
-
 
 router = APIRouter()
 
@@ -388,7 +379,9 @@ async def create_template(
     # brings rooms and agents with it is a different thing from one that
     # carries neither, and that shape is reportable where the name is not.
     emit_safely(
-        current_telemetry(), "template_created", {"template_kind": _kind(req.kind)}
+        current_telemetry(),
+        "template_created",
+        {"template_kind": normalise_template_kind(req.kind)},
     )
     return _detail(
         template,
@@ -610,7 +603,7 @@ async def delete_template(
     template = await _load_for(
         "delete", session, template_store, template_id, user, is_admin
     )
-    kind, age = _kind(template.kind), age_days(template.created_at)
+    kind, age = normalise_template_kind(template.kind), age_days(template.created_at)
     try:
         await template_store.delete(session, template_id)
     except ValueError as e:

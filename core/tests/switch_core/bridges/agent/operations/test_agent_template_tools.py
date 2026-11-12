@@ -44,6 +44,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import RoomSpec
 from switch_core.template_guide import TEMPLATE_GUIDE
+from tests.telemetry_records import recording_telemetry
 
 ROOM_TEMPLATE = """\
 version: 1
@@ -614,6 +615,27 @@ kickoff: "@{agent} start"
 
 
 @pytest.mark.asyncio
+async def test_saving_and_deleting_are_reported_as_in_the_gateway(tools):
+    """`template_created` and `template_deleted` counted only the gateway's
+    before."""
+    telemetry, sink = recording_telemetry()
+    tools["protocol"].telemetry = telemetry
+
+    saved = await _as(
+        tools["agent_id"],
+        save_template,
+        name="mine",
+        description="",
+        yaml=ROOM_TEMPLATE,
+    )
+    await _as(tools["agent_id"], delete_template, template_id=saved["id"])
+
+    assert sink.events("template_created") == [{"template_kind": "room"}]
+    [deleted] = sink.events("template_deleted")
+    assert deleted["template_kind"] == "room"
+    assert deleted["age_days"] >= 0
+
+
 async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tools):
     saved = await _as(
         tools["agent_id"],
@@ -623,7 +645,11 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
         yaml=ROOM_TEMPLATE,
     )
     templates = AgentTemplates(
-        TemplateStore(), max_bytes=64 * 1024, agent_management=False, switch_buddy=False
+        TemplateStore(),
+        max_bytes=64 * 1024,
+        agent_management=False,
+        switch_buddy=False,
+        telemetry=None,
     )
     async with tools["session_factory"]() as session:
         agent = await session.get(Agent, tools["agent_id"])
