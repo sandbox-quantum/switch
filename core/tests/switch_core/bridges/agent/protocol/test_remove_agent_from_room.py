@@ -95,6 +95,25 @@ class TestRemoveAgentFromRoom:
 
         assert rooms.removed == [(room_id, [target], "agent")]
 
+    async def test_room_owners_agent_open_to_anyone_does_not_use_her_rights(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Whoever may address it could otherwise remove other people's
+        agents with the room owner's rights."""
+        svc, rooms = _core(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        bob = await _make_user(session_factory, "bob")
+        caller = await _register(svc, "bob-agent", bob)
+        target = await _register(svc, "alice-agent", alice)
+        await _set(session_factory, caller, addressing="anyone")
+        room_id = await _room_with(session_factory, [target, caller], owner_id=bob)
+
+        with pytest.raises(
+            RoomPermissionError, match="takes requests from people other than"
+        ):
+            await svc.remove_agent_from_room(caller, room_id, "alice-agent")
+        assert rooms.removed == []
+
     async def test_being_allowed_to_address_the_agent_is_not_enough(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
