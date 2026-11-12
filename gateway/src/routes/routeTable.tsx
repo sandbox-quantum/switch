@@ -315,20 +315,21 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   redirect("/settings/org/audit-log", CURRENT, "/organization"),
 
-  // The platform operator's pages.
+  // The platform operator's pages. Each holds the operator rule itself, not
+  // only through the area, so a page moved out of it stays the operator's.
   areaIndex("/platform", "platform"),
   redirect("/platform", CURRENT, "/operator/workspaces"),
   settingsPage(
     "/platform/workspaces",
     "platform",
     "All workspaces",
-    everyone,
+    operators,
     <OperatorWorkspacesPage />,
   ),
   redirect("/platform/workspaces", CURRENT, "/operator/workspaces"),
-  settingsPage("/platform/users", "platform", "Users", everyone, <UsersPage />),
+  settingsPage("/platform/users", "platform", "Users", operators, <UsersPage />),
   redirect("/platform/users", CURRENT, "/users"),
-  settingsPage("/platform/connectors", "platform", "Connectors", everyone, <ConnectorAppsPage />),
+  settingsPage("/platform/connectors", "platform", "Connectors", operators, <ConnectorAppsPage />),
   redirect("/platform/connectors", CURRENT, "/connectors"),
 ];
 
