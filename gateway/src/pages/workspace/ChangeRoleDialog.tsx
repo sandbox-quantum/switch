@@ -94,7 +94,13 @@ export default function ChangeRoleDialog({ member, onSave, onClose }: Props) {
                     backgroundColor: selected ? "var(--sw-muted)" : "transparent",
                   }}
                 >
-                  <Radio value={option.role} size="small" sx={{ p: 0.25, mt: "1px" }} />
+                  <Radio
+                    value={option.role}
+                    size="small"
+                    // Focus starts on their current role, the choice to move from.
+                    autoFocus={option.role === member.role}
+                    sx={{ p: 0.25, mt: "1px" }}
+                  />
                   <Box>
                     <Typography variant="body2" sx={{ fontWeight: 500 }}>
                       {option.label}

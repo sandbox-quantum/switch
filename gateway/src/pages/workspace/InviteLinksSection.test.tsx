@@ -63,6 +63,16 @@ describe("InviteLinksSection", () => {
     expect(screen.queryByText("Status")).toBeNull();
   });
 
+  it("doesn't guess who made a link before the roster has loaded", async () => {
+    stubFetch(LINKS);
+    render(<InviteLinksSection tenantId="t1" inOrganization={false} members={null} />);
+
+    await waitFor(() => expect(shownIds()).toEqual(["new", "old"]));
+    expect(screen.queryByText("Someone no longer here")).toBeNull();
+    expect(screen.queryByText("Ann")).toBeNull();
+    expect(within(screen.getByTestId("row-old")).getByText("—")).toBeTruthy();
+  });
+
   it("shows the ended links on request, and offers to revoke only active ones", async () => {
     stubFetch(LINKS);
     render(<InviteLinksSection tenantId="t1" inOrganization={false} members={MEMBERS} />);

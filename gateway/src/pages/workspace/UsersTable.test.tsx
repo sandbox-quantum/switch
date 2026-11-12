@@ -53,6 +53,7 @@ const ROBOT = member({
 interface Rendered {
   onChanged: ReturnType<typeof vi.fn>;
   onSelfChanged: ReturnType<typeof vi.fn>;
+  onRemoved: ReturnType<typeof vi.fn>;
   onLeft: ReturnType<typeof vi.fn>;
 }
 
@@ -63,7 +64,8 @@ function renderTable(
   const handlers = {
     onChanged: vi.fn(async () => {}),
     onSelfChanged: vi.fn(async () => {}),
-    onLeft: vi.fn(),
+    onRemoved: vi.fn(),
+    onLeft: vi.fn(async () => {}),
   };
   render(
     <MemoryRouter>
@@ -180,6 +182,7 @@ describe("UsersTable", () => {
           canOpenOrganizationUsers
           onChanged={vi.fn(async () => {})}
           onSelfChanged={vi.fn(async () => {})}
+          onRemoved={vi.fn()}
           onLeft={vi.fn(async () => {})}
         />
       </MemoryRouter>,
@@ -350,7 +353,7 @@ describe("UsersTable", () => {
 
   it("names who receives what a removed person owns, then says what passed", async () => {
     const fetchMock = stubRemoval({ heir: { user_id: "me", name: "Me", email: "me@example.com" }, handed: { room: 2, template: 1 } });
-    const { onChanged, onLeft } = renderTable([ME, BOB]);
+    const { onChanged, onLeft, onRemoved } = renderTable([ME, BOB]);
 
     fireEvent.click(within(openMenu("Bob")).getByText("Remove from workspace"));
     const dialog = screen.getByRole("dialog");
@@ -362,9 +365,10 @@ describe("UsersTable", () => {
     const [[url]] = calls(fetchMock, "DELETE");
     expect(url).toContain("/tenants/t1/members/bob");
     expect(onLeft).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText("Removed Bob. What they owned there passed to you: 2 rooms, 1 template."),
-    ).toBeTruthy();
+    expect(onRemoved).toHaveBeenCalledWith(
+      "Removed Bob. What they owned there passed to you: 2 rooms, 1 template.",
+      null,
+    );
   });
 
   it("names another admin when the server would hand things to them", async () => {
@@ -391,7 +395,7 @@ describe("UsersTable", () => {
 
   it("shows the sign-ins the removal could not revoke", async () => {
     stubRemoval({ heir: ANN, warning: "Could not revoke the GitHub sign-in; revoke it at GitHub." });
-    const { onChanged } = renderTable([ME, BOB]);
+    const { onChanged, onRemoved } = renderTable([ME, BOB]);
 
     fireEvent.click(within(openMenu("Bob")).getByText("Remove from workspace"));
     const dialog = screen.getByRole("dialog");
@@ -399,8 +403,10 @@ describe("UsersTable", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(await screen.findByText(/Could not revoke the GitHub sign-in/)).toBeTruthy();
-    expect(screen.getByText("Removed Bob. Nothing they owned there changed hands.")).toBeTruthy();
+    expect(onRemoved).toHaveBeenCalledWith(
+      "Removed Bob. Nothing they owned there changed hands.",
+      "Could not revoke the GitHub sign-in; revoke it at GitHub.",
+    );
   });
 
   it("still lets you remove when the preview can't be read, saying so", async () => {
@@ -421,7 +427,7 @@ describe("UsersTable", () => {
 
   it("leaves the workspace from your own row, then follows the session", async () => {
     stubRemoval({ heir: ANN });
-    const { onChanged, onLeft } = renderTable([ME, { ...BOB, role: "admin" }]);
+    const { onChanged, onLeft, onRemoved } = renderTable([ME, { ...BOB, role: "admin" }]);
 
     fireEvent.click(within(openMenu("Me")).getByText("Leave workspace"));
     const dialog = screen.getByRole("dialog");
@@ -433,6 +439,6 @@ describe("UsersTable", () => {
 
     await waitFor(() => expect(onLeft).toHaveBeenCalled());
     expect(onChanged).not.toHaveBeenCalled();
-    expect(await screen.findByText(/^You left the workspace\./)).toBeTruthy();
+    expect(onRemoved).toHaveBeenCalledWith(expect.stringMatching(/^You left the workspace\./), null);
   });
 });

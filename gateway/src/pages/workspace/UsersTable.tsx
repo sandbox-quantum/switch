@@ -1,4 +1,4 @@
-import { Alert, Box, Chip, Link, Stack, Typography } from "@mui/material";
+import { Box, Chip, Link, Stack, Typography } from "@mui/material";
 import { useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router";
 import DataTable, { type ColumnFilter, type TableColumn, TableEmptyState } from "../../components/DataTable";
@@ -66,6 +66,9 @@ interface Props {
   onChanged: () => Promise<void>;
   /** After stepping down: what this person may do here has changed. */
   onSelfChanged: () => Promise<void>;
+  /** After a removal or leaving: what passed to whom, and the sign-ins it
+   * could not revoke, as the server reported them, for the page to show. */
+  onRemoved: (notice: string, warning: string | null) => void;
   /** After leaving: the session is on another workspace now, or none, and
    * the page follows it. */
   onLeft: () => Promise<void>;
@@ -85,14 +88,10 @@ export default function UsersTable({
   canOpenOrganizationUsers,
   onChanged,
   onSelfChanged,
+  onRemoved,
   onLeft,
 }: Props) {
   const [pending, setPending] = useState<Pending | null>(null);
-  // What the last removal handed over, and what it could not revoke, as the
-  // server reported them. Kept across leaving, when the page moves on to the
-  // workspace the session is on now.
-  const [notice, setNotice] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
 
   const columns = useMemo<TableColumn<MemberRow>[]>(() => {
     const rowActions = (row: MemberRow): RowAction[] => {
@@ -215,8 +214,7 @@ export default function UsersTable({
 
   const remove = async (member: Member) => {
     const result = await removeMember(tenantId, member.user_id);
-    setNotice(removalNotice(member, result, selfId));
-    setWarning(result.warning);
+    onRemoved(removalNotice(member, result, selfId), result.warning);
     if (member.user_id === selfId) {
       await onLeft();
       return;
@@ -227,17 +225,7 @@ export default function UsersTable({
   const close = () => setPending(null);
 
   return (
-    <Stack spacing={1.5}>
-      {notice !== null && (
-        <Alert severity="info" onClose={() => setNotice(null)}>
-          {notice}
-        </Alert>
-      )}
-      {warning !== null && (
-        <Alert severity="warning" onClose={() => setWarning(null)}>
-          {warning}
-        </Alert>
-      )}
+    <>
       <DataTable
         rows={members.map((m) => ({ ...m, id: m.user_id }))}
         columns={columns}
@@ -276,6 +264,6 @@ export default function UsersTable({
           onClose={close}
         />
       )}
-    </Stack>
+    </>
   );
 }

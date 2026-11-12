@@ -10,7 +10,7 @@ import {
   fetchInvitations,
   revokeInvitation,
 } from "../../data/api";
-import { formatDate } from "../../theme/format";
+import { EM_DASH, formatDate } from "../../theme/format";
 import { useInvitationCreated } from "./invitationEvents";
 import { workspaceRoleLabel } from "./roles";
 import { useLoad } from "./useLoad";
@@ -29,8 +29,9 @@ const PINNED_ACTIONS = ["actions"];
 interface Props {
   tenantId: string;
   inOrganization: boolean;
-  /** The roster, to name who made each link. */
-  members: Member[];
+  /** The roster, to name who made each link; null until it has loaded, or
+   * when it could not be. */
+  members: Member[] | null;
 }
 
 /** The workspace's invite links: the active ones, newest first, each
@@ -58,7 +59,10 @@ export default function InviteLinksSection({ tenantId, inOrganization, members }
     return () => window.clearInterval(timer);
   }, []);
 
-  const names = useMemo(() => new Map(members.map((m) => [m.user_id, m.name])), [members]);
+  const names = useMemo(
+    () => (members === null ? null : new Map(members.map((m) => [m.user_id, m.name]))),
+    [members],
+  );
   const rows = useMemo(
     () =>
       (invitations ?? [])
@@ -111,7 +115,9 @@ export default function InviteLinksSection({ tenantId, inOrganization, members }
         field: "created_by",
         headerName: "Created by",
         width: 180,
-        valueGetter: (value) => names.get(value as string) ?? "Someone no longer here",
+        // Not known until the roster is: "no longer here" would be a guess.
+        valueGetter: (value) =>
+          names === null ? EM_DASH : (names.get(value as string) ?? "Someone no longer here"),
       },
       {
         field: "actions",
