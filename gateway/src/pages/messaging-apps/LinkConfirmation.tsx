@@ -35,19 +35,25 @@ interface ShownCode {
 const shown = (code: LinkCode): ShownCode => ({ code, deadline: codeDeadline(code, Date.now()) });
 
 /**
- * Show the one-time code that confirms a link, and wait for it to be posted
- * from the account, the same confirmation Switch Console runs.
+ * Confirm a link from the account itself, the same confirmation Switch Console
+ * runs, and wait for it.
+ *
+ * Switch messages the account three numbers and a "Not me" button. When that
+ * message went out, the number to tap leads, and posting the one-time code is
+ * the fallback for a message that never arrived. When it could not go out
+ * (Teams, a Slack app without the Messages tab, a Telegram user who has never
+ * written to the bot), Switch says why and the code is the way.
  *
  * Switch keeps no copy of a code, so there is no "show it again": every code
- * after the first is a new one, and asking for it retires the last. That is
- * also why one is asked for once per opening, however often React runs the
- * effect: a second request would kill the code the first one put on screen.
+ * after the first is a new one, with a new message, and asking retires the
+ * last. That is also why one is asked for once per opening, however often
+ * React runs the effect: a second request would kill the one on screen.
  *
- * A pending link can be cancelled somewhere else (an admin, another tab,
- * unlinking), and the screen notices rather than waiting forever. An older
- * link being confirmed cannot be watched that way, since the pending list
- * leaves out requests for links that already exist; its confirmation shows as
- * the link turning confirmed.
+ * A link can be dropped somewhere else (an admin, another tab, unlinking, or
+ * "Not me" or a wrong number in the message), and the screen notices rather
+ * than waiting forever. An older link being confirmed is never in the pending
+ * list, so it is watched in the linked list: confirming shows as the link
+ * turning confirmed, and "Not me" as the link leaving it.
  */
 export default function LinkConfirmation({
   app,
@@ -96,6 +102,12 @@ export default function LinkConfirmation({
   } = useMyAccounts(gone || appGone ? null : CONFIRMATION_POLL_MS);
   const [settleError, setSettleError] = useState<string | null>(null);
   const confirmed = linked?.some((i) => i.id === target.identityId && i.verified) ?? false;
+  // An older link counts as dropped only once this screen has seen it listed.
+  const listed = linked?.some((i) => i.id === target.identityId) ?? false;
+  const [sawListed, setSawListed] = useState(false);
+  useEffect(() => {
+    if (listed) setSawListed(true);
+  }, [listed]);
 
   const issue = useCallback(async () => {
     setIssuing(true);
@@ -141,7 +153,7 @@ export default function LinkConfirmation({
     !gone &&
     !confirmed &&
     !cancelling &&
-    looksCancelled({ target, linked, pending, pendingReadAt, openedAt });
+    looksCancelled({ target, linked, pending, pendingReadAt, openedAt, sawListed });
   useEffect(() => {
     if (!absent) return;
     let current = true;
@@ -221,8 +233,17 @@ export default function LinkConfirmation({
     }
   };
 
+  // Only the latest message counts: a new code retires the buttons on the
+  // one before.
+  const prompt = code?.code.prompt ?? null;
+  const promptSent = prompt !== null && prompt.sent;
   const linkedText = target.kind === "pending" ? `Linked to ${handle}.` : `${handle} is confirmed.`;
-  const goneText = `The link to ${handle} was cancelled, so its code no longer works.`;
+  const goneText =
+    target.kind === "unverified"
+      ? `The link to ${handle} was removed. It may have been declined in ${app.display_name}, so it no longer counts.`
+      : promptSent
+        ? `The link to ${handle} was cancelled. It may have been declined in ${app.display_name}, so its code no longer works.`
+        : `The link to ${handle} was cancelled, so its code no longer works.`;
   const appGoneText = `${app.display_name} is no longer connected to this workspace, so this link can't be finished.`;
   // One region, there from the start, whose words change: a status inserted
   // together with its text is often not read out, and "Linked" stays up only
@@ -239,7 +260,9 @@ export default function LinkConfirmation({
             : ""
           : expired
             ? "This code has expired."
-            : `Waiting for the code to be posted from ${handle}.`;
+            : promptSent
+              ? `Waiting for you to tap ${prompt.number} in the message sent to ${handle}.`
+              : `Waiting for the code to be posted from ${handle}.`;
   const live = (
     <Box role="status" aria-live="polite" sx={SCREEN_READER_ONLY}>
       {announcement}
@@ -284,79 +307,151 @@ export default function LinkConfirmation({
   }
 
   const busy = issuing || cancelling;
+  const goal = target.kind === "pending" ? "finish linking" : "confirm the link";
+  const openUrl = prompt?.link ?? app.home_url;
+
+  const codeBox = (
+    <Stack
+      direction="row"
+      alignItems="center"
+      justifyContent="space-between"
+      spacing={2}
+      sx={{ px: 2, py: 1.5, border: "1px solid var(--sw-border)", borderRadius: "12px", bgcolor: "var(--sw-muted)" }}
+    >
+      {code === null ? (
+        issuing ? (
+          <Stack direction="row" spacing={1} alignItems="center">
+            <CircularProgress size={16} />
+            <Typography variant="body2" color="text.secondary">
+              Getting a code…
+            </Typography>
+          </Stack>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            No code yet.
+          </Typography>
+        )
+      ) : (
+        <Typography
+          data-testid="link-code"
+          sx={{
+            ...MONO_SX,
+            fontSize: promptSent ? "1rem" : "1.25rem",
+            letterSpacing: "0.15em",
+            userSelect: "all",
+            ...(expired && { color: "text.disabled", textDecoration: "line-through" }),
+          }}
+        >
+          {code.code.code}
+        </Typography>
+      )}
+      <Button
+        variant="outlined"
+        size="small"
+        startIcon={<ContentCopyOutlined fontSize="small" />}
+        disabled={command === null || expired}
+        onClick={() => void copy()}
+        sx={{ flexShrink: 0 }}
+      >
+        {copied ? "Copied" : "Copy command"}
+      </Button>
+    </Stack>
+  );
+
+  const instructions = code !== null && (
+    <Typography variant="body2" color="text.secondary">
+      <InlineCode text={code.code.instructions} />
+    </Typography>
+  );
+
+  const openButton = (variant: "contained" | "outlined") =>
+    openUrl && (
+      <Button
+        variant={variant}
+        startIcon={<OpenInNewOutlined fontSize="small" />}
+        href={openUrl}
+        target="_blank"
+        rel="noreferrer noopener"
+        sx={{ alignSelf: "flex-start" }}
+      >
+        Open in {app.display_name}
+      </Button>
+    );
+
   return (
     <>
       {live}
       <Stack spacing={2}>
-        <Typography variant="body2">
-          {target.kind === "pending"
-            ? `To finish linking ${handle}, post this from that account in ${app.display_name}.`
-            : `Confirm ${handle} is yours by posting this from that account in ${app.display_name}. The link keeps working meanwhile.`}
-        </Typography>
-
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="space-between"
-          spacing={2}
-          sx={{ px: 2, py: 1.5, border: "1px solid var(--sw-border)", borderRadius: "12px", bgcolor: "var(--sw-muted)" }}
-        >
-          {code === null ? (
-            issuing ? (
-              <Stack direction="row" spacing={1} alignItems="center">
-                <CircularProgress size={16} />
-                <Typography variant="body2" color="text.secondary">
-                  Getting a code…
-                </Typography>
-              </Stack>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                No code yet.
-              </Typography>
-            )
-          ) : (
-            <Typography
-              data-testid="link-code"
+        {promptSent ? (
+          <>
+            <Typography variant="body2">
+              {target.kind === "pending"
+                ? `Switch sent ${handle} a message in ${app.display_name}. Tap ${prompt.number} there to finish linking.`
+                : `Switch sent ${handle} a message in ${app.display_name}. Tap ${prompt.number} there to confirm the link. The link keeps working meanwhile.`}
+            </Typography>
+            <Box
               sx={{
-                ...MONO_SX,
-                fontSize: "1.25rem",
-                letterSpacing: "0.15em",
-                userSelect: "all",
-                ...(expired && { color: "text.disabled", textDecoration: "line-through" }),
+                py: 2,
+                textAlign: "center",
+                border: "1px solid var(--sw-border)",
+                borderRadius: "12px",
+                bgcolor: "var(--sw-muted)",
               }}
             >
-              {code.code.code}
+              <Typography
+                data-testid="link-prompt-number"
+                sx={{
+                  fontSize: "2.5rem",
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  ...(expired && { color: "text.disabled", textDecoration: "line-through" }),
+                }}
+              >
+                {prompt.number}
+              </Typography>
+            </Box>
+            {openButton("contained")}
+            <Stack spacing={1}>
+              <Typography variant="body2" color="text.secondary">
+                Didn&apos;t get the message? Post this from that account instead:
+              </Typography>
+              {codeBox}
+              {instructions}
+            </Stack>
+          </>
+        ) : (
+          <>
+            {prompt !== null && (
+              <Typography variant="body2" color="text.secondary" data-testid="link-prompt-unavailable">
+                {prompt.unavailable_reason === null
+                  ? `Couldn't message ${handle} directly.`
+                  : `Couldn't message ${handle} directly: ${prompt.unavailable_reason}`}
+              </Typography>
+            )}
+            <Typography variant="body2">
+              {target.kind === "pending"
+                ? `To finish linking ${handle}, post this from that account in ${app.display_name}.`
+                : `Confirm ${handle} is yours by posting this from that account in ${app.display_name}. The link keeps working meanwhile.`}
             </Typography>
-          )}
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<ContentCopyOutlined fontSize="small" />}
-            disabled={command === null || expired}
-            onClick={() => void copy()}
-            sx={{ flexShrink: 0 }}
-          >
-            {copied ? "Copied" : "Copy command"}
-          </Button>
-        </Stack>
-
-        {code !== null && (
-          <Typography variant="body2" color="text.secondary">
-            <InlineCode text={code.code.instructions} />
-          </Typography>
+            {codeBox}
+            {instructions}
+          </>
         )}
 
         {code !== null &&
           (expired ? (
             <Typography variant="body2" sx={{ color: "warning.main" }}>
-              This code has expired. Get a new one to{" "}
-              {target.kind === "pending" ? "finish linking" : "confirm the link"}.
+              {promptSent
+                ? `This message and code have expired. Send again to ${goal}.`
+                : `This code has expired. Get a new one to ${goal}.`}
             </Typography>
           ) : (
             <Stack direction="row" spacing={1} alignItems="center">
               <CircularProgress size={14} />
               <Typography variant="body2" color="text.secondary">
-                Waiting for the code. It expires at {timeOfDay(code.deadline)}.
+                {promptSent
+                  ? `Waiting for confirmation. The code expires at ${timeOfDay(code.deadline)}.`
+                  : `Waiting for the code. It expires at ${timeOfDay(code.deadline)}.`}
               </Typography>
             </Stack>
           ))}
@@ -368,19 +463,9 @@ export default function LinkConfirmation({
             loading={issuing}
             onClick={() => void issue()}
           >
-            Get a new code
+            {promptSent ? "Send again" : "Get a new code"}
           </Button>
-          {app.home_url && (
-            <Button
-              variant="outlined"
-              startIcon={<OpenInNewOutlined fontSize="small" />}
-              href={app.home_url}
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              Open {app.display_name}
-            </Button>
-          )}
+          {!promptSent && openButton("outlined")}
           <Button color="inherit" disabled={busy} loading={cancelling} onClick={() => void cancel()}>
             {target.kind === "pending" ? "Cancel link" : "Cancel confirmation"}
           </Button>
@@ -393,10 +478,10 @@ export default function LinkConfirmation({
         )}
 
         {/* Without these the screen would go on saying it is waiting while it
-            can no longer tell whether the code was posted. */}
+            can no longer tell whether the link was confirmed. */}
         {(watchError ?? settleError) !== null && (
           <Alert severity="warning" sx={{ overflowWrap: "anywhere" }}>
-            Can&apos;t check whether the code was posted: {watchError ?? settleError}
+            Can&apos;t check whether the link was confirmed: {watchError ?? settleError}
           </Alert>
         )}
       </Stack>

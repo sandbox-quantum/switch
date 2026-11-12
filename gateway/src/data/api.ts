@@ -1100,6 +1100,20 @@ export interface LinkCode {
   /** How to post it on this platform, in Markdown whose only markup is the
    *  command in backticks. */
   instructions: string;
+  /** The message Switch sent the account with numbers to tap, the quicker way
+   *  to confirm; absent from a server that sends none. */
+  prompt?: LinkPrompt | null;
+}
+
+/** The direct message offering numbers to tap: tapping `number` confirms
+ *  the link, the same proof as posting the code. */
+export interface LinkPrompt {
+  number: number;
+  sent: boolean;
+  /** Why no message went out, when `sent` is false. */
+  unavailable_reason: string | null;
+  /** Opens the message on the platform, where it can link to one. */
+  link: string | null;
 }
 
 export interface IdentityClaimant {
@@ -1171,15 +1185,19 @@ export async function claimBridgeIdentity(
     external_user_id: person.external_user_id,
     username: person.username,
     expects_confirmation: true,
+    // Asks Switch to message the account a number to tap as well; a server
+    // that sends none ignores it and the code is the way.
+    wants_prompt: true,
   });
 }
 
-/** A fresh code for the signed-in person's link to this account, replacing
- *  any issued before. */
+/** A fresh code for the signed-in person's link to this account, and a new
+ *  message to tap, replacing any issued before. */
 export async function issueLinkCode(bridgeId: string, identityId: string): Promise<LinkCode> {
   return jsonRequest<LinkCode>(
     `/collaborations/${bridgeId}/identities/${identityId}/code`,
     "POST",
+    { wants_prompt: true },
   );
 }
 

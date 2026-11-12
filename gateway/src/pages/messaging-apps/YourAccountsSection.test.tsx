@@ -78,7 +78,7 @@ describe("YourAccountsSection", () => {
     expect(within(lines[1]!).getByRole("button", { name: "Confirm @ada.old in Acme Slack" })).toBeTruthy();
     expect(within(lines[1]!).getByRole("button", { name: "Unlink @ada.old in Acme Slack" })).toBeTruthy();
     expect(within(lines[2]!).getByText("@ada.new · Waiting for confirmation · started by bob")).toBeTruthy();
-    expect(within(lines[2]!).getByRole("button", { name: "Show code for @ada.new in Acme Slack" })).toBeTruthy();
+    expect(within(lines[2]!).getByRole("button", { name: "Finish linking @ada.new in Acme Slack" })).toBeTruthy();
     expect(within(lines[2]!).getByRole("button", { name: "Cancel link to @ada.new in Acme Slack" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Link another account in Acme Slack" })).toBeTruthy();
   });
@@ -110,7 +110,7 @@ describe("YourAccountsSection", () => {
     expect(mine.refresh).toHaveBeenCalled();
   });
 
-  it("opens the code for a waiting link straight away", async () => {
+  it("opens the confirmation for a waiting link straight away", async () => {
     vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([pendingIdentity({ id: "a3" })]);
     vi.mocked(api.issueLinkCode).mockResolvedValue({
       code: "ABCD-EFGH",
@@ -120,7 +120,7 @@ describe("YourAccountsSection", () => {
     });
     section([slack], accounts([], [pendingIdentity({ id: "a3" })]));
 
-    fireEvent.click(screen.getByRole("button", { name: /^Show code for/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Finish linking/ }));
 
     expect(screen.getByRole("dialog", { name: "Confirm your Slack account" })).toBeTruthy();
     expect(await screen.findByTestId("link-code")).toBeTruthy();
@@ -137,7 +137,7 @@ describe("YourAccountsSection", () => {
     // Said in the row, where a keyboard can reach it.
     expect(screen.getByText(/Acme Slack isn't running, so Switch can't look accounts up/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Link an account in Acme Slack" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: /^Show code for/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^Finish linking/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: /^Cancel link to/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 

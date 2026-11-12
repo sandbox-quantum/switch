@@ -106,33 +106,36 @@ export function codeDeadline(code: LinkCode, arrivedAt: number): number {
   return arrivedAt + code.expires_in_seconds * 1000;
 }
 
-/** Whether a pending link looks to have been cancelled somewhere else (an
- * admin, another tab, unlinking): in neither list. Posting the code turns the
+/** Whether a link looks to have been dropped somewhere else: an admin,
+ * another tab, unlinking, or "Not me" or a wrong number tapped in the message
+ * Switch sent the account.
+ *
+ * A pending link looks so when it is in neither list. Confirming turns the
  * request into a link in one step, but the lists are read apart, so a pair of
- * reads can straddle it. A pending read made before the screen opened says
- * nothing; the caller settles the rest with a fresh read of the linked
- * accounts begun after this one. */
+ * reads can straddle it, and a pending read made before the screen opened
+ * says nothing. An older link is never in the pending list, so it looks so
+ * when it leaves the linked list after this screen saw it there ("Not me"
+ * removes it). Either way the caller settles it with a fresh read of the
+ * linked accounts begun after this one. */
 export function looksCancelled({
   target,
   linked,
   pending,
   pendingReadAt,
   openedAt,
+  sawListed,
 }: {
   target: LinkTarget;
   linked: readonly LinkedIdentity[] | null;
   pending: readonly PendingIdentity[] | null;
   pendingReadAt: number;
   openedAt: number;
+  /** This screen has seen the link in the linked list. */
+  sawListed: boolean;
 }): boolean {
-  return (
-    target.kind === "pending" &&
-    linked !== null &&
-    pending !== null &&
-    pendingReadAt >= openedAt &&
-    !pending.some((p) => p.id === target.identityId) &&
-    !linked.some((i) => i.id === target.identityId)
-  );
+  if (linked === null || linked.some((i) => i.id === target.identityId)) return false;
+  if (target.kind === "unverified") return sawListed;
+  return pending !== null && pendingReadAt >= openedAt && !pending.some((p) => p.id === target.identityId);
 }
 
 /** Why nothing can be looked up or confirmed in an app right now, or null

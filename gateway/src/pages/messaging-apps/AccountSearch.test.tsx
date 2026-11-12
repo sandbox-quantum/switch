@@ -139,7 +139,7 @@ describe("AccountSearch", () => {
     );
   });
 
-  it("offers the code for a link already waiting rather than linking again", async () => {
+  it("offers to finish a link already waiting rather than linking again", async () => {
     vi.mocked(api.searchBridgeDirectory).mockResolvedValue({ source: "directory", note: null, users: [person()] });
     vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([
       pendingIdentity({ id: "acct-1", bridge_id: "b1", external_user_id: "U-ada" }),
@@ -148,7 +148,7 @@ describe("AccountSearch", () => {
     await waitFor(() => expect(api.fetchMyPendingIdentities).toHaveBeenCalled());
     type("ada");
 
-    fireEvent.click(await screen.findByRole("button", { name: "Show code for @ada" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Finish linking @ada" }));
     expect(onConfirm).toHaveBeenCalledWith({ identityId: "acct-1", username: "ada", kind: "pending" }, null);
     expect(api.claimBridgeIdentity).not.toHaveBeenCalled();
   });
@@ -184,7 +184,7 @@ describe("AccountSearch", () => {
     ]);
     search();
     type("ada");
-    expect(await screen.findByRole("button", { name: "Show code for @ada" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Finish linking @ada" })).toBeTruthy();
     cleanup();
 
     // The link was cancelled while its code was up; the search opened again
@@ -193,7 +193,7 @@ describe("AccountSearch", () => {
     search();
     type("ada");
     expect(await screen.findByRole("button", { name: "This is me: Ada Lovelace, @ada" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Show code for @ada" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Finish linking @ada" })).toBeNull();
   });
 
   it("shows Switch's reason when a claim is refused, and lets another be tried", async () => {

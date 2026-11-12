@@ -21,11 +21,11 @@ import type { MyAccounts } from "./useMyAccounts";
 
 /** Beside a link made before links had to be confirmed. */
 const NOT_CONFIRMED_HELP =
-  "This link was made before Switch asked accounts to confirm their links. It still works. Confirm it by posting a one-time code from the account.";
+  "This link was made before Switch asked accounts to confirm their links. It still works. Confirm it from the account: tap the number Switch sends it, or post a one-time code.";
 
-/** Beside a link waiting for its code, which is not a link yet. */
+/** Beside a link waiting to be confirmed, which is not a link yet. */
 const WAITING_HELP =
-  "This account isn't linked until a one-time code is posted from it. Until then your agents don't recognise you here.";
+  "This account isn't linked until it confirms the link: tap the number Switch sends it, or post a one-time code from it. Until then your agents don't recognise you here.";
 
 /**
  * Who you are in each messaging app connected to the workspace: every role
@@ -392,10 +392,10 @@ function AccountRow({
           size="small"
           variant="outlined"
           disabled={unavailable}
-          aria-label={line.kind === "pending" ? `Show code for ${whose}` : `Confirm ${whose}`}
+          aria-label={line.kind === "pending" ? `Finish linking ${whose}` : `Confirm ${whose}`}
           onClick={onConfirm}
         >
-          {line.kind === "pending" ? "Show code" : "Confirm"}
+          {line.kind === "pending" ? "Finish linking" : "Confirm"}
         </Button>
       )}
       {line.kind === "pending" ? (

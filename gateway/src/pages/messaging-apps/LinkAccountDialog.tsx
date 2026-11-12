@@ -25,12 +25,13 @@ export interface LinkOutcome {
 /**
  * Link the signed-in person to their own account in a messaging app, on the
  * web, with the same confirmation Switch Console runs: say which account is
- * you, then post a one-time code from it.
+ * you, then confirm from it, by tapping the number Switch messages it or by
+ * posting a one-time code.
  *
- * Opened on a link already waiting (Show code, Confirm), it goes straight to
- * the code, and cancelling there closes it. Opened to link, cancelling the
- * code goes back to the search, since the likeliest reason is having picked
- * the wrong account.
+ * Opened on a link already waiting (Finish linking, Confirm), it goes straight
+ * to confirming, and cancelling there closes it. Opened to link, cancelling
+ * goes back to the search, since the likeliest reason is having picked the
+ * wrong account.
  *
  * Closing is not cancelling: a waiting link stays, and its row offers a new
  * code for it.

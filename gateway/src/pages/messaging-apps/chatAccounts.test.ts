@@ -113,39 +113,44 @@ describe("codeDeadline", () => {
 
 describe("looksCancelled", () => {
   const target = { identityId: "acct-1", username: "ada", kind: "pending" as const };
+  const older = { ...target, kind: "unverified" as const };
+  const at = { pendingReadAt: 10, openedAt: 10 };
 
   it("is not judged on a pending list read before the screen opened", () => {
     expect(
-      looksCancelled({ target, linked: [], pending: [], pendingReadAt: 5, openedAt: 10 }),
+      looksCancelled({ target, linked: [], pending: [], pendingReadAt: 5, openedAt: 10, sawListed: false }),
     ).toBe(false);
   });
 
   it("is when a pending link is in neither list after the screen opened", () => {
-    expect(
-      looksCancelled({ target, linked: [], pending: [], pendingReadAt: 10, openedAt: 10 }),
-    ).toBe(true);
+    expect(looksCancelled({ target, linked: [], pending: [], ...at, sawListed: false })).toBe(true);
   });
 
   it("is not while the link is listed as linked or still waiting", () => {
-    const args = { target, pendingReadAt: 10, openedAt: 10 };
     expect(
-      looksCancelled({ ...args, linked: [linkedIdentity({ id: "acct-1" })], pending: [] }),
+      looksCancelled({ target, linked: [linkedIdentity({ id: "acct-1" })], pending: [], ...at, sawListed: true }),
     ).toBe(false);
     expect(
-      looksCancelled({ ...args, linked: [], pending: [pendingIdentity({ id: "acct-1" })] }),
+      looksCancelled({ target, linked: [], pending: [pendingIdentity({ id: "acct-1" })], ...at, sawListed: false }),
     ).toBe(false);
   });
 
-  it("is never for an older link, which the pending list leaves out", () => {
+  it("takes an older link's absence from the pending list as nothing, since it is never there", () => {
     expect(
       looksCancelled({
-        target: { ...target, kind: "unverified" },
-        linked: [],
+        target: older,
+        linked: [linkedIdentity({ id: "acct-1", verified: false })],
         pending: [],
-        pendingReadAt: 10,
-        openedAt: 10,
+        ...at,
+        sawListed: true,
       }),
     ).toBe(false);
+  });
+
+  it("is when an older link leaves the linked list after the screen saw it there", () => {
+    expect(looksCancelled({ target: older, linked: [], pending: [], ...at, sawListed: true })).toBe(true);
+    // Not listed yet is not the same as gone: the first read may still be on its way.
+    expect(looksCancelled({ target: older, linked: [], pending: [], ...at, sawListed: false })).toBe(false);
   });
 });
 

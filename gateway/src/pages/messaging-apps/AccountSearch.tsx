@@ -291,7 +291,7 @@ function Results({
                   <Button
                     size="small"
                     variant="outlined"
-                    aria-label={`Show code for @${handleOf(person)}`}
+                    aria-label={`Finish linking @${handleOf(person)}`}
                     disabled={claiming !== null}
                     onClick={() =>
                       onConfirm({
@@ -301,7 +301,7 @@ function Results({
                       })
                     }
                   >
-                    Show code
+                    Finish linking
                   </Button>
                 </Stack>
               ) : (

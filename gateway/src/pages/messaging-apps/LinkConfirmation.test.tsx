@@ -233,7 +233,7 @@ describe("LinkConfirmation", () => {
       />,
     );
 
-    expect(screen.getByRole("link", { name: "Open Acme Slack" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Open in Acme Slack" }).getAttribute("href")).toBe(
       "https://acme.slack.com",
     );
   });
@@ -260,7 +260,7 @@ describe("LinkConfirmation", () => {
     vi.mocked(api.fetchMyIdentities).mockRejectedValue(new Error("Not authenticated"));
     show({ initialCode: code() });
 
-    expect(await screen.findByText(/Can't check whether the code was posted: Not authenticated/)).toBeTruthy();
+    expect(await screen.findByText(/Can't check whether the link was confirmed: Not authenticated/)).toBeTruthy();
   });
 
   it("asks again when the read that settles a cancellation fails", { timeout: 10000 }, async () => {
@@ -275,5 +275,71 @@ describe("LinkConfirmation", () => {
     show({ initialCode: code() });
 
     expect(await screen.findByText(/The link to @ada was cancelled/, SHOWN, { timeout: 6000 })).toBeTruthy();
+  });
+
+  describe("with a message to tap", () => {
+    const sent = (overrides: Partial<api.LinkPrompt> = {}) =>
+      code({ prompt: { number: 42, sent: true, unavailable_reason: null, link: "https://acme.slack.com/archives/D1", ...overrides } });
+
+    it("leads with the number to tap, and keeps the code as the fallback", () => {
+      show({ initialCode: sent() });
+
+      expect(screen.getByText("Switch sent @ada a message in Acme Slack. Tap 42 there to finish linking.")).toBeTruthy();
+      expect(screen.getByTestId("link-prompt-number").textContent).toBe("42");
+      expect(screen.getByRole("link", { name: "Open in Acme Slack" }).getAttribute("href")).toBe(
+        "https://acme.slack.com/archives/D1",
+      );
+      expect(screen.getByText(/Didn't get the message\? Post this from that account instead/)).toBeTruthy();
+      expect(screen.getByTestId("link-code").textContent).toBe("ABCD-EFGH");
+      expect(screen.getByRole("button", { name: "Send again" })).toBeTruthy();
+      expect(screen.getByText(/Waiting for confirmation. The code expires at/)).toBeTruthy();
+    });
+
+    it("asks the confirmation of an older link the same way", () => {
+      show({ target: older, initialCode: sent() });
+      expect(screen.getByText(/Tap 42 there to confirm the link. The link keeps working meanwhile./)).toBeTruthy();
+    });
+
+    it("says why no message went out, and shows the code as the way", () => {
+      show({
+        initialCode: code({
+          prompt: { number: 42, sent: false, unavailable_reason: "Teams can't send one.", link: null },
+        }),
+      });
+
+      expect(screen.getByText("Couldn't message @ada directly: Teams can't send one.")).toBeTruthy();
+      expect(screen.queryByTestId("link-prompt-number")).toBeNull();
+      expect(screen.getByText("To finish linking @ada, post this from that account in Acme Slack.")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Get a new code" })).toBeTruthy();
+    });
+
+    it("says a link dropped while the message was up may have been declined", async () => {
+      vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+      show({ initialCode: sent() });
+
+      expect(
+        await screen.findByText(/The link to @ada was cancelled. It may have been declined in Acme Slack/, SHOWN),
+      ).toBeTruthy();
+    });
+
+    it("notices an older link removed by Not me, though it was never pending", async () => {
+      vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+      vi.mocked(api.fetchMyIdentities)
+        .mockResolvedValueOnce([linkedIdentity({ id: "acct-1", verified: false })])
+        .mockResolvedValueOnce([linkedIdentity({ id: "acct-1", verified: false })])
+        .mockResolvedValue([]);
+      show({ target: older, initialCode: sent() });
+      await screen.findByTestId("link-prompt-number");
+
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send again" })));
+
+      expect(await screen.findByText(/The link to @ada was removed. It may have been declined/, SHOWN)).toBeTruthy();
+    });
+
+    it("tells a screen reader which number to tap", () => {
+      show({ initialCode: sent() });
+      const live = screen.getAllByRole("status").find((el) => el.getAttribute("aria-live") === "polite")!;
+      expect(live.textContent).toBe("Waiting for you to tap 42 in the message sent to @ada.");
+    });
   });
 });
