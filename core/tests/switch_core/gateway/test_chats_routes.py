@@ -49,7 +49,9 @@ from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
 )
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.session_activity.listener import Change
+from switch_core.transport.observer import ParticipantMessage
 from tests.switch_core.gateway.conftest import (
     RecordingSink,
     _Harness,
@@ -570,6 +572,37 @@ async def test_a_send_is_reported_once_as_a_participant_message(
         (room_id, member.id, "human", False, True),
     ]
     assert not any(m.sender_is_app for m in chats.observer.observed)
+
+
+async def test_an_observer_that_raises_does_not_fail_the_send(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post is committed before the observer hears of it, so a failure
+    there must not answer the send with an error: the retry would be told
+    nothing was sent. Counted instead."""
+
+    class _Broken:
+        def observe(self, message: ParticipantMessage) -> None:
+            raise RuntimeError("observer bug")
+
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    registry = MetricsRegistry()
+    install(registry)
+    monkeypatch.setattr(chats.service, "_message_observer", _Broken())
+    try:
+        sent = await chats.send(chats.alice, room_id, "s1", "still sent")
+        failures = next(
+            p
+            for p in registry.collect()
+            if p.name == "switch.messages.observer_failures"
+        )
+    finally:
+        uninstall()
+
+    assert sent.status_code == 200, sent.text
+    assert [m.body for m in await chats.message_rows(room_id)] == ["still sent"]
+    assert failures.numbers[0].value == 1.0
 
 
 async def test_a_chat_is_reported_as_a_console_chat_when_made(

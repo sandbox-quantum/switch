@@ -388,7 +388,7 @@ never invisible.
 | `room_internal_only_count` | number | rooms with no external channel |
 | `room_console_chat_direct_count` | number | unarchived Switch Console chats with one person in them (`direct`), of any origin. Already counted in `room_count` and its siblings |
 | `room_console_chat_group_count` | number | unarchived Switch Console chats that are groups: a direct chat becomes one when a second person joins it |
-| `room_console_chat_active_7d` | number | Switch Console chats, archived or not, with an interaction in 7 days. Of `room_active_7d` |
+| `room_console_chat_active_7d` | number | of those Console chats, the ones with an interaction in 7 days, so never more than direct plus group. Of `room_active_7d` |
 | `room_membership_total` | number | user–room memberships summed over rooms |
 | `room_users_mean` | number | mean human members per room |
 | `room_users_max` | number | largest human membership of any one room |

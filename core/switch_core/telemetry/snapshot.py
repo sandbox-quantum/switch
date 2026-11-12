@@ -726,7 +726,7 @@ async def collect_tenant_counts(
         select(func.count())
         .select_from(Room)
         .where(
-            Room.tenant_id == tenant_id,
+            *live,
             console_chat,
             Room.id.in_(_human_interaction(tenant_id, week_ago, now)),
         ),

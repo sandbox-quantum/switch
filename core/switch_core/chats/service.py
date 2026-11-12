@@ -116,6 +116,7 @@ from switch_core.transport.content import media_content, message_content
 from switch_core.transport.observer import (
     ParticipantMessage,
     ParticipantMessageObserver,
+    observe_safely,
 )
 from switch_core.transport.types import MessageFormat
 from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
@@ -2085,7 +2086,8 @@ class ChatService:
             )
         # Written through the router rather than the transport, so the
         # transport never sees it: told here, once for the whole post.
-        self._message_observer.observe(
+        observe_safely(
+            self._message_observer,
             ParticipantMessage(
                 tenant_id=tenant_id,
                 room_id=room.id,
@@ -2095,7 +2097,7 @@ class ChatService:
                 from_console=True,
                 has_attachment=bool(uploads),
                 in_thread=root is not None,
-            )
+            ),
         )
         return room, posted
 

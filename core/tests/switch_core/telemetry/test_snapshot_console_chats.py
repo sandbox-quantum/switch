@@ -291,3 +291,22 @@ async def test_a_console_chat_becoming_active_says_it_is_one(
     )
 
     assert sorted(room.console_chat for room in found) == [False, True]
+
+
+async def test_an_archived_console_chat_is_not_counted_as_active(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The Console chat counts are of unarchived chats, so the active count
+    stays within direct plus group."""
+    someone = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@example.com")
+    room_id = await _console_chat(session_factory, user_id=someone, agent_replies=True)
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        room = await session.get(Room, room_id)
+        assert room is not None
+        room.archived_at = datetime.now(UTC)
+        await session.commit()
+
+    counts = await collect_usage(session_factory)
+
+    assert counts.room_console_chat_direct_count == 0
+    assert counts.room_console_chat_active_7d == 0

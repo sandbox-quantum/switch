@@ -53,6 +53,7 @@ from switch_core.transport import (
     TransportError,
     TransportHandlers,
 )
+from switch_core.transport import observer as observer_module
 from switch_core.transport import postgres as postgres_module
 from switch_core.transport.cursors import FromHead
 from switch_core.transport.ephemeral import EphemeralBus
@@ -556,7 +557,7 @@ class TestTheParticipantMessageObserver:
         registry = MetricsRegistry()
         install(registry)
         monkeypatch.setattr(
-            postgres_module, "_observer_failures", WarningThrottle(60.0)
+            observer_module, "_observer_failures", WarningThrottle(60.0)
         )
         async with session_factory() as session:
             room_id, transport_room_id, client_id, user_id = await _make_room(session)
