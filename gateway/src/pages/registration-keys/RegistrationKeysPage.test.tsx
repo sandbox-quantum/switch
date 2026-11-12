@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiKeyDetail } from "../../data/api";
 import { apiKey } from "../api-keys/testFixtures";
@@ -44,5 +44,24 @@ describe("RegistrationKeysPage", () => {
     expect(leftover.getByRole("button", { name: "Delete deleted-helper" })).toBeTruthy();
 
     expect(within(screen.getByTestId("row-hidden")).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("says why a delete was refused, and keeps the dialog open", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+        init?.method === "DELETE"
+          ? new Response(JSON.stringify({ detail: "Not authorized to delete this key" }), { status: 403 })
+          : new Response(JSON.stringify([key("mine", {})]), { status: 200 }),
+      ),
+    );
+    render(<RegistrationKeysPage />);
+
+    fireEvent.click(within(await screen.findByTestId("row-mine")).getByRole("button", { name: "Delete mine" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    expect(await within(dialog).findByText("Not authorized to delete this key")).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 });

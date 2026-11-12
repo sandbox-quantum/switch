@@ -287,7 +287,9 @@ function Devices({
             ),
         });
       }
-      const machine = machineOf.get(row.id);
+      // The caller's own cloud machine only: `/hosted-machines` answers
+      // nobody else's, and nothing here should act on anyone else's.
+      const machine = cloudOfYours ? machineOf.get(row.id) : undefined;
       if (machine && row.cloud) {
         for (const action of row.cloud.actions) {
           const meta = CLOUD_ACTIONS[action];

@@ -172,6 +172,28 @@ describe("DevicesPage", () => {
     ]);
   });
 
+  it("offers an admin nothing to do with someone else's cloud device", async () => {
+    signedInAs("admin");
+    serve([
+      device("grace-cloud", {
+        name: "Switch cloud",
+        kind: "ec2",
+        type: "cloud",
+        owner_id: "u2",
+        owner_name: "Grace",
+        can_edit: false,
+        can_recheck: false,
+        can_remove: false,
+      }),
+    ]);
+    render(<DevicesPage />);
+
+    const row = within(await screen.findByTestId("row-grace-cloud"));
+    expect(row.getByText("Cloud")).toBeTruthy();
+    expect(row.getByText("Online")).toBeTruthy();
+    expect(row.queryByRole("button")).toBeNull();
+  });
+
   it("shows a cloud device still being set up", async () => {
     signedInAs("member");
     serve([], [], [cloud({ state: "provisioning" })]);
