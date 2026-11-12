@@ -16,6 +16,7 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     displayName: 'Mattermost',
     status: 'active',
     isDefault: true,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,
@@ -23,6 +24,8 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
+    privateChannels: null,
+    privateChannelNeedsLinkedAccount: false,
     receivesWebhooks: false,
     webhookUrl: null,
     ...overrides,
@@ -104,6 +107,44 @@ describe('withResolvedHomeUrls', () => {
   it('does not probe the stack when no Mattermost bridge is attached', async () => {
     await withResolvedHomeUrls(MANAGED, [bridge({ type: 'slack', homeUrl: null })]);
 
+    expect(mattermostOriginFor).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Mattermost the user connected beside the bundled one on its own link', async () => {
+    const resolved = await withResolvedHomeUrls(MANAGED, [
+      bridge({ id: 'bundled', preconfigured: true, homeUrl: null }),
+      bridge({
+        id: 'external',
+        preconfigured: false,
+        homeUrl: 'mattermost://chat.example.com/team',
+      }),
+    ]);
+
+    expect(resolved[0].homeUrl).toBe('http://127.0.0.1:8065/switch');
+    expect(resolved[1].homeUrl).toBe('https://chat.example.com/team');
+  });
+
+  it('keeps the only Mattermost on its own link when a person connected it', async () => {
+    const resolved = await withResolvedHomeUrls(MANAGED, [
+      bridge({
+        id: 'external',
+        preconfigured: false,
+        homeUrl: 'mattermost://chat.example.com/team',
+      }),
+    ]);
+
+    expect(resolved[0].homeUrl).toBe('https://chat.example.com/team');
+    expect(mattermostOriginFor).not.toHaveBeenCalled();
+  });
+
+  it('substitutes no origin when the bundled Mattermost cannot be told apart', async () => {
+    const resolved = await withResolvedHomeUrls(MANAGED, [
+      bridge({ id: 'a', homeUrl: 'mattermost://chat.example.com/team' }),
+      bridge({ id: 'b', homeUrl: null }),
+    ]);
+
+    expect(resolved[0].homeUrl).toBe('https://chat.example.com/team');
+    expect(resolved[1].homeUrl).toBeNull();
     expect(mattermostOriginFor).not.toHaveBeenCalled();
   });
 });

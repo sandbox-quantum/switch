@@ -267,16 +267,23 @@ class SwitchConfig(BaseSettings):
     # once, so one tenant with a slow backend does not hold up the others.
     decision_sweep_concurrency: int = Field(default=4, ge=1, le=64)
 
-    @field_validator("decision_endpoint_url", "decision_api_key", mode="before")
+    @field_validator(
+        "decision_endpoint_url",
+        "decision_api_key",
+        "gateway_signup_refused_header",
+        mode="before",
+    )
     @classmethod
-    def _blank_decision_setting_is_unset(cls, value: object) -> object:
+    def _blank_setting_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
 
-    # Gateway admin seed
+    # Gateway admin seed. The password is the seeded admin's password-login
+    # credential, so it is required only while password login is on; without
+    # it the admin is seeded with no password and signs in through OIDC.
     gateway_admin_email: str
-    gateway_admin_password: str
+    gateway_admin_password: str | None = None
 
     # OIDC (optional — enables OAuth token validation on the MCP server).
     # The audience is required with the issuer: without it, a token the same
@@ -344,6 +351,19 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # The name of a request header that a trusted edge in front of the server
+    # (prod's WAF) adds to requests from countries where new accounts are not
+    # offered. A request carrying it, with any value (empty included), may not
+    # create an account: neither a first OIDC sign-in nor a password sign-up,
+    # the two ways a person creates their own. The edge must therefore add it
+    # only to requests it refuses, never set it to a "no" value for the rest.
+    # Existing accounts sign in as before, and accounts that are not sign-ups
+    # (`POST /users`, the seeded admin, the bootstrap owner) are unaffected.
+    # Trusting the header's presence is safe, since a client that sends it
+    # only refuses itself; its absence proves nothing, because the edge
+    # decides where a request comes from and this server never checks. Unset
+    # or blank turns the check off.
+    gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
     # Cloud machines run the agent controller, so above 0 this needs the
@@ -1355,6 +1375,16 @@ class SwitchConfig(BaseSettings):
                 f"{FOLLOW_THE_CONVERSATION!r} in FEATURE_FLAGS_ENABLED as well: "
                 "it asks about the messages the follow-the-conversation rules "
                 "leave with nobody."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_admin_password(self) -> "SwitchConfig":
+        if self.gateway_password_login_enabled and not self.gateway_admin_password:
+            raise ValueError(
+                "GATEWAY_ADMIN_PASSWORD is required while password login is "
+                "enabled. Set it, or set GATEWAY_PASSWORD_LOGIN_ENABLED=false "
+                "to seed the admin without a password and sign in through OIDC."
             )
         return self
 

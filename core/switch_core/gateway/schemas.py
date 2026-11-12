@@ -92,6 +92,10 @@ class RoomSummary(BaseModel):
     viewer_is_member: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
+    # Its people (`connected_user_*`) are its Switch members rather than
+    # accounts on a messaging app: a Console chat on no app. Lets a client tell
+    # a chat with no members from a server too old to count them.
+    people_are_members: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
     # links and attaching resources; `can_change_members` covers adding and
@@ -756,6 +760,13 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Whether a new room here can have a private channel, and whether that
+    # channel needs the person asking to have linked their account on the
+    # platform, through which Switch puts them in it (on Teams, as its owner).
+    # Lets a room form offer "New private channel" from the server rather than
+    # a list of its own.
+    private_channels_supported: bool = True
+    private_channel_needs_linked_account: bool = False
     # Why no existing channel can be bound to a room by id on this connection,
     # or None when one can. Set for a connection whose chats arrive only one
     # way, so the room form can say so instead of offering the choice.
@@ -1142,6 +1153,16 @@ class TenantMembershipResponse(BaseModel):
     # None only for a workspace from before organizations that no migration
     # has given one yet.
     organization_id: str | None
+
+
+class WorkspaceCountsResponse(BaseModel):
+    """How many people and agents one workspace the caller may enter has, as
+    its members list and agents list show them. The body of
+    `GET /tenants/counts`, one per workspace."""
+
+    id: str
+    users: int
+    agents: int
 
 
 class OperatorWorkspaceResponse(BaseModel):
@@ -1592,10 +1613,14 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
-    # What the caller may do with it (`switch_core.authz`). `can_edit`: change
-    # it — its owner, an admin, or anyone when it is publicly writable.
-    # `can_manage`: delete it, change who may see or edit it, transfer it — its
-    # owner or an admin.
+    # What the caller may do with it (`switch_core.authz`). `can_read`: open
+    # it — its owner, an admin, or anyone when it is publicly readable. Every
+    # route returns only what the caller may read, except a package's or a
+    # room's list, which names a private item to everyone who may read the
+    # package or room. `can_edit`: change it — its owner, an admin, or anyone
+    # when it is publicly writable. `can_manage`: delete it, change who may see
+    # or edit it, transfer it — its owner or an admin.
+    can_read: bool
     can_edit: bool
     can_manage: bool
 
@@ -1806,8 +1831,11 @@ class DocumentDetail(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
-    # All three are false for a room's own document, which is changed and
-    # removed in its room, not through the library.
+    # Those three are false for a room's own document, which is changed and
+    # removed in its room, not through the library. `can_read` is whether the
+    # library opens it; the room routes say otherwise for a room's own document
+    # (`RoomDocumentDetail`).
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
@@ -1819,7 +1847,10 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in."""
+    """A document as seen from a room it is in. Its `can_read` is true for a
+    room's own document, which the room opens for everyone who may read the
+    room; an attached library document keeps the library's rule, which says
+    whether its own page opens."""
 
     can_remove: bool
 
@@ -1845,13 +1876,15 @@ class DocumentSummary(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `DocumentDetail`.
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in."""
+    """A document as listed in a room it is in. `can_read` as on
+    `RoomDocumentDetail`."""
 
     can_remove: bool
 

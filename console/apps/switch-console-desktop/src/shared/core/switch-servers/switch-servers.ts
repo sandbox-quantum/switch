@@ -203,7 +203,9 @@ export type SwitchServerDeclaration = {
  * `type` is `registration` for a key they made to register agents with,
  * `agent` for one of their agents' own keys, or `bootstrap` for the
  * deployment's seeded registration key. `keyPrefix` is the start of the key's
- * hash, which identifies it without revealing it.
+ * hash, which identifies it without revealing it. `expiresAt` is when the key
+ * stops working, or null when it never does (agents' own keys and the
+ * bootstrap key, and every key on a server older than key expiry).
  */
 export type SwitchApiKey = {
   id: string;
@@ -211,10 +213,20 @@ export type SwitchApiKey = {
   type: string;
   keyPrefix: string;
   createdAt: string;
+  expiresAt: string | null;
 };
 
+/** How long a new registration key works: a number of days (1–365), or never. */
+export type ApiKeyLifetime = number | 'never';
+
 /** A registration key just made, with its full value. */
-export type CreatedRegistrationKey = { id: string; label: string; key: string; createdAt: string };
+export type CreatedRegistrationKey = {
+  id: string;
+  label: string;
+  key: string;
+  createdAt: string;
+  expiresAt: string | null;
+};
 
 /** The authenticated user, as returned by `GET /gateway/auth/me`. */
 export type SwitchUser = {
@@ -358,6 +370,12 @@ export type RemoteRoomSummary = {
   viewerIsMember: boolean;
   /** A Switch Console chat: only its members can open it. False from a server that does not say. */
   isConsoleChat: boolean;
+  /**
+   * The server counts its people as its Switch members (a Console chat on no
+   * app), so its count is right even when 0. Absent from a server too old to
+   * count a chat's members, whose count for a chat always reads 0.
+   */
+  peopleAreMembers?: boolean;
   archived: boolean;
   createdAt: string;
   /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
@@ -500,6 +518,37 @@ export function visibilityForAccess(access: RoomAccess): {
  * Teams, where Switch may not remove it. */
 export type ChannelRetirement = 'archived' | 'deleted' | 'left' | 'kept';
 
+/** A message Switch posts to some of a room's agents on a timer (mirrors the
+ * gateway's `RoomScheduleDetail`), on behalf of `authorId`: whoever last set
+ * what it says or to whom. */
+export type RemoteRoomSchedule = {
+  id: string;
+  authorId: string;
+  /** The agent that set it up through its Switch tools, which it is posted as;
+   * null for a person, and from a server that predates it. */
+  authorAgentId: string | null;
+  agentIds: string[];
+  text: string;
+  /** A five-field cron rule read in `timezone`; null for a one-off. */
+  cron: string | null;
+  /** The one-off's moment, ISO 8601; null for a recurring schedule. */
+  runAt: string | null;
+  timezone: string;
+  paused: boolean;
+  /** Null once a one-off has been sent. */
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+};
+
+/** What a schedule says, to whom and when. Exactly one of `cron` and `runAt`. */
+export type RoomScheduleDraft = {
+  agentIds: string[];
+  text: string;
+  cron: string | null;
+  runAt: string | null;
+  timezone: string;
+};
+
 /** What deleting a room did to its platform channel when asked to retire it
  * (mirrors the gateway's `RetireOutcome`). `failed` means the channel is still there and someone has
  * to remove it by hand; `reason` says why. */
@@ -564,6 +613,13 @@ export type RemoteBridge = {
   /** The bridge used when a room is created without naming one. */
   isDefault: boolean;
   /**
+   * Whether the deployment registered this bridge itself rather than a person
+   * connecting it — on a local server, what marks its bundled Mattermost. Null
+   * on a server predating the field, where nothing says either way; read it
+   * through `bundledMattermostBridge`, not directly.
+   */
+  preconfigured: boolean | null;
+  /**
    * Link that opens this bridge's workspace in its messaging app, from the
    * gateway's live adapter. Null when the bridge is not running, the platform
    * offers no such link, or the server predates the field — so treat its
@@ -619,6 +675,18 @@ export type RemoteBridge = {
    * Null on a server predating the field.
    */
   channelIdsRefused: string | null;
+  /**
+   * Whether a new room here can have a private channel, as the server says.
+   * Null on a server predating the field, where Console falls back to what
+   * such servers could do: a private channel on every platform but Teams.
+   */
+  privateChannels: boolean | null;
+  /**
+   * Whether a private channel here needs the person asking to have linked
+   * their account on the platform, which the server names as its owner
+   * (Teams). False on a server predating the field.
+   */
+  privateChannelNeedsLinkedAccount: boolean;
   /** Whether this connection receives its platform's events on an address of
    * its own, which the operator has to give the platform. */
   receivesWebhooks: boolean;
@@ -1372,12 +1440,30 @@ export type CreateRoomParams = {
   /** Switch agent ids to add as members. May be empty — a room is valid with
    * no agents, and members can be invited later. */
   agentIds: string[];
+  /** People to add to the bridged room's channel, by their username on its
+   * messaging app. Absent or empty adds nobody; a new private channel gets its
+   * creator from the server either way. */
+  userNames?: string[];
   /** The bridged room's channel: a new one, or an existing one by its id. Null for a new public one. */
   channel: NewRoomChannel | null;
   /** The group to file the room under, or null for none. */
   groupId: string | null;
   /** Who may see and change the room, or null for the server's default. */
   access: RoomAccess | null;
+};
+
+/**
+ * Someone Switch knows on a messaging app, who a room there can be given
+ * (`GET /collaborations/{id}/users`).
+ */
+export type BridgePerson = {
+  /** Their username on the app: what a room on it is given them by. */
+  username: string;
+  externalUserId: string;
+  /** The Switch users who linked this account and confirmed it from it. */
+  linkedUserIds: string[];
+  /** The first of those users' names, to show beside the username; null when nobody has. */
+  linkedName: string | null;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */

@@ -529,7 +529,7 @@ async def test_disconnect_works_once_the_app_is_removed(github_app):
     result = await client.delete(BASE)
     assert result.status_code == 200
     assert result.json()["warning"] == (
-        "GitHub is not set up on this server, so Switch could not revoke the "
+        "GitHub is not set up here, so Switch could not revoke the "
         "sign-in. Revoke it at GitHub."
     )
     github.revoke.assert_not_called()

@@ -252,6 +252,9 @@ class AttachmentRef(BaseModel):
     msgtype: str
 
 
+FollowUp = Literal["thread_follow_up", "channel_follow_up", "main_agent"]
+
+
 class MessagePayload(BaseModel):
     addressed: bool
     sender: str
@@ -287,6 +290,14 @@ class MessagePayload(BaseModel):
     # routed.
     routed: bool = False
     routed_reason: Literal["decided", "fallback"] | None = None
+    # Which follow-the-conversation rule delivered a message that tagged
+    # nobody (`delivery/conversation.py`): "thread_follow_up", a reply in a
+    # thread the agent spoke or was tagged in last; "channel_follow_up", the
+    # sender's next channel message in an exchange with the agent;
+    # "main_agent", the agent is the room's assigned agent. The agent may stay
+    # silent on such a message. None when the message named the agent, or was
+    # routed (`routed_reason`).
+    follow_up: FollowUp | None = None
 
 
 class CommandPayload(BaseModel):

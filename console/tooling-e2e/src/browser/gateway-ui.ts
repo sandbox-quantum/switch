@@ -24,6 +24,10 @@ const STREAMING = new Set(['eventsource', 'websocket']);
  */
 const ABORTED = /net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled/i;
 
+/** Routes the server mounts only behind a feature flag; the organization page
+ * hides the section on a 404, so a server without the flag is not an error. */
+const FLAG_GATED_ROUTES = /^\/gateway\/organizations\/current\/(services|connector-apps)(\/|$)/;
+
 /**
  * The gateway UI in one browser context, and everything that went wrong on its
  * pages while a scenario drove it.
@@ -112,7 +116,7 @@ export class GatewayUi {
 
   async signOut(): Promise<void> {
     await this.page.getByRole('button', { name: 'Account menu' }).click();
-    await this.page.getByRole('menuitem', { name: 'Sign out' }).click();
+    await this.page.getByRole('menuitem', { name: 'Sign out', exact: true }).click();
     this.signedIn = false;
     await expect.poll(() => this.path(), { timeout: 15_000 }).toBe('/login');
     // The login form fetches its config as it mounts; navigating away before
@@ -204,6 +208,7 @@ export class GatewayUi {
     const status = response.status();
     const failed = status >= 500 || (this.signedIn && status >= 400);
     if (!failed) return;
+    if (status === 404 && FLAG_GATED_ROUTES.test(new URL(response.url()).pathname)) return;
     const from = this.inFlight.get(response.request()) ?? this.path();
     this.problems.push(
       `${response.request().method()} ${this.pathOf(response.url())} answered ${status} on ${from}`

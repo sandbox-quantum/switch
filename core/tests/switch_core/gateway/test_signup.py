@@ -58,6 +58,7 @@ async def signup_app(session_factory):
         gateway_signup_open=True,
         gateway_signup_mode="default_tenant",
         gateway_signup_max_per_hour=20,
+        gateway_signup_refused_header=None,
         gateway_password_login_enabled=True,
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
@@ -498,7 +499,7 @@ async def test_signup_is_refused_once_the_hourly_cap_is_reached(signup_app, capl
     response = await _signup(app, email="third@example.com")
     assert response.status_code == 429, response.text
     assert response.json()["detail"] == (
-        "Too many sign-ups on this server in the last hour. Try again later."
+        "Too many sign-ups in the last hour. Try again later."
     )
     assert 1 <= int(response.headers["Retry-After"]) <= 3600
     assert "2 users created in the last hour (cap 2)" in caplog.text
@@ -599,6 +600,41 @@ async def test_a_sign_up_over_the_hourly_cap_is_reported_as_rate_limited(
     assert (await _signup(signup_app, email="second@example.com")).status_code == 429
 
     assert reported.events("signup_refused") == [{"reason": "rate_limited"}]
+
+
+REFUSED_HEADER = "x-amzn-waf-signup-refused"
+
+
+async def test_a_sign_up_the_edge_marks_as_refused_creates_no_account(
+    signup_app, reported
+):
+    app = signup_app
+    app.config.gateway_signup_refused_header = REFUSED_HEADER
+    refused = await app.client.post(
+        "/auth/signup",
+        json={"email": "far.away@example.com", "password": PASSWORD},
+        headers={REFUSED_HEADER: "country"},
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == (
+        "New Switch accounts are not available in your country."
+    )
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 0
+    assert reported.events("signup_refused") == [{"reason": "country"}]
+
+    assert (await _signup(app, email="nearby@example.com")).status_code == 201
+
+
+async def test_the_refused_header_is_ignored_while_no_header_is_configured(
+    signup_app,
+):
+    response = await signup_app.client.post(
+        "/auth/signup",
+        json={"email": "far.away@example.com", "password": PASSWORD},
+        headers={REFUSED_HEADER: "country"},
+    )
+    assert response.status_code == 201
 
 
 async def test_the_owner_stopping_and_starting_their_machine_is_reported(

@@ -113,14 +113,13 @@ def _refuse_unoffered(
     if req.backend == "haiku_anthropic" and not server.haiku_anthropic:
         raise HTTPException(
             status_code=422,
-            detail="Haiku runs in the server's decision service, and this server "
-            "has none configured.",
+            detail="Haiku runs in Switch's decision service, and none is set up here.",
         )
     if req.backend == "haiku_bedrock" and not server.haiku_bedrock:
         raise HTTPException(
             status_code=422,
-            detail="Haiku on Bedrock isn't offered on this server: it needs the "
-            "server's decision service and DECISION_BEDROCK_ENABLED.",
+            detail="Haiku on Bedrock isn't offered here: it needs Switch's "
+            "decision service and DECISION_BEDROCK_ENABLED.",
         )
 
 
@@ -134,7 +133,7 @@ async def _refuse_unreachable(endpoint: str, policy: OutboundPolicy) -> None:
         raise HTTPException(
             status_code=422,
             detail=f"{refused} A workspace's decision endpoint must be a public "
-            "address, or a private host the server's operator lists in "
+            "address, or a private host whoever runs Switch lists in "
             "OUTBOUND_ALLOWED_PRIVATE_HOSTS.",
         ) from refused
 
@@ -292,7 +291,7 @@ async def test_decision_settings(
                     backend=req.backend,
                     error=DecisionTestError(
                         code="not_configured",
-                        message="The stored key can't be decrypted by this server; "
+                        message="The stored key can't be decrypted here; "
                         "enter it again.",
                     ),
                 )

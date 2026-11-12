@@ -7,6 +7,7 @@ them. Every query runs in the caller's tenant-bound session.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from sqlalchemy import delete, exists, func, select, update
@@ -23,9 +24,47 @@ class Pending:
     room_id: str
     room_seq: int
     message_key: str
+    # How long the message had waited when the row was read, on the database's
+    # clock, which stamped it; and when it was read, on this process's
+    # monotonic clock. A settled message's wait (`switch.decision.wait`) adds
+    # the two, so it never mixes the two clocks.
+    age_seconds: float
+    read_at: float
+
+    def waited_seconds(self) -> float:
+        """How long the message has waited, as of now."""
+        return self.age_seconds + (time.monotonic() - self.read_at)
+
+
+@dataclass(frozen=True)
+class PendingSummary:
+    """How many of a tenant's messages wait for a decision, and how long the
+    oldest has waited, on the database's clock. `oldest_age_seconds` is None
+    when none waits."""
+
+    count: int
+    oldest_age_seconds: float | None
 
 
 class PendingDecisionStore:
+    async def summary(self, session: AsyncSession, *, tenant_id: str) -> PendingSummary:
+        """The tenant's waiting queue, claimed rows included: a message being
+        decided right now is still one a person is waiting on."""
+        row = (
+            await session.execute(
+                select(
+                    func.count(),
+                    func.extract(
+                        "epoch", func.now() - func.min(PendingDecision.created_at)
+                    ),
+                ).where(PendingDecision.tenant_id == tenant_id)
+            )
+        ).one()
+        count, age = row
+        return PendingSummary(
+            count=int(count), oldest_age_seconds=None if age is None else float(age)
+        )
+
     async def add(
         self,
         session: AsyncSession,
@@ -61,9 +100,14 @@ class PendingDecisionStore:
                 PendingDecision.room_id,
                 PendingDecision.room_seq,
                 PendingDecision.message_key,
+                func.extract("epoch", func.now() - PendingDecision.created_at),
             )
         )
-        return [Pending(*row) for row in rows.all()]
+        read_at = time.monotonic()
+        return [
+            Pending(room_id, room_seq, message_key, max(0.0, float(age)), read_at)
+            for room_id, room_seq, message_key, age in rows.all()
+        ]
 
     async def claim(
         self, session: AsyncSession, *, tenant_id: str, lease_seconds: float, limit: int
@@ -110,10 +154,15 @@ class PendingDecisionStore:
                 PendingDecision.room_id,
                 PendingDecision.room_seq,
                 PendingDecision.message_key,
+                func.extract("epoch", func.now() - PendingDecision.created_at),
             )
             .execution_options(synchronize_session=False)
         )
-        return [Pending(*row) for row in rows.all()]
+        read_at = time.monotonic()
+        return [
+            Pending(room_id, room_seq, message_key, max(0.0, float(age)), read_at)
+            for room_id, room_seq, message_key, age in rows.all()
+        ]
 
     async def finish(
         self, session: AsyncSession, *, tenant_id: str, pending: Pending

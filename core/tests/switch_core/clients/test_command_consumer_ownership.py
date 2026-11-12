@@ -41,6 +41,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -130,6 +131,7 @@ async def _process(
         external_user_store=ExternalUserStore(),
         document_store=DocumentStore(),
         reference_store=ReferenceStore(),
+        package_store=PackageStore(),
         agent_session_store=AgentSessionStore(),
         room_service=MagicMock(),
         user_store=UserStore(),

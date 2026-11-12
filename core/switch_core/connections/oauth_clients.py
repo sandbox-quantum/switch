@@ -104,7 +104,7 @@ class RegisteredClient:
         scopes: list[str],
     ) -> None:
         if not redirect_uris:
-            raise ValueError(f"{service} has no redirect this server can register.")
+            raise ValueError(f"{service} has no redirect Switch can register.")
         self._service = service
         self._name = name
         self._session_factory = session_factory

@@ -38,8 +38,8 @@ Backend = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
 Source = Literal["workspace", "server_default"]
 
 FLAG_OFF_REASON = (
-    "Auto-route isn't switched on for this Switch server. Whoever runs the "
-    "server turns it on with the decision_routing feature flag."
+    "Auto-route isn't switched on here. Whoever runs Switch turns it on "
+    "with the decision_routing feature flag."
 )
 NO_BACKEND_REASON = (
     "Auto-route needs a decision service. A workspace admin can set one up in "

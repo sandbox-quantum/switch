@@ -100,11 +100,13 @@ ingress:
 #      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
 #        postgresql.owner.existingSecret is set),
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
-#      GATEWAY_ADMIN_PASSWORD,
+#      GATEWAY_ADMIN_PASSWORD (unless switchCore.oidc.enabled with
+#        passwordLoginEnabled false, and Mattermost off),
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      CONTROLLER_TOKEN_SECRET (with the agent_management feature flag on),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
-#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
+#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled),
+#      WORKOS_API_KEY (if switchCore.organizationDirectory.mode is workos).
 secrets:
   # Name of a pre-existing Secret to read all of the above from. Empty = the
   # chart manages its own Secret from the values below.
@@ -134,6 +136,8 @@ secrets:
   # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
+  # Required while password login is on (or with Mattermost); may be left
+  # empty with switchCore.oidc.passwordLoginEnabled false.
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
@@ -144,6 +148,11 @@ secrets:
   controllerTokenSecret: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # WorkOS API key (required when switchCore.organizationDirectory.mode is
+  # workos). With member changes on, it must belong to the AuthKit application
+  # in organizationDirectory.workosClientId: WorkOS exchanges that
+  # application's sign-ins only with its own key.
+  workosApiKey: ""
   # SMTP relay password for invitation e-mails (required when
   # switchCore.smtp.enabled and a username is set, either way below).
   gatewaySmtpPassword: ""
@@ -254,6 +263,9 @@ switchCore:
   # a collector expects to group and filter on.
   # rootLevel governs everything, libraries included; logLevel above is
   # switch-core's own and is usually the one to change.
+  #
+  # The decision service (decision.enabled) follows format, rootLevel and
+  # environment too, under the service name switch-decision.
   logging:
     format: text
     rootLevel: INFO
@@ -261,7 +273,8 @@ switchCore:
     environment: ""
     serviceName: switch-core
 
-  # Where this deployment reports metrics and logs.
+  # Where this deployment reports metrics and logs. The decision service
+  # (decision.enabled) uses the same collector for its logs.
   #
   # Empty endpoint means it reports nowhere, which is the default: nothing
   # leaves the deployment until an operator names a collector. Readiness
@@ -398,6 +411,29 @@ switchCore:
     # turns self-service creation off. Applies in every mode but invite_only,
     # which allows none.
     maxWorkspacesPerUser: 3
+    # A request header the edge in front of Switch (a WAF rule, say) adds to
+    # requests from countries where new accounts are not offered. A request
+    # carrying it creates no account; existing accounts sign in as before.
+    # Empty turns the check off. The edge decides where a request comes from:
+    # Switch only reads the header.
+    refusedHeader: ""
+  # Who keeps the record of organizations and their members
+  # (docs/old/workos-directory.md).
+  #   local  — this server, in its own tables
+  #   workos — the WorkOS environment behind the OIDC sign-in, read with
+  #            secrets.workosApiKey. Needs oidc.enabled against that
+  #            environment and signup.mode invite_only.
+  organizationDirectory:
+    mode: local
+    # Member changes made from Switch to a linked organization, sent to the
+    # service the WorkOS environment's members are changed through, with the
+    # admin's own WorkOS token. All three or none; workos mode only.
+    membersServiceUrl: ""
+    # The AuthKit application admins sign in to for that token.
+    workosClientId: ""
+    # Its callback, <gatewayPublicUrl>/gateway/auth/workos/callback, registered
+    # on that application.
+    workosRedirectUrl: ""
   # Answer a person with several workspaces and none selected with a 409 that
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.
@@ -473,7 +509,8 @@ switchCore:
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy, buddy_slack_handoff, decision_routing.
+  # switch_buddy, buddy_slack_handoff, decision_routing, gateway_v2
+  # (development and staging only until the new dashboard layout is finished).
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people
@@ -912,6 +949,11 @@ decision:
     region: ""
   # Extra container env for the decision container (DECISION_TIMEOUT_S,
   # DECISION_HISTORY_LIMIT, SYSTEMONE_URL, ...), as Kubernetes env entries.
+  # The service's logging has no settings here: it follows
+  # switchCore.logging (format, rootLevel, environment) as service
+  # switch-decision, and switchCore.observability (otlpEndpoint, deploymentId,
+  # logs, timeoutSeconds, and secrets.otlpHeaders) to ship its logs, never
+  # metrics. An entry here replaces any of those.
   env: []
   resources:
     requests:

@@ -45,7 +45,7 @@ export default function ResourceFiltersBar({
   const hasType = types !== undefined && onTypeChange !== undefined;
 
   return (
-    <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 2 }}>
+    <Stack direction="row" spacing={2} alignItems="flex-end" sx={{ mb: 2 }}>
       <TextField
         size="small"
         placeholder={searchPlaceholder ?? "Search by name…"}

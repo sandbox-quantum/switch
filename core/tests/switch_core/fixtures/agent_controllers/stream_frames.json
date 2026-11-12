@@ -61,7 +61,8 @@
           "sender_role": null,
           "switch_notice": null,
           "routed": false,
-          "routed_reason": null
+          "routed_reason": null,
+          "follow_up": null
         },
         "sequence": 1,
         "missed": {
@@ -91,7 +92,8 @@
         "body": {
           "type": "session.reset"
         },
-        "requesterName": "Ada"
+        "requesterName": "Ada",
+        "direct": false
       }
     }
   },

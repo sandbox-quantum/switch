@@ -38,6 +38,7 @@ from switch_core.attachments import parse_attachment_group
 from switch_core.authz import (
     Action,
     Principal,
+    can,
     require,
     require_group_filing,
     require_manage,
@@ -82,8 +83,10 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentityConflict,
     agent_identity,
 )
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
+from switch_core.chats import people_are_members
 from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
@@ -107,6 +110,7 @@ from switch_core.db.models import (
     Room,
     RoomGroup,
     RoomRole,
+    RoomSchedule,
     Template,
     Tool,
     User,
@@ -124,6 +128,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -135,6 +140,12 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
+from switch_core.room_schedules import (
+    TEXT_LIMIT,
+    ScheduleError,
+    addressed_first_run,
+    first_run,
+)
 from switch_core.room_service import require_membership_changeable_from_outside
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
@@ -3142,6 +3153,17 @@ class AgentCore:
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_channel_creation(b.type)
                 ),
+                # Whether create_room may ask for channel_private here, and
+                # whether that needs the room's owner to have linked their
+                # account on the platform: they are put in the channel through
+                # it (on Teams, as its owner), so nobody is locked out.
+                "can_create_private_channels": (
+                    b.channel_creation_enabled
+                    and self.collab_lifecycle.supports_private_channels(b.type)
+                ),
+                "private_channel_needs_linked_account": (
+                    self.collab_lifecycle.supports_private_channels(b.type)
+                ),
             }
             for b in bridges
         ]
@@ -3278,6 +3300,8 @@ class AgentCore:
                 raise ValueError(f"Failed to create room: {str(e)}") from e
             except PermissionError as e:
                 raise PermissionError(str(e)) from e
+            except BridgeOperationError as e:
+                raise BridgeOperationError(f"Failed to create room: {e}") from e
             except RuntimeError as e:
                 raise RuntimeError(f"Room service error: {str(e)}") from e
         if include_owner:
@@ -4055,6 +4079,213 @@ class AgentCore:
                 raise LookupError(f"No link from {source_room_id} to {target_room_id}")
             await session.commit()
 
+    # ── Room schedules ───────────────────────────────────────────────────
+
+    async def list_room_schedules(
+        self, agent_id: str, room_id: str
+    ) -> list[dict[str, Any]]:
+        """A room's schedules, for an agent whose owner may read the room."""
+        async with self.session_factory() as session:
+            await self._require_room_action(session, agent_id, room_id, "read")
+            schedules = await RoomScheduleStore().for_room(session, room_id)
+            return [
+                await self._schedule_view(session, schedule, agent_id)
+                for schedule in schedules
+            ]
+
+    async def create_room_schedule(
+        self,
+        agent_id: str,
+        room_id: str,
+        *,
+        agents: list[str],
+        text: str,
+        cron: str | None,
+        run_at: datetime | None,
+        timezone: str,
+    ) -> dict[str, Any]:
+        """Set up a schedule in a room, speaking as the calling agent.
+
+        Takes what a person needs to change the room's schedules, asked of
+        the agent's owner, and the agent has to be in the room it schedules
+        into: the message goes out as it.
+        """
+        async with self.session_factory() as session:
+            caller = await self._require_schedule_change(session, agent_id, room_id)
+            agent_ids = await self._schedule_audience(session, room_id, agents)
+            _check_schedule_text(text)
+            next_run_at = await _scheduled_first_run(
+                session, self.room_store, room_id, agent_ids, cron, run_at, timezone
+            )
+            assert caller.owner_id is not None
+            schedule = await RoomScheduleStore().create(
+                session,
+                RoomSchedule(
+                    room_id=room_id,
+                    author_id=caller.owner_id,
+                    author_agent_id=caller.id,
+                    agent_ids=agent_ids,
+                    text=text,
+                    cron=cron,
+                    run_at=run_at,
+                    timezone=timezone,
+                    paused=False,
+                    next_run_at=next_run_at,
+                ),
+            )
+            view = await self._schedule_view(session, schedule, agent_id)
+            await session.commit()
+        return view
+
+    async def update_room_schedule(
+        self,
+        agent_id: str,
+        room_id: str,
+        schedule_id: str,
+        *,
+        agents: list[str],
+        text: str,
+        cron: str | None,
+        run_at: datetime | None,
+        timezone: str,
+    ) -> dict[str, Any]:
+        """Replace what one of the calling agent's own schedules says, to whom and when."""
+        async with self.session_factory() as session:
+            await self._require_schedule_change(session, agent_id, room_id)
+            schedule = await self._own_schedule(session, agent_id, room_id, schedule_id)
+            agent_ids = await self._schedule_audience(session, room_id, agents)
+            _check_schedule_text(text)
+            schedule.next_run_at = await _scheduled_first_run(
+                session, self.room_store, room_id, agent_ids, cron, run_at, timezone
+            )
+            schedule.agent_ids = agent_ids
+            schedule.text = text
+            schedule.cron = cron
+            schedule.run_at = run_at
+            schedule.timezone = timezone
+            await session.flush()
+            view = await self._schedule_view(session, schedule, agent_id)
+            await session.commit()
+        return view
+
+    async def pause_room_schedule(
+        self, agent_id: str, room_id: str, schedule_id: str, *, paused: bool
+    ) -> dict[str, Any]:
+        """Pause one of the calling agent's own schedules, or resume it from now."""
+        async with self.session_factory() as session:
+            await self._require_schedule_change(session, agent_id, room_id)
+            schedule = await self._own_schedule(session, agent_id, room_id, schedule_id)
+            if not paused and schedule.paused:
+                try:
+                    schedule.next_run_at = first_run(
+                        cron=schedule.cron,
+                        run_at=schedule.run_at,
+                        timezone=schedule.timezone,
+                        now=datetime.now(UTC),
+                    )
+                except ScheduleError as e:
+                    raise ValueError(str(e)) from e
+            schedule.paused = paused
+            await session.flush()
+            view = await self._schedule_view(session, schedule, agent_id)
+            await session.commit()
+        return view
+
+    async def delete_room_schedule(
+        self, agent_id: str, room_id: str, schedule_id: str
+    ) -> None:
+        """Delete one of the calling agent's own schedules."""
+        async with self.session_factory() as session:
+            await self._require_schedule_change(session, agent_id, room_id)
+            schedule = await self._own_schedule(session, agent_id, room_id, schedule_id)
+            await RoomScheduleStore().delete(session, schedule)
+            await session.commit()
+
+    async def _require_schedule_change(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> Agent:
+        """The calling agent, once it may change the room's schedules: its owner
+        may manage the room, and the agent is in it."""
+        agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        if owner_id is None:
+            raise PermissionError(
+                "An agent nobody owns cannot set up schedules: a schedule "
+                "carries its owner's authority."
+            )
+        room = await self.room_store.get(session, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        if not can(Principal(owner_id, owner_is_admin), "delete", room):
+            raise PermissionError(
+                "Changing a room's schedules takes the right to manage the room "
+                "(its owner or a workspace admin), and your owner does not have it here."
+            )
+        if agent_id not in set(await self.room_store.get_agent_ids(session, room_id)):
+            raise PermissionError(
+                "You can only set up schedules in a room you are in: they are posted as you."
+            )
+        return agent
+
+    async def _own_schedule(
+        self, session: AsyncSession, agent_id: str, room_id: str, schedule_id: str
+    ) -> RoomSchedule:
+        schedule = await RoomScheduleStore().get(session, schedule_id)
+        if schedule is None or schedule.room_id != room_id:
+            raise LookupError(f"No schedule {schedule_id} in room {room_id}")
+        if schedule.author_agent_id != agent_id:
+            raise PermissionError(
+                "You can only change the schedules you set up yourself. Ask someone "
+                "who manages the room to change this one."
+            )
+        return schedule
+
+    async def _schedule_audience(
+        self, session: AsyncSession, room_id: str, names: list[str]
+    ) -> list[str]:
+        """The ids of the agents in the room called `names`."""
+        if not names:
+            raise ValueError(
+                "Name at least one agent in the room for the schedule to address."
+            )
+        by_name: dict[str, str] = {}
+        for member_id in await self.room_store.get_agent_ids(session, room_id):
+            member = await self.agent_store.get(session, member_id)
+            if member is not None:
+                by_name[member.name] = member.id
+        missing = [name for name in names if name.lstrip("@") not in by_name]
+        if missing:
+            raise ValueError(
+                "A schedule can only address agents in its room. Not here: "
+                + ", ".join(missing)
+            )
+        return list(dict.fromkeys(by_name[name.lstrip("@")] for name in names))
+
+    async def _schedule_view(
+        self, session: AsyncSession, schedule: RoomSchedule, agent_id: str
+    ) -> dict[str, Any]:
+        names = []
+        for addressed in schedule.agent_ids:
+            agent = await self.agent_store.get(session, addressed)
+            names.append(agent.name if agent is not None else addressed)
+        return {
+            "id": schedule.id,
+            "agents": names,
+            "text": schedule.text,
+            "cron": schedule.cron,
+            "run_at": schedule.run_at.isoformat() if schedule.run_at else None,
+            "timezone": schedule.timezone,
+            "paused": schedule.paused,
+            "next_run_at": schedule.next_run_at.isoformat()
+            if schedule.next_run_at
+            else None,
+            "last_run_at": schedule.last_run_at.isoformat()
+            if schedule.last_run_at
+            else None,
+            "set_up_by_you": schedule.author_agent_id == agent_id,
+        }
+
     async def list_all_rooms(
         self,
         agent_id: str,
@@ -4423,6 +4654,10 @@ class AgentCore:
                     for cid in client_ids
                     if cid in ext_client_to_name
                 )
+            if people_are_members(room):
+                # A Console chat's people are its members, not accounts on an app.
+                members = await self.room_store.member_users_by_room(session, [room.id])
+                connected_user_names = [name for _, name in members.get(room.id, [])]
 
             group_name, group_path = await self._group_labels(session, room.group_id)
             join_listener_ids = await self.room_store.get_join_event_listeners(
@@ -4825,3 +5060,34 @@ class AgentCore:
         """
         await self.require_room_member(agent_id, room_id)
         return {"verdict": POST_INVOCATION_OK}
+
+
+def _check_schedule_text(text: str) -> None:
+    if not text.strip():
+        raise ValueError("A schedule needs something to say.")
+    if len(text) > TEXT_LIMIT:
+        raise ValueError(f"A schedule's message is at most {TEXT_LIMIT} characters.")
+
+
+async def _scheduled_first_run(
+    session: AsyncSession,
+    rooms: RoomStore,
+    room_id: str,
+    agent_ids: list[str],
+    cron: str | None,
+    run_at: datetime | None,
+    timezone: str,
+) -> datetime:
+    try:
+        return await addressed_first_run(
+            session,
+            rooms,
+            room_id,
+            agent_ids=agent_ids,
+            cron=cron,
+            run_at=run_at,
+            timezone=timezone,
+            now=datetime.now(UTC),
+        )
+    except ScheduleError as e:
+        raise ValueError(str(e)) from e

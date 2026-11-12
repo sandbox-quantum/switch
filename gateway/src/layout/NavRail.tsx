@@ -1,19 +1,7 @@
+import AccountCircleOutlined from "@mui/icons-material/AccountCircleOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
-import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
-import ApartmentOutlined from "@mui/icons-material/ApartmentOutlined";
-import DnsOutlined from "@mui/icons-material/DnsOutlined";
-import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
-import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
-import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
-import PowerOutlined from "@mui/icons-material/PowerOutlined";
-import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
-import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
-import PeopleOutlined from "@mui/icons-material/PeopleOutlined";
-import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
-import VpnKeyOutlined from "@mui/icons-material/VpnKeyOutlined";
-import WorkspacesOutlined from "@mui/icons-material/WorkspacesOutlined";
 import {
   Alert,
   Box,
@@ -28,51 +16,14 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { memo, useEffect, useState } from "react";
-import { NavLink, useLocation } from "react-router";
-import type { ComponentType, MouseEvent } from "react";
+import { memo, useState } from "react";
+import { NavLink, Link as RouterLink, useLocation } from "react-router";
+import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
-import { useCurrentTenant } from "../data/hooks";
-import { fetchManagementAvailable } from "../data/management";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
+import { type Layout, type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
-
-interface NavItem {
-  label: string;
-  path: string;
-  icon: ComponentType<{ sx?: object }>;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { label: "Ecosystem", path: "/ecosystem", icon: AccountTreeOutlined },
-  { label: "Rooms", path: "/rooms", icon: MeetingRoomOutlined },
-  { label: "Resources", path: "/resources", icon: FolderOutlined },
-  { label: "Agents", path: "/agents", icon: SmartToyOutlined },
-  { label: "Apps", path: "/collaborations", icon: ChatBubbleOutlineOutlined },
-  { label: "API Keys", path: "/registration-keys", icon: VpnKeyOutlined },
-  { label: "Workspace", path: "/workspace", icon: WorkspacesOutlined },
-];
-
-// Shown when the current workspace belongs to an organization.
-const ORGANIZATION_ITEMS: NavItem[] = [
-  { label: "Organization", path: "/organization", icon: ApartmentOutlined },
-];
-
-// Shown only when the server runs with agent management enabled.
-const MANAGEMENT_ITEMS: NavItem[] = [
-  { label: "Machines", path: "/machines", icon: ComputerOutlined },
-];
-
-const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
-  { label: "Usage", path: "/usage", icon: DataUsageOutlined },
-];
-
-const ADMIN_ITEMS: NavItem[] = [
-  { label: "All workspaces", path: "/operator/workspaces", icon: DnsOutlined },
-  { label: "Users", path: "/users", icon: PeopleOutlined },
-  { label: "Connectors", path: "/connectors", icon: PowerOutlined },
-];
 
 // The rail follows the window's height: at a laptop's it is sized so an
 // operator's eleven labelled items and the account button fit, and it grows
@@ -85,11 +36,11 @@ const LABEL = "clamp(0.6875rem, 1.05vh, 0.75rem)";
 // against thin-stroke icons, so matching the container would read as heavier.
 const LOGO = "clamp(24px, 2.6vh, 28px)";
 
-function RailItem({ item, active }: { item: NavItem; active: boolean }) {
+function RailItem({ item, active }: { item: RailItemDefinition; active: boolean }) {
   return (
     <Box
       component={NavLink}
-      to={item.path}
+      to={item.to}
       aria-current={active ? "page" : undefined}
       sx={{
         display: "flex",
@@ -101,7 +52,7 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
         opacity: active ? 1 : 0.75,
         transition: "opacity 150ms",
         "&:hover": { opacity: 1 },
-        "&:focus-visible": { outline: "2px solid var(--hoot-ring)", outlineOffset: 2, borderRadius: "16px" },
+        "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2, borderRadius: "16px" },
       }}
     >
       <Box
@@ -116,9 +67,9 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
           // The active indicator is a subtle vertical gradient pill with a
           // whisper of lift — never a filled accent.
           ...(active && {
-            background: "linear-gradient(to bottom, var(--hoot-card), var(--hoot-secondary))",
-            border: "1px solid var(--hoot-border)",
-            boxShadow: "var(--hoot-shadow-rail-active)",
+            background: "linear-gradient(to bottom, var(--sw-card), var(--sw-secondary))",
+            border: "1px solid var(--sw-border)",
+            boxShadow: "var(--sw-shadow-rail-active)",
           }),
         }}
       >
@@ -133,9 +84,10 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
-export default memo(function NavRail() {
+export default memo(function NavRail({ layout }: { layout: Layout }) {
   const location = useLocation();
-  const { user, session, isOperator, logout, logoutEverywhere, switchTo } = useAuth();
+  const { user, session, isOperator, capabilities, logout, logoutEverywhere, switchTo } =
+    useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -150,32 +102,13 @@ export default memo(function NavRail() {
     }
   };
 
-  const { data: tenant } = useCurrentTenant();
-  const [managementAvailable, setManagementAvailable] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchManagementAvailable()
-      .then((available) => {
-        if (!cancelled) setManagementAvailable(available);
-      })
-      .catch((err: unknown) => {
-        console.error("Could not tell whether agent management is enabled:", err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const items = [
-    ...NAV_ITEMS,
-    ...(session?.tenant?.organization_id ? ORGANIZATION_ITEMS : []),
-    ...(managementAvailable ? MANAGEMENT_ITEMS : []),
-    ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
-    ...(isOperator ? ADMIN_ITEMS : []),
-  ];
+  const items = railFor(layout, capabilities);
+  const isActive = (item: RailItemDefinition) =>
+    item.activeFor.some((prefix) => location.pathname.startsWith(prefix));
   const current = session?.tenant ?? null;
-  const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);
+  // The new layout switches workspace from the top bar's breadcrumb.
+  const others =
+    layout === "v2" ? [] : (session?.tenants ?? []).filter((t) => t.id !== current?.id);
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
 
   return (
@@ -194,8 +127,10 @@ export default memo(function NavRail() {
         {/* Two assets rather than one recoloured mark: the swap is done in CSS
             off the colour-scheme attribute so there is no flash on first paint,
             and a future coloured logo drops in without rework. The file names
-            describe the ink — `dark` is the black mark, for the light theme. */}
+            describe the ink — `dark` is the black mark, for the light theme.
+            An image, so the name the tooltip gives it is allowed on it. */}
         <Box
+          role="img"
           sx={{
             width: TARGET,
             height: TARGET,
@@ -231,30 +166,37 @@ export default memo(function NavRail() {
 
       <Divider sx={{ my: 1.5, width: 29 }} />
 
-      <Stack
-        component="nav"
-        aria-label="Main"
-        sx={{
-          width: "100%",
-          alignItems: "center",
-          gap: ITEM_GAP,
-          // On a window shorter still, the items scroll and the account
-          // button stays put; the rail is too narrow for a scrollbar.
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
-          scrollbarWidth: "none",
-          "&::-webkit-scrollbar": { display: "none" },
-        }}
-      >
-        {items.map((item) => (
-          <RailItem
-            key={item.path}
-            item={item}
-            active={location.pathname.startsWith(item.path)}
-          />
-        ))}
+      <Stack component="nav" aria-label="Main" sx={{ width: "100%", flex: 1, minHeight: 0 }}>
+        <Stack
+          sx={{
+            width: "100%",
+            alignItems: "center",
+            gap: ITEM_GAP,
+            // On a window shorter still, the items scroll and the account
+            // button stays put; the rail is too narrow for a scrollbar.
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            overflowX: "hidden",
+            scrollbarWidth: "none",
+            "&::-webkit-scrollbar": { display: "none" },
+          }}
+        >
+          {items
+            .filter((item) => !item.bottom)
+            .map((item) => (
+              <RailItem key={item.to} item={item} active={isActive(item)} />
+            ))}
+        </Stack>
+        {items.some((item) => item.bottom) && (
+          <Stack sx={{ width: "100%", alignItems: "center", gap: ITEM_GAP, pt: 2 }}>
+            {items
+              .filter((item) => item.bottom)
+              .map((item) => (
+                <RailItem key={item.to} item={item} active={isActive(item)} />
+              ))}
+          </Stack>
+        )}
       </Stack>
 
       <Stack sx={{ width: "100%", alignItems: "center", gap: 2, pt: 2 }}>
@@ -274,7 +216,7 @@ export default memo(function NavRail() {
             fontSize: "0.9375rem",
             fontWeight: 700,
             letterSpacing: "-0.02em",
-            "&:focus-visible": { outline: "2px solid var(--hoot-ring)", outlineOffset: 2 },
+            "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2 },
           }}
         >
           {initial}
@@ -300,14 +242,26 @@ export default memo(function NavRail() {
           )}
         </Box>
         <Divider sx={{ my: 0.5 }} />
-        <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
-          <Typography variant="caption" sx={{ color: "text.secondary" }}>
-            Workspace
-          </Typography>
-          <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
-            {current?.name}
-          </Typography>
-        </Box>
+        {layout === "v2" ? (
+          <MenuItem
+            component={RouterLink}
+            to="/settings/account"
+            onClick={() => setAnchor(null)}
+            sx={{ gap: 1 }}
+          >
+            <AccountCircleOutlined sx={{ fontSize: 16 }} />
+            Your account
+          </MenuItem>
+        ) : (
+          <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              Workspace
+            </Typography>
+            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+              {current?.name}
+            </Typography>
+          </Box>
+        )}
         {others.map((tenant) => (
           <MenuItem
             key={tenant.id}

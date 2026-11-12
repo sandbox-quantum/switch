@@ -36,6 +36,8 @@ const BRIDGE = {
   type: 'slack',
   displayName: 'Acme Slack',
   channelIdsRefused: null,
+  privateChannels: null,
+  privateChannelNeedsLinkedAccount: false,
 } as RemoteBridge;
 
 let container: HTMLDivElement | null = null;
@@ -50,7 +52,7 @@ afterEach(async () => {
   latest = DEFAULT_ROOM_OPTIONS;
 });
 
-function Harness({ bridge, admin }: { bridge: RemoteBridge; admin: boolean }) {
+function Harness({ bridge, admin }: { bridge: RemoteBridge | null; admin: boolean }) {
   const [value, setValue] = useState<RoomCreateOptions>(DEFAULT_ROOM_OPTIONS);
   const onChange = (next: RoomCreateOptions) => {
     latest = next;
@@ -58,18 +60,19 @@ function Harness({ bridge, admin }: { bridge: RemoteBridge; admin: boolean }) {
   };
   return (
     <>
-      <RoomChannelField bridge={bridge} value={value} onChange={onChange} />
+      {bridge && <RoomChannelField bridge={bridge} value={value} onChange={onChange} />}
       <CreateRoomOptions
         workspaceId="ws-1"
         value={value}
         onChange={onChange}
         administersWorkspace={admin}
+        bridged={bridge !== null}
       />
     </>
   );
 }
 
-async function render(bridge: RemoteBridge = BRIDGE, admin = true): Promise<HTMLDivElement> {
+async function render(bridge: RemoteBridge | null = BRIDGE, admin = true): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -143,5 +146,19 @@ describe('creating a room on a messaging app', () => {
     await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     expect(el.querySelector('[aria-label="Group"]')).toBeNull();
     expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
+  });
+});
+
+describe('creating a Switch Console chat', () => {
+  it('has no channel, and says the chat is private to those taking part until changed', async () => {
+    const el = await render(null);
+    expect(radio(el, 'New public channel')).toBeUndefined();
+    expect(el.textContent).toContain(
+      'Group: none · Only those taking part and admins see it; owner and admins change it'
+    );
+    await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
+    expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
+    expect(el.textContent).not.toContain('who can read or post in the channel');
+    expect(latest.access).toBeNull();
   });
 });

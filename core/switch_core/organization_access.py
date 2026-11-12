@@ -37,6 +37,17 @@ from switch_core.gateway.workspace_access import (
 
 
 @dataclass(frozen=True)
+class MembershipRemoval:
+    """What `remove_membership` did: the access it revoked, for
+    `AccessRevocation.finish`, and who received what the member owned (`heir`,
+    None when nobody did) with how many of each kind passed (`handed`)."""
+
+    revoked: RevokedAccess
+    heir: str | None
+    handed: dict[str, int]
+
+
+@dataclass(frozen=True)
 class AccessRevocation:
     """What taking someone's access away in a workspace needs."""
 
@@ -130,7 +141,7 @@ async def remove_membership(
     actor_id: str | None,
     details: dict[str, Any],
     keep_agent_keys: bool,
-) -> RevokedAccess:
+) -> MembershipRemoval:
     """Remove `membership` from its workspace, bound on `session`, with the
     member's keys, service connections and sign-ins under way there, recorded
     in its audit log with `details`; `keep_agent_keys` as
@@ -173,7 +184,7 @@ async def remove_membership(
         },
     )
     await session.delete(membership)
-    return revoked
+    return MembershipRemoval(revoked=revoked, heir=heir, handed=handed)
 
 
 async def _hand_over_to_heir(
@@ -187,7 +198,7 @@ async def _hand_over_to_heir(
     """Hand what `user_id` owns in `tenant_id` to their `removal_heir`, for
     `reason`. Returns the heir, or None when there is none and nothing moved,
     and how many of each kind passed."""
-    heir = await removal_heir(session, tenant_id, user_id, actor_id)
+    heir = await removal_heir(session, tenant_id, user_id, actor_id, lock=True)
     if heir is None:
         return None, {}
     handed = await hand_over_everything(
@@ -202,7 +213,12 @@ async def _hand_over_to_heir(
 
 
 async def removal_heir(
-    session: AsyncSession, tenant_id: str, user_id: str, actor_id: str | None
+    session: AsyncSession,
+    tenant_id: str,
+    user_id: str,
+    actor_id: str | None,
+    *,
+    lock: bool,
 ) -> str | None:
     """Who takes over what `user_id` owns in `tenant_id` when they lose access
     to it: the person removing them, when they are a member of the workspace
@@ -211,16 +227,18 @@ async def removal_heir(
     admin, then the lowest id. None when the workspace has no other admin, and
     what they own stays theirs.
 
-    The heir's membership is locked until the caller commits, so a removal of
-    the heir running at the same time waits for this one and then finds what
-    was handed to them, rather than leaving it with someone already gone."""
+    With `lock`, as for the removal itself, the heir's membership is locked
+    until the caller commits, so a removal of the heir running at the same
+    time waits for this one and then finds what was handed to them, rather
+    than leaving it with someone already gone. Without it, as for telling an
+    admin beforehand who will receive what, nothing is locked."""
     if actor_id is not None and actor_id != user_id:
         actor = await session.get(
-            TenantMember, (tenant_id, actor_id), with_for_update=True
+            TenantMember, (tenant_id, actor_id), with_for_update=lock
         )
         if actor is not None:
             return actor_id
-    heir: str | None = await session.scalar(
+    query = (
         select(TenantMember.user_id)
         .where(
             TenantMember.tenant_id == tenant_id,
@@ -229,8 +247,8 @@ async def removal_heir(
         )
         .order_by(TenantMember.created_at, TenantMember.user_id)
         .limit(1)
-        .with_for_update()
     )
+    heir: str | None = await session.scalar(query.with_for_update() if lock else query)
     return heir
 
 

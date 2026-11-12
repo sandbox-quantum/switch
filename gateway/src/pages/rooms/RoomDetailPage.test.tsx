@@ -65,6 +65,7 @@ const room = {
   write_visibility: "public",
   created_at: "2026-10-01T00:00:00Z",
   archived: false,
+  viewer_is_member: false,
   transport_room_id: "!r1:example.test",
   matrix_room_id: "!r1:example.test",
   external_channel_id: null,
@@ -79,13 +80,19 @@ const room = {
   can_write: true,
   can_manage: false,
   can_unlink: false,
+  can_transfer: false,
+  can_change_members: true,
 } as RoomDetail;
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
 
-function viewAs(can: { can_write: boolean; can_manage: boolean; can_unlink: boolean }) {
+// Members can be changed by whoever may write to the room, as the server
+// says, unless a test sets otherwise.
+function viewAs(
+  can: { can_write: boolean; can_manage: boolean; can_unlink: boolean } & Partial<RoomDetail>,
+) {
   vi.mocked(hooks.useRoom).mockReturnValue({
-    data: { ...room, ...can },
+    data: { ...room, can_change_members: can.can_write, ...can },
     loading: false,
     error: null,
     refetch: vi.fn(),
@@ -161,6 +168,35 @@ describe("RoomDetailPage permissions", () => {
     expect(sent).not.toHaveProperty("write_visibility");
   });
 
+  it("lets someone who may write edit a bridged room's description like any other room's", async () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Retro and planning" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateRoom).mock.calls[0][1]).toMatchObject({
+      description: "Retro and planning",
+    });
+  });
+
+  it("leaves a chat's members to its platform, keeping its settings editable", () => {
+    viewAs({
+      can_write: true,
+      can_manage: false,
+      can_unlink: false,
+      can_change_members: false,
+      channel_type: "group",
+    });
+
+    expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove planner" })).toBeNull();
+    expect(screen.getByText(/rooms is managed from the messaging platform/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
   it("lets someone who may manage the room change its access and delete it", async () => {
     viewAs({ can_write: true, can_manage: true, can_unlink: false });
 
@@ -202,6 +238,63 @@ describe("RoomDetailPage permissions", () => {
     expect(joinEventsSwitch().disabled).toBe(true);
     expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
+  });
+
+  it("lists a Switch Console chat's members as its people, to change in Console", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        bridge_id: null,
+        bridge_display_name: null,
+        is_console_chat: true,
+        connected_user_count: 2,
+        connected_user_names: ["Ada Lovelace", "Grace Hopper"],
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.getByText("People (2)")).toBeTruthy();
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+    expect(screen.getByText("Grace Hopper")).toBeTruthy();
+    expect(screen.queryByText(/Connected users/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add user" })).toBeNull();
+  });
+
+  it("lists two people who share a name as two people", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        bridge_id: null,
+        bridge_display_name: null,
+        is_console_chat: true,
+        connected_user_count: 2,
+        connected_user_names: ["Alex", "Alex"],
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.getAllByText("Alex")).toHaveLength(2);
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
+    errors.mockRestore();
+  });
+
+  it("lists no people for a room on no app that is not a Console chat", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: { ...room, bridge_id: null, bridge_display_name: null },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.queryByText(/^People \(/)).toBeNull();
   });
 
   it("lets someone taking part in a room they cannot edit unlink its resources", () => {

@@ -468,6 +468,56 @@ class TestJourneys:
         assert await room.reached(after) == set()
 
 
+class TestWhyTheAgentWasGivenIt:
+    """The event names the rule that delivered a follow-up, so the agent's
+    session can tell a message it may leave alone from one that asked it."""
+
+    async def test_a_mention_names_no_rule(self, room: Journey) -> None:
+        told = await room.say("alice", "@helper what does just up do?", at=0)
+
+        payload = (await room.payloads(told))["helper"]
+        assert payload.follow_up is None
+        assert payload.routed is False
+
+    async def test_a_reply_in_the_agents_thread(self, room: Journey) -> None:
+        answer = await room.post("helper", "It starts the stack", at=0)
+
+        told = await room.say("alice", "why two database roles?", at=30, thread=answer)
+
+        assert (await room.payloads(told))["helper"].follow_up == "thread_follow_up"
+
+    async def test_the_next_channel_message(self, room: Journey) -> None:
+        await room.say("alice", "@helper what does just migrate do?", at=0)
+        await room.post("helper", "It applies migrations", at=10)
+
+        told = await room.say("alice", "and what does just down do?", at=40)
+
+        assert (await room.payloads(told))["helper"].follow_up == "channel_follow_up"
+
+    async def test_the_assigned_agent(self, room: Journey) -> None:
+        await room.command("alice", "assign-agent", "@helper", at=0)
+
+        told = await room.say("bob", "anyone know why the deploy failed?", at=10)
+
+        assert (await room.payloads(told))["helper"].follow_up == "main_agent"
+
+    async def test_a_mention_of_the_assigned_agent_names_no_rule(
+        self, room: Journey
+    ) -> None:
+        await room.command("alice", "assign-agent", "@helper", at=0)
+
+        told = await room.say("alice", "@helper are you there?", at=10)
+
+        assert (await room.payloads(told))["helper"].follow_up is None
+
+    async def test_a_file_in_the_agents_thread(self, room: Journey) -> None:
+        answer = await room.post("helper", "Which log?", at=0)
+
+        told = await room.send_file("alice", "app.log", at=10, thread=answer)
+
+        assert (await room.payloads(told))["helper"].follow_up == "thread_follow_up"
+
+
 class TestAttachments:
     """A post with files follows the conversation as a text message does
     (CHOO-4067): the rules read the first file's text and thread, and the
@@ -804,7 +854,7 @@ class TestCommandsWhileTheFlagIsOff:
             )  # type: ignore[arg-type]
 
         assert len(replies) == 3
-        assert all("isn't switched on for this Switch server" in r for r in replies)
+        assert all("isn't switched on" in r for r in replies)
         async with world.session_factory() as session:
             assert await RoomStore().main_agent_id(session, world.room_id) is None
             assert await RoomStore().follow_ups_enabled(session, world.room_id)

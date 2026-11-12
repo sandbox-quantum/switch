@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query';
-import { LogOut, Pencil, Trash2 } from 'lucide-react';
+import { CircleCheck, LogOut, Pencil, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -8,6 +8,7 @@ import { PageHeader } from '@renderer/lib/components/page-header';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { Alert, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
@@ -170,8 +171,11 @@ function DisplayName({ serverId, name }: { serverId: string; name: string }) {
   );
 }
 
-function ChangePassword({ serverId }: { serverId: string }) {
+export function ChangePassword({ serverId }: { serverId: string }) {
   const [open, setOpen] = useState(false);
+  // Said on the page rather than in a toast that can be missed, and held here
+  // only, so it is gone once the person navigates away and back.
+  const [changed, setChanged] = useState(false);
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -190,7 +194,11 @@ function ChangePassword({ serverId }: { serverId: string }) {
       }),
     onSuccess: () => {
       reset();
-      toast.success('Password changed');
+      setChanged(true);
+      // Anything refused in the moment between the server ending the old
+      // session and Console keeping the new one can have shown the server as
+      // signed out; read its status again now the new session is in place.
+      void switchServersStore.refreshStatus(serverId);
     },
     onError: (error) => {
       const { headline, detail } = describeFailure(error, 'Could not change your password.');
@@ -202,8 +210,21 @@ function ChangePassword({ serverId }: { serverId: string }) {
     return (
       <div className="space-y-1.5">
         <Label>Password</Label>
+        {changed && (
+          <Alert variant="success" className="max-w-md">
+            <CircleCheck />
+            <AlertTitle>Password changed successfully</AlertTitle>
+          </Alert>
+        )}
         <div>
-          <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setChanged(false);
+              setOpen(true);
+            }}
+          >
             Change password
           </Button>
         </div>

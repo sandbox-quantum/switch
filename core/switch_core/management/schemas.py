@@ -124,7 +124,7 @@ def _controller_name(value: str) -> str:
     """A machine's name, trimmed, and refused when nothing is left."""
     trimmed = value.strip()
     if not trimmed:
-        raise ValueError("a machine's name must not be blank")
+        raise ValueError("a device's name must not be blank")
     return trimmed
 
 
@@ -364,7 +364,7 @@ class _ControllerDetailsChange(BaseModel):
     @classmethod
     def _name_is_not_blank(cls, value: str | None) -> str | None:
         if value is None:
-            raise ValueError("a machine's name cannot be cleared")
+            raise ValueError("a device's name cannot be cleared")
         return _controller_name(value)
 
     @field_validator("description")

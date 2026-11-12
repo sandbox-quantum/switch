@@ -41,6 +41,20 @@ Secret of its own.
 {{- end }}
 
 {{/*
+"true" when GATEWAY_ADMIN_PASSWORD must be set: while password login is on
+(it is the seeded admin's credential), and with Mattermost, whose setup Job
+signs in as the admin with it. Empty otherwise: with OIDC-only sign-in the
+admin is seeded without a password.
+*/}}
+{{- define "switch.adminPasswordRequired" -}}
+{{- $passwordLogin := or (not .Values.switchCore.oidc.enabled) .Values.switchCore.oidc.passwordLoginEnabled }}
+{{- if and .Values.mattermost.enabled (not $passwordLogin) }}
+{{- fail "mattermost.enabled needs password login: its setup Job signs in as the admin with GATEWAY_ADMIN_PASSWORD. Keep switchCore.oidc.passwordLoginEnabled true or turn Mattermost off." }}
+{{- end }}
+{{- if $passwordLogin }}true{{ end }}
+{{- end }}
+
+{{/*
 The Secret's data block, so the pre-upgrade copy the migration reads is
 rendered from this one source and cannot drift from the release's own.
 */}}
@@ -70,13 +84,20 @@ JWT_SECRET_KEY: {{ . | b64enc | quote }}
 CONTROLLER_TOKEN_SECRET: {{ $controllerSecret | b64enc | quote }}
 {{- end }}
 GATEWAY_ADMIN_EMAIL: {{ required "secrets.gatewayAdminEmail is required" .Values.secrets.gatewayAdminEmail | b64enc | quote }}
-GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- if include "switch.adminPasswordRequired" . }}
+GATEWAY_ADMIN_PASSWORD: {{ required "secrets.gatewayAdminPassword is required while password login is enabled" .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- else if .Values.secrets.gatewayAdminPassword }}
+GATEWAY_ADMIN_PASSWORD: {{ .Values.secrets.gatewayAdminPassword | b64enc | quote }}
+{{- end }}
 {{- if .Values.mattermost.enabled }}
 MATTERMOST_ADMIN_PASSWORD: {{ .Values.secrets.mattermostAdminPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
 MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
 {{- end }}
 {{- if .Values.switchCore.oidc.enabled }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
+{{- end }}
+{{- if eq .Values.switchCore.organizationDirectory.mode "workos" }}
+WORKOS_API_KEY: {{ required "secrets.workosApiKey is required when switchCore.organizationDirectory.mode is workos" .Values.secrets.workosApiKey | b64enc | quote }}
 {{- end }}
 {{- if and .Values.switchCore.smtp.enabled (or .Values.switchCore.smtp.username .Values.switchCore.smtp.usernameFromSecret) }}
 GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when an SMTP username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
@@ -701,6 +722,44 @@ SHA-256.
 {{- end }}
 
 {{/*
+Where to send OTLP, from switchCore.observability: nothing when no collector is
+named. switch-core passes `metrics: true`; the decision service exports logs
+only, so it gets no metrics settings. Each line starts with a newline.
+Usage: {{- include "switch.otlpEnv" (dict "root" . "metrics" true) }}
+*/}}
+{{- define "switch.otlpEnv" -}}
+{{- $root := .root }}
+{{- $metrics := .metrics }}
+{{- with $root.Values.switchCore.observability }}
+{{- if .otlpEndpoint }}
+- name: OTLP_ENDPOINT
+  value: {{ .otlpEndpoint | quote }}
+- name: DEPLOYMENT_ID
+  value: {{ .deploymentId | quote }}
+{{- if $metrics }}
+- name: OTLP_METRICS_ENABLED
+  value: {{ .metrics | quote }}
+{{- end }}
+- name: OTLP_LOGS_ENABLED
+  value: {{ .logs | quote }}
+{{- if $metrics }}
+- name: OTLP_EXPORT_INTERVAL_SECONDS
+  value: {{ .exportIntervalSeconds | quote }}
+{{- end }}
+- name: OTLP_TIMEOUT_SECONDS
+  value: {{ .timeoutSeconds | quote }}
+{{- if $root.Values.secrets.otlpHeaders }}
+- name: OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $root }}
+      key: OTLP_HEADERS
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -841,6 +900,9 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: GATEWAY_ADMIN_PASSWORD
+      {{- if not (include "switch.adminPasswordRequired" .) }}
+      optional: true
+      {{- end }}
 {{- if .Values.switchCore.oidc.enabled }}
 - name: GATEWAY_OIDC_ISSUER_URL
   value: {{ required "switchCore.oidc.issuerUrl is required when oidc.enabled" .Values.switchCore.oidc.issuerUrl | quote }}
@@ -888,6 +950,11 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $signupMode | quote }}
 - name: GATEWAY_MAX_WORKSPACES_PER_USER
   value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+{{- with .Values.switchCore.signup.refusedHeader }}
+- name: GATEWAY_SIGNUP_REFUSED_HEADER
+  value: {{ . | quote }}
+{{- end }}
+{{- include "switch.organizationDirectoryEnv" . }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
 {{- $outboundHosts := .Values.switchCore.outbound.allowedPrivateHosts }}
@@ -1002,29 +1069,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: ENVIRONMENT
   value: {{ . | quote }}
 {{- end }}
-{{- with .Values.switchCore.observability }}
-{{- if .otlpEndpoint }}
-- name: OTLP_ENDPOINT
-  value: {{ .otlpEndpoint | quote }}
-- name: DEPLOYMENT_ID
-  value: {{ .deploymentId | quote }}
-- name: OTLP_METRICS_ENABLED
-  value: {{ .metrics | quote }}
-- name: OTLP_LOGS_ENABLED
-  value: {{ .logs | quote }}
-- name: OTLP_EXPORT_INTERVAL_SECONDS
-  value: {{ .exportIntervalSeconds | quote }}
-- name: OTLP_TIMEOUT_SECONDS
-  value: {{ .timeoutSeconds | quote }}
-{{- if $.Values.secrets.otlpHeaders }}
-- name: OTLP_HEADERS
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "switch.secretName" $ }}
-      key: OTLP_HEADERS
-{{- end }}
-{{- end }}
-{{- end }}
+{{- include "switch.otlpEnv" (dict "root" . "metrics" true) }}
 - name: TELEMETRY_ENABLED
   value: {{ .Values.switchCore.telemetry.enabled | quote }}
 {{- if .Values.switchCore.telemetry.enabled }}
@@ -1291,5 +1336,46 @@ HF_TOKEN env entry from decision.modelServer.hfTokenSecret, or nothing.
     secretKeyRef:
       name: {{ . }}
       key: {{ $.Values.decision.modelServer.hfTokenSecret.key }}
+{{- end }}
+{{- end }}
+
+{{/*
+switch-core's organization directory settings. The checks mirror the ones
+switch-core makes at startup (config.py), so a bad combination fails the
+render instead of a pod.
+*/}}
+{{- define "switch.organizationDirectoryEnv" -}}
+{{- $directory := .Values.switchCore.organizationDirectory }}
+{{- $changes := list $directory.membersServiceUrl $directory.workosClientId $directory.workosRedirectUrl | compact }}
+{{- if not (has $directory.mode (list "local" "workos")) }}
+{{- fail (printf "switchCore.organizationDirectory.mode must be local or workos. Got %q." $directory.mode) }}
+{{- end }}
+{{- if eq $directory.mode "workos" }}
+{{- if not .Values.switchCore.oidc.enabled }}
+{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.oidc.enabled, against the same WorkOS environment: the sign-in is what names the person there." }}
+{{- end }}
+{{- if ne .Values.switchCore.signup.mode "invite_only" }}
+{{- fail "switchCore.organizationDirectory.mode workos needs switchCore.signup.mode invite_only: a customer's organization is linked by an operator, not created by whoever signs up." }}
+{{- end }}
+{{- if and $changes (lt (len $changes) 3) }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are set together, or not at all." }}
+{{- end }}
+- name: ORGANIZATION_DIRECTORY
+  value: "workos"
+- name: WORKOS_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" . }}
+      key: WORKOS_API_KEY
+{{- if $changes }}
+- name: MEMBERS_SERVICE_URL
+  value: {{ $directory.membersServiceUrl | quote }}
+- name: WORKOS_CLIENT_ID
+  value: {{ $directory.workosClientId | quote }}
+- name: WORKOS_REDIRECT_URL
+  value: {{ $directory.workosRedirectUrl | quote }}
+{{- end }}
+{{- else if $changes }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are for mode workos." }}
 {{- end }}
 {{- end }}

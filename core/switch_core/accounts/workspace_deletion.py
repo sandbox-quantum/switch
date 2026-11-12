@@ -125,6 +125,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "room_packages": "deleted",
     "room_references": "deleted",
     "room_roles": "deleted",
+    "room_schedules": "deleted",
     "room_skills": "deleted",
     "sealed_provider_logins": "deleted",
     "service_grants": "deleted",
@@ -161,13 +162,13 @@ REFUSED: dict[str, tuple[str, str]] = {
     "documents": ("document", "documents"),
     "templates": ("template", "templates"),
     "room_groups": ("room group", "room groups"),
-    "messaging_installs": ("messaging app connection", "messaging app connections"),
-    "collaboration_bridges": ("messaging bridge", "messaging bridges"),
-    "machine_workspaces": ("cloud machine", "cloud machines"),
-    "agent_controllers": ("machine", "machines"),
-    "server_connectors": ("server connector", "server connectors"),
+    "messaging_installs": ("installed app", "installed apps"),
+    "collaboration_bridges": ("messaging app", "messaging apps"),
+    "machine_workspaces": ("cloud device", "cloud devices"),
+    "agent_controllers": ("device", "devices"),
+    "server_connectors": ("agent run by Switch", "agents run by Switch"),
     "skills": ("skill", "skills"),
-    "service_connections": ("service connection", "service connections"),
+    "service_connections": ("connector", "connectors"),
 }
 
 
@@ -252,7 +253,7 @@ async def remaining(session: AsyncSession, tenant_id: str, owner_id: str) -> lis
         .where(members.c.tenant_id == tenant_id, members.c.user_id != owner_id)
     )
     if others:
-        left.append(_counted(others, ("other member", "other members")))
+        left.append(_counted(others, ("other user", "other users")))
     return left
 
 
@@ -260,7 +261,7 @@ async def refusal(session: AsyncSession, tenant_id: str, owner_id: str) -> str |
     """Why the workspace cannot be deleted now, or None when it can."""
     if tenant_id == TENANT_ZERO_ID:
         return (
-            "This is the server's default workspace, where new accounts start. "
+            "This is Switch's default workspace, where new accounts start. "
             "It can't be deleted."
         )
     left = await remaining(session, tenant_id, owner_id)

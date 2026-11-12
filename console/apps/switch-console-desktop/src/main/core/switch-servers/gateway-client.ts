@@ -77,6 +77,7 @@ import {
   type AgentRenameOutcome,
   type BridgeConfigField,
   type BridgeDirectoryUser,
+  type BridgePerson,
   type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
@@ -99,14 +100,17 @@ import {
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
+  type RemoteRoomSchedule,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
   type RoomRoleInput,
   type RoomVisibility,
   type RetireOutcome,
   type SwitchApiKey,
+  type ApiKeyLifetime,
   type CreatedRegistrationKey,
   type RoomAutoRoute,
+  type RoomScheduleDraft,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -136,6 +140,7 @@ import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from '
 import { consoleIdentityHeaders } from './console-identity';
 import { NoManagementApiError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
+import { noteSessionEnded } from './session-ended';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
@@ -426,6 +431,9 @@ export async function gatewayRequest(
   }
 
   if (response.status === 401) {
+    // Only a call that sent a session can say the session is gone; a 401 to an
+    // unauthenticated call is about something else.
+    if (options.authenticated) noteSessionEnded(server.id);
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
   if (answeredWithPage(response)) {
@@ -777,14 +785,23 @@ export async function updateMyName(server: SwitchServer, name: string): Promise<
  * with the server's reason, such as a wrong current password. An account made
  * through single sign-on has no password to change; the server says so on the
  * user (`hasPassword`), and Settings offers no change for one.
+ *
+ * The server ends every session on a password change, the one that made it
+ * included, and answers with a new session cookie for this caller. Keeping it
+ * is what leaves Console signed in: the stored cookie is now refused. A server
+ * that sends none leaves the old one, and the next call finds it signed out.
+ *
+ * Failing to keep the new cookie is not a failed change: the password has
+ * changed by then, so it is reported as what it is, with what to do next.
  */
 export async function changeMyPassword(
   server: SwitchServer,
   currentPassword: string,
   newPassword: string
 ): Promise<void> {
+  let res: Response;
   try {
-    await gatewayFetch(server, '/auth/me/password', {
+    res = await gatewayFetch(server, '/auth/me/password', {
       authenticated: true,
       method: 'PUT',
       body: { current_password: currentPassword, new_password: newPassword },
@@ -792,6 +809,29 @@ export async function changeMyPassword(
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
+  }
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) return;
+  try {
+    await setSessionCookie(server.id, cookie);
+  } catch (cause) {
+    throw new PasswordChangedSessionNotSavedError(cause);
+  }
+}
+
+/**
+ * The password changed, but Console could not keep the session the server
+ * answered with. Named, so the window says it as it is rather than leading
+ * with "Could not change your password", which would leave the person
+ * believing the old password still works.
+ */
+export class PasswordChangedSessionNotSavedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      'Your password was changed, but Console couldn’t save its new session. Sign in again with your new password.',
+      { cause }
+    );
+    this.name = 'PasswordChangedSessionNotSavedError';
   }
 }
 
@@ -1771,6 +1811,8 @@ type BridgeJson = {
   display_name: string;
   status: string;
   is_default?: boolean;
+  // Absent on a server predating the flag.
+  preconfigured?: boolean;
   home_url?: string | null;
   // Both absent on a server predating the capability — defaulting each to
   // true reproduces how every bridge behaved before it existed: any platform
@@ -1785,6 +1827,10 @@ type BridgeJson = {
   attention?: string | null;
   team_placement_supported?: boolean;
   channel_ids_refused?: string | null;
+  // Both absent on a server predating them, which could make a private
+  // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
+  private_channels_supported?: boolean;
+  private_channel_needs_linked_account?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1799,6 +1845,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     displayName: b.display_name,
     status: b.status,
     isDefault: b.is_default ?? false,
+    preconfigured: b.preconfigured ?? null,
     homeUrl: b.home_url ?? null,
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
@@ -1806,6 +1853,8 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
     channelIdsRefused: b.channel_ids_refused ?? null,
+    privateChannels: b.private_channels_supported ?? null,
+    privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
@@ -3443,6 +3492,8 @@ type RoomSummaryJson = {
   owner_id?: string | null;
   viewer_is_member?: boolean;
   is_console_chat?: boolean;
+  /** Its people are its Switch members; absent from a server too old to count them. */
+  people_are_members?: boolean;
   archived: boolean;
   created_at: string;
   write_visibility?: string;
@@ -3471,6 +3522,7 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
     isConsoleChat: r.is_console_chat ?? false,
+    ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
     createdAt: r.created_at,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
@@ -3765,6 +3817,33 @@ export async function setRoomAutoRoute(
 }
 
 /**
+ * The people Switch knows on one bridge (`GET /collaborations/{id}/users`),
+ * with who has linked each account, for the New room dialog to offer them and
+ * to match them to the workspace's people. A link counts only once confirmed;
+ * a server that predates confirming leaves `verified` out, and its links count.
+ */
+export async function fetchBridgePeople(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<BridgePerson[]> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
+    authenticated: true,
+  });
+  const users = (await res.json()) as ExternalUserSummaryJson[];
+  return users
+    .map((user) => {
+      const linked = (user.claimed_by ?? []).filter((claim) => claim.verified !== false);
+      return {
+        username: user.external_username,
+        externalUserId: user.external_user_id,
+        linkedUserIds: linked.map((claim) => claim.user_id),
+        linkedName: linked[0]?.user_name ?? null,
+      };
+    })
+    .sort((a, b) => a.username.localeCompare(b.username));
+}
+
+/**
  * Add agents to an existing room (`POST /rooms/{id}/agents`). Requires write
  * access to the room. Agents already in the room are ignored server-side, so
  * this is safe to call with a set that overlaps the current membership.
@@ -3796,6 +3875,123 @@ export async function removeRoomAgent(
     `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`,
     { authenticated: true, method: 'DELETE' }
   );
+}
+
+/** The gateway `RoomScheduleDetail` wire shape. */
+type RoomScheduleJson = {
+  id: string;
+  author_id: string;
+  author_agent_id?: string | null;
+  agent_ids: string[];
+  text: string;
+  cron: string | null;
+  run_at: string | null;
+  timezone: string;
+  paused: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+};
+
+function mapRoomSchedule(json: RoomScheduleJson): RemoteRoomSchedule {
+  return {
+    id: json.id,
+    authorId: json.author_id,
+    authorAgentId: json.author_agent_id ?? null,
+    agentIds: json.agent_ids,
+    text: json.text,
+    cron: json.cron,
+    runAt: json.run_at,
+    timezone: json.timezone,
+    paused: json.paused,
+    nextRunAt: json.next_run_at,
+    lastRunAt: json.last_run_at,
+  };
+}
+
+function roomScheduleBody(draft: RoomScheduleDraft) {
+  return {
+    agent_ids: draft.agentIds,
+    text: draft.text,
+    cron: draft.cron,
+    run_at: draft.runAt,
+    timezone: draft.timezone,
+  };
+}
+
+function roomSchedulesPath(roomId: string): string {
+  return `/rooms/${encodeURIComponent(roomId)}/schedules`;
+}
+
+function roomSchedulePath(roomId: string, scheduleId: string): string {
+  return `${roomSchedulesPath(roomId)}/${encodeURIComponent(scheduleId)}`;
+}
+
+/** A room's schedules (`GET /rooms/{id}/schedules`), oldest first. Requires read access. */
+export async function fetchRoomSchedules(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomSchedule[]> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), { authenticated: true });
+  return ((await res.json()) as RoomScheduleJson[]).map(mapRoomSchedule);
+}
+
+/**
+ * Add a schedule to a room (`POST /rooms/{id}/schedules`), with the signed-in
+ * user as its author. Requires write access. The server checks the timing and
+ * that every agent is in the room, and refuses with the reason otherwise.
+ */
+export async function createRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  draft: RoomScheduleDraft
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), {
+    authenticated: true,
+    method: 'POST',
+    body: roomScheduleBody(draft),
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Replace what a schedule says, to whom and when; the signed-in user becomes its author. */
+export async function updateRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  draft: RoomScheduleDraft
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, roomSchedulePath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'PUT',
+    body: roomScheduleBody(draft),
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Pause a schedule, or resume it from now: runs missed while it was paused are not sent. */
+export async function setRoomSchedulePaused(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  paused: boolean
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, `${roomSchedulePath(roomId, scheduleId)}/paused`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { paused },
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+export async function deleteRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<void> {
+  await gatewayFetch(server, roomSchedulePath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /**
@@ -3855,6 +4051,8 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
+    /** Usernames on the bridge's app to add to the channel. */
+    userNames?: string[];
     /** Null for a new public channel. */
     channel: NewRoomChannel | null;
     groupId: string | null;
@@ -3886,6 +4084,7 @@ export async function createRoom(
           }
         : {}),
       agent_ids: params.agentIds,
+      ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
@@ -5208,7 +5407,12 @@ export async function deleteManagedAgent(
 }
 
 type ApiKeyJson = { id: string; label: string; type: string };
-type ApiKeyDetailJson = ApiKeyJson & { key_prefix: string; created_at: string };
+// `expires_at` is absent on a server older than key expiry, where no key expires.
+type ApiKeyDetailJson = ApiKeyJson & {
+  key_prefix: string;
+  created_at: string;
+  expires_at?: string | null;
+};
 
 /**
  * The signed-in person's own API keys (`GET /api-keys`): the registration
@@ -5223,21 +5427,38 @@ export async function fetchMyApiKeys(server: SwitchServer): Promise<SwitchApiKey
     type: key.type,
     keyPrefix: key.key_prefix,
     createdAt: key.created_at,
+    expiresAt: key.expires_at ?? null,
   }));
 }
 
-/** Make a registration key (`POST /api-keys`). Its value is in the answer and nowhere else. */
+/**
+ * Make a registration key (`POST /api-keys`) that works for `lifetime`. Its
+ * value is in the answer and nowhere else.
+ */
 export async function createRegistrationKey(
   server: SwitchServer,
-  label: string
+  label: string,
+  lifetime: ApiKeyLifetime
 ): Promise<CreatedRegistrationKey> {
   const res = await gatewayFetch(server, '/api-keys', {
     authenticated: true,
     method: 'POST',
-    body: { label },
+    body: { label, expires_in_days: lifetime },
   });
-  const json = (await res.json()) as { id: string; label: string; key: string; created_at: string };
-  return { id: json.id, label: json.label, key: json.key, createdAt: json.created_at };
+  const json = (await res.json()) as {
+    id: string;
+    label: string;
+    key: string;
+    created_at: string;
+    expires_at?: string | null;
+  };
+  return {
+    id: json.id,
+    label: json.label,
+    key: json.key,
+    createdAt: json.created_at,
+    expiresAt: json.expires_at ?? null,
+  };
 }
 
 /** One of the signed-in person's keys in full (`GET /api-keys/{id}/reveal`). The server audits it. */

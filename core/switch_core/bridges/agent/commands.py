@@ -303,12 +303,15 @@ def room_control_frame(
     thread_id: str | None,
     surface: str,
     requester_name: str,
+    direct: bool,
     target_message_id: str | None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
     Beside the contract command it names who asked, as the room knows them,
-    so the session can answer that person once the control has applied.
+    so the session can answer that person once the control has applied, and
+    whether the room is a direct chat, where a reset is meant to leave the
+    session with none of the conversation.
     `session_id` is None for a controller-backed agent, whose controller
     picks the session from the room. `target_message_id` is the message a
     `retry` runs again, and None for every other control.
@@ -340,6 +343,7 @@ def room_control_frame(
         body=body,
     )
     frame["requesterName"] = requester_name
+    frame["direct"] = direct
     return frame
 
 
@@ -593,7 +597,7 @@ async def _decide_control_command(
     # which routes the command to the one working in this room. Switch does not
     # know which session that is, so the frame names none.
     controller_backed = client._connections.controllers.is_bound(agent.id)
-    placed = client._connections.session_in_room(agent.id, meta.room_id)
+    placed = client._connections.live_session_in_room(agent.id, meta.room_id)
     if placed is not None or controller_backed:
         if not event.message_id:
             return say(
@@ -618,6 +622,7 @@ async def _decide_control_command(
             thread_id=event.thread_id,
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
+            direct=meta.channel_type == "direct",
             target_message_id=target,
         )
 
@@ -848,7 +853,7 @@ async def _cmd_list_room_agents(
 
 
 _FOLLOW_THE_CONVERSATION_OFF = (
-    "Following the conversation isn't switched on for this Switch server, so "
+    "Following the conversation isn't switched on in Switch, so "
     "`!follow-ups` and `!assign-agent` have no effect here. Agents only get "
     "messages that mention them."
 )
@@ -913,7 +918,7 @@ async def _cmd_follow_ups(
 
 
 _AUTO_ROUTE_FLAG_OFF = (
-    "Automatic routing isn't switched on for this Switch server, so "
+    "Automatic routing isn't switched on in Switch, so "
     "`!auto-route` has no effect here. Agents only get messages that mention "
     "them, follow-ups, or every message when they are the room's assigned agent."
 )

@@ -47,13 +47,30 @@ from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery.decision import DECISION_NOTICE, THREAD_CONTEXT
 from switch_core.delivery.recipient import AgentRecipient
 from switch_core.delivery.router import sweep_pending_decisions
+from switch_core.logging_config import JsonFormatter
+from switch_core.logging_context import STRUCTURED_FIELDS, LogContextFilter
+from switch_core.observability.catalogue import (
+    DECISION_NOTICES,
+    DECISION_SETTLED,
+    DECISION_WAIT,
+)
 from switch_core.outbound import OutboundPolicy
 from switch_core.tenant_context import current_tenant_id, no_tenant
 from switch_core.transport import InboundMessage
 from tests.conftest import TEST_KEYRING
+from tests.metric_readings import Readings, recording_metrics
 from tests.routing import process_on
 from tests.switch_core.delivery.test_conversation_journeys import ON, Journey
 from tests.switch_core.delivery.world import World
+
+
+def decision_records(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    """The decision records the router logged, one per settled message."""
+    return [
+        getattr(r, STRUCTURED_FIELDS)["decision"]
+        for r in caplog.records
+        if isinstance(getattr(r, STRUCTURED_FIELDS, None), dict)
+    ]
 
 
 class DecisionService:
@@ -298,7 +315,7 @@ class TestWhichMessagesAreAsked:
 
         assert await room.reached(told) == set()
         assert await room.reached(in_thread) == {"helper"}
-        assert "isn't switched on for this Switch server" in reply
+        assert "isn't switched on" in reply
 
 
 class TestWhatTheServiceIsSent:
@@ -465,9 +482,16 @@ class TestWhatTheAgentIsGiven:
         assert event.payload.message_id == told
         assert event.payload.body == "can someone check why the deploy failed?"
         assert own.room_seq > 0
-        assert "candidates=2 choice=helper" in caplog.text
-        assert "confidence=0.9 threshold=0.6 latency_ms=" in caplog.text
-        assert "backend=server_default" in caplog.text
+        [record] = decision_records(caplog)
+        assert record["outcome"] == "delivered"
+        assert record["choice"] == "helper"
+        assert record["candidates"] == 2
+        assert record["model_choice"] == "helper"
+        assert record["confidence"] == 0.9
+        assert record["threshold"] == 0.6
+        assert record["backend"] == "server_default"
+        assert isinstance(record["latency_ms"], int)
+        assert record["decision_id"]
         assert event.payload.routed_reason == "decided"
 
     async def test_what_follows_a_delivery_runs_in_the_rooms_workspace(
@@ -1013,7 +1037,10 @@ class TestTheTriageAgent:
             told = await room.say("bob", "can someone check the deploy?", at=10)
 
         assert await room.reached(told) == set()
-        assert "routed_reason=fallback outcome=dropped_not_permitted" in caplog.text
+        [record] = decision_records(caplog)
+        assert record["outcome"] == "dropped_not_allowed"
+        assert record["choice"] == "reviewer"
+        assert record["failure"] == "timeout"
 
     async def test_it_cannot_be_the_assigned_agent(self, room: Journey) -> None:
         await room.command("alice", "assign-agent", "@reviewer", at=5)
@@ -1114,7 +1141,7 @@ class TestAWorkspaceWithNoBackend:
         assert service.requests == []
         assert await room.reached(told) == set()
         assert room.room_notices == [DECISION_NOTICE]
-        assert "refused by the server's outbound policy" in caplog.text
+        assert "refused by Switch's outbound policy" in caplog.text
 
 
 def test_a_claim_lasts_the_decision_timeout_plus_a_margin():
@@ -1124,3 +1151,358 @@ def test_a_claim_lasts_the_decision_timeout_plus_a_margin():
 
     assert decision_lease_seconds(5) == 15
     assert decision_lease_seconds(30) == 40
+
+
+class TestTheDecisionRecord:
+    """Every undecided message ends in exactly one decision record and one
+    `switch.decision.settled` count, whichever way it ended."""
+
+    async def _settles_once(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        registry: Any,
+        outcome: str,
+    ) -> dict[str, Any]:
+        readings = Readings(registry)
+        [record] = decision_records(caplog)
+        assert record["outcome"] == outcome
+        assert readings.total(DECISION_SETTLED.name) == 1
+        assert readings.total(DECISION_SETTLED.name, outcome=outcome) == 1
+        assert readings.count(DECISION_WAIT.name, outcome=outcome) == 1
+        assert isinstance(record["wait_ms"], int) and record["wait_ms"] >= 0
+        return record
+
+    async def test_delivered(
+        self, room: Journey, service: DecisionService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        service.pick = "helper"
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            told = await room.say("bob", "can someone check the deploy?", at=10)
+            record = await self._settles_once(caplog, registry, "delivered")
+
+        assert record["message_key"] == told
+        assert record["choice"] == "helper"
+        assert record["model"] == "stub"
+        assert record["model_ms"] == 5
+        assert record["reason"] is None
+
+    async def test_nobody_chosen(
+        self, room: Journey, service: DecisionService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        service.pick = None
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.say("bob", "what's the weather in London tomorrow?", at=10)
+            record = await self._settles_once(caplog, registry, "nobody_chosen")
+
+        assert record["choice"] is None
+        assert record["model_choice"] == "none"
+
+    async def test_nobody_because_the_service_failed(
+        self, room: Journey, service: DecisionService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        service.status = 502
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.say("bob", "can someone check the deploy?", at=10)
+            record = await self._settles_once(caplog, registry, "nobody_failed")
+
+        assert record["failure"] == "error_status"
+        assert "no triage agent" in record["reason"]
+
+    async def test_one_notice_is_counted_for_two_failures_in_an_hour(
+        self, room: Journey, service: DecisionService
+    ) -> None:
+        service.status = 502
+
+        with recording_metrics() as registry:
+            await room.say("bob", "can someone check the deploy?", at=10)
+            await room.say("alice", "is anyone looking at the gateway?", at=600)
+            readings = Readings(registry)
+
+        assert room.room_notices == [DECISION_NOTICE]
+        assert readings.total(DECISION_NOTICES.name) == 1
+        assert readings.total(DECISION_SETTLED.name, outcome="nobody_failed") == 2
+
+    async def test_sent_to_the_triage_agent(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        async with world.session_factory() as session:
+            await session.execute(
+                update(Room)
+                .where(Room.id == world.room_id)
+                .values(owner_id=world.owner_id)
+            )
+            await session.commit()
+        await room.command("alice", "auto-route", "fallback @reviewer", at=5)
+        service.error = httpx.ConnectError("connection refused")
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.say("bob", "can someone check the deploy?", at=10)
+            record = await self._settles_once(caplog, registry, "triage")
+
+        assert record["choice"] == "reviewer"
+        assert record["failure"] == "unreachable"
+
+    async def test_dropped_when_the_agent_left(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        service.pick = "helper"
+        helper = room.clients["helper"]
+
+        async def remove() -> None:
+            async with world.session_factory() as session:
+                await session.execute(
+                    delete(ClientRoom).where(
+                        ClientRoom.client_id == helper.id,
+                        ClientRoom.room_id == world.room_id,
+                    )
+                )
+                await session.commit()
+
+        service.during = remove
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.say("bob", "can someone check the deploy?", at=10)
+            await self._settles_once(caplog, registry, "dropped_not_member")
+
+    async def test_dropped_when_the_agent_no_longer_admits_the_sender(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        service.pick = "helper"
+
+        async def tighten() -> None:
+            await _owner_only(world, "helper")
+
+        service.during = tighten
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.say("bob", "can someone check the deploy?", at=10)
+            record = await self._settles_once(caplog, registry, "dropped_not_allowed")
+
+        assert record["choice"] == "helper"
+
+    async def test_expired(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _stop_waking(room)
+        told = await room.say("bob", "can someone check the deploy?", at=10)
+        async with world.session_factory() as session:
+            await session.execute(
+                update(PendingDecision).values(
+                    created_at=func.now() - timedelta(minutes=10)
+                )
+            )
+            await session.commit()
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.process.router.decide_pending(TENANT_ZERO_ID)
+            record = await self._settles_once(caplog, registry, "expired")
+
+        [line] = [
+            r
+            for r in caplog.records
+            if isinstance(getattr(r, STRUCTURED_FIELDS, None), dict)
+        ]
+        assert line.levelno == logging.WARNING
+        assert record["message_key"] == told
+        assert record["decision_id"] is None
+        assert record["wait_ms"] >= 600_000
+
+    async def test_an_expired_record_names_the_workspace(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _stop_waking(room)
+        await room.say("bob", "can someone check the deploy?", at=10)
+        async with world.session_factory() as session:
+            await session.execute(
+                update(PendingDecision).values(
+                    created_at=func.now() - timedelta(minutes=10)
+                )
+            )
+            await session.commit()
+        caplog.handler.addFilter(LogContextFilter("placeholder-tenant"))
+
+        with caplog.at_level(logging.INFO):
+            await room.process.router.decide_pending(TENANT_ZERO_ID)
+
+        [line] = [
+            r
+            for r in caplog.records
+            if isinstance(getattr(r, STRUCTURED_FIELDS, None), dict)
+        ]
+        rendered = json.loads(
+            JsonFormatter(
+                service="switch-core", environment=None, version=None, process_id="p"
+            ).format(line)
+        )
+        assert rendered["tenant_id"] == TENANT_ZERO_ID
+        assert rendered["room_id"] == world.room_id
+
+    async def test_the_wait_is_measured_on_the_databases_clock(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _stop_waking(room)
+        service.pick = "helper"
+        await room.say("bob", "can someone check the deploy?", at=10)
+        async with world.session_factory() as session:
+            await session.execute(
+                update(PendingDecision).values(
+                    created_at=func.now() - timedelta(seconds=30)
+                )
+            )
+            await session.commit()
+
+        with caplog.at_level(logging.INFO):
+            await room.process.router.decide_pending(TENANT_ZERO_ID)
+
+        [record] = decision_records(caplog)
+        assert record["outcome"] == "delivered"
+        assert 30_000 <= record["wait_ms"] < 40_000
+
+    async def test_settled_elsewhere(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        service.pick = "helper"
+
+        async def settled_elsewhere() -> None:
+            async with world.session_factory() as session:
+                await session.execute(delete(PendingDecision))
+                await session.commit()
+
+        service.during = settled_elsewhere
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.say("bob", "can someone check the deploy?", at=10)
+            await self._settles_once(caplog, registry, "settled_elsewhere")
+
+    async def test_unavailable_when_auto_route_was_turned_off(
+        self,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _stop_waking(room)
+        await room.say("bob", "can someone check the deploy?", at=10)
+        await room.command("alice", "auto-route", "off", at=20)
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.process.router.decide_pending(TENANT_ZERO_ID)
+            record = await self._settles_once(caplog, registry, "unavailable")
+
+        assert record["reason"] == "auto-route was turned off"
+        assert service.requests == []
+
+    async def test_every_line_of_a_decision_carries_the_room_tenant_and_decision(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        service.status = 502
+        caplog.handler.addFilter(LogContextFilter("placeholder-tenant"))
+
+        with caplog.at_level(logging.INFO):
+            await room.say("bob", "can someone check the deploy?", at=10)
+
+        formatter = JsonFormatter(
+            service="switch-core", environment=None, version=None, process_id="p-1"
+        )
+        [record] = decision_records(caplog)
+        [warning] = [r for r in caplog.records if "gave no answer" in r.getMessage()]
+        for line in (
+            warning,
+            *[r for r in caplog.records if "Decision routing:" in r.getMessage()],
+        ):
+            rendered = json.loads(formatter.format(line))
+            assert rendered["room_id"] == world.room_id
+            assert rendered["tenant_id"] == TENANT_ZERO_ID
+            assert rendered["decision_id"] == record["decision_id"]
+        assert service.headers[-1]["x-request-id"] == record["decision_id"]
+        [decision_line] = [
+            r
+            for r in caplog.records
+            if isinstance(getattr(r, STRUCTURED_FIELDS, None), dict)
+        ]
+        assert json.loads(formatter.format(decision_line))["decision"] == record
+
+
+class TestNoContentIsRecorded:
+    async def test_message_text_instructions_and_keys_reach_no_log_or_metric(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        sentinel = "zebra-quartz-sentinel"
+        own = DecisionService()
+        room.decisions._guarded_client = httpx.AsyncClient(  # type: ignore[union-attr]
+            transport=httpx.MockTransport(own.handle)
+        )
+        room.process.router._decisions = room.decisions
+        async with world.session_factory() as session:
+            await session.execute(
+                update(Room)
+                .where(Room.id == world.room_id)
+                .values(instructions=f"Always mention {sentinel} first.")
+            )
+            await DecisionSettingsStore().save(
+                session,
+                TENANT_ZERO_ID,
+                backend="endpoint",
+                endpoint="http://10.9.0.5/decide",
+                api_key_encrypted=TEST_KEYRING.encrypt(f"key-{sentinel}"),
+                threshold=None,
+            )
+            await session.commit()
+        caplog.handler.addFilter(LogContextFilter("placeholder-tenant"))
+        formatter = JsonFormatter(
+            service="switch-core", environment=None, version=None, process_id="p-1"
+        )
+
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            own.pick = "helper"
+            await room.say("bob", f"is {sentinel} deployed?", at=10)
+            own.pick = None
+            await room.say("bob", f"and {sentinel} on staging?", at=20)
+            own.status = 502
+            await room.say("bob", f"what about {sentinel} in prod?", at=30)
+            readings = Readings(registry)
+
+        assert len(own.requests) == 3
+        assert sentinel in own.requests[0]["message"]["text"]
+        assert len(decision_records(caplog)) == 3
+        for line in caplog.records:
+            assert sentinel not in formatter.format(line), line.name
+        assert not any(sentinel in value for value in readings.attribute_values())

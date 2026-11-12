@@ -8,7 +8,7 @@ Expand only: a process from before this revision neither writes nor reads the
 column, so it delivers every press, as before.
 
 Revision ID: a4c7e2d9b813
-Revises: 689d7d8ff913
+Revises: ab802e19c401
 Create Date: 2026-11-08 00:00:00.000000
 
 """
@@ -20,7 +20,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "a4c7e2d9b813"
-down_revision: str | None = "689d7d8ff913"
+down_revision: str | None = "ab802e19c401"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

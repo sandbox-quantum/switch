@@ -87,6 +87,7 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
         external_user_store=session_env.external_user_store,
         document_store=session_env.document_store,
         reference_store=session_env.reference_store,
+        package_store=session_env.package_store,
         agent_session_store=session_env.agent_session_store,
         room_service=harness.room_service,
         connections=AgentConnectionRegistry(),
