@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from switch_core.bridges.collaboration.irc import adapter as adapter_module
 from switch_core.bridges.collaboration.irc import client as client_module
 from switch_core.bridges.collaboration.irc.adapter import IrcAdapter
 from tests.switch_core.bridges.collaboration.irc_fakes import (
@@ -351,5 +352,68 @@ async def test_a_network_without_history_says_what_is_lost(
     try:
         assert not server.sent("CHATHISTORY")
         assert "is not relayed" in caplog.text
+    finally:
+        await adapter.stop()
+
+
+async def test_only_a_bang_and_a_word_is_a_command(
+    server: FakeIrcServer, inbound: Inbound, adapter: IrcAdapter
+) -> None:
+    for number, text in enumerate(["!!!", "! look at this", "!1 two", "!Reset now"]):
+        await server.tell(privmsg(text, msgid=f"b{number}"))
+    await until(lambda: len(inbound.messages) == 3 and len(inbound.commands) == 1)
+    assert [m.content for m in inbound.messages] == ["!!!", "! look at this", "!1 two"]
+    (command,) = inbound.commands
+    assert (command.command, command.args) == ("Reset", "now")
+
+
+async def test_a_message_switch_could_not_take_is_read_back_while_connected(
+    server: FakeIrcServer, inbound: Inbound, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The connection stays up, so no join reads the channel back: the
+    adapter does, until the message is taken, and the marker then moves."""
+    monkeypatch.setattr(adapter_module, "_READ_BACK_RETRY_SECONDS", (0.05,))
+    adapter = await started(server, inbound)
+    try:
+        first, lost = ago(seconds=3), ago(seconds=2)
+        await server.tell(privmsg("one", msgid="1", sent=first))
+        await server.wait_for(lambda: server.markers.get(CHANNEL) == first)
+        inbound.refused = {"lost"}
+        raw = privmsg("lost", msgid="2", sent=lost)
+        server.history[CHANNEL] = [
+            (first, privmsg("one", msgid="1", sent=first)),
+            (lost, raw),
+        ]
+        await server.tell(raw)
+        # Read back, and refused again, twice over.
+        await server.wait_for(lambda: server.marker_queries >= 2)
+        assert server.markers[CHANNEL] == first
+        inbound.refused = set()
+        await until(lambda: "lost" in [m.content for m in inbound.messages])
+        await server.wait_for(lambda: server.markers.get(CHANNEL) == lost)
+        assert server.connections == 1
+    finally:
+        await adapter.stop()
+
+
+async def test_a_newer_mark_held_during_a_read_back_does_not_skip_a_failure(
+    server: FakeIrcServer, inbound: Inbound
+) -> None:
+    marked, missed = ago(minutes=10), ago(minutes=5)
+    server.markers[CHANNEL] = marked
+    server.history[CHANNEL] = [(missed, privmsg("lost", msgid="h1", sent=missed))]
+    server.hold_history = asyncio.Event()
+    inbound.refused = {"lost"}
+    adapter = await started(server, inbound)
+    try:
+        await server.tell(privmsg("live", msgid="l1", sent=ago(seconds=1)))
+        await until(lambda: [m.content for m in inbound.messages] == ["live"])
+        server.hold_history.set()
+        await server.wait_for(lambda: bool(server.sent("CHATHISTORY")))
+        await asyncio.sleep(0.1)
+        await server.tell("PING :sync")
+        await server.wait_for(lambda: bool(server.sent("PONG")))
+        # Moving it to `live` would leave `lost` behind it for good.
+        assert server.markers[CHANNEL] == marked
     finally:
         await adapter.stop()

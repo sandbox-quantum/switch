@@ -38,10 +38,16 @@ _HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*)$", re.MULTILINE)
 # unmatched brackets cannot make the engine retry the whole tail from every
 # position (the same reasoning as Telegram's pattern).
 _LINK = re.compile(r"\[([^\[\]\n]*)\]\(([^()\s]*)\)")
-_BOLD = re.compile(r"\*\*([^\n]+?)\*\*|__([^\n]+?)__")
+# A `*` beside a `/`, or one that opens onto a space or a dot, is part of a
+# glob or a path (`src/**/*.py`, `*.md`), not emphasis: an emphasised run
+# starts with a word character, a quote or a bracket.
+_BOLD = re.compile(
+    r"(?<![*/])\*\*(?=[\w\"'(\[])([^\n]*?[^\s*/])\*\*(?![*/])|__([^\n]+?)__"
+)
 _STRIKE = re.compile(r"~~([^\n]+?)~~")
 _ITALIC = re.compile(
-    r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])|(?<![\w_])_([^_\n]+?)_(?![\w_])"
+    r"(?<![*\w/.])\*(?=[\w\"'(\[])([^*\n]*?[\w\"')\].!?])\*(?![*\w/])"
+    r"|(?<![\w_])_([^_\n]+?)_(?![\w_])"
 )
 
 

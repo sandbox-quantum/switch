@@ -3,6 +3,7 @@ the bot is in, as the server receives them."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
@@ -10,9 +11,12 @@ import pytest
 from switch_core.bridges.collaboration.adapter import (
     AgentPresentation,
     ChannelNotBindable,
+    MessagePartlySent,
     RequestCard,
+    RichContentFailed,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.irc import client as client_module
 from switch_core.bridges.collaboration.irc.adapter import IrcAdapter
 from switch_core.bridges.collaboration.irc.markup import BOLD
 from switch_core.bridges.collaboration.irc.protocol import MAX_LINE_BYTES
@@ -211,10 +215,14 @@ async def test_a_turns_progress_is_not_said_but_its_problem_is(
 async def test_a_new_room_gets_a_new_channel_with_its_topic(
     server: FakeIrcServer, adapter: IrcAdapter
 ) -> None:
-    channel = await adapter.create_channel(
+    created = await adapter.create_channel(
         "Release Train!", "Ship\nit", channel_type="channel_private"
     )
+    channel = created.id
     assert channel.startswith("#release-train-") and len(channel) == 19
+    # Named as every message from it names it, and as a rename would.
+    assert created.name == channel.removeprefix("#")
+    assert created.name.startswith(adapter.channel_name_for("Release Train!") + "-")
     await server.wait_for(lambda: bool(server.sent("TOPIC")))
     assert [line.params for line in server.sent("MODE")] == [(channel, "+si")]
     assert server.sent("TOPIC")[0].params == (channel, "Ship it")
@@ -224,7 +232,7 @@ async def test_a_new_room_gets_a_new_channel_with_its_topic(
 async def test_a_long_topic_is_cut_to_fit_without_breaking_a_character(
     server: FakeIrcServer, adapter: IrcAdapter
 ) -> None:
-    channel = await adapter.create_channel("notes", "é" * 400)
+    channel = (await adapter.create_channel("notes", "é" * 400)).id
     await server.wait_for(lambda: bool(server.sent("TOPIC")))
     (topic,) = server.sent("TOPIC")
     assert topic.params == (channel, "é" * 150)
@@ -233,9 +241,9 @@ async def test_a_long_topic_is_cut_to_fit_without_breaking_a_character(
 async def test_people_invited_to_a_new_private_channel_are_let_in(
     server: FakeIrcServer, adapter: IrcAdapter
 ) -> None:
-    channel = await adapter.create_channel(
-        "secrets", "", channel_type="channel_private"
-    )
+    channel = (
+        await adapter.create_channel("secrets", "", channel_type="channel_private")
+    ).id
     await adapter.add_users_to_channel(channel, ["ada"], ["account:ada"])
     await server.wait_for(lambda: bool(server.sent("INVITE")))
     order = [r.line.command for r in server.received]
@@ -265,9 +273,8 @@ async def test_a_notice_waits_for_a_connection_rather_than_being_lost(
 
 
 async def test_two_rooms_with_one_name_get_two_channels(adapter: IrcAdapter) -> None:
-    assert await adapter.create_channel("general", "") != await adapter.create_channel(
-        "general", ""
-    )
+    first = await adapter.create_channel("general", "")
+    assert first.id != (await adapter.create_channel("general", "")).id
 
 
 async def test_a_room_bound_to_a_channel_is_joined(
@@ -336,3 +343,69 @@ async def test_a_channel_left_is_not_joined_again_after_a_reconnect(
 async def test_a_channel_is_public_and_a_person_direct(adapter: IrcAdapter) -> None:
     assert await adapter.get_channel_type(CHANNEL) == "channel_public"
     assert await adapter.get_channel_type("ada") == "direct"
+
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+
+
+async def test_a_message_cut_short_by_a_drop_is_partly_sent_not_lost(
+    server: FakeIrcServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Returning no ref would have Switch post the whole message again, and
+    the lines already out would show twice."""
+    monkeypatch.setattr(client_module, "_LINE_INTERVAL_SECONDS", 0.3)
+    monkeypatch.setattr(client_module, "_BURST", 1)
+    adapter = await started(server)
+    try:
+        sending = asyncio.create_task(
+            adapter.send_message(CHANNEL, "coder", "one\ntwo\nthree")
+        )
+        await server.wait_for(lambda: server.said(CHANNEL) == ["<coder> one"])
+        await server.drop()
+        with pytest.raises(MessagePartlySent) as cut:
+            await sending
+        assert (cut.value.delivered, cut.value.total) == (1, 3)
+        assert cut.value.first_ref
+        await server.wait_for(lambda: len(server.said(CHANNEL)) == 2)
+        assert server.said(CHANNEL)[1].startswith("(The rest of this message")
+        await asyncio.sleep(0.4)
+        assert len(server.said(CHANNEL)) == 2
+    finally:
+        await adapter.stop()
+
+
+async def test_a_settled_card_that_cannot_be_said_fails_and_is_said_later(
+    server: FakeIrcServer, adapter: IrcAdapter
+) -> None:
+    ref = await adapter.post_rich(CHANNEL, "coder", _card("open"))
+    posted = len(await _said(server, 1))
+    server.taken = {NICK, f"{NICK}_", f"{NICK}__", f"{NICK}___"}
+    await server.drop()
+    await server.wait_for(lambda: server.connections >= 2)
+    with pytest.raises(RichContentFailed):
+        await adapter.update_rich(CHANNEL, "coder", ref, _card("resolved"), None)
+    server.taken = set()
+    await server.wait_for(lambda: server.open == 1)
+    # Not remembered as said, so the next redraw says it.
+    await adapter.update_rich(CHANNEL, "coder", ref, _card("resolved"), None)
+    await server.wait_for(lambda: len(server.said(CHANNEL)) > posted)
+
+
+async def test_a_room_bound_to_an_existing_channel_is_joined_at_once(
+    server: FakeIrcServer, adapter: IrcAdapter
+) -> None:
+    await adapter.check_channel_usable("#deploys")
+    await adapter.check_channel_usable("ada")
+    await server.wait_for(lambda: len(server.sent("JOIN")) == 2)
+    assert server.sent("JOIN")[-1].params == ("#deploys",)
+
+
+async def test_nobody_is_invited_to_a_conversation_with_one_person(
+    server: FakeIrcServer, adapter: IrcAdapter, caplog: pytest.LogCaptureFixture
+) -> None:
+    left_out = await adapter.add_users_to_channel("ada", ["bob"], ["account:bob"])
+    assert left_out == ["account:bob"]
+    assert "conversation with one person" in caplog.text
+    await server.tell("PING :sync")
+    await server.wait_for(lambda: bool(server.sent("PONG")))
+    assert not server.sent("INVITE")

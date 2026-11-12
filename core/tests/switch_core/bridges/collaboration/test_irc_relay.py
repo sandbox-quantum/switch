@@ -138,9 +138,9 @@ async def test_a_room_created_from_a_quiet_copy_is_made_by_the_holder(
     server: FakeIrcServer, pair: tuple[IrcAdapter, IrcAdapter, Relay]
 ) -> None:
     _, quiet, _ = pair
-    channel = await quiet.create_channel(
-        "incident", "Paging", channel_type="channel_private"
-    )
+    channel = (
+        await quiet.create_channel("incident", "Paging", channel_type="channel_private")
+    ).id
     await server.wait_for(lambda: bool(server.sent("TOPIC")))
     assert _from_holder(server, "JOIN")[-1] == (channel,)
     assert _from_holder(server, "MODE") == [(channel, "+si")]
@@ -239,3 +239,25 @@ async def test_a_relayed_request_naming_no_channel_is_refused(
     assert len(server.sent("JOIN")) == 1 and not server.said()
     assert "Ignoring a relayed IRC request" in caplog.text
     assert "it is no IRC channel or nick" in caplog.text
+
+
+async def test_a_channel_bound_through_a_quiet_copy_is_joined_at_once(
+    server: FakeIrcServer, pair: tuple[IrcAdapter, IrcAdapter, Relay]
+) -> None:
+    _, quiet, _ = pair
+    await quiet.check_channel_usable("#deploys")
+    await server.wait_for(lambda: len(server.sent("JOIN")) == 2)
+    assert _from_holder(server, "JOIN") == [(CHANNEL,), ("#deploys",)]
+
+
+async def test_every_copy_gives_a_channel_the_same_type(
+    pair: tuple[IrcAdapter, IrcAdapter, Relay],
+) -> None:
+    """A room bound through any process records the same privacy: a quiet
+    copy that has never seen a channel must not call it private."""
+    holder, quiet, _ = pair
+    for channel_id in (CHANNEL, "#never-seen", "ada"):
+        assert await quiet.get_channel_type(channel_id) == (
+            await holder.get_channel_type(channel_id)
+        )
+    assert await quiet.get_channel_type("#never-seen") == "channel_public"

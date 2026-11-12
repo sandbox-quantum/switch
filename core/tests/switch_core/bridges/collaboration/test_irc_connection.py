@@ -394,3 +394,71 @@ async def test_messages_reach_the_handler_in_order_while_one_is_slow(
         assert seen == ["first", "second"]
     finally:
         await session.stop()
+
+
+async def test_a_connection_that_drops_at_once_is_dialled_less_and_less_often(
+    server: FakeIrcServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server that welcomes the bot and closes the link at once (a ban, a
+    flood limit) must not be dialled every second."""
+    delays: list[float] = []
+
+    def jittered(delay: float) -> float:
+        delays.append(delay)
+        return 0.001
+
+    monkeypatch.setattr(client_module, "_jittered", jittered)
+    lines = Lines()
+    session = _session(server, lines)
+    await session.start()
+    try:
+        for connection in (1, 2, 3):
+            await until(lambda n=connection: lines.registered == n)
+            assert server.connections == connection
+            await server.drop()
+        await until(lambda: len(delays) == 3)
+        assert delays == [0.01, 0.02, 0.04]
+    finally:
+        await session.stop()
+
+
+async def test_a_connection_that_stayed_up_is_dialled_again_at_once(
+    server: FakeIrcServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    delays: list[float] = []
+
+    def jittered(delay: float) -> float:
+        delays.append(delay)
+        return 0.001
+
+    monkeypatch.setattr(client_module, "_jittered", jittered)
+    monkeypatch.setattr(client_module, "_STABLE_SECONDS", 0.0)
+    lines = Lines()
+    session = _session(server, lines)
+    await session.start()
+    try:
+        for connection in (1, 2, 3):
+            await until(lambda n=connection: lines.registered == n)
+            await server.drop()
+        await until(lambda: len(delays) == 3)
+        assert delays == [0.01, 0.01, 0.01]
+    finally:
+        await session.stop()
+
+
+async def test_a_send_cut_short_by_a_drop_says_how_many_lines_went_out(
+    server: FakeIrcServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(client_module, "_LINE_INTERVAL_SECONDS", 10.0)
+    monkeypatch.setattr(client_module, "_BURST", 1)
+    session = _session(server, Lines())
+    await session.start()
+    try:
+        sending = asyncio.create_task(session.send(CHANNEL, ["one", "two", "three"]))
+        await server.wait_for(lambda: server.said() == ["one"])
+        await server.drop()
+        with pytest.raises(IrcNotConnected) as cut:
+            await sending
+        assert cut.value.written == 1
+    finally:
+        await session.stop()

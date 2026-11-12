@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -17,6 +18,7 @@ from pydantic import Field, field_validator, model_validator
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     ChannelNotBindable,
+    MessagePartlySent,
     PlatformAdapter,
     RequestCard,
     RichContent,
@@ -45,6 +47,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -103,6 +106,20 @@ _SERVICES = frozenset(
 # How many cards and problems are remembered as already said again, so a
 # redraw of one that has not changed says nothing.
 _SAID_AGAIN_MAX = 1000
+
+# A command is `!` and a word starting with a letter. Anything else that starts
+# with `!` (`!!!`, `! look`, `!1`) is something said, not a command.
+_COMMAND = re.compile(r"!([A-Za-z][\w-]*)(?:\s+(.*))?", re.DOTALL)
+
+# When a channel message Switch could not take is read back again, while the
+# connection stays up: soon, then less often, then every five minutes until it
+# has been taken.
+_READ_BACK_RETRY_SECONDS = (5.0, 30.0, 120.0, 300.0)
+# How long one such read-back may take before it counts as failed.
+_READ_BACK_TIMEOUT_SECONDS = 120.0
+
+# Said in place of the rest of a message the connection dropped under.
+_CUT_SHORT = "(The rest of this message did not reach IRC: the connection dropped.)"
 
 
 def _server_address(server: str, port: int) -> str:
@@ -288,11 +305,16 @@ def _message_ref(line: Line) -> str:
     return f"irc-{digest.hexdigest()[:32]}"
 
 
+def _channel_slug(name: str) -> str:
+    """A room's name as a channel name, without the `#` or a suffix."""
+    slug = _CHANNEL_NAME_INVALID.sub("-", name.strip().lower()).strip("-_")[:40]
+    return slug or "switch"
+
+
 def _new_channel(name: str) -> str:
     """A channel for a new room: its name, and a suffix that keeps it from
     walking into a channel someone else already has."""
-    slug = _CHANNEL_NAME_INVALID.sub("-", name.strip().lower()).strip("-_")[:40]
-    return f"#{slug or 'switch'}-{secrets.token_hex(2)}"
+    return f"#{_channel_slug(name)}-{secrets.token_hex(2)}"
 
 
 def _relay_parts(texts: list[str]) -> list[list[str]]:
@@ -436,9 +458,12 @@ class IrcAdapter(PlatformAdapter):
         # Losing it costs one repeat after a restart.
         self._said_again: OrderedDict[str, str] = OrderedDict()
         # Channels with a message Switch could not take on this connection.
-        # Their read marker stays where it is, so the next connection reads
-        # that message back; marking a later one read would skip it.
+        # Their read marker stays where it is, so the message is read back
+        # (`_retry_read_back`, or the next connection); marking a later one
+        # read would skip it.
         self._unrelayed: set[str] = set()
+        # channel -> the task reading it back while the connection stays up.
+        self._retries: dict[str, asyncio.Task[None]] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -483,6 +508,10 @@ class IrcAdapter(PlatformAdapter):
         )
 
     async def stop(self) -> None:
+        retries = list(self._retries.values())
+        for task in retries:
+            task.cancel()
+        await asyncio.gather(*retries, return_exceptions=True)
         if self._session is not None:
             await self._session.stop()
             self._session = None
@@ -555,10 +584,65 @@ class IrcAdapter(PlatformAdapter):
                 await self._relay(line, channel, in_channel, text)
         except Exception:
             self._unrelayed.add(channel)
+            if in_channel:
+                # A newer message's mark, held back while the channel is read
+                # back, would skip this one once released.
+                session.forget_held_mark(channel)
+                self._schedule_read_back(channel)
             raise
         sent = line.tags.get("time")
         if in_channel and sent and channel not in self._unrelayed:
             session.mark_read(channel, sent)
+
+    def _schedule_read_back(self, channel: str) -> None:
+        """Read the channel back soon, so a message that failed to reach
+        Switch while the connection stays up is not left waiting for the next
+        reconnect, with the channel's read marker stuck before it."""
+        if channel not in self._retries:
+            self._retries[channel] = asyncio.create_task(
+                self._retry_read_back(channel), name=f"irc-read-back-{channel}"
+            )
+
+    async def _retry_read_back(self, channel: str) -> None:
+        attempt = 0
+        try:
+            while channel in self._unrelayed:
+                await asyncio.sleep(
+                    _READ_BACK_RETRY_SECONDS[
+                        min(attempt, len(_READ_BACK_RETRY_SECONDS) - 1)
+                    ]
+                )
+                attempt += 1
+                session = self._session
+                if session is None or channel not in self._unrelayed:
+                    # Stopped, or a new connection read the channel back.
+                    return
+                if not session.keeps_history:
+                    self._unrelayed.discard(channel)
+                    logger.error(
+                        "A message in IRC %s did not reach Switch and cannot be "
+                        "read back: the network keeps no history with a read "
+                        "marker",
+                        channel,
+                    )
+                    return
+                self._unrelayed.discard(channel)
+                read = session.read_back(channel)
+                if read is None:
+                    # Not in the channel on this connection: the next join
+                    # reads it back from the marker.
+                    self._unrelayed.add(channel)
+                    return
+                try:
+                    async with asyncio.timeout(_READ_BACK_TIMEOUT_SECONDS):
+                        await read
+                except TimeoutError:
+                    self._unrelayed.add(channel)
+                    logger.warning(
+                        "Reading IRC %s back took too long; trying again", channel
+                    )
+        finally:
+            self._retries.pop(channel, None)
 
     async def _relay(
         self, line: Line, channel: str, in_channel: bool, text: str
@@ -579,17 +663,17 @@ class IrcAdapter(PlatformAdapter):
         channel_type: ChannelType = "channel_public" if in_channel else "direct"
         sender_id = _person_id(line)
         channel_name = channel.lstrip("#&") if in_channel else line.nick
-        if stripped.startswith("!"):
+        command = _COMMAND.fullmatch(stripped)
+        if command is not None:
             if self._on_command is not None:
-                command, _, args = stripped.partition(" ")
                 await self._on_command(
                     InboundCommand(
                         channel_id=channel,
                         channel_type=channel_type,
                         sender_id=sender_id,
                         sender_name=line.nick,
-                        command=command.lstrip("!"),
-                        args=args.strip(),
+                        command=command.group(1),
+                        args=(command.group(2) or "").strip(),
                         message_ref=_message_ref(line),
                         channel_name=channel_name,
                     )
@@ -688,6 +772,10 @@ class IrcAdapter(PlatformAdapter):
         quiet copy hands them to the holder, and the reference then says they
         were handed over: the holder keeps them until it is connected to say
         them, and only its stopping first loses them, which it logs.
+
+        Raises `MessagePartlySent` when the connection drops after some of the
+        lines went out: sending the message again would repeat them. A line
+        saying the rest is missing goes out once the bot is connected again.
         """
         if not self._valid_target(target):
             return None
@@ -722,8 +810,24 @@ class IrcAdapter(PlatformAdapter):
         try:
             await self._session.send(target, texts)
         except IrcNotConnected as error:
-            logger.error("Did not say a message in IRC %s: %s", target, error)
-            return None
+            if not error.written:
+                logger.error("Did not say a message in IRC %s: %s", target, error)
+                return None
+            logger.error(
+                "Only %d of %d lines of a message reached IRC %s: %s",
+                error.written,
+                len(texts),
+                target,
+                error,
+            )
+            if self._session is not None:
+                self._session.queue(target, [_CUT_SHORT])
+            raise MessagePartlySent(
+                platform=self.platform_name,
+                first_ref=ref,
+                delivered=error.written,
+                total=len(texts),
+            ) from error
         return ref
 
     @staticmethod
@@ -803,20 +907,26 @@ class IrcAdapter(PlatformAdapter):
 
     # ── Channels ─────────────────────────────────────────────────────────────
 
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
+        return _channel_slug(room_name)
+
     async def create_channel(
         self,
         name: str,
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         """Join a channel nobody uses yet, which makes it, with the bot as its
-        operator. A private room's channel is secret and invite-only."""
+        operator. A private room's channel is secret and invite-only. Its
+        name is given without the `#`, as every message from it names it."""
         channel = _new_channel(name)
         topic = re.sub(r"[\x00-\x1f]", " ", topic).strip()
         topic = topic.encode()[:_TOPIC_MAX_BYTES].decode(errors="ignore")
         self._join(channel, topic=topic, secret=channel_type != "channel_public")
-        return channel
+        return CreatedChannel(id=channel, name=channel.lstrip("#&"))
 
     async def ensure_channel_subscriptions(
         self, channels: list[tuple[str, str]]
@@ -865,7 +975,17 @@ class IrcAdapter(PlatformAdapter):
                 f"name in lower case, e.g. {casefold(channel_id)!r}"
             )
 
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """A room bound to an existing channel is joined now, from whichever
+        process the binding reached, rather than at the holder's next start.
+        Whether the network lets the bot in is known only to the holder, which
+        logs a refusal; a channel nobody is in is created by joining it."""
+        if is_channel(channel_id):
+            self._join(channel_id, topic="", secret=False)
+
     async def get_channel_type(self, channel_id: str) -> ChannelType:
+        """The same answer on every process, from the id alone: none of them
+        knows more without asking the network, which only the holder can."""
         return "channel_public" if is_channel(channel_id) else "direct"
 
     async def add_agents_to_channel(
@@ -884,10 +1004,17 @@ class IrcAdapter(PlatformAdapter):
         lets them into an invite-only channel, and they join from their
         client. It reaches only someone online under that nick; the network
         says when they are not, and that is logged."""
+        if not is_channel(channel_id):
+            logger.warning(
+                "Not inviting anyone to IRC %s: it is a conversation with one "
+                "person, which nobody else can join",
+                channel_id,
+            )
+            return list(user_external_ids)
         left_out: list[str] = []
         for external_id in user_external_ids:
             nick = _nick_of(external_id)
-            if nick is None or not is_channel(channel_id):
+            if nick is None:
                 left_out.append(external_id)
             elif self._session is None:
                 self._hand_to_holder(

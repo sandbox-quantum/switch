@@ -52,6 +52,10 @@ _SEND_WAIT_SECONDS = 15.0
 _DRAIN_SECONDS = 5.0
 _FIRST_RETRY_SECONDS = 1.0
 _LAST_RETRY_SECONDS = 60.0
+# How long a connection has to stay up before the next drop is retried from
+# `_FIRST_RETRY_SECONDS` again. A server that welcomes the bot and then closes
+# the link at once (a ban, a flood limit) is otherwise dialled every second.
+_STABLE_SECONDS = 60.0
 # Silence after which the bot pings the server; twice as long and the
 # connection is taken to be dead.
 _IDLE_SECONDS = 120.0
@@ -105,7 +109,12 @@ class IrcNickTaken(Exception):
 
 
 class IrcNotConnected(RuntimeError):
-    """The bot has no registered connection to send on."""
+    """The bot has no registered connection to send on, or it dropped before
+    every line of a send was out. `written` is how many were."""
+
+    def __init__(self, message: str, *, written: int = 0) -> None:
+        super().__init__(message)
+        self.written = written
 
 
 @dataclass
@@ -213,6 +222,8 @@ class IrcSession:
         # Marking a newer message first would skip what is still to come.
         self._reading_back: set[str] = set()
         self._held_marks: dict[str, str] = {}
+        # channel -> who waits for it to be read back (`read_back`).
+        self._read_back_waiters: dict[str, list[asyncio.Future[None]]] = {}
 
         self._events: asyncio.Queue[Line | _CaughtUp] = asyncio.Queue()
         self._tasks: list[asyncio.Task[None]] = []
@@ -258,6 +269,7 @@ class IrcSession:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
+        self._release_read_backs()
         if self._outbox:
             logger.error(
                 "%d message line(s) for %s were not sent: the bridge stopped first",
@@ -282,6 +294,11 @@ class IrcSession:
     @property
     def registered(self) -> bool:
         return self._registered.is_set()
+
+    @property
+    def keeps_history(self) -> bool:
+        """Whether this connection can read a channel back from its marker."""
+        return _HISTORY_CAPS <= self.caps
 
     def is_me(self, line: Line) -> bool:
         """Whether the bot sent `line`, under its nick now or, in a channel's
@@ -344,7 +361,13 @@ class IrcSession:
         futures = [asyncio.get_running_loop().create_future() for _ in lines]
         for line, written in zip(lines, futures, strict=True):
             self._enqueue(line, written)
-        await asyncio.gather(*futures)
+        outcomes = await asyncio.gather(*futures, return_exceptions=True)
+        failures = [o for o in outcomes if isinstance(o, BaseException)]
+        if failures:
+            # Lines go out in order, so those written are the first ones.
+            raise IrcNotConnected(
+                str(failures[0]), written=len(outcomes) - len(failures)
+            )
 
     def mark_read(self, channel: str, timestamp: str) -> None:
         """Move the channel's read marker up to `timestamp`. Coalesced: only
@@ -356,6 +379,29 @@ class IrcSession:
         elif _keep_latest(self._marks, channel, timestamp):
             self._idle.clear()
             self._wake.set()
+
+    def read_back(self, channel: str) -> asyncio.Future[None] | None:
+        """Read `channel` back from its read marker again, on this connection,
+        as every join does: for a message Switch could not take while the
+        connection stays up. Settled once the channel is read back, or this
+        connection ends first. None when it cannot be: the bot is not in the
+        channel on a connection that keeps history."""
+        if not (self.registered and self.keeps_history and channel in self._joining):
+            return None
+        done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._read_back_waiters.setdefault(channel, []).append(done)
+        if channel not in self._reading_back:
+            # Marks wait until it has been read back, as after a join.
+            self._reading_back.add(channel)
+            self._awaiting_marker.add(channel)
+            # Without a timestamp, this asks the network for the marker.
+            self._enqueue(build("MARKREAD", channel))
+        return done
+
+    def forget_held_mark(self, channel: str) -> None:
+        """Drop the mark held for `channel` while it is read back: it is for a
+        message after one Switch could not take, and would skip that one."""
+        self._held_marks.pop(channel, None)
 
     def _require_registered(self) -> None:
         if not self.registered:
@@ -372,22 +418,30 @@ class IrcSession:
     # ── The connection ───────────────────────────────────────────────────────
 
     async def _connect_forever(self, first: asyncio.Future[None]) -> None:
+        loop = asyncio.get_running_loop()
         delay = _FIRST_RETRY_SECONDS
         try:
             while True:
                 try:
                     reader, writer = await self._open()
+                    registered_at: float | None = None
                     try:
                         await self._register(reader, writer)
                         self._registered.set()
+                        registered_at = loop.time()
                         if not first.done():
                             first.set_result(None)
-                        delay = _FIRST_RETRY_SECONDS
                         await self._run(reader, writer)
                     finally:
                         self._registered.clear()
                         writer.close()
                         self._fail_waiting()
+                        self._release_read_backs()
+                        if (
+                            registered_at is not None
+                            and loop.time() - registered_at >= _STABLE_SECONDS
+                        ):
+                            delay = _FIRST_RETRY_SECONDS
                 except asyncio.CancelledError:
                     raise
                 except (OSError, TimeoutError, IrcNickTaken) as error:
@@ -412,7 +466,7 @@ class IrcSession:
                     delay = _LAST_RETRY_SECONDS
                 if not first.done():
                     first.set_result(None)
-                wait = delay * random.uniform(0.5, 1.0)
+                wait = _jittered(delay)
                 logger.info("Reconnecting to %s in %.1fs", self._host, wait)
                 await asyncio.sleep(wait)
                 delay = min(delay * 2, _LAST_RETRY_SECONDS)
@@ -717,9 +771,11 @@ class IrcSession:
             command.isdigit() and 400 <= int(command) < 600 and command != "433"
         ):
             logger.warning("%s refused a request: %s", self._host, " ".join(params))
-            if command == "FAIL" and params[0] == "CHATHISTORY":
+            if command == "FAIL" and params[0] in ("CHATHISTORY", "MARKREAD"):
                 for param in params[2:]:
                     if casefold(param) in self._channels:
+                        # A marker asked for and refused is not waited for.
+                        self._awaiting_marker.discard(casefold(param))
                         self._events.put_nowait(_CaughtUp(casefold(param)))
 
     def _names(self, channel: str, names: list[str] | None) -> None:
@@ -894,6 +950,23 @@ class IrcSession:
         held = self._held_marks.pop(channel, None)
         if held is not None:
             self.mark_read(channel, held)
+        for waiter in self._read_back_waiters.pop(channel, []):
+            if not waiter.done():
+                waiter.set_result(None)
+
+    def _release_read_backs(self) -> None:
+        """The connection ended: whoever waits for a channel to be read back
+        on it waits no more. The next connection reads every channel back."""
+        waiters = self._read_back_waiters
+        self._read_back_waiters = {}
+        for waiter in (w for found in waiters.values() for w in found):
+            if not waiter.done():
+                waiter.set_result(None)
+
+
+def _jittered(delay: float) -> float:
+    """How long to wait before dialling again: `delay`, less up to half."""
+    return delay * random.uniform(0.5, 1.0)
 
 
 def _keep_latest(marks: dict[str, str], channel: str, timestamp: str) -> bool:

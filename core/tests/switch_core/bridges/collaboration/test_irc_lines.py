@@ -155,3 +155,18 @@ def test_nothing_that_ends_a_line_or_starts_a_ctcp_is_sent() -> None:
         "ACTION hi",
         "next",
     ]
+
+
+def test_globs_and_paths_keep_their_asterisks() -> None:
+    for literal in (
+        "src/**/*.py and lib/**/*.js",
+        "src/*/lib/*",
+        "*.md*",
+        "*.py and *.js",
+        "a * b * c",
+        "2 ** 3 ** 4",
+    ):
+        assert to_irc(literal) == literal
+    assert to_irc("say *hi!* to **them**") == (
+        f"say {ITALIC}hi!{ITALIC} to {BOLD}them{BOLD}"
+    )

@@ -161,6 +161,8 @@ class FakeIrcServer:
         self.hold_history: asyncio.Event | None = None
         # Answers nothing at all, as a server that accepts and then hangs.
         self.silent = False
+        # How often the bot asked for a marker without setting it.
+        self.marker_queries = 0
         self._clients: list[_Client] = []
         self._server: asyncio.Server | None = None
         self._changed = asyncio.Event()
@@ -293,6 +295,15 @@ class FakeIrcServer:
                     )
         elif command == "PRIVMSG" and params[0].lower() == "nickserv":
             self._nickserv(client, params[1])
+        elif command == "MARKREAD" and len(params) == 1:
+            # Asked for the marker, without setting it.
+            self.marker_queries += 1
+            marker = self.markers.get(params[0])
+            self._send(
+                client,
+                f":irc.example MARKREAD {params[0]} "
+                + (f"timestamp={marker}" if marker else "*"),
+            )
         elif command == "MARKREAD":
             self.markers[params[0]] = params[1].removeprefix("timestamp=")
             self._send(client, f":irc.example MARKREAD {params[0]} {params[1]}")

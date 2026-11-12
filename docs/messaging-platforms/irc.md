@@ -22,6 +22,8 @@ needs SASL PLAIN or NickServ, and reading back missed messages needs the IRCv3
 - **Formatting.** Bold, italics and strike-through become IRC's formatting
   codes, and a link keeps its address in the text. Code is sent as written: a
   code block loses its ``` fences, and each of its lines keeps its indentation.
+  Asterisks in globs and paths, such as `src/**/*.py` or `*.md`, are left as
+  written.
 - **Long replies.** IRC limits a message to one line of 512 bytes, including
   the bot's own address that the network adds. A longer reply is sent as
   several lines, in order. Prose is wrapped at a space; a code line is never
@@ -91,8 +93,9 @@ and so gets it back within a few minutes of it being free.
 
 - **Channels in the connection's list** are joined on every connect. Each one
   gets a room as soon as the bot is in it.
-- **Binding a room to a channel** that already exists makes the bot join it.
-  Give the channel's name in lower case, for example `#deploys`.
+- **Binding a room to a channel** that already exists makes the bot join it
+  straight away, whichever pod the request reached. Give the channel's name in
+  lower case, for example `#deploys`.
 - **Rooms Switch creates** get a new channel named after the room, with a short
   suffix so it never walks into a channel someone else uses, for example
   `#release-train-3f9a`. The bot creates it by joining it, and sets the room's
@@ -107,7 +110,9 @@ and so gets it back within a few minutes of it being free.
 
 ## Commands
 
-Type in-room commands with `!`, for example `!invite-agent @coder`. To link
+Type in-room commands with `!` followed by the command's name, for example
+`!invite-agent @coder`. A message that starts with `!` but not with a word,
+such as `!!!` or `! look`, is an ordinary message. To link
 your IRC account to Switch, log in to your network account first: Switch
 links only people who are logged in, since anyone can use a nick that is not.
 
@@ -147,14 +152,22 @@ joins a channel, Switch asks the network for what was said since the marker
 
 - Messages sent while Switch was restarting, or while the bridge moved between
   pods, are relayed once Switch is back.
-- A message Switch could not take keeps the channel's marker before it, and is
-  read back on the next reconnect.
+- A message Switch could not take keeps the channel's marker before it. While
+  the connection stays up, Switch reads the channel back from the marker after
+  5 seconds, 30 seconds, 2 minutes and then every 5 minutes until the message
+  is taken; a reconnect reads it back too.
 - A message relayed twice is recognised by the network's message ID and
   dropped.
 - Switch reads back at most the last 24 hours, and logs a warning when the
   marker is older than that.
 - A channel the bot has never read is not read back. Direct messages are not
   read back.
+
+If the connection drops while a long reply is being sent, the lines already
+sent stay and are not sent again; once the bot is connected again it says that
+the rest of the message did not arrive. A connection that drops right after the
+network welcomes the bot (a ban, a flood limit) is dialled again less and less
+often, up to once a minute.
 
 On a network without these capabilities, anything said while no pod was
 connected is not relayed. Switch logs a warning each time it connects to such
