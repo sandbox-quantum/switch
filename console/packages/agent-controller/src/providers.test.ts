@@ -4,8 +4,9 @@ import { expect, it } from 'vitest';
 import { PROVIDERS, registeredProviders } from './providers';
 
 it('runs every provider that has both a plugin and a runtime', () => {
-  expect([...PROVIDERS].sort()).toEqual([...pluginRegistry.ids()].sort());
-  expect([...PROVIDERS].sort()).toEqual([...providerRuntimeIds()].sort());
+  const sortIds = (ids: readonly string[]) => [...ids].sort((a, b) => a.localeCompare(b));
+  expect(sortIds(PROVIDERS)).toEqual(sortIds(pluginRegistry.ids()));
+  expect(sortIds(PROVIDERS)).toEqual(sortIds(providerRuntimeIds()));
 });
 
 it('refuses a provider registered on only one side, naming the missing half', () => {
