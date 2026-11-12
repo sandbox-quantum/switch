@@ -24,6 +24,7 @@ import type {
   SessionStatus,
   TokenUsage,
   TurnOutcome,
+  UsageLimit,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
@@ -35,7 +36,7 @@ import {
 } from '../transport/stdio-json-rpc';
 import { CumulativeUsage, mergeUsage, type UsageCounts } from '../usage';
 import { featureArgs, mcpServerConfigArgs, tomlString } from './config-args';
-import { mapCodexItem } from './item-mapping';
+import { mapCodexChildren, mapCodexItem } from './item-mapping';
 import {
   CODEX_EPHEMERAL_LOGIN_ARGS,
   CODEX_KEYRING_READ_TIMEOUT_MS,
@@ -136,6 +137,7 @@ interface CodexSessionState {
   approvals: Map<string, PendingApproval>;
   userInputs: Map<string, PendingUserInput>;
   items: Map<string, CodexThreadItem>;
+  childTurns: Map<string, string>;
   deltaBuffers: Map<string, string>;
   stopping: boolean;
   exited: boolean;
@@ -307,6 +309,15 @@ function turnOutcomeOf(status: CodexTurnNotification['turn']['status']): TurnOut
 }
 
 /**
+ * A failed turn Codex classifies as the account's usage limit. Codex gives
+ * the reset time only in the message's own words.
+ */
+export function codexUsageLimit(turn: CodexTurnNotification['turn']): UsageLimit | null {
+  if (turn.status !== 'failed') return null;
+  return turn.error?.codexErrorInfo === 'usageLimitExceeded' ? { resetsAt: null } : null;
+}
+
+/**
  * The card for Codex asking to run an MCP tool: the server and tool in the
  * title, the arguments as the detail. Codex names the tool only in its
  * message, so a message worded otherwise leaves the tool out of the title.
@@ -457,6 +468,7 @@ export class CodexAdapter implements ProviderAdapter {
       approvals: new Map(),
       userInputs: new Map(),
       items: new Map(),
+      childTurns: new Map(),
       deltaBuffers: new Map(),
       stopping: false,
       exited: false,
@@ -968,11 +980,13 @@ export class CodexAdapter implements ProviderAdapter {
       state.items.clear();
       state.deltaBuffers.clear();
       if (!turnId) return;
+      const usageLimit = codexUsageLimit(payload.turn);
       this.emit(state, {
         type: 'turn.completed',
         turnId,
         outcome,
         ...(message ? { message } : {}),
+        ...(usageLimit ? { usageLimit } : {}),
         usage: this.takeUsage(state),
         raw: { source: CODEX_SERVER_NOTIFICATIONS.turnCompleted, payload },
       });
@@ -990,6 +1004,8 @@ export class CodexAdapter implements ProviderAdapter {
         item: mapCodexItem(payload.item, 'started'),
         raw: { source: CODEX_SERVER_NOTIFICATIONS.itemStarted, payload },
       });
+      for (const item of mapCodexChildren(payload.item))
+        this.emit(state, { type: 'item.updated', turnId, item });
     });
 
     client.onNotification(CODEX_SERVER_NOTIFICATIONS.itemCompleted, (params) => {
@@ -999,12 +1015,22 @@ export class CodexAdapter implements ProviderAdapter {
       state.deltaBuffers.delete(payload.item.id);
       const turnId = this.turnIdFor(state, payload.turnId);
       if (!turnId) return;
+      const item = mapCodexItem(payload.item, 'completed');
       this.emit(state, {
-        type: 'item.completed',
+        type:
+          item.type === 'subagent' && item.status === 'in_progress'
+            ? 'item.updated'
+            : 'item.completed',
         turnId,
-        item: mapCodexItem(payload.item, 'completed'),
+        item,
         raw: { source: CODEX_SERVER_NOTIFICATIONS.itemCompleted, payload },
       });
+      for (const item of mapCodexChildren(payload.item))
+        this.emit(state, {
+          type: item.status === 'in_progress' ? 'item.updated' : 'item.completed',
+          turnId,
+          item,
+        });
     });
 
     client.onNotification(CODEX_SERVER_NOTIFICATIONS.agentMessageDelta, (params) => {
@@ -1276,6 +1302,18 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   private emit(state: CodexSessionState, event: EmittableEvent): void {
+    if (
+      (event.type === 'item.started' ||
+        event.type === 'item.updated' ||
+        event.type === 'item.completed') &&
+      event.item.type === 'subagent' &&
+      event.item.nativeChildId
+    ) {
+      const childId = event.item.nativeChildId;
+      const turnId = state.childTurns.get(childId) ?? event.turnId;
+      state.childTurns.set(childId, turnId);
+      event = { ...event, turnId };
+    }
     const full = {
       eventId: randomUUID(),
       provider: PROVIDER,

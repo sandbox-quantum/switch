@@ -38,6 +38,17 @@ follow the time picker. The other dashboards are where you go next, for causes.
 Keep it that way when you edit it: one question per tile, at most five series
 per chart, a limit drawn on any chart an alert reads, and colour only for state.
 
+Below the signals, "Digging into error logs" is where you go once something is
+red and you want the why. It reads switch-core's own logs on pilot, errors and
+warnings only: errors over time by the logger that wrote them, the most
+frequent messages with their ids folded into one pattern (usually the fastest
+way to the cause), warnings by logger, and the latest errors as they arrived.
+Its note links the same view in Logs and Error Tracking. The log panels filter
+on `service:switch-core` alone: development reports as `switch-core-dev`, the
+only other `service:switch-core` logs are staging's product events, all at
+info, and `env` can't tell deployments apart because the telemetry relay sets
+it (hoot's `public_otel_proxy`).
+
 ## Alerts
 
 Every monitor in `monitors.json` is something a user would notice and someone
@@ -51,6 +62,27 @@ and once more when it recovers. A crashed bridge also gets an alert that names
 it (`switch.bridges.crashed`), and "the morning report didn't post" fires when
 the 09:00 report has been silent for 25 hours, so a quiet channel can be
 trusted.
+
+Four more alerts read logs rather than metrics, for failures that only show
+up there: a request failing with an unhandled error (`Exception in ASGI
+application`), a pod losing the lease on its agents' connections without
+shutting down (a pod shut down in a deploy is logged at info and does not
+fire it), a bridge
+failing to post for 10 minutes (more
+than 10 `Could not publish` lines, so one message retrying briefly stays
+quiet), and a burst of more than 25 errors in 15 minutes. Before this change the
+worst 15 minutes of the first week of November held 54 errors, almost all the
+Slack identity error now logged as a warning; without it the worst was 7. Log alerts filter on
+`service:switch-core`, for the reason the board's log panels do.
+
+"Agent controllers keep reconnecting" watches `switch.controllers.connections`
+with `event:opened`, for the reconnect storm seen on pilot in November (about
+7,500 controller connections opened every six hours, so around 625 every 30
+minutes, about 570 when this was written): more than 900 in 30 minutes fires,
+so it is quiet at today's level and says when the storm gets worse. Lower it
+to 450 once the reconnect loop is fixed. A rollout reconnects each controller
+once or twice, which stays below either. `event:taken_over` on the
+same metric is the churn's signature; the signal board shows every event.
 
 Priority follows what a user loses: P1 when Switch is down or messages are
 lost, P2 when some people or one platform are affected, P3 when it is slow but
@@ -87,8 +119,12 @@ DD_API_KEY=... DD_APP_KEY=... SWITCH_URL=... SWITCH_AGENT_ID=... \
 ```
 
 Without the `SWITCH_*` settings it only prints the report. The application key
-needs read access to metrics, and to logs for the reason bridges fail. Its verdict, the choice of graph and the comments are tested in
-`test_daily_report.py`.
+needs read access to metrics, and to logs for the reason bridges fail. Its verdict, the choice of graph, the comments and the drawing are tested in
+`test_daily_report.py`, with the script's own dependencies (CI runs the same):
+
+```bash
+uv run --no-project --with-requirements daily_report.py --with pytest pytest
+```
 
 ## Importing
 

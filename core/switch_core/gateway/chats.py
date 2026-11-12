@@ -216,6 +216,7 @@ class ActivityItemView(CamelModel):
     turn_id: str
     item_id: str
     kind: str
+    subagent: bool = False
     revision: int
     status: str
     title: str
@@ -235,6 +236,7 @@ class ActivityItemView(CamelModel):
             session_id=row.session_id,
             turn_id=row.turn_id,
             item_id=row.item_id,
+            subagent=bool(row.subagent),
             kind=row.kind,
             revision=row.revision,
             status=row.status,

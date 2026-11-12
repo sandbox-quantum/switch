@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import UTC, datetime
 from typing import Any
@@ -149,6 +150,66 @@ class AccessQueryRedaction(logging.Filter):
         return True
 
 
+# Successful answers to the requests clients repeat on a timer: Console and
+# the agent controller polling, controllers reporting status, hosts beating,
+# probes. On pilot these were most of the ~900k access lines a day and none of
+# them said anything; a failure on the same route is still logged.
+_ROUTINE_POLLS = (
+    re.compile(r"^/health(/|$)"),
+    re.compile(r"^/v1/management/controllers/[^/]+/(status|assignment|operations)$"),
+    re.compile(r"^/gateway/management/(controllers|agents)$"),
+    re.compile(r"^/gateway/hosted-controller/machines(/[^/]+/observation)?$"),
+    re.compile(r"^/agent-sessions/[^/]+/activity$"),
+    re.compile(r"^/agent-sessions/approvals/outcomes$"),
+)
+# Long-polls and per-agent traffic, quiet whatever they answer, as before.
+_QUIET_ALWAYS = ("/events?timeout=", "/room-history?", "/agents/")
+
+
+class RoutineAccessFilter(logging.Filter):
+    """Drops access lines for routine polling that succeeded (2xx or 304).
+
+    Installed on the `uvicorn.access` logger, so it sees the unredacted
+    target; anything else, and any 4xx or 5xx, passes.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not (isinstance(record.args, tuple) and len(record.args) == 5):
+            return True
+        _client, _method, target, _version, status = record.args
+        if not isinstance(target, str) or not isinstance(status, int | str):
+            return True
+        try:
+            code = int(status)
+        except (TypeError, ValueError):
+            return True
+        if not (200 <= code < 300 or code == 304):
+            return True
+        if any(marker in target for marker in _QUIET_ALWAYS):
+            return False
+        path = target.partition("?")[0]
+        return not any(pattern.match(path) for pattern in _ROUTINE_POLLS)
+
+
+# uvicorn logs every WebSocket handshake and close at INFO on `uvicorn.error`:
+# with agent controllers reconnecting, ~300k lines a day on pilot. Kept at
+# DEBUG; the reconnect rate is the `switch.controllers.connections` metric.
+_WEBSOCKET_CHATTER = re.compile(
+    r'^(connection open|connection closed|.*"WebSocket [^"]*" \[accepted\])$'
+)
+
+
+class WebSocketChatterFilter(logging.Filter):
+    """Lets uvicorn's per-connection WebSocket lines through only at DEBUG."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.INFO:
+            return True
+        if not _WEBSOCKET_CHATTER.match(record.getMessage()):
+            return True
+        return logging.getLogger(record.name).isEnabledFor(logging.DEBUG)
+
+
 def build_handler(
     config: SwitchConfig, version: str | None, process_id: str
 ) -> logging.Handler:
@@ -188,5 +249,12 @@ def configure_logging(
     # Every outbound HTTP call is logged at INFO by httpx, which at our request
     # rate is noise rather than signal.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    _install_once(logging.getLogger("uvicorn.access"), RoutineAccessFilter)
+    _install_once(logging.getLogger("uvicorn.error"), WebSocketChatterFilter)
 
     _configured = True
+
+
+def _install_once(target: logging.Logger, kind: type[logging.Filter]) -> None:
+    if not any(isinstance(existing, kind) for existing in target.filters):
+        target.addFilter(kind())

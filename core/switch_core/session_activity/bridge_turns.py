@@ -67,6 +67,7 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             turn_id=step.turn_id,
             revision=step.revision,
             kind=step.kind,  # type: ignore[arg-type]
+            subagent=bool(step.subagent),
             status=step.status,  # type: ignore[arg-type]
             title=step.title,
             text=step.text,
