@@ -14,7 +14,7 @@ brings that forward. Data only, and one way: the downgrade cannot tell which
 rooms were read & write.
 
 Revision ID: b7e2c4a9d1f6
-Revises: 7105e0bea527
+Revises: d41f9a7c2e58
 Create Date: 2026-11-10 00:00:00.000000
 
 """
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "b7e2c4a9d1f6"
-down_revision: str | Sequence[str] | None = "7105e0bea527"
+down_revision: str | Sequence[str] | None = "d41f9a7c2e58"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
