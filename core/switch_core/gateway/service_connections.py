@@ -172,9 +172,10 @@ async def list_service_connections(
                     None if definition.token is None else definition.token.note
                 ),
                 # Whether a sign-in can start and finish in the browser, from
-                # the gateway; false where it returns only to Switch Console's
-                # listener, and for a key.
-                "web_sign_in": definition.enabled and flows.web_ready(definition),
+                # the gateway: false where it can't be connected here at all,
+                # where it returns only to Switch Console's listener, and for
+                # a key.
+                "web_sign_in": standing.connectable and flows.web_ready(definition),
                 # The ports Switch Console's listener may take a sign-in back
                 # on, for a vendor that matches them; null for any port.
                 "loopback_ports": (

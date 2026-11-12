@@ -47,7 +47,13 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.service_connections import service_refusal
-from switch_core.gateway.service_flows import LOST, NOT_YOURS, connector_page
+from switch_core.gateway.service_flows import (
+    LOST,
+    NOT_YOURS,
+    connector_page,
+    opened_elsewhere,
+    refused_browser,
+)
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
@@ -79,14 +85,17 @@ async def owners_browser(
     user_store: UserStore,
     config: SwitchConfig,
 ) -> bool:
-    return await session_belongs_to(
+    if await session_belongs_to(
         request,
         session_factory,
         user_store,
         config,
         user_id=flow.user_id,
         tenant_id=flow.tenant_id,
-    )
+    ):
+        return True
+    refused_browser(request, "github", flow.tenant_id, flow.user_id)
+    return False
 
 
 def service(request: Request) -> GitHubConnections:
@@ -181,6 +190,7 @@ class CompleteFlow(FlowSecret):
 
 @router.post("/flows/web", response_model=None)
 async def start_web(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
@@ -193,6 +203,9 @@ async def start_web(
         await broker.require_workspace_enabled(session, "github")
     except ServiceError as error:
         return service_refusal(error)
+    elsewhere = opened_elsewhere(request, github.callback, "GitHub")
+    if elsewhere is not None:
+        raise HTTPException(409, elsewhere)
     tenant = await session.get(Tenant, require_tenant_id())
     if tenant is None:
         raise HTTPException(404, "Workspace not found.")

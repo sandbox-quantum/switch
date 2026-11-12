@@ -176,6 +176,11 @@ class ServiceFlows:
                 return mode
         return None
 
+    @property
+    def public_url(self) -> str | None:
+        """Where Core's callback is, when this server knows its address."""
+        return self._public_url
+
     def web_ready(self, definition: ConnectionDefinition) -> bool:
         """Whether a sign-in to `definition` can start and finish in the
         browser: GitHub's always returns to Core, and an OAuth entry's does

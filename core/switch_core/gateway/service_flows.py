@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from html import escape
 from typing import Annotated
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -135,13 +135,48 @@ async def _owners_browser(
 ) -> bool:
     """Whether the browser is signed in to Switch as the person who started
     `flow`, in a workspace they may still use."""
-    return await session_belongs_to(
+    if await session_belongs_to(
         request,
         session_factory,
         user_store,
         config,
         user_id=flow.user_id,
         tenant_id=flow.tenant_id,
+    ):
+        return True
+    refused_browser(request, flow.service, flow.tenant_id, flow.user_id)
+    return False
+
+
+def refused_browser(
+    request: Request, service: str, tenant_id: str, user_id: str
+) -> None:
+    """A web sign-in reached in a browser not signed in as whoever started it:
+    a link sent on to someone else, or a session that ended meanwhile."""
+    logger.warning(
+        "Refused a %s sign-in step (%s) in a browser not signed in as the person "
+        "who started it: tenant=%s user=%s",
+        service,
+        request.url.path.rsplit("/", 1)[-1],
+        tenant_id,
+        user_id,
+    )
+
+
+def opened_elsewhere(request: Request, callback: str, name: str) -> str | None:
+    """Why a sign-in started from this page could not finish, or None.
+
+    The vendor returns the browser to `callback`, where the Switch session it
+    must carry is only if the page is open on that host too: a cookie is the
+    host's, whatever the port. The dashboard's POST names the page's origin.
+    """
+    origin = request.headers.get("origin")
+    if origin is None or urlsplit(origin).hostname == urlsplit(callback).hostname:
+        return None
+    where = f"{urlsplit(callback).scheme}://{urlsplit(callback).netloc}"
+    return (
+        f"{name} returns sign-ins to Switch at {where}, and this page is open at "
+        f"another address. Open Switch at {where} and connect from there."
     )
 
 
@@ -154,6 +189,7 @@ def connector_page(service: str, state: str) -> str:
 @router.post("/web", response_model=None)
 async def start_web(
     service: str,
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
@@ -166,6 +202,10 @@ async def start_web(
         definition, _ = await broker.sign_in(session, service)
     except ServiceError as error:
         return service_refusal(error)
+    if flows.public_url is not None:
+        elsewhere = opened_elsewhere(request, flows.public_url, definition.name)
+        if elsewhere is not None:
+            raise HTTPException(409, elsewhere)
     tenant = await session.get(Tenant, require_tenant_id())
     if tenant is None:
         raise HTTPException(404, "Workspace not found.")

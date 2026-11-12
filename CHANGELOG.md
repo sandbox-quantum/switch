@@ -65,7 +65,9 @@ version of their own to them without also giving them a release of their own.
   and returns to the connector's page, which says how the sign-in ended or
   why it failed, and offers Reconnect when a connection needs a fresh
   sign-in. The callback writes the connection only for the person who
-  started the sign-in, and only in a browser signed in to Switch as them.
+  started the sign-in, and only in a browser signed in to Switch as them; a
+  page open at another address than `GATEWAY_PUBLIC_URL`, where the vendor
+  returns the browser, is told to connect from there instead.
   Atlassian, Notion and Sentry return sign-ins only to Switch Console, which
   still connects them. `GET /service-connections` reports `web_sign_in`, and
   `POST /service-connections/{service}/flows/web` and

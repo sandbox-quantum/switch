@@ -692,10 +692,13 @@ class Browser:
     def cookies(self) -> dict[str, str]:
         return {**cookies_for(self.user), **self.flow_cookies}
 
-    async def start(self, service: str = "example") -> httpx.Response:
+    async def start(
+        self, service: str = "example", origin: str = PUBLIC
+    ) -> httpx.Response:
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows/web",
             cookies=cookies_for(self.user),
+            headers={"Origin": origin},
         )
 
     async def leave(self, authorize_url: str) -> httpx.Response:
@@ -773,7 +776,7 @@ class TestWeb:
         assert await _flow_ids(session_factory) == set()
 
     async def test_only_the_browser_of_whoever_started_it_finishes_it(
-        self, session_factory, tmp_path
+        self, session_factory, tmp_path, caplog
     ) -> None:
         """Someone starts a sign-in and sends the link to another person: had
         it finished in their browser, their account at the vendor would be
@@ -805,6 +808,11 @@ class TestWeb:
             refused = await victim.back(callback)
             assert refused.status_code == 403
             assert "started by someone else" in refused.text
+            assert any(
+                record.levelname == "WARNING"
+                and "not signed in as the person who started it" in record.message
+                for record in caplog.records
+            )
             assert world.vendor.token_requests == []
             assert await _connection(session_factory, grace.id) is None
             assert await _connection(session_factory, ada.id) is None
@@ -913,37 +921,120 @@ class TestWeb:
         assert "Connect it from Switch Console" in refused.json()["detail"]
         assert await _flow_ids(session_factory) == set()
 
-    @pytest.mark.parametrize(
-        ("public_url", "web"),
-        [
-            (
-                PUBLIC,
-                {
-                    "google-workspace": True,
-                    "github": True,
-                    "atlassian": False,
-                    "datadog": False,
-                    "asana": False,
-                },
-            ),
-            (None, {"google-workspace": False, "github": True, "atlassian": False}),
-        ],
-    )
-    async def test_the_list_says_which_can_be_connected_on_the_web(
-        self, session_factory, tmp_path, public_url, web
+    async def test_the_list_says_what_cannot_be_connected_on_the_web(
+        self, session_factory, tmp_path
     ) -> None:
-        """Google returns sign-ins to Core, which needs the public address;
-        GitHub's App always returns to Core; Atlassian returns only to
-        Console's listener; a key is pasted; a placeholder can't connect."""
-        world = _world(session_factory, tmp_path / "catalog", public_url=public_url)
+        """Atlassian returns sign-ins only to Console's listener; a key is
+        pasted; a placeholder can't connect; and Google and GitHub can't be
+        connected here at all, this world having neither's app."""
+        world = _world(session_factory, tmp_path / "catalog", public_url=PUBLIC)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             listed = await client.get(
                 "/gateway/service-connections", cookies=cookies_for(ada)
             )
         assert listed.status_code == 200, listed.text
-        by_slug = {c["slug"]: c["web_sign_in"] for c in listed.json()["connections"]}
-        assert {slug: by_slug[slug] for slug in web} == web
+        by_slug = {c["slug"]: c for c in listed.json()["connections"]}
+        for slug in ("atlassian", "datadog", "asana", "github", "google-workspace"):
+            assert by_slug[slug]["web_sign_in"] is False, slug
+
+    async def test_a_page_open_at_another_address_is_told_where_to_connect(
+        self, session_factory, tmp_path
+    ) -> None:
+        """The vendor returns the browser to the public address, where the
+        Switch session would be missing for a page open on another host."""
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            browser = Browser(client, ada)
+            refused = await browser.start(origin="https://switch.internal.example")
+            # Another port on the same host shares its cookies.
+            other_port = await browser.start(origin="https://switch.example.com:8443")
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == (
+            "Example returns sign-ins to Switch at https://switch.example.com, and "
+            "this page is open at another address. Open Switch at "
+            "https://switch.example.com and connect from there."
+        )
+        assert other_port.status_code == 200, other_port.text
+
+    async def test_switched_off_before_the_return_the_sign_in_is_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core]\n    revocation_discovered: true",
+            public_url=PUBLIC,
+            workspace_gate=True,
+        )
+        ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, True, ada)
+        async with world.harness.client() as client:
+            browser = Browser(client, ada)
+            started = await browser.start()
+            state = started.json()["id"]
+            left = await browser.leave(started.json()["url"])
+            callback = world.vendor.authorize(left.headers["location"])
+            await _switch(session_factory, False, ada)
+            _returned_to_page(await browser.back(callback), state)
+            status = await _web_status(browser, state)
+        assert (status["status"], status["error"]) == (
+            "failed",
+            WORKSPACE_REFUSAL["detail"],
+        )
+        assert await _connection(session_factory, ada.id) is None
+        assert [form["token_type_hint"] for form in world.vendor.revoked] == [
+            "refresh_token"
+        ]
+        assert world.vendor.live_refresh == {}
+
+    async def test_a_web_sign_in_replaces_one_started_in_console(
+        self, session_factory, tmp_path
+    ) -> None:
+        """One sign-in per person at a time, whichever way it started."""
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            assert (await console.start()).status_code == 200
+            browser = Browser(client, ada)
+            started = await browser.start()
+            assert (await console.status()).status_code == 410
+            left = await browser.leave(started.json()["url"])
+            returned = await browser.back(
+                world.vendor.authorize(left.headers["location"])
+            )
+            _returned_to_page(returned, started.json()["id"])
+        assert await _connection(session_factory, ada.id) is not None
+
+    async def test_the_operator_finishes_a_sign_in_in_a_workspace_they_entered(
+        self, session_factory, tmp_path
+    ) -> None:
+        """The operator may bind any workspace, on platform access: the return
+        lets them in as starting it did."""
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        async with session_factory() as session:
+            operator = User(name="op", email="op@example.invalid", role="admin")
+            session.add(operator)
+            await session.commit()
+        async with world.harness.client() as client:
+            browser = Browser(client, operator)
+            started = await browser.start()
+            assert started.status_code == 200, started.text
+            left = await browser.leave(started.json()["url"])
+            assert left.status_code == 307, left.text
+            returned = await browser.back(
+                world.vendor.authorize(left.headers["location"])
+            )
+            _returned_to_page(returned, started.json()["id"])
+        assert await _connection(session_factory, operator.id) is not None
 
 
 class TestRefusals:

@@ -345,6 +345,22 @@ async def test_a_cancelled_web_sign_in_says_so_on_the_page(github_app):
     github.exchange.assert_not_called()
 
 
+async def test_a_page_open_at_another_address_is_told_where_to_connect_github(
+    github_app,
+):
+    client, github, identity, factory = github_app
+    client.cookies.set("switch_auth", await _signed_in(factory, identity["user"]))
+    refused = await client.post(
+        BASE + "/flows/web", headers={"Origin": "https://switch.internal.example"}
+    )
+    assert refused.status_code == 409
+    assert "Open Switch at https://switch.example.com" in refused.json()["detail"]
+    allowed = await client.post(
+        BASE + "/flows/web", headers={"Origin": "https://switch.example.com"}
+    )
+    assert allowed.status_code == 200, allowed.text
+
+
 async def test_callback_rejects_missing_cookie_and_replayed_completion(github_app):
     client, github, _, _ = github_app
     flow_id = await authorize(client)
@@ -939,6 +955,33 @@ class TestOrganizationsApp:
         assert APP_CHANGED in left.text
         assert polled["status"] == "failed"
         assert polled["error"] == APP_CHANGED
+
+    async def test_a_web_sign_in_whose_app_changes_before_the_return_fails_with_why(
+        self, github_app
+    ) -> None:
+        """The code GitHub issued is for the App the flow left through: one
+        saved in its place meanwhile would be refused at GitHub, less clearly."""
+        _, server_github, identity, factory = github_app
+        organizations = _Organizations(None)
+        app = _process(server_github, identity, factory, False, organizations)
+
+        async with await _client(app) as client:
+            client.cookies.set(
+                "switch_auth", await _signed_in(factory, identity["user"])
+            )
+            started = await client.post(BASE + "/flows/web")
+            state = started.json()["id"]
+            left = await client.get(started.json()["url"])
+            assert left.status_code == 307
+            organizations.app = _saved(_organization_github("organization-client"))
+            returned = await client.get(
+                BASE + "/callback", params={"state": state, "code": "SYNTHETIC-CODE"}
+            )
+            polled = (await client.get(BASE + f"/flows/{state}")).json()
+
+        assert returned.headers["location"] == f"/connectors/github?sign_in={state}"
+        assert (polled["status"], polled["error"]) == ("failed", APP_CHANGED)
+        server_github.exchange.assert_not_called()
 
     async def test_an_app_unusable_by_authorize_fails_the_flow_with_its_problem(
         self, github_app

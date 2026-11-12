@@ -413,7 +413,8 @@ async def session_belongs_to(
     tenant_id: str,
 ) -> bool:
     """Whether the request carries `user_id`'s current session, and they may
-    still bind `tenant_id`.
+    still bind `tenant_id`, as `get_current_user` would let them: a member, an
+    organization admin over it, or the platform operator.
 
     For a route a browser reaches with or without a session, which acts for a
     person and workspace it already knows rather than for whoever is signed
@@ -428,7 +429,9 @@ async def session_belongs_to(
         return False
     if caller.user_id != user_id:
         return False
-    return tenant_id in await tenants_bindable_by(session_factory, user_id)
+    if tenant_id in await tenants_bindable_by(session_factory, user_id):
+        return True
+    return await _operator_may_enter(session_factory, user_store, user_id, tenant_id)
 
 
 @dataclass(frozen=True)
