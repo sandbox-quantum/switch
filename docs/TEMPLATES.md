@@ -183,10 +183,14 @@ bridge:
 **Switch Console.** A room whose `bridge` is `Switch Console` is on no
 messaging app. The person who runs the template is in it, so it shows up in
 their Switch Console chats; when an agent runs the template, that's the
-agent's owner. It names no `users`, and it needs the server's `group_chats`
-flag: without it the value is refused. A `bridge` param offers it after the
-messaging apps, and `$first` never picks it, so a template gets it only by
-naming it, as a value or in a chain (`default: [Switch Console, $first]`).
+agent's owner. Its `users` may name only that person (`{$creator}`), and it
+needs the server's `group_chats` flag: without it the value is refused.
+
+On a server with `group_chats` it is also the default: a room that names no
+messaging app (no `bridge`, or a `bridge` param left empty) is in Switch
+Console. Without `group_chats`, such a room goes on the server's default
+messaging app. A `bridge` param offers Switch Console after the messaging
+apps, and `$first` never picks it: `$first` is always a messaging app.
 
 A chain with no hit leaves the input empty. With `required: true` that
 blocks creation, and the message names the candidates that were tried.

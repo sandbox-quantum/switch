@@ -516,11 +516,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const bridgeParam = templateParams.find((p) => p.type === 'bridge');
     const picked = bridgeParam ? String(values[bridgeParam.name] ?? '') : '';
     const named = picked !== '' ? picked : (parsed?.bridge ?? null);
-    // A Switch Console room is on no messaging app.
-    if (named === CONSOLE_ROOM) return null;
+    // A Switch Console room is on no messaging app, and where the server
+    // offers them a room that names none is one.
+    if (named === CONSOLE_ROOM || (!named && consoleOffered)) return null;
     if (named) return bridges.find((b) => b.displayName === named) ?? null;
     return bridges.find((b) => b.isDefault) ?? null;
-  }, [bridges, parsed, templateParams, values]);
+  }, [bridges, consoleOffered, parsed, templateParams, values]);
   const creatorIdentity = useMemo(() => {
     if (identities === null) return null;
     if (templateBridge) {

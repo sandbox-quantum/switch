@@ -223,7 +223,8 @@ export function BridgeField({
               icon={<MessagesSquare className="size-5 text-foreground-muted" />}
               title={CONSOLE_ROOM}
               disabled={false}
-              selected={isConsole}
+              // Naming no app puts the room in Switch Console, so it is the default.
+              selected={isConsole || value === ''}
               onSelect={() => onChange(CONSOLE_ROOM)}
             >
               <span className="truncate text-xs text-foreground-muted">

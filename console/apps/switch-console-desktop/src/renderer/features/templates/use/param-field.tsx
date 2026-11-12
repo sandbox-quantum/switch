@@ -253,7 +253,9 @@ export function ParamField({
       )}
       {param.type === 'bridge' && !required && isEmpty(value) && (
         <p className="text-[11.5px] text-foreground-passive">
-          Left empty, the room is created on the server's default messaging app.
+          {lists.consoleOffered
+            ? 'Left empty, the room is created in Switch Console.'
+            : "Left empty, the room is created on the server's default messaging app."}
         </p>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}

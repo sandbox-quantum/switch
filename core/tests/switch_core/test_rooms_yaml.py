@@ -836,7 +836,7 @@ async def test_provision_duplicate_doc_name_is_best_effort(env):
 
 @pytest.mark.asyncio
 async def test_provision_users_without_bridge_fails(env):
-    spec, _ = _svc(env).parse(
+    spec, _ = _without_console(env).parse(
         """
         room:
           name: "R"
@@ -845,7 +845,7 @@ async def test_provision_users_without_bridge_fails(env):
         """
     )
     with pytest.raises(ValueError, match="without a bridge|no bridge"):
-        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+        await _without_console(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
 
 # ── export ───────────────────────────────────────────────────────────────────
@@ -1716,7 +1716,7 @@ async def test_builtins_creator_uses_claimed_identity_on_default_bridge(env):
         claimed_by=env["user_id"],
         external_username="abel.dantas",
     )
-    builtins = await _svc(env).builtins_for(
+    builtins = await _without_console(env).builtins_for(
         user_id=env["user_id"],
         name="alice",
         email="alice@example.com",
@@ -1757,7 +1757,7 @@ async def test_builtins_refuses_unclaimed_creator_when_the_template_needs_one(en
         external_username="abel.dantas",
     )
     with pytest.raises(ValueError, match=r"no linked account on Slack"):
-        await _svc(env).builtins_for(
+        await _without_console(env).builtins_for(
             user_id=env["user_id"],
             name="alice",
             email="alice@example.com",
@@ -2787,3 +2787,28 @@ async def test_a_switch_console_room_its_runner_cannot_join_is_deleted(env):
 
     assert len(env["rooms"].configs) == 1
     assert len(env["rooms"].deleted) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_room_naming_no_messaging_app_is_in_switch_console_by_default(env):
+    svc = _svc(env)
+    for inputs in ({}, {"bridge": ""}):
+        parsed = svc.parse_template(CONSOLE_TEXT, inputs=inputs)
+        await svc.check_bridges(parsed, creator="alice")
+        await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
+    assert [(c.internal_only, c.bridge_id) for c in env["rooms"].configs] == [
+        (True, None),
+        (True, None),
+    ]
+    assert len(env["console"].added) == 2
+
+
+@pytest.mark.asyncio
+async def test_without_group_chats_no_messaging_app_still_means_the_default_one(env):
+    svc = _without_console(env)
+    parsed = svc.parse_template(CONSOLE_TEXT, inputs={})
+    await svc.check_bridges(parsed, creator="alice")
+    await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
+    (config,) = env["rooms"].configs
+    assert config.internal_only is False
+    assert env["console"].added == []

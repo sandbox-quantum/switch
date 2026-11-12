@@ -152,13 +152,14 @@ references by id:
         instructions: Work through it for each change.
         content: "Tests pass. Errors are handled. The docs say what changed."
 
-Without bridge the room goes on the server's default messaging app; users
-needs one (make them depend on it: [{if: "{bridge}", value: [...]},
-{value: []}]). bridge "Switch Console" makes a room on no messaging app
-with the deployer in it (an agent's owner, when an agent runs the
-template), one of their Switch Console chats; it names no users, and needs
-the server's group_chats flag. A bridge param offers it last, and $first
-never picks it. Several rooms go in one group. packages must be ones the
+bridge "Switch Console" makes a room on no messaging app with the deployer
+in it (an agent's owner, when an agent runs the template), one of their
+Switch Console chats; its users may name only the deployer ({$creator}). It
+needs the server's group_chats flag, and where that is on it is also where a
+room without bridge goes. Without group_chats, a room without bridge goes on
+the server's default messaging app. users needs a messaging app (make them
+depend on it: [{if: "{bridge}", value: [...]}, {value: []}]). A bridge param
+offers Switch Console last, and $first never picks it. Several rooms go in one group. packages must be ones the
 deployer can attach by hand; a missing or ambiguous one stops the run.
 
 ## A group (type: group)

@@ -2192,8 +2192,9 @@ async def run_template(
         inputs: Values for the template's params (see ``get_template``),
             including a ``machine`` or ``provider`` param. A ``bridge`` param
             also takes ``"Switch Console"``: the room is then on no messaging
-            app, with your owner in it as one of their Switch Console chats
-            (only where the server has group chats).
+            app, with your owner in it as one of their Switch Console chats.
+            Where the server has group chats, that is also where a room goes
+            when you leave its ``bridge`` empty.
         agents: Existing agents to stand in for slots instead of creating
             them, ``{slot name: agent name}``, the slot named as
             ``get_template`` lists it or as it reads with your inputs. Only a

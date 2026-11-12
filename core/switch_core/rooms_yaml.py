@@ -116,9 +116,9 @@ FIRST = "$first"
 NEW = "$new"
 # The types whose param may be left without a value when the template marks
 # it ``required: false`` and gives no default: a string is empty, a room
-# with no bridge lands on the server's default messaging app, and an unset
-# room drops out of the list it was written in (an agent's ``join``, where
-# it means "no room").
+# with no bridge lands in Switch Console (without group chats, on the
+# server's default messaging app), and an unset room drops out of the list
+# it was written in (an agent's ``join``, where it means "no room").
 OPTIONAL_WITHOUT_DEFAULT_TYPES = ("string", "bridge", "room")
 
 ParamType = Literal[
@@ -456,7 +456,9 @@ class RoomSpec(BaseModel):
     name: str
     description: str
     instructions: str | None = None
-    # Collaboration bridge display name; omit for an internal-only room.
+    # Collaboration bridge display name, or ``CONSOLE_ROOM``. Omitted, the
+    # room is in Switch Console where the server offers it, else on the
+    # server's default messaging app.
     bridge: str | None = None
     channel_type: Literal["channel_public", "channel_private"] = "channel_public"
     read_visibility: str = "public"
@@ -574,7 +576,8 @@ _SpecDumper.add_representer(str, _str_representer)
 # that puts the room in Switch Console rather than on a messaging app: an
 # internal room with the person who runs the template as a member, so it is
 # one of their Switch Console chats. An agent running a template puts its
-# owner there. It needs the server's `group_chats` flag.
+# owner there. It needs the server's `group_chats` flag, and where that is on
+# it is also where a room that names no messaging app goes.
 CONSOLE_ROOM = "Switch Console"
 
 
@@ -875,7 +878,10 @@ class RoomYamlService:
                 if isinstance(parsed.spec, GroupSpec)
                 else parsed.spec
             )
-            bridge_id = await self._resolve_bridge_id(first.bridge)
+            where = self._where(first.bridge)
+            bridge_id = (
+                None if is_console_room(where) else await self._resolve_bridge_id(where)
+            )
             if bridge_id is None:
                 param = wanted["user"][0][0]
                 raise ValueError(
@@ -1078,7 +1084,7 @@ class RoomYamlService:
             bridge = filled
         if bridge is not None and not isinstance(bridge, str):
             return None
-        if is_console_room(bridge):
+        if is_console_room(self._where(bridge)):
             return None
         try:
             return await self._resolve_bridge_id(bridge)
@@ -1112,7 +1118,7 @@ class RoomYamlService:
         that can refuse an agent's room have run before this is called.
         ``template_name`` is what the room's run is listed under.
         """
-        console = is_console_room(spec.bridge)
+        console = is_console_room(self._where(spec.bridge))
         owner: User | None = None
         if console:
             console_rooms = self._require_console_rooms()
@@ -1314,7 +1320,7 @@ class RoomYamlService:
             else [parsed.spec]
         )
         for spec in specs:
-            if is_console_room(spec.bridge):
+            if is_console_room(self._where(spec.bridge)):
                 self._require_console_rooms()
                 _refuse_console_users(spec, creator)
                 continue
@@ -1325,6 +1331,14 @@ class RoomYamlService:
                     "it is on no messaging app: none is set up here. Leave "
                     "users out, or make them depend on a bridge."
                 )
+
+    def _where(self, bridge: str | None) -> str | None:
+        """Where a room's ``bridge`` puts it: as written, except that naming
+        no messaging app means Switch Console on a server that offers it,
+        and the server's default messaging app elsewhere."""
+        if not bridge and self._console_offered():
+            return CONSOLE_ROOM
+        return bridge
 
     def _console_offered(self) -> bool:
         return self._console_rooms is not None and self._console_rooms.enabled
