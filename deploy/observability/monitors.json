@@ -700,8 +700,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] Hosted machine launches failing",
     "type": "query alert",
-    "query": "sum(last_30m):default_zero(sum:switch.hosted.machine_events{service:REPLACE-WITH-SERVICE,event:failed}.as_count()) >= 3",
-    "message": "{{#is_alert}}{{value}} hosted machine launches failed in 30 minutes.\n\n**Check:** the failures by reason on the dashboard (not scheduled, never started, never connected, a wake that didn't come back, a stop that failed, reported), then the controller service's logs for the cloud errors.{{/is_alert}}{{#is_recovery}}Recovered: hosted machine launches are succeeding again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "sum(last_30m):default_zero(sum:switch.hosted.machine_events{service:REPLACE-WITH-SERVICE,event:failed,reason IN (never_connected,wake_failed,not_scheduled,never_started)}.as_count()) >= 3",
+    "message": "{{#is_alert}}{{value}} hosted machine launches failed in 30 minutes.\n\n**Check:** the failures by reason on the dashboard (not scheduled, never started, never connected, a wake that didn't come back), then the controller service's logs for the cloud errors.{{/is_alert}}{{#is_recovery}}Recovered: hosted machine launches are succeeding again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",

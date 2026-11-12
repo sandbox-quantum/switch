@@ -126,7 +126,8 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
             "owner_left",
             "needs_attention",
             "reported",
-            # An error observed while the machine is wanted stopped.
+            # An error observed while the machine is wanted stopped, retained
+            # or deleted.
             "stop_failed",
         }
     ),

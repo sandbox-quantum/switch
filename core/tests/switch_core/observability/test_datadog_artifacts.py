@@ -89,6 +89,20 @@ def test_monitors_are_individually_importable() -> None:
         ]
 
 
+def test_launches_failing_counts_only_launch_and_wake_failures() -> None:
+    """A machine whose owner left, that failed to stop, or that reported an
+    error isn't a launch failing, so none of those page as one."""
+    (monitor,) = [
+        m
+        for m in _load("monitors.json")  # type: ignore[union-attr]
+        if m["name"].endswith("Hosted machine launches failing")
+    ]
+    assert (
+        "reason IN (never_connected,wake_failed,not_scheduled,never_started)"
+        in monitor["query"]
+    )
+
+
 def test_only_the_default_service_loads_the_shared_signal_board() -> None:
     """The signal board is one board under a fixed title. A run for any other
     deployment stops before it, so a test deployment can't overwrite it."""

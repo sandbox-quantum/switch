@@ -14,9 +14,9 @@ carries the cookie passes only if:
    request with none of the three isn't a browser's, and a forged request
    needs the browser to carry the cookie. That's how Switch Console's main
    process keeps working: Node's fetch sends the cookie with only
-   `sec-fetch-mode: cors`. Temporary, until Console sends `Origin` (the tech
-   lead's follow-up). A WebSocket handshake follows the same three rules, as
-   Console's change socket (`/changes/ws`) is opened the same way.
+   `sec-fetch-mode: cors`. Temporary, until Console sends `Origin` itself.
+   A WebSocket handshake follows the same three rules, as Console's change
+   socket (`/changes/ws`) is opened the same way.
 
 A cookie request is checked whatever else it carries, an `Authorization`
 header included, so a bad or empty bearer can never carry it past the check.
