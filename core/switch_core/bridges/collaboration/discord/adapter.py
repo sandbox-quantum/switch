@@ -3728,7 +3728,7 @@ class DiscordAdapter(PlatformAdapter):
             filename = str(getattr(file, "filename", "") or "file")
             size = getattr(file, "size", None)
             if isinstance(size, int) and size > self._max_attachment_bytes:
-                logger.warning(
+                logger.info(
                     "Discord attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,

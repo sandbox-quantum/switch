@@ -100,6 +100,7 @@ import {
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
+  type RemoteRoomSchedule,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
   type RoomRoleInput,
@@ -109,6 +110,7 @@ import {
   type ApiKeyLifetime,
   type CreatedRegistrationKey,
   type RoomAutoRoute,
+  type RoomScheduleDraft,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -3887,6 +3889,123 @@ export async function removeRoomAgent(
     `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`,
     { authenticated: true, method: 'DELETE' }
   );
+}
+
+/** The gateway `RoomScheduleDetail` wire shape. */
+type RoomScheduleJson = {
+  id: string;
+  author_id: string;
+  author_agent_id?: string | null;
+  agent_ids: string[];
+  text: string;
+  cron: string | null;
+  run_at: string | null;
+  timezone: string;
+  paused: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+};
+
+function mapRoomSchedule(json: RoomScheduleJson): RemoteRoomSchedule {
+  return {
+    id: json.id,
+    authorId: json.author_id,
+    authorAgentId: json.author_agent_id ?? null,
+    agentIds: json.agent_ids,
+    text: json.text,
+    cron: json.cron,
+    runAt: json.run_at,
+    timezone: json.timezone,
+    paused: json.paused,
+    nextRunAt: json.next_run_at,
+    lastRunAt: json.last_run_at,
+  };
+}
+
+function roomScheduleBody(draft: RoomScheduleDraft) {
+  return {
+    agent_ids: draft.agentIds,
+    text: draft.text,
+    cron: draft.cron,
+    run_at: draft.runAt,
+    timezone: draft.timezone,
+  };
+}
+
+function roomSchedulesPath(roomId: string): string {
+  return `/rooms/${encodeURIComponent(roomId)}/schedules`;
+}
+
+function roomSchedulePath(roomId: string, scheduleId: string): string {
+  return `${roomSchedulesPath(roomId)}/${encodeURIComponent(scheduleId)}`;
+}
+
+/** A room's schedules (`GET /rooms/{id}/schedules`), oldest first. Requires read access. */
+export async function fetchRoomSchedules(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomSchedule[]> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), { authenticated: true });
+  return ((await res.json()) as RoomScheduleJson[]).map(mapRoomSchedule);
+}
+
+/**
+ * Add a schedule to a room (`POST /rooms/{id}/schedules`), with the signed-in
+ * user as its author. Requires write access. The server checks the timing and
+ * that every agent is in the room, and refuses with the reason otherwise.
+ */
+export async function createRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  draft: RoomScheduleDraft
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), {
+    authenticated: true,
+    method: 'POST',
+    body: roomScheduleBody(draft),
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Replace what a schedule says, to whom and when; the signed-in user becomes its author. */
+export async function updateRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  draft: RoomScheduleDraft
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, roomSchedulePath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'PUT',
+    body: roomScheduleBody(draft),
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Pause a schedule, or resume it from now: runs missed while it was paused are not sent. */
+export async function setRoomSchedulePaused(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  paused: boolean
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, `${roomSchedulePath(roomId, scheduleId)}/paused`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { paused },
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+export async function deleteRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<void> {
+  await gatewayFetch(server, roomSchedulePath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /**

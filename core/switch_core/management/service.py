@@ -41,6 +41,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     DETACH_DELETED,
     DETACH_UNASSIGNED,
     DISCONNECT_REVOKED,
+    ConnectionNotLetGoError,
     ControllerConnection,
     ControllerPresence,
     ControllerRevokedError,
@@ -612,15 +613,21 @@ class ManagementService:
         died, or has not written it yet) may have sent past them, and the
         beats confirming how far went with that holder: resuming there would
         skip what it sent after, so the controller is told to open again,
-        with its own cursors."""
+        with its own cursors.
+
+        A holder that has not written the going yet may be about to: the
+        refusal for that is `ConnectionNotLetGoError`, which the attach waits
+        out for a moment before passing it on."""
         if controller.open_generation != generation or (
             controller.connection_id == connection_id
-            and (
-                controller.disconnected_at is None
-                or controller.disconnect_reason in _ENDING_REASONS
-            )
+            and controller.disconnect_reason in _ENDING_REASONS
         ):
             raise UnknownControllerConnectionError(connection_id)
+        if (
+            controller.connection_id == connection_id
+            and controller.disconnected_at is None
+        ):
+            raise ConnectionNotLetGoError(connection_id)
         resume_cursors = _resume_cursors(controller.open_cursors)
         if not await self.controllers.record_taken_up(
             session,

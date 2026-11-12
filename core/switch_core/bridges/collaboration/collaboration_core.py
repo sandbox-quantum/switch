@@ -120,6 +120,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# (bridge type, agent name, failure) of identity provisioning failures already
+# logged as a warning by this process; see `_sync_agent_identities`.
+_IDENTITY_FAILURES_SEEN: set[tuple[str, str, str]] = set()
+_IDENTITY_FAILURES_SEEN_MAX = 2000
+
 _InboundEventT = TypeVar(
     "_InboundEventT",
     InboundInteraction,
@@ -822,13 +827,25 @@ class CollaborationCore:
 
         failures = await self._adapter.sync_agent_identities(list(current.values()))
         failed = {name for name, _ in failures}
+        any_new = False
         for name, exc in failures:
-            logger.error(
+            # A refusal that needs a person (a handle taken in the workspace)
+            # comes back on every bridge start: a warning the first time this
+            # process sees it, debug after that.
+            seen = (self._bridge_id, name, str(exc))
+            first = seen not in _IDENTITY_FAILURES_SEEN
+            if first:
+                any_new = True
+                if len(_IDENTITY_FAILURES_SEEN) >= _IDENTITY_FAILURES_SEEN_MAX:
+                    _IDENTITY_FAILURES_SEEN.clear()
+                _IDENTITY_FAILURES_SEEN.add(seen)
+            logger.log(
+                logging.WARNING if first else logging.DEBUG,
                 "Failed to provision %s identity for agent %s: %s",
                 self._bridge_type,
                 name,
                 exc,
-                exc_info=exc,
+                exc_info=exc if first else None,
             )
         for identity in current.values():
             if identity.name not in failed:
@@ -839,7 +856,8 @@ class CollaborationCore:
         # count regardless of failures would read as success on a run where
         # every one of them failed.
         if failures:
-            logger.warning(
+            logger.log(
+                logging.WARNING if any_new else logging.INFO,
                 "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
                 len(current),
@@ -1172,7 +1190,7 @@ class CollaborationCore:
         if msg.root_id is not None:
             thread_root_id = await self._event_for_external_post(msg.root_id)
             if thread_root_id is None:
-                logger.warning(
+                logger.info(
                     "[BRIDGE-IN] no room message mapped for external root %s; "
                     "posting top-level in room %s",
                     msg.root_id,

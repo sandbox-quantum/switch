@@ -69,6 +69,8 @@ from switch_core.sessions.contract import (
 )
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
     from switch_core.db.models import Agent
 
 logger = logging.getLogger(__name__)
@@ -440,6 +442,16 @@ class ActivityMarkRefused(RuntimeError):
 #: thing to be told and is why it is a mark of its own rather than a second
 #: meaning for the first.
 ActivityMark = Literal["working", "queued"]
+
+#: How a platform refused a send, for a caller deciding whether to send it again.
+#:
+#: "permanent": sending the same thing again is refused again (the request is
+#: too large, the method is not allowed). "bounded": a refusal that is usually
+#: final but can clear on its own, such as a bot not yet added to the channel
+#: or a post not yet visible, so worth a few more attempts and no more.
+#: "transient": a timeout, a dropped connection, a server error, a rate limit,
+#: an expired session, or anything the adapter cannot recognise.
+RefusalKind = Literal["permanent", "bounded", "transient"]
 
 
 @runtime_checkable
@@ -846,6 +858,17 @@ class PlatformAdapter(ABC):
         `BridgeOperationError` for platform refusals needs no override.
         """
         return None
+
+    @classmethod
+    def classify_refusal(cls, exc: BaseException) -> RefusalKind:
+        """How this platform refused a send: see `RefusalKind`.
+
+        The session activity publisher drops a "permanent" refusal at once,
+        gives a "bounded" one a few attempts, and retries a "transient" one for
+        as long as it takes. An adapter that cannot tell its platform's errors
+        apart answers "transient", which keeps every failure retried.
+        """
+        return "transient"
 
     @classmethod
     async def prepare_config(
@@ -2006,6 +2029,13 @@ class PlatformAdapter(ABC):
         no tenant. Slack overrides it, because it shares one structure across
         every Slack bridge in the process and has to keep tenants apart in it.
         """
+        return None
+
+    def set_session_factory(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Install a database session factory for adapters that access shared database stores
+        (such as cross-pod event deduplication receipts). Default is a no-op."""
         return None
 
     def set_channel_team_persister(

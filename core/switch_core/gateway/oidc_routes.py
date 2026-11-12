@@ -52,6 +52,8 @@ from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
 
+_warned_unverified_claim = False
+
 router = APIRouter()
 
 # Module-level OAuth registry. The single gateway client is registered once at
@@ -355,12 +357,17 @@ async def oidc_callback(
                 sub,
             )
             raise HTTPException(status_code=401, detail="OIDC email is not verified")
-        logger.warning(
+        # A setting, not an event: said once per process as a warning, then
+        # at debug for each sign-in it applies to.
+        global _warned_unverified_claim
+        logger.log(
+            logging.DEBUG if _warned_unverified_claim else logging.WARNING,
             "OIDC email_verified=%r accepted (sub %s): the email claim is trusted "
             "because GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED is false.",
             email_verified,
             sub,
         )
+        _warned_unverified_claim = True
     name = claims.get("name") or email.split("@")[0]
 
     # A returning identity is looked up on the immutable issuer+subject, never

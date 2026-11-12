@@ -125,6 +125,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "room_packages": "deleted",
     "room_references": "deleted",
     "room_roles": "deleted",
+    "room_schedules": "deleted",
     "room_skills": "deleted",
     "sealed_provider_logins": "deleted",
     "service_grants": "deleted",

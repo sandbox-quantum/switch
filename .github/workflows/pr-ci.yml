@@ -284,7 +284,7 @@ jobs:
     name: Switch Console
     needs: changes
     if: ${{ needs.changes.outputs.console == 'true' || needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-24.04 # Playwright 1.60 cannot install browser deps on ubuntu-latest (26.04)
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: console

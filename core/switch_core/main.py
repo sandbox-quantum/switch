@@ -229,6 +229,7 @@ from switch_core.retention.audit_history import check_purge_privilege
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
+from switch_core.room_schedules import own_room_schedules
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
@@ -634,21 +635,6 @@ async def _snapshot_loop(reporter: SnapshotReporter) -> None:
     # whichever one happened to be bound when the task was created.
     with no_tenant():
         await reporter.run_forever()
-
-
-class _QuietPollFilter(logging.Filter):
-    _SUPPRESSED = [
-        "/events?timeout=",
-        "/room-history?",
-        "/agents/",
-    ]
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(p in msg for p in self._SUPPRESSED)
-
-
-logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
 
 
 async def _prepare_database(config: SwitchConfig) -> None:
@@ -1078,6 +1064,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
+    # Room schedules post from whichever process owns them (`room_schedules.py`).
+    own_room_schedules(ownership, session_factory, client_lifecycle)
     # Every process runs each tenant's admin actor, so the process that wrote
     # a message posts the heads-up it owes (`clients/mention_warnings.py`).
     router.use_admin(
@@ -1508,6 +1496,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
         bridges_crashed=collab_lifecycle.crashed,
+        bridges_started=collab_lifecycle.started_names,
         consumers_running=client_lifecycle.running_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),

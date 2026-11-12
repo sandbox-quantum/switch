@@ -26,6 +26,7 @@ import { RoomAutoRouteSection } from './room-auto-route-section';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
 import { agentNameFor, roomDetailKey, useRoomDetail } from './room-participants';
+import { SchedulesSection } from './room-schedules-section';
 import {
   AccessAndGroupFields,
   ArchiveRoomSection,
@@ -207,6 +208,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             />
           )}
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          <SchedulesSection workspaceId={workspaceId} room={room} permissions={permissions} />
           <RoomInfoSection room={room} />
           <section
             id="room-settings-archive"

@@ -518,6 +518,37 @@ export function visibilityForAccess(access: RoomAccess): {
  * Teams, where Switch may not remove it. */
 export type ChannelRetirement = 'archived' | 'deleted' | 'left' | 'kept';
 
+/** A message Switch posts to some of a room's agents on a timer (mirrors the
+ * gateway's `RoomScheduleDetail`), on behalf of `authorId`: whoever last set
+ * what it says or to whom. */
+export type RemoteRoomSchedule = {
+  id: string;
+  authorId: string;
+  /** The agent that set it up through its Switch tools, which it is posted as;
+   * null for a person, and from a server that predates it. */
+  authorAgentId: string | null;
+  agentIds: string[];
+  text: string;
+  /** A five-field cron rule read in `timezone`; null for a one-off. */
+  cron: string | null;
+  /** The one-off's moment, ISO 8601; null for a recurring schedule. */
+  runAt: string | null;
+  timezone: string;
+  paused: boolean;
+  /** Null once a one-off has been sent. */
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+};
+
+/** What a schedule says, to whom and when. Exactly one of `cron` and `runAt`. */
+export type RoomScheduleDraft = {
+  agentIds: string[];
+  text: string;
+  cron: string | null;
+  runAt: string | null;
+  timezone: string;
+};
+
 /** What deleting a room did to its platform channel when asked to retire it
  * (mirrors the gateway's `RetireOutcome`). `failed` means the channel is still there and someone has
  * to remove it by hand; `reason` says why. */

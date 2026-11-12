@@ -37,6 +37,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentityConflict,
     MessagePartlySent,
     PlatformAdapter,
+    RefusalKind,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -165,6 +166,10 @@ _EDIT_CUT_SHORT = (
     "one post and could not be posted after it.)_"
 )
 
+# How many reply-to-thread-root resolutions one bridge remembers. Forgetting one
+# costs a refused post and a lookup the next time that reply is threaded under.
+_MAX_THREAD_ROOTS = 1024
+
 # The values of `TeamSettings.TeammateNameDisplay` under which Mattermost puts
 # a bot's display name in the post header. Under any other value — including
 # the server default, "username" — the display name is stored and never shown.
@@ -186,6 +191,17 @@ _DEFINITE_REFUSALS = (
     ContentTooLarge,
     FeatureDisabled,
 )
+
+# Refusals that sending the same post again will not change.
+_REFUSED_FOR_GOOD = (MethodNotAllowed, ContentTooLarge)
+
+# Refusals that are usually final but can clear on their own: a 400 for a file
+# id not ready yet, a 403 for a bot not yet added to the channel, a 404 for a
+# post or channel not visible yet. A 401 is neither: a bot's session can be
+# signed in again, so it is left to retry with the server errors.
+_REFUSED_FOR_NOW = (InvalidOrMissingParameters, NotEnoughPermissions, ResourceNotFound)
+_STATUS_REFUSED_FOR_GOOD = frozenset({405, 413})
+_STATUS_TRANSIENT = frozenset({401, 408, 429})
 
 # How long to wait after a rate limit that names no interval of its own.
 # Matches the Slack adapter's fallback, for the same reason: long enough not to
@@ -452,6 +468,50 @@ class MattermostAdapter(PlatformAdapter):
             return "platform_error"
         return None
 
+    @classmethod
+    def classify_refusal(cls, exc: BaseException) -> RefusalKind:
+        """Read the driver's error out of the chain: `RichContentFailed`
+        carries it as its cause.
+
+        "permanent" for a 405 or 413, "bounded" for any other 4xx but 401, 408
+        and 429, "transient" for everything else. `mattermostdriver` raises its
+        named exceptions without the response, so for those the status is read
+        from the class; a status it does not name arrives as the `requests`
+        error with the response still on it.
+
+        A transient failure anywhere in the chain wins: a refused thread root
+        whose post could not be looked up for the network is worth sending
+        again once the lookup can get through.
+        """
+        if isinstance(exc, RichContentThrottled):
+            return "transient"
+        kind: RefusalKind = "transient"
+        seen: BaseException | None = exc
+        while seen is not None:
+            if isinstance(
+                seen,
+                sync_requests.exceptions.ConnectionError
+                | sync_requests.exceptions.Timeout,
+            ):
+                return "transient"
+            if isinstance(seen, _REFUSED_FOR_GOOD):
+                kind = "permanent"
+            elif isinstance(seen, _REFUSED_FOR_NOW):
+                if kind != "permanent":
+                    kind = "bounded"
+            elif isinstance(seen, sync_requests.exceptions.HTTPError):
+                status = getattr(seen.response, "status_code", None)
+                if isinstance(status, int):
+                    if status in _STATUS_REFUSED_FOR_GOOD:
+                        kind = "permanent"
+                    elif 400 <= status < 500 and status not in _STATUS_TRANSIENT:
+                        if kind != "permanent":
+                            kind = "bounded"
+                    else:
+                        return "transient"
+            seen = seen.__cause__
+        return kind
+
     draws_session_activity: ClassVar[bool] = True
 
     #: A problem somebody has to act on still gets its own reply, so it
@@ -596,6 +656,11 @@ class MattermostAdapter(PlatformAdapter):
         # The server's `MaxPostSize`, read the first time a message is long
         # enough for it to matter. Mattermost refuses a longer post outright.
         self._max_post_size: int | None = None
+
+        # A reply's id -> the id of the thread it is in. Mattermost threads a
+        # post only under a thread's root, and Switch is sometimes handed a
+        # reply to thread under. Only lookups that found a root are kept.
+        self._thread_roots: OrderedDict[str, str] = OrderedDict()
 
         # This bridge's place on the shared callback listener, installed by the
         # lifecycle service before start. None when the adapter is running
@@ -965,21 +1030,20 @@ class MattermostAdapter(PlatformAdapter):
     ) -> None:
         """An ephemeral post: shown in the channel, in the message's thread,
         to the person who posted it and to nobody else, and gone on reload."""
-        loop = self._main_loop
         driver = self._admin_driver
-        if loop is None or driver is None:
+        if self._main_loop is None or driver is None:
             raise RuntimeError("Mattermost is not connected")
-        post: dict[str, Any] = {
-            "channel_id": channel_id,
-            "message": self.translate_outbound(content),
-        }
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
-        await loop.run_in_executor(
-            None,
-            driver.posts.create_ephemeral_post,
-            {"user_id": user_id, "post": post},
-        )
+        message = self.translate_outbound(content)
+
+        def send(root_id: str | None) -> Any:
+            post: dict[str, Any] = {"channel_id": channel_id, "message": message}
+            if root_id is not None:
+                post["root_id"] = root_id
+            return driver.posts.create_ephemeral_post(
+                {"user_id": user_id, "post": post}
+            )
+
+        await self._in_thread(driver, thread_root_id, send)
 
     # ── Messaging ────────────────────────────────────────────────────────────
 
@@ -1104,15 +1168,13 @@ class MattermostAdapter(PlatformAdapter):
                 thread_root_id,
             )
 
-        post: dict[str, object] = {
+        post: dict[str, Any] = {
             "channel_id": channel_id,
             "message": self.translate_outbound(caption) if caption else "",
             "file_ids": file_ids,
         }
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
         try:
-            result = await loop.run_in_executor(None, driver.posts.create_post, post)
+            result = await self._create_threaded_post(driver, post, thread_root_id)
             post_id: str = result.get("id", "")
             return post_id or None
         except Exception as e:
@@ -1185,15 +1247,13 @@ class MattermostAdapter(PlatformAdapter):
                 channel_id, sender_name, files, caption, thread_root_id
             )
 
-        post: dict[str, object] = {
+        post: dict[str, Any] = {
             "channel_id": channel_id,
             "message": self.translate_outbound(caption) if caption else "",
             "file_ids": file_ids,
         }
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
         try:
-            result = await loop.run_in_executor(None, driver.posts.create_post, post)
+            result = await self._create_threaded_post(driver, post, thread_root_id)
             post_id: str = result.get("id", "")
             return post_id or None
         except Exception as e:
@@ -1341,19 +1401,122 @@ class MattermostAdapter(PlatformAdapter):
         actually said, which is the difference between a caller that can retry
         sensibly and one that only knows it got `None`.
         """
-        loop = self._main_loop
-        if loop is None:
-            raise RuntimeError("Mattermost is not connected.")
         post: dict[str, Any] = {"channel_id": channel_id, "message": content}
-        if thread_root_id is not None:
-            post["root_id"] = thread_root_id
         if props:
             post["props"] = props
-        result = await loop.run_in_executor(None, driver.posts.create_post, post)
+        result = await self._create_threaded_post(driver, post, thread_root_id)
         post_id: str = result.get("id", "")
         if not post_id:
             raise RuntimeError("Mattermost accepted the post but returned no id.")
         return post_id
+
+    async def _create_threaded_post(
+        self, driver: Driver, post: dict[str, Any], thread_root_id: str | None
+    ) -> dict[str, Any]:
+        def send(root_id: str | None) -> dict[str, Any]:
+            body = dict(post)
+            if root_id is not None:
+                body["root_id"] = root_id
+            result: dict[str, Any] = driver.posts.create_post(body)
+            return result
+
+        return await self._in_thread(driver, thread_root_id, send)
+
+    async def _in_thread[T](
+        self,
+        driver: Driver,
+        thread_root_id: str | None,
+        send: Callable[[str | None], T],
+    ) -> T:
+        """Run `send` with the root id to thread under, on the driver's thread.
+
+        Mattermost takes only a thread's root as `root_id` and refuses a reply's
+        id with a 400. Switch is handed a reply to thread under whenever what it
+        answers was itself posted in a thread, so on any 400 the reference is
+        looked up, and if it is a reply `send` is tried once more under the
+        root of its thread. The refusal's text is not consulted: Mattermost
+        translates it, and the driver keeps nothing else of the response.
+
+        A root found this way is remembered for the reference. A send under a
+        remembered root that is refused forgets it and looks the reference up
+        again, once, since the thread may have changed since.
+        """
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Mattermost is not connected.")
+        if thread_root_id is None:
+            return await loop.run_in_executor(None, send, None)
+        known_root = self._thread_root_for(thread_root_id)
+        if known_root is not None and known_root != thread_root_id:
+            try:
+                return await loop.run_in_executor(None, send, known_root)
+            except (InvalidOrMissingParameters, ResourceNotFound) as error:
+                logger.warning(
+                    "Mattermost refused %s, the remembered thread root of %s "
+                    "(%s); looking %s up again",
+                    known_root,
+                    thread_root_id,
+                    error,
+                    thread_root_id,
+                )
+                self._thread_roots.pop(thread_root_id, None)
+                refusal: InvalidOrMissingParameters | ResourceNotFound = error
+        else:
+            try:
+                return await loop.run_in_executor(None, send, thread_root_id)
+            except InvalidOrMissingParameters as error:
+                refusal = error
+        root = await self._root_of_reply(driver, thread_root_id, refusal)
+        return await loop.run_in_executor(None, send, root)
+
+    def _thread_root_for(self, thread_root_id: str | None) -> str | None:
+        """The root `thread_root_id` is known to resolve to, or itself."""
+        if thread_root_id is None:
+            return None
+        known_root = self._thread_roots.get(thread_root_id)
+        if known_root is None:
+            return thread_root_id
+        self._thread_roots.move_to_end(thread_root_id)
+        return known_root
+
+    async def _root_of_reply(
+        self,
+        driver: Driver,
+        post_id: str,
+        refusal: InvalidOrMissingParameters | ResourceNotFound,
+    ) -> str:
+        """The root of the thread `post_id` is a reply in, or `refusal` raised
+        when Mattermost cannot say it is a reply in one."""
+        loop = self._main_loop
+        assert loop is not None
+        try:
+            referenced = await loop.run_in_executor(
+                None, driver.posts.get_post, post_id
+            )
+        except Exception as lookup_error:
+            logger.warning(
+                "Mattermost refused a post threaded under %s (%s), and looking "
+                "%s up to find its thread failed: %s",
+                post_id,
+                refusal,
+                post_id,
+                lookup_error,
+            )
+            raise refusal from lookup_error
+        root = referenced.get("root_id") if isinstance(referenced, dict) else None
+        if not isinstance(root, str) or not root or root == post_id:
+            logger.warning(
+                "Mattermost refused a post threaded under %s (%s), and %s is a "
+                "thread root, so threading was not the problem",
+                post_id,
+                refusal,
+                post_id,
+            )
+            raise refusal
+        self._thread_roots[post_id] = root
+        if len(self._thread_roots) > _MAX_THREAD_ROOTS:
+            self._thread_roots.popitem(last=False)
+        return root
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
