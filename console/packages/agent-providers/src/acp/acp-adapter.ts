@@ -77,9 +77,12 @@ export async function checkAcpSignIn(
   input: SignInCheckInput
 ): Promise<ProviderReadiness> {
   let client: StdioJsonRpcClient | undefined;
+  let cleanup: (() => Promise<void>) | undefined;
   const handshake = async () => {
+    const { cleanup: tidy, ...launch } = await hooks.launch(input);
+    cleanup = tidy;
     client = new StdioJsonRpcClient({
-      ...(await hooks.launch(input)),
+      ...launch,
       cwd: input.cwd,
       logger: noopLogger,
       onExit: () => {},
@@ -99,6 +102,11 @@ export async function checkAcpSignIn(
     );
   } finally {
     await client?.dispose();
+    try {
+      await cleanup?.();
+    } catch {
+      // The check's answer stands; a failed removal must not replace it.
+    }
   }
 }
 
@@ -137,6 +145,10 @@ interface State {
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
+  /** What the provider's `launch` prepared for this process, removed once it exits. */
+  cleanup: (() => Promise<void>) | undefined;
+  /** The removal of what `launch` prepared, once it has begun. */
+  tidied: Promise<void> | undefined;
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -186,11 +198,12 @@ export class AcpAdapter implements ProviderAdapter {
         prefix.legacyMessage
       );
     const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
-    const launch = await hooks.launch({
+    const { cleanup, ...launch } = await hooks.launch({
       binaryPath,
       cwd,
       env: input.env,
       runtimeMode: input.runtimeMode,
+      mcpServers: input.mcpServers,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
@@ -221,6 +234,8 @@ export class AcpAdapter implements ProviderAdapter {
       prompt: {},
       configOptions: [],
       models: [],
+      cleanup,
+      tidied: undefined,
     };
     this.sessions.set(state.id, state);
     const context = this.context(state);
@@ -239,11 +254,12 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(
-        hooks.label,
-        input.mcpServers,
-        agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
-      );
+      if (!hooks.mcpServersAtLaunch)
+        requireHttpMcp(
+          hooks.label,
+          input.mcpServers,
+          agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
+        );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -264,7 +280,7 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = hooks.mcpServersAtLaunch ? [] : acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession
@@ -302,6 +318,7 @@ export class AcpAdapter implements ProviderAdapter {
     } catch (cause) {
       await client.dispose();
       this.sessions.delete(state.id);
+      await this.tidy(state);
       if (cause instanceof ProviderConversationUnavailableError) throw cause;
       const details =
         cause instanceof JsonRpcError &&
@@ -544,6 +561,7 @@ export class AcpAdapter implements ProviderAdapter {
     // nothing but its id: what it leaves out is the announced call's.
     const announced = state.items.get(toolCall.toolCallId);
     const kind =
+      this.hooks.toolKind?.(toolCall.title ? toolCall : { ...toolCall, title: announced?.title }) ??
       toolCall.kind ??
       (announced?.type === 'command_execution'
         ? 'execute'
@@ -660,6 +678,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
+    const kind = this.hooks.toolKind?.(update) ?? update.kind;
     const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
     if (server !== undefined) state.mcpToolCalls.set(update.toolCallId, update);
     const text = (update.content ?? [])
@@ -683,9 +702,9 @@ export class AcpAdapter implements ProviderAdapter {
         this.hooks.itemType?.(update) ??
         (server !== undefined || update.toolCallId.startsWith('mcp_')
           ? 'mcp_tool_call'
-          : update.kind === 'execute'
+          : kind === 'execute'
             ? 'command_execution'
-            : update.kind === 'edit'
+            : kind === 'edit'
               ? 'file_change'
               : 'tool_call'),
       // A later update repeating the bare tool name keeps the hook's title.
@@ -798,6 +817,7 @@ export class AcpAdapter implements ProviderAdapter {
     if (state.turn) await this.interruptTurn(id);
     await state.client.dispose();
     this.exited(id, 'Session stopped');
+    await this.tidy(state);
   }
   async stopAll(): Promise<void> {
     await Promise.all([...this.sessions.keys()].map((id) => this.stopSession(id)));
@@ -818,8 +838,26 @@ export class AcpAdapter implements ProviderAdapter {
         usage: [],
       });
     this.sessions.delete(id);
+    void this.tidy(state);
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
     this.emit(state, { type: 'session.exited', reason });
+  }
+  /**
+   * Removes what `launch` prepared, once; every caller waits for the same
+   * removal. A failure is only logged: the session is already gone.
+   */
+  private tidy(state: State): Promise<void> {
+    state.tidied ??= (async () => {
+      try {
+        await state.cleanup?.();
+      } catch (error) {
+        this.logger.warn(`${this.hooks.label} could not remove what it prepared for a session.`, {
+          sessionId: state.id,
+          error: String(error),
+        });
+      }
+    })();
+    return state.tidied;
   }
   private require(id: string): State {
     const state = this.sessions.get(id);
