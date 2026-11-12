@@ -55,7 +55,7 @@ function installationOf(
 }
 
 /** The repositories a GitHub grant names, by full name where the person can still see them. */
-function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
+export function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
   const installation = installationOf(github, grant.resources);
   return repositoryIds(grant.resources).map((id) => {
     const repository = installation?.repositories.find((r) => r.id === id);
@@ -389,7 +389,7 @@ function OnOffGrant({
   );
 }
 
-function GitHubGrantForm({
+export function GitHubGrantForm({
   github,
   githubError,
   notSetUp,

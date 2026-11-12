@@ -1564,6 +1564,8 @@ export interface OrganizationServiceSetting {
 export interface OrganizationService {
   slug: string;
   name: string;
+  category: string;
+  description: string;
   /** Null: the organization has no say, and each workspace decides. */
   setting: OrganizationServiceSetting | null;
   updated_by_name: string | null;
@@ -2889,11 +2891,30 @@ export interface ServiceConnection {
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: number | null;
-  /**
-   * What a person pastes to connect a service connected with a key, and where
-   * they make one; null for any other. A key is connected from Switch Console.
-   */
+  /** What a person pastes to connect a service connected with a key, and
+   * where they make one; null for any other. */
   key: ServiceKeyForm | null;
+  auth_type: "oauth" | "api_key";
+  /** Whether the server can grant it here; `unavailable_reason` says why not. */
+  configured: boolean;
+  unavailable_code: string | null;
+  /** Who makes it, and its own pages; null for one not built yet. */
+  publisher: string | null;
+  links: { documentation: string; support: string; privacy: string } | null;
+  /** The vendor's MCP servers its agents' sessions call, if any. */
+  mcp_urls: string[];
+  /** Whether it is on in this workspace. */
+  workspace_enabled: boolean;
+  /** The workspace's organization locked it on or off, out of the workspace admin's reach. */
+  organization_locked: boolean;
+  /** Which setting `workspace_enabled` comes from; null where workspaces have no switch. */
+  decided_by: WorkspaceServiceDecider | null;
+  /** The level the person allowed when connecting; null while not connected. */
+  consent: "read" | "write" | null;
+  /** The account connected, as the vendor names it. */
+  external_identity: string | null;
+  /** Whether the person may disconnect it: their own, while they have one. */
+  can_revoke: boolean;
 }
 
 /** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
@@ -3088,10 +3109,14 @@ export interface ConnectorApp {
   /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
   setup_blocked: string | null;
   install_url: string | null;
+  /** When the app saved here was first saved; null with none saved. */
+  created_at: string | null;
   updated_by_name: string | null;
   updated_at: string | null;
   connected_members: number;
   workspaces: number;
+  /** Agents' grants on the connections made through the app in use. */
+  agent_grants: number;
   /** Connections made through an app this server no longer uses. */
   stale_connections: number;
   /** An organization's page only: whether the server has an app its
@@ -3125,6 +3150,7 @@ export interface SaveConnectorAppInput {
 export interface ConnectorAppImpact {
   connected_members: number;
   workspaces: number;
+  agent_grants: number;
 }
 
 /** A save the vendor refused: what it said, and the value to look at again. */
@@ -3214,4 +3240,76 @@ export async function removeConnectorApp(
   service: string,
 ): Promise<ConnectorAppImpact> {
   return jsonRequest<ConnectorAppImpact>(`${CONNECTOR_APPS_PATH[scope]}/${service}`, "DELETE");
+}
+
+// ── Who uses a connector, from its page ──────────────────────────────────
+
+/** One of the signed-in person's own agents, and its grant on a connector. */
+export interface ServiceAgent {
+  agent_id: string;
+  name: string;
+  granted: boolean;
+  grant: ServiceGrant | null;
+  /** Whether Switch Console runs it, so it can be granted a connector at all. */
+  grantable: boolean;
+  /** Others can address it, so they could have it act as its owner. */
+  addressing_open: boolean;
+}
+
+export async function fetchServiceAgents(service: string): Promise<ServiceAgent[]> {
+  return jsonRequest<ServiceAgent[]>(`/service-connections/${service}/agents`, "GET");
+}
+
+/** Someone connected to a connector in this workspace, as its admins see them. */
+export interface ConnectedPerson {
+  user_id: string;
+  name: string;
+  status: Exclude<ServiceConnection["status"], "not_connected">;
+  connected_at: string;
+  /** How many of their agents are granted it. */
+  agents: number;
+  /** Someone else's: an admin's own is disconnected, not revoked. */
+  can_revoke: boolean;
+}
+
+/** An agent granted a connector in this workspace, whoever owns it. */
+export interface GrantedAgent {
+  agent_id: string;
+  name: string;
+  owner_id: string;
+  owner_name: string;
+  grant: ServiceGrant;
+  /** Others than its owner can address it, and so have it act as its owner. */
+  addressing_open: boolean;
+}
+
+export interface ServiceInWorkspace {
+  people: ConnectedPerson[];
+  agents: GrantedAgent[];
+}
+
+/** Who uses a connector in this workspace: its admins only. */
+export async function fetchServiceInWorkspace(service: string): Promise<ServiceInWorkspace> {
+  return jsonRequest<ServiceInWorkspace>(`/service-connections/${service}/workspace`, "GET");
+}
+
+/** End someone else's connection, as a workspace admin. */
+export async function revokeServiceConnection(
+  service: string,
+  userId: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/service-connections/${service}/people/${userId}`, "DELETE");
+}
+
+/** End your own connection; `warning` names what could not be revoked. */
+export async function disconnectService(service: string): Promise<{ warning: string | null }> {
+  return jsonRequest(`/service-connections/${service}`, "DELETE");
+}
+
+/** Connect a key-based connector, or replace its key, once the vendor accepts it. */
+export async function connectServiceWithKey(
+  service: string,
+  fields: Record<string, string>,
+): Promise<{ warning: string | null; external_identity: string }> {
+  return jsonRequest(`/service-connections/${service}/key`, "PUT", { fields });
 }

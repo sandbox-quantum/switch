@@ -5,6 +5,7 @@ import { useAuth } from "../../data/AuthContext";
 import { fetchCurrentOrganization } from "../../data/api";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
+import OrganizationConnectorsSettings from "./connectors/OrganizationConnectorsSettings";
 import OrganizationConnectorsSection from "./OrganizationConnectorsSection";
 import OrganizationServicesSection from "./OrganizationServicesSection";
 import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
@@ -171,12 +172,7 @@ export function OrganizationUsersPage() {
 }
 
 export function OrganizationConnectorsPage() {
-  return (
-    <Stack spacing={4}>
-      <OrganizationServicesSection />
-      <OrganizationConnectorsSection />
-    </Stack>
-  );
+  return <OrganizationConnectorsSettings />;
 }
 
 export function OrganizationAuditLogPage() {

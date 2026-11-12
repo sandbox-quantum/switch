@@ -1054,6 +1054,14 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/service-connections/{service}/agents": get(
         f"{G}/service-connections/github/agents", SELF
     ),
+    "GET /gateway/service-connections/{service}/workspace": get(
+        f"{G}/service-connections/github/workspace", admins()
+    ),
+    "DELETE /gateway/service-connections/{service}/people/{user_id}": delete(
+        f"{G}/service-connections/github/people/{{member_target}}",
+        admins(ok=404),
+        why="An admin ends someone else's connection; this member has none.",
+    ),
     "PUT /gateway/service-connections/{service}/key": put(
         f"{G}/service-connections/datadog/key",
         anyone(ok=403),

@@ -203,7 +203,11 @@ export default function WorkspaceConnectorsPage() {
                     <ConnectorCard
                       connector={service}
                       meta={metaText(service, organization)}
-                      onOpen={() => navigate(`/connectors/${service.slug}`)}
+                      onOpen={() =>
+                        navigate(`/connectors/${service.slug}`, {
+                          state: { back: { label: "Workspace settings", to: "/settings/connectors" } },
+                        })
+                      }
                       trailing={
                         <Stack spacing={0.5} sx={{ alignItems: "flex-end" }}>
                           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>

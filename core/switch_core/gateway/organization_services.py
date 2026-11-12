@@ -332,6 +332,8 @@ async def list_organization_services(
             {
                 "slug": definition.slug,
                 "name": definition.name,
+                "category": definition.category,
+                "description": definition.description,
                 "setting": None
                 if setting is None
                 else _setting_body(_setting_of(setting)),
