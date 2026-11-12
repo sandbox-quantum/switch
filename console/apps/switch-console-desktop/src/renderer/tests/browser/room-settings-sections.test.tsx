@@ -221,11 +221,17 @@ describe('room settings for someone who may write to the room', () => {
     expect(el.textContent).not.toContain('bob (');
   });
 
-  it('shows the usernames alone when who linked them cannot be read', async () => {
+  it('shows the usernames alone when who linked them cannot be read, and says so', async () => {
     listBridgePeople.mockRejectedValue(new Error('offline'));
     const el = await renderPanel('side');
     expect(el.textContent).toContain('ada');
     expect(el.textContent).not.toContain('ada (');
+    expect(el.textContent).toContain('Could not load people’s names');
+  });
+
+  it('says nothing about names when every lookup worked', async () => {
+    const el = await renderPanel('side');
+    expect(el.textContent).not.toContain('Could not load people');
   });
 
   it('offers no adding or removing in a direct conversation, whose platform fixes who is in it', async () => {

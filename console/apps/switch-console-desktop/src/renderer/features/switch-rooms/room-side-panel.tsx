@@ -111,7 +111,8 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   const bridgeId = consoleChat ? null : (room?.bridgeId ?? null);
   // Who linked each username, to name them beside it. Shares the Add people
   // panel's cache. Only a label, so it is kept a while rather than fetched on
-  // every open, and a failure is not retried: the usernames are shown alone.
+  // every open, and a failure is not retried: the usernames are shown alone, with a
+  // note saying why.
   const bridgePeople = useQuery({
     queryKey: ['bridge-people', workspaceId, bridgeId],
     queryFn: () =>
@@ -272,6 +273,11 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
             People who posted here or were added through Switch. The channel may have more.
           </Note>
         )}
+        {bridgePeople.isError &&
+          people.length > 0 && (
+            // Said, so a lookup that failed does not pass for people nobody linked.
+            <Note>Could not load people’s names, so only their usernames are shown.</Note>
+          )}
         {controls.peopleNote !== null && <Note>{controls.peopleNote}</Note>}
       </Fold>
 
