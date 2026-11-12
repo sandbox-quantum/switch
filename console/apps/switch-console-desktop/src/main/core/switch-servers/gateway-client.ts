@@ -1831,6 +1831,8 @@ type BridgeJson = {
   // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  // Absent on a server predating it, which put nobody in a public channel.
+  public_channel_adds_creator?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1855,6 +1857,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelIdsRefused: b.channel_ids_refused ?? null,
     privateChannels: b.private_channels_supported ?? null,
     privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
+    publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
