@@ -83,19 +83,6 @@ class PlatformRegistration(NamedTuple):
 
 
 PLATFORMS: tuple[PlatformRegistration, ...] = (
-    PlatformRegistration("mattermost", MattermostAdapter, MattermostConnectionConfig),
-    PlatformRegistration("slack", SlackAdapter, SlackConnectionConfig),
-    PlatformRegistration("teams", TeamsAdapter, TeamsConnectionConfig),
-    PlatformRegistration("discord", DiscordAdapter, DiscordConnectionConfig),
-    PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
-    PlatformRegistration("whatsapp", WhatsAppAdapter, WhatsAppConnectionConfig),
-    PlatformRegistration("google_chat", GoogleChatAdapter, GoogleChatConnectionConfig),
-    PlatformRegistration("zulip", ZulipAdapter, ZulipConnectionConfig),
-    PlatformRegistration("signal", SignalAdapter, SignalConnectionConfig),
-    PlatformRegistration("matrix", MatrixAdapter, MatrixConnectionConfig),
-    PlatformRegistration("rocketchat", RocketChatAdapter, RocketChatConnectionConfig),
-    PlatformRegistration("webex", WebexAdapter, WebexConnectionConfig),
-    PlatformRegistration("sms", SmsAdapter, SmsConnectionConfig),
     PlatformRegistration(
         "mattermost", MattermostAdapter, MattermostConnectionConfig, None
     ),
@@ -132,6 +119,9 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     ),
     PlatformRegistration(
         "webex", WebexAdapter, WebexConnectionConfig, ADDITIONAL_MESSAGING_PLATFORMS
+    ),
+    PlatformRegistration(
+        "sms", SmsAdapter, SmsConnectionConfig, ADDITIONAL_MESSAGING_PLATFORMS
     ),
 )
 
