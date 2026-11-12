@@ -19,11 +19,19 @@ from switch_core.bridges.collaboration.google_chat.adapter import (
     GoogleChatAdapter,
     GoogleChatConnectionConfig,
 )
+from switch_core.bridges.collaboration.matrix.adapter import (
+    MatrixAdapter,
+    MatrixConnectionConfig,
+)
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
 )
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
+from switch_core.bridges.collaboration.signal.adapter import (
+    SignalAdapter,
+    SignalConnectionConfig,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -68,6 +76,8 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("whatsapp", WhatsAppAdapter, WhatsAppConnectionConfig),
     PlatformRegistration("google_chat", GoogleChatAdapter, GoogleChatConnectionConfig),
     PlatformRegistration("zulip", ZulipAdapter, ZulipConnectionConfig),
+    PlatformRegistration("signal", SignalAdapter, SignalConnectionConfig),
+    PlatformRegistration("matrix", MatrixAdapter, MatrixConnectionConfig),
 )
 
 

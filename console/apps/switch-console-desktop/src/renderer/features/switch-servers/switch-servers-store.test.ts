@@ -12,6 +12,7 @@ const removeServer = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
 const connectToSwitchCloud = vi.hoisted(() => vi.fn());
 const oidcLogin = vi.hoisted(() => vi.fn());
+const passwordLogin = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
@@ -28,6 +29,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       addServer,
       connectToSwitchCloud,
       oidcLogin,
+      passwordLogin,
     },
     onboarding: { installIsEmpty },
   },
@@ -749,15 +751,58 @@ describe('keeping a server active', () => {
 
 describe('the error banner', () => {
   it('survives a background refresh, which cannot tell whether it is stale', async () => {
-    // A rejected password lives in the same field. A background sweep clearing
-    // it would delete the one thing telling the user what went wrong.
+    // A background sweep clearing it would delete the one thing telling the
+    // user what went wrong.
     const store = newStore([server('srv-a')]);
     await store.ensureAuthConfig('srv-a');
-    store.error = 'Invalid email or password';
+    store.error = 'Could not rename the server.';
 
     await store.recoverStale();
 
-    expect(store.error).toBe('Invalid email or password');
+    expect(store.error).toBe('Could not rename the server.');
+  });
+});
+
+describe('a failed sign-in', () => {
+  const rejected = {
+    success: false,
+    error: { kind: 'invalid_credentials', message: 'Invalid email or password.' },
+  };
+
+  it('stays on its own server, so another workspace shows no error banner', async () => {
+    const store = newStore([server('srv-a'), server('srv-b')]);
+    passwordLogin.mockResolvedValueOnce(rejected);
+
+    expect(await store.passwordLogin('srv-a', 'ada@example.test', 'wrong')).toBe(false);
+
+    expect(store.signInError('srv-a')).toBe('Invalid email or password.');
+    expect(store.signInError('srv-b')).toBeNull();
+    expect(store.error).toBeNull();
+  });
+
+  it('is cleared when that server is signed in', async () => {
+    const store = newStore([server('srv-a')]);
+    passwordLogin.mockResolvedValueOnce(rejected);
+    await store.passwordLogin('srv-a', 'ada@example.test', 'wrong');
+
+    passwordLogin.mockResolvedValueOnce({ success: true, data: true });
+    expect(await store.passwordLogin('srv-a', 'ada@example.test', 'right')).toBe(true);
+
+    expect(store.signInError('srv-a')).toBeNull();
+  });
+
+  it('through the browser stays on its own server too', async () => {
+    const store = newStore([server('srv-a'), server('srv-b')]);
+    oidcLogin.mockResolvedValueOnce({
+      success: false,
+      error: { kind: 'failed', message: 'Sign-in failed.' },
+    });
+
+    await store.oidcLogin('srv-a', null);
+
+    expect(store.signInError('srv-a')).toBe('Sign-in failed.');
+    expect(store.signInError('srv-b')).toBeNull();
+    expect(store.error).toBeNull();
   });
 });
 
