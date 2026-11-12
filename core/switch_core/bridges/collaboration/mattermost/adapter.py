@@ -3525,6 +3525,14 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
+        if event_type in ("post_deleted", "post_edited"):
+            self._handle_post_takeback(event_type, event)
+            return
+
+        if event_type == "channel_deleted":
+            self._handle_channel_deleted(event)
+            return
+
         if event_type != "posted":
             return
 
@@ -3648,6 +3656,89 @@ class MattermostAdapter(PlatformAdapter):
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    def _handle_post_takeback(self, event_type: str, event: dict[str, Any]) -> None:
+        """A post deleted or edited on Mattermost. Every bot in the channel
+        receives the event, so each deletion, and each edit (told apart by its
+        `edit_at`), is reported once. Mattermost moves `edit_at` only when the
+        words or the files change, so a post never edited is a pin or a link
+        preview, not an edit."""
+        post_str = event.get("data", {}).get("post")
+        try:
+            post = json.loads(post_str)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Mattermost %s event without a readable post", event_type)
+            return
+        if post.get("type", ""):
+            return
+        user_id = post.get("user_id", "")
+        if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
+            return
+        post_id = str(post.get("id") or "")
+        channel_id = str(post.get("channel_id") or "")
+        if not post_id or not channel_id:
+            logger.warning(
+                "Mattermost %s event without a post or channel id (post=%s)",
+                event_type,
+                post_id,
+            )
+            return
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError(f"Cannot handle {event_type} event: adapter not started")
+        if event_type == "post_deleted":
+            if not self._first_sighting(f"deleted:{post_id}"):
+                return
+            self._dispatch(self.report_message_deleted(channel_id, post_id), loop)
+            return
+        edit_at = post.get("edit_at") or 0
+        if not edit_at or not self._first_sighting(f"edited:{post_id}:{edit_at}"):
+            return
+        self._dispatch(
+            self.report_message_edited(channel_id, post_id, post.get("message", "")),
+            loop,
+        )
+
+    def _handle_channel_deleted(self, event: dict[str, Any]) -> None:
+        """Mattermost sends the same `channel_deleted` event when a channel is
+        archived, which can be undone, and when it is deleted for good (the
+        API's `permanent=true` or the CLI). Which one is told by asking for the
+        channel: an archived one is still there."""
+        data: dict[str, Any] = event.get("data", {})
+        channel_id = str(data.get("channel_id") or "")
+        if not channel_id:
+            logger.warning("Mattermost channel_deleted event without a channel id")
+            return
+        if not self._first_sighting(
+            f"channel_deleted:{channel_id}:{data.get('delete_at')}"
+        ):
+            return
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError(
+                "Cannot handle channel_deleted event: adapter not started"
+            )
+        self._dispatch(self._report_channel_deleted(channel_id), loop)
+
+    async def _report_channel_deleted(self, channel_id: str) -> None:
+        driver = self._admin_driver
+        if driver is None:
+            raise RuntimeError(
+                f"Cannot tell whether Mattermost channel {channel_id} was archived "
+                "or deleted: adapter not started"
+            )
+        try:
+            channel = await asyncio.to_thread(driver.channels.get_channel, channel_id)
+        except ResourceNotFound:
+            await self.report_channel_removed(channel_id, deleted=True)
+            return
+        if not channel.get("delete_at"):
+            logger.info(
+                "Mattermost channel %s was archived and has been restored since",
+                channel_id,
+            )
+            return
+        await self.report_channel_removed(channel_id, deleted=False)
 
     async def _fetch_attachments(
         self, file_ids: list[str], loop: asyncio.AbstractEventLoop
