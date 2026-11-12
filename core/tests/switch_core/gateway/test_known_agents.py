@@ -412,6 +412,12 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ],
             [],
         ),
+        (
+            "kimi",
+            "Kimi Code CLI",
+            ["Bash", "Read", "Write", "Edit", "Grep", "Glob", "Agent"],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(

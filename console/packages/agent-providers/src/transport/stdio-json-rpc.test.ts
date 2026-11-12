@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { StdioJsonRpcClient, noopLogger } from './stdio-json-rpc';
 let client: StdioJsonRpcClient | null = null;
@@ -72,5 +75,49 @@ it.each(['stdout', 'stderr'])(
     await client.dispose();
     expect(client.isAlive).toBe(false);
     expect(warn).not.toHaveBeenCalled();
+  }
+);
+
+// Saves 300 ms after its input closes, as Kimi Code saves its sessions; a
+// SIGTERM, which it does not handle, ends it at once.
+const SAVES_ON_CLOSED_INPUT = `
+const { writeFileSync } = require('node:fs');
+process.stdin.resume();
+process.stdin.on('end', () =>
+  setTimeout(() => {
+    writeFileSync(process.argv[1], 'saved');
+    process.exit(0);
+  }, 300)
+);
+`;
+
+async function stopAfterSaving(exitsOnClosedInput: boolean): Promise<string | null> {
+  const dir = await mkdtemp(join(tmpdir(), 'switch-stdio-'));
+  const saved = join(dir, 'saved');
+  try {
+    client = new StdioJsonRpcClient({
+      command: process.execPath,
+      args: ['-e', SAVES_ON_CLOSED_INPUT, saved],
+      cwd: process.cwd(),
+      env: {},
+      logger: noopLogger,
+      onExit: () => {},
+      exitsOnClosedInput,
+    });
+    await client.dispose();
+    return await readFile(saved, 'utf8').catch(() => null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+it('stops a process that saves as its input closes by closing its input alone', async () => {
+  expect(await stopAfterSaving(true)).toBe('saved');
+});
+
+it.skipIf(process.platform === 'win32')(
+  'otherwise sends SIGTERM as its input closes, which such a process does not survive',
+  async () => {
+    expect(await stopAfterSaving(false)).toBeNull();
   }
 );

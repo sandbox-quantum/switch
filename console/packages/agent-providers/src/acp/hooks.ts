@@ -30,6 +30,12 @@ export interface AcpLaunch {
    * prompt, say).
    */
   rejectOutputLine?: (line: string) => string | undefined;
+  /**
+   * The agent saves its sessions as it exits once its input closes, and a
+   * signal would cut that short (Kimi Code): it is stopped by closing its
+   * input alone, and killed only if it is still running 2 s later.
+   */
+  exitsOnClosedInput?: boolean;
   /** Removes what `launch` prepared for this process, once the process is gone. */
   cleanup?: () => Promise<void>;
 }

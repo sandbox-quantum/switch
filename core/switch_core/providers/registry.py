@@ -270,6 +270,21 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="WebSearch", description="Searches the web"),
         ),
     ),
+    AgentProvider(
+        id="kimi",
+        label="Kimi Code",
+        sign_in_command="kimi login",
+        connector_type="Kimi Code CLI",
+        tools=(
+            ToolSpec(name="Bash", description="Executes shell commands"),
+            ToolSpec(name="Read", description="Reads file contents"),
+            ToolSpec(name="Write", description="Writes files"),
+            ToolSpec(name="Edit", description="Edits existing files"),
+            ToolSpec(name="Grep", description="Searches file contents"),
+            ToolSpec(name="Glob", description="Finds files by pattern"),
+            ToolSpec(name="Agent", description="Delegates to a subagent"),
+        ),
+    ),
 )
 
 

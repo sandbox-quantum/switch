@@ -112,7 +112,7 @@ describe('sessionLaunchConfig', () => {
     });
   });
 
-  it.each(['cursor', 'antigravity', 'pi', 'droid', 'junie'])(
+  it.each(['cursor', 'antigravity', 'pi', 'droid', 'junie', 'kimi'])(
     'runs %s on its model with the instructions',
     (provider) => {
       const launch = sessionLaunchConfig({
@@ -192,6 +192,7 @@ describe('advancedSettings', () => {
     expect(advancedSettings('cursor')).toEqual({});
     expect(advancedSettings('antigravity')).toEqual({});
     expect(advancedSettings('droid')).toEqual({});
+    expect(advancedSettings('kimi')).toEqual({});
   });
 });
 
@@ -211,6 +212,7 @@ describe('advancedConfigProblem', () => {
     expect(advancedConfigProblem('antigravity', {})).toBeNull();
     expect(advancedConfigProblem('cursor', {})).toBeNull();
     expect(advancedConfigProblem('droid', {})).toBeNull();
+    expect(advancedConfigProblem('kimi', {})).toBeNull();
   });
 
   it('names a field the provider does not apply', () => {
@@ -220,6 +222,7 @@ describe('advancedConfigProblem', () => {
     expect(advancedConfigProblem('cursor', { effort: 'high' })).toMatch(/'effort'/);
     expect(advancedConfigProblem('antigravity', { effort: 'high' })).toMatch(/'effort'/);
     expect(advancedConfigProblem('droid', { effort: 'high' })).toMatch(/'effort'/);
+    expect(advancedConfigProblem('kimi', { effort: 'high' })).toMatch(/'effort'/);
   });
 
   it('names a field whose value is not of the shape it is applied as', () => {
