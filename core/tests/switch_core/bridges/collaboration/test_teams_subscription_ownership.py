@@ -63,6 +63,7 @@ class _Graph:
             "id": subscription_id,
             "resource": _resource(channel_id),
             "notificationUrl": NOTIFICATION_URL,
+            "changeType": "created,updated,deleted",
             "expirationDateTime": (datetime.now(UTC) + expires_in).isoformat(),
         }
         return subscription_id
