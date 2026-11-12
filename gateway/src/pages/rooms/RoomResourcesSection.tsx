@@ -36,7 +36,7 @@ import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
-  // Attaching is for anyone in the room; unlinking for its owner or an
+  // Attaching is for anyone in the room; detaching for its owner or an
   // admin, or a resource's own owner while they are in the room.
   canAttach: boolean;
   canUnlink: boolean;
@@ -245,9 +245,9 @@ function RoomReferences({
                   size="small"
                   onClick={() => handleDetach(ref.id)}
                   disabled={busy}
-                  aria-label={`Unlink ${ref.name || ref.description}`}
+                  aria-label={`Detach ${ref.name || ref.description}`}
                 >
-                  Unlink
+                  Detach
                 </Button>
               )}
             </Stack>
@@ -374,9 +374,9 @@ function RoomDocuments({
                       size="small"
                       onClick={() => handleDetach(doc.id)}
                       disabled={busy}
-                      aria-label={`Unlink ${doc.name || doc.description}`}
+                      aria-label={`Detach ${doc.name || doc.description}`}
                     >
-                      Unlink
+                      Detach
                     </Button>
                   )}
                 </Stack>
@@ -568,9 +568,9 @@ function RoomPackages({
                     handleDetach(p.id);
                   }}
                   disabled={busy}
-                  aria-label={`Unlink ${p.name || p.description}`}
+                  aria-label={`Detach ${p.name || p.description}`}
                 >
-                  Unlink
+                  Detach
                 </Button>
               )}
             </Stack>

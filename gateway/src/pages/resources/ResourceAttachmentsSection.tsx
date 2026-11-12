@@ -132,9 +132,9 @@ export default function ResourceAttachmentsSection({
                 <Button
                   size="small"
                   onClick={() => setUnlinking(r)}
-                  aria-label={`Unlink from ${r.room_name}`}
+                  aria-label={`Detach from ${r.room_name}`}
                 >
-                  Unlink
+                  Detach
                 </Button>
               )}
             </Stack>
@@ -167,9 +167,9 @@ export default function ResourceAttachmentsSection({
       )}
       <ConfirmDialog
         open={unlinking !== null}
-        title={`Unlink from ${unlinking?.room_name ?? "the room"}`}
+        title={`Detach from ${unlinking?.room_name ?? "the room"}`}
         tone="destructive"
-        confirmLabel="Unlink"
+        confirmLabel="Detach"
         description={
           <>
             Agents in {unlinking?.room_name} stop getting <b>{resourceLabel}</b>. The {kind} itself is
