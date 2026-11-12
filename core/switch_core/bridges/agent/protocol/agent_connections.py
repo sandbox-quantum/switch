@@ -100,8 +100,13 @@ APPROVAL_OUTCOME_PROTOCOL_REVISION = 4
 SESSION_COMMAND_PROTOCOL_REVISION = 5
 
 # The revision from which a client takes a `room_released` frame: a room claim
-# or session placement on its connection was taken over by another connection.
+# or session placement on its connection was taken over by another connection,
+# or the agent is no longer in the room.
 ROOM_RELEASED_PROTOCOL_REVISION = 6
+
+# The taker named when a session is unplaced because the agent left its room
+# (taken out, or the room deleted): no connection, so the owner is always told.
+MEMBERSHIP_LOST = "membership-lost"
 
 # From this agent-protocol revision a client tracks a position (one number per
 # source, see `positions.py`) instead of a single number. It opens with
@@ -1650,7 +1655,14 @@ class AgentConnectionRegistry:
         Every connection, not only the live ones — a lapsed connection still
         holds its claim, and a client reconnecting to it resumes covering the
         room.
+
+        A session placed in the room is unplaced too, and the connection that
+        placed it is sent `room_released`, so its watcher forgets the placement
+        instead of stating it again on every reconnect.
         """
+        placed = self._session_rooms.get(agent_id, {})
+        for session_id in [s for s, room in placed.items() if room == room_id]:
+            self._unplace(agent_id, session_id, room_id, taker=MEMBERSHIP_LOST)
         for cid in self._by_agent.get(agent_id, set()):
             conn = self._by_id.get(cid)
             if conn is not None and room_id in conn.rooms:
