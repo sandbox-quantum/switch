@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Collection
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -82,6 +83,17 @@ if TYPE_CHECKING:
     from switch_core.transport.room_cache import RoomDeliveryCache
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RemovalMiss:
+    """Someone a removal did not take out as asked: `not_in_room`, nobody in
+    the room goes by that name; `kept_by_platform`, out of the Switch room but
+    the platform would not remove them from its channel."""
+
+    name: str
+    reason: Literal["not_in_room", "kept_by_platform"]
+
 
 SYSTEM_CLIENT_TYPES = ("observe", "admin")
 
@@ -1796,6 +1808,52 @@ class RoomService:
         about it. Only people: agents are removed through
         `remove_agents_from_room`."""
         self._people_left_listeners = (*self._people_left_listeners, listener)
+
+    async def remove_users_from_room(
+        self, room_id: str, user_names: list[str], *, removed_by: str
+    ) -> list[RemovalMiss]:
+        """Take people out of a bridged room by their names on its platform,
+        at someone's request: out of the platform channel as well, so the
+        channel and the room agree. Returns who did not go as asked: a name
+        nobody in the room goes by, or someone the platform would not remove
+        from its channel (who is out of the Switch room all the same).
+
+        Names are matched among the room's own members, so a removal never
+        has to ask the platform who someone is.
+        """
+        async with self._session_factory() as session:
+            room = await self._room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            members = await ExternalUserStore().get_by_room(session, room_id)
+        if not room.bridge_id or not room.external_channel_id:
+            raise ValueError(f"Room {room_id} is not bridged")
+        by_name: dict[str, str] = {}
+        for member in members:
+            if member.bridge_id == room.bridge_id:
+                # By name, and by platform id, which is how a mention a
+                # platform escaped (Slack's `<@U123>`) arrives.
+                by_name.setdefault(
+                    member.external_username.lower(), member.external_user_id
+                )
+                by_name.setdefault(
+                    member.external_user_id.lower(), member.external_user_id
+                )
+        misses: list[RemovalMiss] = []
+        ids: dict[str, str] = {}
+        for name in dict.fromkeys(user_names):
+            external_user_id = by_name.get(name.lstrip("@").lower())
+            if external_user_id is None:
+                misses.append(RemovalMiss(name=name, reason="not_in_room"))
+            else:
+                ids[external_user_id] = name
+        refused = await self.remove_people_from_room(
+            room_id, list(ids), removed_by=removed_by, from_channel=True
+        )
+        misses.extend(
+            RemovalMiss(name=ids.get(i, i), reason="kept_by_platform") for i in refused
+        )
+        return misses
 
     async def remove_people_from_room(
         self,

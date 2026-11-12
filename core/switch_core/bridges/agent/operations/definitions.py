@@ -1704,6 +1704,48 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
 
 @operation
+async def remove_users_from_room(room_id: str, user_names: list[str]) -> dict[str, Any]:
+    """Take one or more people out of a bridged room by name — the opposite of
+    `add_users_to_room`.
+
+    Each person is taken out of the Switch room, which stops what reaches
+    them and ends what being in the room let them do, and out of the room's
+    platform channel, so the two agree. The room's history records that you
+    removed them. Only the room's owner or a workspace admin may (an agent
+    acts with its owner's rights). A direct or group conversation is refused:
+    its platform fixes who is in it. Confirm with the person asking first.
+
+    Args:
+        room_id: The Switch room id (UUID string).
+        user_names: The people to remove, each named by their username on the
+            room's messaging app, as `add_users_to_room` takes them. Their
+            Switch name does not resolve.
+
+    Returns:
+        `{"ok": bool, "removed": [...], "not_in_room": [...],
+        "kept_by_platform": [...]}`. `not_in_room` lists names nobody in the
+        room goes by; nothing was done for them. `kept_by_platform` lists
+        people taken out of the Switch room whom the platform would not remove
+        from its channel (Telegram never can; Slack keeps everyone in
+        #general; Teams keeps a standard channel's members, who are its
+        team's): tell the person asking, as they are still in the channel
+        there. `ok` is true only when everyone named was removed from both.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    misses = await protocol.remove_users_from_room(agent_id, room_id, user_names)
+    not_in_room = [m.name for m in misses if m.reason == "not_in_room"]
+    kept = [m.name for m in misses if m.reason == "kept_by_platform"]
+    removed = [name for name in user_names if name not in not_in_room]
+    return {
+        "ok": not misses,
+        "removed": removed,
+        "not_in_room": not_in_room,
+        "kept_by_platform": kept,
+    }
+
+
+@operation
 async def list_all_rooms(
     include_archived: bool = False,
     name_contains: str | None = None,

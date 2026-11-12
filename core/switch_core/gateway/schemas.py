@@ -239,6 +239,17 @@ class RoomUsersRequest(BaseModel):
     user_names: list[str]
 
 
+class RoomUsersRemoved(BaseModel):
+    """The room after people were taken out of it, and who did not go as
+    asked: `not_in_room`, names nobody in the room goes by (nothing was done);
+    `kept_by_platform`, people out of the Switch room whom the platform would
+    not remove from its channel."""
+
+    room: RoomDetail
+    not_in_room: list[str] = []
+    kept_by_platform: list[str] = []
+
+
 class RoomProtectionRequest(BaseModel):
     protection_config: dict[str, Any]
 

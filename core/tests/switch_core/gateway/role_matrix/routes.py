@@ -593,6 +593,12 @@ ROUTES: dict[str, Case] = {
         json={"user_names": []},
         why="Let through, then refused: people join through the room's platform channel, and it has none.",
     ),
+    "POST /gateway/rooms/{room_id}/users/remove": post(
+        f"{G}/rooms/{{room}}/users/remove",
+        owner_or_admins(ok=400),
+        json={"user_names": ["nobody"]},
+        why="Removing a person is the owner's or an admin's; let through, then refused, as the room has no platform channel to take them out of.",
+    ),
     "PUT /gateway/rooms/{room_id}/group": put(
         f"{G}/rooms/{{room}}/group",
         admins(),

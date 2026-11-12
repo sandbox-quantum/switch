@@ -16,7 +16,7 @@ from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_fo
 from switch_core.db.models import Agent, Room
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_policy import RoomPermissionError
-from switch_core.room_service import MembershipFixed
+from switch_core.room_service import MembershipFixed, RemovalMiss
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_user,
     _register,
@@ -27,11 +27,18 @@ from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
 class _RecordingRoomService:
     def __init__(self) -> None:
         self.removed: list[tuple[str, list[str], str]] = []
+        self.removed_by: list[str | None] = []
 
     async def remove_agents_from_room(
-        self, room_id: str, agent_ids: list[str], removed_by_kind: str
+        self,
+        room_id: str,
+        agent_ids: list[str],
+        removed_by_kind: str,
+        *,
+        removed_by: str | None = None,
     ) -> None:
         self.removed.append((room_id, agent_ids, removed_by_kind))
+        self.removed_by.append(removed_by)
 
 
 def _core(
@@ -224,3 +231,73 @@ class TestRemoveAgentFromRoom:
         with pytest.raises(ValueError, match="unknown agent"):
             await svc.remove_agent_from_room(caller, room_id, "nobody")
         assert rooms.removed == []
+
+
+class _PeopleRoomService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str], str]] = []
+
+    async def remove_users_from_room(
+        self, room_id: str, user_names: list[str], *, removed_by: str
+    ) -> list[RemovalMiss]:
+        self.calls.append((room_id, user_names, removed_by))
+        return []
+
+
+class TestRemoveUsersFromRoom:
+    """Taking people out is the room's owner's or an admin's, as removing an
+    agent someone else owns is (CHOO-4255)."""
+
+    def _core(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[AgentCore, _PeopleRoomService]:
+        svc = _service(session_factory)
+        rooms = _PeopleRoomService()
+        svc.room_service = rooms  # type: ignore[assignment]
+        return svc, rooms
+
+    async def test_the_room_owners_agent_removes_people(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc, rooms = self._core(session_factory)
+        bob = await _make_user(session_factory, "bob")
+        caller = await _register(svc, "bob-agent", bob)
+        room_id = await _room_with(session_factory, [caller], owner_id=bob)
+
+        await svc.remove_users_from_room(caller, room_id, ["carol"])
+
+        # The departure names the agent that asked.
+        assert rooms.calls == [(room_id, ["carol"], "bob-agent")]
+
+    async def test_being_in_the_room_is_not_enough(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc, rooms = self._core(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        bob = await _make_user(session_factory, "bob")
+        caller = await _register(svc, "bob-agent", bob)
+        room_id = await _room_with(session_factory, [caller], owner_id=alice)
+
+        with pytest.raises(
+            RoomPermissionError, match="room's owner or a workspace admin"
+        ):
+            await svc.remove_users_from_room(caller, room_id, ["carol"])
+        assert rooms.calls == []
+
+    @pytest.mark.parametrize("channel_type", ["direct", "group"])
+    async def test_refuses_a_direct_or_group_conversation(
+        self, session_factory: async_sessionmaker[AsyncSession], channel_type: str
+    ) -> None:
+        svc, rooms = self._core(session_factory)
+        bob = await _make_user(session_factory, "bob")
+        caller = await _register(svc, "bob-agent", bob)
+        room_id = await _room_with(session_factory, [caller], owner_id=bob)
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)
+            assert room is not None
+            room.channel_type = channel_type
+            await session.commit()
+
+        with pytest.raises(RoomPermissionError, match="set by its platform"):
+            await svc.remove_users_from_room(caller, room_id, ["carol"])
+        assert rooms.calls == []

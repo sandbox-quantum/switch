@@ -152,7 +152,10 @@ from switch_core.room_schedules import (
     addressed_first_run,
     first_run,
 )
-from switch_core.room_service import require_membership_changeable_from_outside
+from switch_core.room_service import (
+    RemovalMiss,
+    require_membership_changeable_from_outside,
+)
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -3480,6 +3483,30 @@ class AgentCore:
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
 
+    async def remove_users_from_room(
+        self, agent_id: str, room_id: str, user_names: list[str]
+    ) -> list[RemovalMiss]:
+        """Take people out of a bridged room by name, on the calling agent's
+        behalf: the room policy's "remove_member", so the owner or a workspace
+        admin, judged as the agent's owner. Never in a direct or group
+        conversation. The departure names the calling agent as who removed
+        them. Returns who did not go as asked (`RoomService.remove_users_from_room`).
+        """
+        async with self.session_factory() as session:
+            caller = await self.agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            room = await self._require_room_action(
+                session, agent_id, room_id, "remove_member"
+            )
+            require_membership_changeable_from_outside(room)
+        try:
+            return await self.room_service.remove_users_from_room(
+                room_id, user_names, removed_by=caller.name
+            )
+        except ValueError as e:
+            raise ValueError(f"Failed to remove users: {str(e)}") from e
+
     async def remove_agent_from_room(
         self, agent_id: str, room_id: str, agent_name: str
     ) -> None:
@@ -3512,7 +3539,7 @@ class AgentCore:
                 session, agent_id, room, "remove_member", target
             )
         await self.room_service.remove_agents_from_room(
-            room_id, [target.id], removed_by_kind="agent"
+            room_id, [target.id], removed_by_kind="agent", removed_by=caller.name
         )
 
     def run_service(self) -> RunService:

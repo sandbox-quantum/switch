@@ -88,6 +88,7 @@ from switch_core.gateway.schemas import (
     RoomSetGroupRequest,
     RoomSummary,
     RoomUpdateRequest,
+    RoomUsersRemoved,
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
@@ -1553,7 +1554,9 @@ async def delete_room_agent(
         owns_target=agent is not None and owns(principal, agent.owner_id),
     )
     try:
-        await room_service.remove_agents_from_room(room_id, [agent_id])
+        await room_service.remove_agents_from_room(
+            room_id, [agent_id], removed_by=user.name
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()
@@ -1607,6 +1610,53 @@ async def post_room_users(
         protocol,
         principal,
         decisions,
+    )
+
+
+@router.post("/{room_id}/users/remove")
+async def post_room_users_remove(
+    room_id: str,
+    req: RoomUsersRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomUsersRemoved:
+    """Take people out of a bridged room and its channel, by their names on
+    its platform: the room's owner or an admin (`remove_member`)."""
+    principal = Principal(user.id, is_admin)
+    await _require_member_change(
+        session, room_store, room_id, principal, "remove_member", owns_target=False
+    )
+    try:
+        misses = await room_service.remove_users_from_room(
+            room_id, req.user_names, removed_by=user.name
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await session.commit()
+    room = await room_store.get(session, room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    detail = await _build_room_detail(
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
+    )
+    return RoomUsersRemoved(
+        room=detail,
+        not_in_room=[m.name for m in misses if m.reason == "not_in_room"],
+        kept_by_platform=[m.name for m in misses if m.reason == "kept_by_platform"],
     )
 
 
