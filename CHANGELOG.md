@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **`switch-purge-organization` deletes an organization when its owner
+  asks.** Run where switch-core runs, it shows what would go and what stays;
+  with `--execute --request REFERENCE` it ends the organization's messaging
+  app installs, revokes its service sign-ins, tears down its cloud machines,
+  then deletes every workspace with everything in it, the organization, and
+  the accounts that belonged to nothing else. It waits, and says so, while a
+  machine or token is still live outside Switch. WorkOS is left alone; the
+  command lists what to remove there.
 - **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
   through Meta's Cloud API and people can talk to agents in one-to-one chats,
   with files, quoted replies as threads and read receipts. Each connection
