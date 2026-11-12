@@ -1,13 +1,15 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert, Loader2, RefreshCw } from 'lucide-react';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
+import { ReportedProviderLine } from '@renderer/lib/components/provider-status-row';
+import { reportedHeadline } from '@renderer/lib/components/reported-provider';
 import {
   recheckThisComputer,
   useThisComputerReport,
 } from '@renderer/lib/stores/use-this-computer-report';
 import { Button } from '@renderer/lib/ui/button';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { reportedHeadline, reportedProvider } from './this-computer-status';
+import { reportedProvider } from './this-computer-status';
 
 /**
  * A provider's install and sign-in state on this computer, for Settings →
@@ -41,13 +43,7 @@ export function ThisComputerProviderStatus({
     : reportedHeadline(reported);
   const Icon = checking ? Loader2 : reported.ready ? CheckCircle2 : CircleAlert;
   const tone = checking || reported.ready ? 'text-foreground-muted' : 'text-foreground-warning';
-  if (compact)
-    return (
-      <span className={`inline-flex items-center gap-1.5 text-xs ${tone}`}>
-        <Icon className={`size-3.5 ${checking ? 'animate-spin' : ''}`} />
-        {headline}
-      </span>
-    );
+  if (compact) return <ReportedProviderLine reported={reported} checking={recheck.isPending} />;
   const provider = getProvider(providerId);
   return (
     <div className="rounded-lg border border-border bg-background-1 p-3 text-sm" role="status">

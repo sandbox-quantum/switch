@@ -34,6 +34,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       getRoomDetail,
       syncRoomName,
       listAgents: vi.fn(() => Promise.resolve([])),
+      listRoomGroups: vi.fn(() => Promise.resolve([])),
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
   },
@@ -44,6 +45,7 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     roomWorkspaceId: () => 'ws-1',
     roomServerId: () => 'server-1',
     canDeleteRoom: () => manages.value,
+    roomPermissions: () => ({ canWrite: true, canManage: manages.value }),
   },
 }));
 
@@ -66,6 +68,20 @@ const ROOM = {
   externalChannelUrl: null,
   agentIds: [],
   connectedUserNames: [],
+  readVisibility: 'public',
+  writeVisibility: 'public',
+  groupId: null,
+  groupName: null,
+  ownerName: 'Ada',
+  bridgeId: null,
+  agentStatuses: {},
+  roles: [],
+  joinEventListeners: [],
+  externalChannelId: null,
+  transportRoomId: null,
+  archived: false,
+  archivedAt: null,
+  createdAt: '2026-10-01T09:00:00+00:00',
 };
 
 let container: HTMLDivElement | null = null;

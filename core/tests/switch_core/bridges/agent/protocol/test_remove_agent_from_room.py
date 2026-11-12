@@ -13,6 +13,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.db.models import Agent, Room
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.room_service import MembershipFixed
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_user,
     _register,
@@ -98,6 +99,29 @@ class TestRemoveAgentFromRoom:
 
         with pytest.raises(PermissionError, match="Not permitted to remove"):
             await svc.remove_agent_from_room(caller, room_id, "alice-agent")
+        assert rooms.removed == []
+
+    @pytest.mark.parametrize("channel_type", ["direct", "group"])
+    async def test_refuses_a_direct_or_group_conversation(
+        self, session_factory: async_sessionmaker[AsyncSession], channel_type: str
+    ) -> None:
+        """Its platform fixes who is in it, as the room routes say too; the
+        people in it use `!remove-agent`. Even its owner's own manager is
+        refused, which is let through anywhere else."""
+        svc, rooms = _core(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        buddy = await _register(svc, "alice-buddy", alice)
+        target = await _register(svc, "alice-agent", alice)
+        await _set(session_factory, buddy, can_manage_agents=True)
+        room_id = await _room_with(session_factory, [target])
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)
+            assert room is not None
+            room.channel_type = channel_type
+            await session.commit()
+
+        with pytest.raises(MembershipFixed, match=channel_type):
+            await svc.remove_agent_from_room(buddy, room_id, "alice-agent")
         assert rooms.removed == []
 
     async def test_manager_removes_its_owners_agent_it_may_not_address(

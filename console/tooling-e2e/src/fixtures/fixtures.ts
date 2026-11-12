@@ -50,6 +50,10 @@ export class Fixtures {
    * `autoSession` is off unless asked for: with it on, Switch expects a
    * connector to spawn a session when the agent is addressed, and an operator's
    * Console watching the same server could fight the harness for the room.
+   *
+   * The registration token's agents belong to a non-admin account. With
+   * `ownedByAdmin` the agent is registered by the signed-in gateway admin
+   * instead, for operations only a workspace admin's agent may call.
    */
   async agent(
     role: string,
@@ -57,18 +61,35 @@ export class Fixtures {
       autoSession?: boolean;
       agentType?: HarnessAgentType;
       repoDir?: string;
+      ownedByAdmin?: boolean;
     } = {},
   ): Promise<RegisteredAgent> {
     const name = this.names.name(role);
+    const description = `Switch end-to-end harness agent (run ${this.names.runId}). Safe to delete.`;
+    if (options.ownedByAdmin) {
+      if (options.autoSession || options.agentType || options.repoDir) {
+        throw new Error(
+          "ownedByAdmin registers a plain opencode agent; drop the other options",
+        );
+      }
+      return this.track(
+        await this.switchClient.registerAgentAsUser({ name, description }),
+      );
+    }
     const agent = await this.switchClient.registerKnownAgent({
       agentType: options.agentType ?? "opencode",
       name,
-      description: `Switch end-to-end harness agent (run ${this.names.runId}). Safe to delete.`,
+      description,
       options: {
         auto_session: options.autoSession ?? false,
         ...(options.repoDir ? { repo_dir: options.repoDir } : {}),
       },
     });
+    return this.track(agent);
+  }
+
+  private async track(agent: RegisteredAgent): Promise<RegisteredAgent> {
+    const name = agent.name;
     const cleanup = {
       label: `agent ${name} (${agent.id})`,
       run: () => this.switchClient.deleteAgent(agent),

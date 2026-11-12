@@ -31,7 +31,7 @@ from switch_core.connections.app_credentials import (
 )
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.flows import ServiceFlows
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, Connection
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
@@ -190,6 +190,8 @@ class World:
         self.public_url = public_url
         # Settings beyond the public URL, such as a configured GitHub App.
         self.config: dict[str, object] = {}
+        # The catalog as the server offers it, after SERVICE_ACCESS_PROFILES.
+        self.catalog: dict[str, Connection] = CATALOG
         self.harness: Harness = build_harness(session_factory)
         self.session_factory = session_factory
 
@@ -212,7 +214,7 @@ class World:
             server_name="switch.example.com",
         )
         apps = ConnectorApps(
-            catalog=CATALOG,
+            catalog=self.catalog,
             config=_config(gateway_public_url=self.public_url, **self.config),
             environ=environ or {},
             session_factory=self.session_factory,
@@ -224,9 +226,9 @@ class World:
         broker = ServiceBroker(
             session_factory=self.session_factory,
             keyring=TEST_KEYRING,
-            catalog=CATALOG,
+            catalog=self.catalog,
             adapters=build_adapters(
-                CATALOG,
+                self.catalog,
                 github_app=apps.github_app(),
                 oauth_clients=apps.oauth_clients(),
                 http=http,
@@ -332,7 +334,7 @@ async def operator(session_factory) -> User:
 
 
 class TestOnlyTheOperator:
-    @pytest.mark.parametrize("member_role", ["member", "admin", "owner"])
+    @pytest.mark.parametrize("member_role", ["member", "admin"])
     async def test_everyone_else_is_refused_on_every_route(
         self, world: World, session_factory, member_role: str
     ) -> None:
@@ -389,7 +391,10 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
-        assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
+        assert [entry["slug"] for entry in body["registered"]] == [
+            "atlassian",
+            "notion",
+        ]
 
     async def test_an_unknown_service_is_not_found(
         self, world: World, operator
@@ -641,8 +646,7 @@ class TestGitHubNeedsHttps:
         services = {entry["slug"]: entry for entry in listed.json()["connections"]}
         assert services["github"]["unavailable_code"] == "needs_https"
         assert services["github"]["unavailable_reason"] == (
-            "GitHub can't be used on this server: it needs the server to have an "
-            "https address."
+            "GitHub can't be used here: it needs Switch to have an https address."
         )
         assert services["github"]["server_setup_needed"] is False
         assert services[GOOGLE]["unavailable_code"] == "app_not_set_up"
@@ -820,7 +824,7 @@ class TestImportAndRemove:
         assert google["server_setup_needed"] is True
         assert google["unavailable_code"] == "app_not_set_up"
         assert google["unavailable_reason"].startswith(
-            "Google Workspace is not set up on this server."
+            "Google Workspace is not set up here."
         )
         assert [event.action for event in await _audit(session_factory)] == [
             "connector_app.saved",

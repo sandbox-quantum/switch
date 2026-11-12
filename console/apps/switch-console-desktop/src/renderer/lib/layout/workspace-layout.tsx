@@ -1,4 +1,3 @@
-import { detectPlatform } from '@tanstack/hotkeys';
 import { type ReactNode } from 'react';
 import { useDefaultLayout } from 'react-resizable-panels';
 import { useWorkspaceLayoutContext } from '@renderer/lib/layout/layout-provider';
@@ -9,8 +8,6 @@ const LEFT_PANEL_DEFAULT_SIZE = '274px';
 const LEFT_SIDEBAR_MIN_SIZE = '200px';
 const LEFT_SIDEBAR_MAX_SIZE = '30%';
 const MAIN_PANEL_MIN_SIZE = '30%';
-
-const isMac = detectPlatform() === 'mac';
 
 interface WorkspaceLayoutProps {
   leftSidebar: ReactNode;
@@ -28,6 +25,8 @@ interface WorkspaceLayoutProps {
   banner: ReactNode;
   /** Classes for the view and the persistent layer under the banner. */
   contentClassName: string | undefined;
+  /** The strip across the top of the window, above the card: search and docs. */
+  topBar: ReactNode;
 }
 
 export function WorkspaceLayout({
@@ -36,6 +35,7 @@ export function WorkspaceLayout({
   persistentLayer = null,
   banner,
   contentClassName,
+  topBar,
 }: WorkspaceLayoutProps) {
   const { leftPanelRef, syncLeftOpenFromPanel, isLeftOpen } = useWorkspaceLayoutContext();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -88,12 +88,14 @@ export function WorkspaceLayout({
             own corner under the close button. */}
         <div
           className={cn(
-            'relative h-full w-full overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
-            isLeftOpen ? 'pt-2 pl-px' : 'pl-2',
-            !isLeftOpen && (isMac ? 'pt-9' : 'pt-2')
+            'relative flex h-full w-full flex-col overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
+            // The top bar is the gap above the card, and clears the macOS window
+            // buttons itself.
+            isLeftOpen ? 'pl-px' : 'pl-2'
           )}
         >
-          <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)] [-webkit-app-region:no-drag]">
+          {topBar}
+          <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)] [-webkit-app-region:no-drag]">
             {banner}
             <div className={cn('relative min-h-0 w-full flex-1', contentClassName)}>
               {mainContent}

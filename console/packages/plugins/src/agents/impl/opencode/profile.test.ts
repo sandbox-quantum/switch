@@ -160,14 +160,14 @@ describe('buildOpencodeConfig', () => {
 describe('opencodeLaunchProfile', () => {
   it('loads the config from the environment, having no flag that would load it', () => {
     const profile = opencodeLaunchProfile({
-      slug: 'oc-hoot',
+      slug: 'oc-agent',
       workingDir: WD,
       values: { model: 'anthropic/claude-sonnet-4-5' },
     })!;
 
     expect(profile.args).toEqual([]);
     expect(profile.env).toEqual({
-      OPENCODE_CONFIG: `${HOME}/.config/opencode/switch/${opencodeProfileName('oc-hoot', WD)}.json`,
+      OPENCODE_CONFIG: `${HOME}/.config/opencode/switch/${opencodeProfileName('oc-agent', WD)}.json`,
     });
   });
 
@@ -176,7 +176,7 @@ describe('opencodeLaunchProfile', () => {
     // paths, so a free-form body there would be mangled or executed.
     const instructions = 'be terse\n$(whoami) and "quotes"';
     const profile = opencodeLaunchProfile({
-      slug: 'oc-hoot',
+      slug: 'oc-agent',
       workingDir: WD,
       values: { instructions },
     })!;
@@ -191,7 +191,7 @@ describe('opencodeLaunchProfile', () => {
     // The config is read from the home directory while the session runs in the
     // repo, so a relative path would resolve against the wrong root.
     const profile = opencodeLaunchProfile({
-      slug: 'oc-hoot',
+      slug: 'oc-agent',
       workingDir: WD,
       values: { instructions: 'be terse' },
     })!;
@@ -199,14 +199,14 @@ describe('opencodeLaunchProfile', () => {
     const instructionsPath = configOf(profile).instructions[0] as string;
     expect(instructionsPath.startsWith(`${HOME}/`)).toBe(true);
     expect(instructionsPath).toBe(
-      `${HOME}/.config/opencode/switch/${opencodeProfileName('oc-hoot', WD)}.instructions.md`
+      `${HOME}/.config/opencode/switch/${opencodeProfileName('oc-agent', WD)}.instructions.md`
     );
     expect(profile.files.some((f) => f.relativePath === instructionsPath.slice(HOME.length + 1)));
   });
 
   it('writes no instructions file when there is no system prompt', () => {
     const profile = opencodeLaunchProfile({
-      slug: 'oc-hoot',
+      slug: 'oc-agent',
       workingDir: WD,
       values: { model: 'x' },
     })!;
@@ -226,13 +226,13 @@ describe('opencodeProfileName', () => {
   it('gives two agents that share a name in different dirs distinct configs', () => {
     // Agent names are unique only within a location, so the working dir must
     // discriminate — otherwise the second launch overwrites the first's config.
-    expect(opencodeProfileName('hoot', '/dir/one')).not.toBe(
-      opencodeProfileName('hoot', '/dir/two')
+    expect(opencodeProfileName('switch', '/dir/one')).not.toBe(
+      opencodeProfileName('switch', '/dir/two')
     );
   });
 
   it('is stable for the same (slug, dir)', () => {
-    expect(opencodeProfileName('hoot', WD)).toBe(opencodeProfileName('hoot', WD));
+    expect(opencodeProfileName('switch', WD)).toBe(opencodeProfileName('switch', WD));
   });
 
   it('keeps slugs that differ only in rewritten characters on distinct configs', () => {
@@ -248,8 +248,8 @@ describe('opencodeProfileName', () => {
 
 describe('opencodeProfilePaths', () => {
   it('names both files so teardown takes the instructions with the config', () => {
-    const name = opencodeProfileName('oc-hoot', WD);
-    expect(opencodeProfilePaths({ slug: 'oc-hoot', workingDir: WD })).toEqual([
+    const name = opencodeProfileName('oc-agent', WD);
+    expect(opencodeProfilePaths({ slug: 'oc-agent', workingDir: WD })).toEqual([
       `.config/opencode/switch/${name}.json`,
       `.config/opencode/switch/${name}.instructions.md`,
     ]);
@@ -257,17 +257,17 @@ describe('opencodeProfilePaths', () => {
 
   it('covers every file the profile can write', () => {
     const profile = opencodeLaunchProfile({
-      slug: 'oc-hoot',
+      slug: 'oc-agent',
       workingDir: WD,
       values: { model: 'x', instructions: 'be terse' },
     })!;
-    const paths = opencodeProfilePaths({ slug: 'oc-hoot', workingDir: WD });
+    const paths = opencodeProfilePaths({ slug: 'oc-agent', workingDir: WD });
 
     for (const file of profile.files) expect(paths).toContain(file.relativePath);
   });
 
   it('keeps Switch-owned files in their own directory, not among the user’s', () => {
-    for (const path of opencodeProfilePaths({ slug: 'oc-hoot', workingDir: WD })) {
+    for (const path of opencodeProfilePaths({ slug: 'oc-agent', workingDir: WD })) {
       expect(path.startsWith('.config/opencode/switch/')).toBe(true);
     }
   });

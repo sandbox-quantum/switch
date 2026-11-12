@@ -18,6 +18,8 @@ apps/*/dist-local-server/
 # Re-include Electron packaging/signing assets. The monorepo root .gitignore
 # globally ignores build/, which would otherwise drop these tracked files.
 !apps/*/build/
+# Screenshots the browser acceptance tests save.
+apps/*/build/acceptance/
 
 # Re-include the app's TypeScript `lib/` source trees. The monorepo root
 # .gitignore is Python-oriented and globally ignores `lib/` (Python packaging),

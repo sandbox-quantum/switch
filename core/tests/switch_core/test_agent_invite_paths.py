@@ -51,6 +51,7 @@ async def test_gateway_add_uses_the_logged_in_person_even_for_admins(monkeypatch
             bridge_store=None,
             external_user_store=None,
             protocol=None,
+            decisions=None,
             user=SimpleNamespace(id="admin-user"),
             is_admin=True,
         )
@@ -73,7 +74,9 @@ async def test_gateway_creation_forwards_the_person_and_returns_a_clear_refusal(
             bridge_store=None,
             external_user_store=None,
             protocol=None,
+            decisions=None,
             user=SimpleNamespace(id="person"),
+            is_admin=False,
         )
     assert error.value.status_code == 403
     config = service.create_room.await_args.args[0]

@@ -63,7 +63,7 @@ export async function otherTenantAndProber(
   const ownerEmail = `${names.name('owner')}@e2e.invalid`;
   const proberEmail = `${names.name('prober')}@e2e.invalid`;
   await admin.createUser({
-    name: 'E2E workspace owner',
+    name: 'E2E workspace admin',
     email: ownerEmail,
     password,
     role: 'admin',

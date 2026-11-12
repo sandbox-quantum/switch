@@ -9,7 +9,8 @@ import { defineEvent } from '@shared/lib/ipc/events';
  * runtime: a remote stack always runs on the host's Docker. */
 export type RemoteServerStatus = Omit<
   LocalServerStatus,
-  'runtime' | 'mattermost' | 'mattermostState' | 'notice'
+  // A remote server runs on Docker, which always serves the admin pages.
+  'runtime' | 'mattermost' | 'mattermostState' | 'notice' | 'adminPages'
 > & {
   sshHost: string;
   /** Something done to the stack from elsewhere (another Console, or the host

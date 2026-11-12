@@ -75,7 +75,7 @@ machine, in what repository, or what the prompt said.
 | `service.version` | app version | `0.9.14`, `1.0.2` |
 | `build` | release channel | `dev`, `canary`, `stable` |
 | `flint_env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
-| `flint_internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address** | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
+| `flint_internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address**. Once an installation has been signed in with one, it stays `true`, so staff usage stays labelled after that account signs out | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
 | `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
@@ -92,7 +92,7 @@ id, no IP field, no Switch identity.
 | `outcome` | `success`, `failure` (on `session_ended`: `normal`, `failed`; on `bridge_identity_claimed`, also `pending`) |
 | `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
-| `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
+| `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name). **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
 | `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
@@ -106,8 +106,10 @@ id, no IP field, no Switch identity.
 | `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch after its version changed) / `same` |
 | `renderer_crashed` | *(no fields)* |
 | `update_checked` | `trigger`: `user` / `startup` / `scheduled` · `result`: `available` / `up_to_date` / `failed` |
+| `update_download_started` | *(no fields)* — Download was pressed for an available update |
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `success` / `failure` |
+| `update_installed` | `from_version`: `0.40.1`, or `unknown` when the previous launch did not record one · `trigger`: `restart_button` (the app restarted itself to install it) / `other` (installed on quit, or by hand) — sent on the first launch after the version changed |
 | `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
 | `setting_changed` | `setting_key`, one of exactly 12: `localLocation`, `sessions`, `defaultAgent`, `notifications`, `theme`, `openIn`, `interface`, `browserPreview`, `browser`, `changesViewMode`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |
@@ -124,7 +126,7 @@ id, no IP field, no Switch identity.
 | `onboarding_completed` | *(no fields)* |
 | `add_server_step` | `step`: `choose` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
 | `onboarding_page` | `page`: `welcome` / `how_to_run` / `local_setup` / `server_address` / `sign_in` / `choose_workspace` / `create_workspace` / `meet_buddy` / `provider_setup` · `path`: `none` / `cloud` / `local` / `external` — which page of the first run opened, and how the install is running Switch once chosen |
-| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `created` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none |
+| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `created` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `deepseek-harness` / `pi` / `copilot` / `kiro` / `mistral-vibe` / `junie` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none |
 | `buddy_message_sent` | `nth`: `1` / `2` / `3` / `4` / `5` / `6+` — the how-manyth message sent to one's own switch-buddy. **The message is never sent.** |
 
 **Agents and sessions**
@@ -133,17 +135,36 @@ id, no IP field, no Switch identity.
 |---|---|
 | `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `refused` / `invalid` / `error` · `entry_point`: `sidebar` |
 | `agent_removed` | `agent_type` · `location` · `delete_in_switch`: `true` · `trigger`: `user` / `server_teardown` · `outcome` · `failure_reason`: `none` / `not_linked_to_switch` / `gateway_unauthorized` / `gateway_http` / `gateway_network` / `error` |
-| `agent_reset` | `agent_type` · `outcome` · `failure_reason`: `none` / `agent_not_found` / `not_remote` / `connect` / `error` |
 | `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `process_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` · `duration_ms`: `8421` |
 | `session_started` | `agent_type`: `claude` · `location`: `local` · `outcome`: `success` · `failure_reason`: `none` / `agent_not_found` / `already_exists` / `spawn_failed` · `entry_point`: `command_palette` · `start_source`: `user` / `auto` / `adopted` / `unknown` · `has_initial_prompt`: `true` (**a boolean — never the prompt**) · `connected_to_room`: `false` |
 | `session_ended` | `agent_type` · `location` · `outcome`: `normal` / `failed` |
 | `session_attached` | `agent_type` · `outcome` |
 | `session_provision_retried` | `agent_type` · `location` · `trigger`: `auto` / `retry_button` · `outcome` |
+| `managed_session_started` | `agent_type`: `claude` · `start_source`: `user` / `room` / `automation` / `unknown` — a session of an agent on the agent controller this app runs on this computer started |
+| `activation_milestone` | `milestone`: `server_ready` / `agent_ready` / `first_agent_session` · `path`: `buddy` / `manual` / `unknown` — a step towards an agent doing work, the first time this installation reaches it |
 
 Note the shape of `failure_reason` everywhere: a short enumerated code such as
 `permission_denied` or `docker_daemon_down`. It is **never** an exception message,
 a stack trace, or a command's stderr — those are mapped to `error` if they don't
 match a known code.
+
+`managed_session_started` counts sessions this app has no session of its own
+for: those of the agents it runs on the agent controller on this computer. That
+controller tells the app, over the channel between the two processes on this
+machine, once the agent's Switch server has taken the session's start, and the
+app reports it under the same consent setting as everything else. The session's
+id is used only to count a start told twice once, and goes no further. A
+controller on another machine — an SSH host, or one run on its own — sends
+nothing here, because it cannot ask this setting.
+
+`activation_milestone` marks three steps the first time an installation reaches
+each: `server_ready` (signed in to a server, or a server this app runs started),
+`agent_ready` (an agent created) and `first_agent_session` (a session of one of
+its agents started, here or on the controller above). Each is sent once for the
+life of the installation, and only by one that was installed on a version that
+sends them. `path` says which way it went at Meet switch-buddy: `buddy` if the
+buddy was started, `manual` if it was skipped, `unknown` before either; it is
+recorded on this machine and sent only on these events.
 
 `duration_ms` on `agent_cli_action` is how long the operation took, in whole
 milliseconds, measured on a monotonic clock around the operation itself. Like
@@ -156,11 +177,11 @@ machine from another.
 
 | Event | Fields, with example values |
 |---|---|
-| `server_added` | `server_kind`: `remote_managed` · `outcome`: `success` |
+| `server_added` | `server_kind`: `remote_managed` · `outcome`: `success` · `failure_reason`: `none` / `already_added` (another server already has the address) / `not_the_server_address` (it answered with a web page, usually a dashboard's address) / `error` |
 | `server_removed` | `server_kind`: `external` |
 | `server_sign_in` | `auth_method`: `password` / `oidc` / `signup` · `server_kind` · `outcome` · `failure_reason`: `none` / `invalid_credentials` / `cancelled` / `failed` / `unreachable` / `email_taken` / `invalid` / `disabled` / `rate_limited` |
 | `server_sign_out` | `server_kind`: `local` |
-| `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
+| `managed_server_action` | `action`: `start` / `stop` / `reset` · `target`: `local` / `remote` · `outcome` · `failure_reason`: `none` / `docker_not_installed` / `docker_daemon_down` / `version_downgrade` / `matrix_migration_failed` / `start_refused` (the stack already on the host cannot be started from here, such as another account's) / `health_timeout` (it started but did not become healthy in time) / `core_exited` (the server process exited while starting) / `running_as_root` / `operation_in_progress` (another start, stop or reset was running) / `error` · `docker_available`: `available` / `unavailable` / `unknown` |
 
 No server name, URL, hostname or username appears in any of these. A failed
 sign-in records `invalid_credentials` — not the username tried, not the server.
@@ -173,7 +194,7 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 | `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `mattermost` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome`: `success` (linked) / `pending` (waiting for a one-time code to be posted from the account, which is what confirms the link) / `failure` |
 | `bridge_identity_confirmed` | `bridge_platform` · `link_kind`: `new` (a link that was waiting on its code) / `existing` (a link made before links had to be confirmed, which worked all along) / `unknown` — sent when the code is posted and the link confirmed, after asking the server that it is |
-| `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `error` · `source`: `dialog` / `template` |
+| `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `network` / `forbidden` / `not_found` / `conflict` / `server_error` / `error` · `source`: `dialog` / `template` |
 | `room_deleted` | `server_kind` · `outcome` |
 | `room_agents_added` | `agent_count`: `2` · `direction`: `agents_to_room` / `room_to_agents` |
 
@@ -259,6 +280,17 @@ Console started naming the address is flagged on its page like any other
 out-of-step setting, with the restart offered. "No" is written down
 explicitly rather than left out, because a stack started under a "yes" would
 otherwise keep the setting it started with.
+
+What that server reports is its own catalogue (`docs/old/telemetry-events.md`),
+held to the same rule: counts, durations and closed values, never a room,
+agent, person or message. Auto-route is an example: each decision the server
+asks a decision service for reports only which kind of backend answered
+(`server_default`, `endpoint`, `haiku_anthropic` or `haiku_bedrock`), whether
+it picked an agent or nobody, its confidence in tenths and its latency
+(`decision_made`), or why it failed (`decision_failed`: `timeout`,
+`unreachable`, `error_status`, `bad_answer`, `key_unreadable`,
+`endpoint_refused`). Which agent was
+picked, in which room, for which message, is never sent.
 
 Three limits are stated in the app rather than left to be discovered.
 

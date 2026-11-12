@@ -1,7 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentDetail } from "../../data/api";
+import { useAuth } from "../../data/AuthContext";
 import AgentManagementSection from "./AgentManagementSection";
+
+vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
 const agent: AgentDetail = {
   id: "a1",
@@ -28,11 +31,21 @@ const agent: AgentDetail = {
   children: [],
   addressing_policy: null,
   can_manage_agents: false,
+  can_manage: true,
+  can_rename: true,
+  can_edit_options: true,
+  can_transfer: true,
+  transfer_blocked_reason: null,
+  can_change_manage_agents: true,
+  can_grant_services: true,
 };
 
 type Call = { path: string; method: string; body: unknown };
 
 function mockServer({ management }: { management: boolean }) {
+  vi.mocked(useAuth).mockReturnValue({
+    capabilities: { features: { agent_management: management } },
+  } as ReturnType<typeof useAuth>);
   const calls: Call[] = [];
   vi.stubGlobal(
     "fetch",
@@ -40,10 +53,6 @@ function mockServer({ management }: { management: boolean }) {
       const path = String(input);
       const method = init?.method ?? "GET";
       calls.push({ path, method, body: init?.body ? JSON.parse(String(init.body)) : null });
-      if (path === "/gateway/management/controllers")
-        return management
-          ? new Response("[]", { status: 200 })
-          : new Response(JSON.stringify({ detail: "Not Found" }), { status: 404 });
       if (path === "/gateway/agents/a1/can-manage-agents" && method === "PUT")
         return new Response(JSON.stringify({ ...agent, can_manage_agents: true }), {
           status: 200,
@@ -90,10 +99,10 @@ describe("AgentManagementSection", () => {
     expect(screen.getByText(/Only the agent's owner can change this/)).toBeTruthy();
   });
 
-  it("is not shown where agent management does not run", async () => {
+  it("is not shown where agent management does not run", () => {
     const calls = mockServer({ management: false });
     render(<AgentManagementSection agent={agent} canEdit onUpdated={() => {}} />);
-    await waitFor(() => expect(calls.length).toBe(1));
     expect(screen.queryByText("Can manage agents")).toBeNull();
+    expect(calls).toEqual([]);
   });
 });

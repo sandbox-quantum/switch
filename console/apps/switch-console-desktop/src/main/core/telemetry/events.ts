@@ -1,4 +1,5 @@
 import type { InstallMethod } from '@switch-console/core/deps';
+import type { ManagedStartFailure } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { HostSetupStepKind } from '@shared/core/remote-hosts/setup';
 import type { SearchStatus } from '@shared/core/search';
@@ -98,14 +99,6 @@ export type TelemetryAgentRemoveFailure =
   | 'gateway_network'
   | 'error';
 
-/** Why resetting a remote agent failed. Also named rather than derived. */
-export type TelemetryAgentResetFailure =
-  | 'none'
-  | 'agent_not_found'
-  | 'not_remote'
-  | 'connect'
-  | 'error';
-
 /**
  * What removed an agent.
  *
@@ -163,6 +156,14 @@ export type TelemetryCliFailure =
 declare const durationMsBrand: unique symbol;
 export type TelemetryDurationMs = number & { readonly [durationMsBrand]: true };
 
+/**
+ * An app version, as the app reports its own: semver only, checked where it is
+ * minted (`appVersionOf`). Branded so only that check produces one, the way a
+ * platform key below is: a string type here would let free text through.
+ */
+declare const appVersionBrand: unique symbol;
+export type TelemetryAppVersion = string & { readonly [appVersionBrand]: true };
+
 declare const platformKeyBrand: unique symbol;
 
 /**
@@ -209,12 +210,23 @@ export type TelemetryIdentityClaimOutcome = 'success' | 'pending' | 'failure';
  */
 export type TelemetryIdentityLinkKind = 'new' | 'existing' | 'unknown';
 
+/**
+ * Why a room create failed. `unreachable` is the server's host known to be
+ * down before asking; `network` a request that never reached the server;
+ * `forbidden`, `not_found`, `conflict` and `server_error` the server's own
+ * answer (403, 404, 409, 5xx); `error` anything with no answer to read.
+ */
 export type TelemetryRoomCreateFailure =
   | 'none'
   | 'unauthenticated'
   | 'bridge_unavailable'
   | 'invalid'
   | 'unreachable'
+  | 'network'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'server_error'
   | 'error';
 
 /** How a room came to be made: the Create room dialog, or a template run. */
@@ -245,12 +257,18 @@ export type TelemetryHostSetupAction = 'install' | 'update' | 'skip';
 
 export type TelemetryManagedServerAction = 'start' | 'stop' | 'reset';
 
+/**
+ * Why a managed server's start, stop or reset failed. The start's own causes
+ * are named where the code can tell them apart (`ManagedStartFailure`); `error`
+ * is everything else, including anything that threw.
+ */
 export type TelemetryManagedServerFailure =
   | 'none'
   | 'docker_not_installed'
   | 'docker_daemon_down'
   | 'version_downgrade'
   | 'matrix_migration_failed'
+  | Exclude<ManagedStartFailure, 'unexpected'>
   | 'error';
 
 /**
@@ -289,8 +307,44 @@ export type TelemetrySettingKey = AppSettingsKeyName;
 /** How a search ended. The search's own union, reused rather than restated. */
 export type TelemetrySearchStatus = SearchStatus;
 
-/** The kinds of server this install can hold. Named once, used by five events. */
-export type TelemetryServerKind = 'local' | 'remote_managed' | 'external';
+/**
+ * The kinds of server this install can hold. Named once, used by five events.
+ * `cloud` is Switch Cloud, the server this build offers by name; `external` is
+ * any other server someone registered by address.
+ */
+export type TelemetryServerKind = 'local' | 'remote_managed' | 'external' | 'cloud';
+
+/**
+ * Why registering a server by address failed: the address is already another
+ * server's, or it answered with a page rather than the server's API (the
+ * dashboard's address pasted in place of the server's).
+ */
+export type TelemetryServerAddFailure =
+  | 'none'
+  | 'already_added'
+  | 'not_the_server_address'
+  | 'error';
+
+/**
+ * How a session of an agent on this computer's agent controller started, as
+ * its session host told Switch (`host/session-start.ts`): a person in Console,
+ * the agent being addressed in a room, or the automation API. `unknown` is a
+ * launcher that did not say.
+ */
+export type TelemetryManagedSessionStartSource = 'user' | 'room' | 'automation' | 'unknown';
+
+/**
+ * The steps from installing the app to an agent doing work, each reported
+ * once for the life of an install (`./activation`).
+ */
+export type TelemetryActivationMilestone = 'server_ready' | 'agent_ready' | 'first_agent_session';
+
+/**
+ * Which way the install went at Meet switch-buddy: `buddy` started the buddy,
+ * `manual` skipped it. `unknown` until one of the two happens, which is after
+ * a server is ready, so `server_ready` normally carries it.
+ */
+export type TelemetryActivationPath = 'buddy' | 'manual' | 'unknown';
 
 /**
  * A setup step's kind, reused from the remote-host model rather than restated.
@@ -364,9 +418,13 @@ export type TelemetryEventMap = {
    * counting those here as well would double-count the same wall.
    */
   server_added: {
-    /** `external` is a server the user registered by URL: Switch Console does not run it. */
-    server_kind: 'local' | 'remote_managed' | 'external';
+    /**
+     * `external` is a server the user registered by URL: Switch Console does not
+     * run it. `cloud` is Switch Cloud, registered from its own button.
+     */
+    server_kind: TelemetryServerKind;
     outcome: TelemetryOutcome;
+    failure_reason: TelemetryServerAddFailure;
   };
   /**
    * The app checked for an update. `trigger` separates a check someone asked for
@@ -376,6 +434,13 @@ export type TelemetryEventMap = {
     trigger: TelemetryUpdateTrigger;
     result: 'available' | 'up_to_date' | 'failed';
   };
+  /**
+   * Download was pressed for an available update. Downloads only ever start on
+   * that press (`autoDownload` is off), so this is the press, and
+   * `update_downloaded` is how it ended. Nothing to carry: which update is the
+   * event's own app version and the check before it.
+   */
+  update_download_started: Record<never, never>;
   update_downloaded: {
     outcome: TelemetryOutcome;
   };
@@ -385,10 +450,25 @@ export type TelemetryEventMap = {
    * Deliberately named for what it can actually observe. A successful install
    * quits the app, so there is no moment afterwards in which to report one; what
    * this counts is the point the update was handed to the installer. Whether it
-   * worked is answered by the next `app_launched` and its version.
+   * worked is answered by `update_installed` on the next launch. A launch that
+   * comes back on the old version reports this event again, as a failure.
    */
   update_install_started: {
     outcome: TelemetryOutcome;
+  };
+  /**
+   * The first launch on a new version after an update: the end of the update.
+   * The new version is the event's own app version, which every event carries.
+   *
+   * `from_version` is the version the previous launch ran; `unknown` for an
+   * install from before launches were recorded, or a stored value that is not a
+   * version. `trigger` is `restart_button` when the previous run handed the update
+   * to the installer from Restart to update, and `other` when the version changed
+   * without that: installed when the app quit, or by hand.
+   */
+  update_installed: {
+    from_version: TelemetryAppVersion | 'unknown';
+    trigger: 'restart_button' | 'other';
   };
   /** A messaging platform was connected to a server. */
   bridge_connected: {
@@ -435,16 +515,6 @@ export type TelemetryEventMap = {
     failure_reason: TelemetryAgentRemoveFailure;
   };
   /**
-   * A remote agent was reset — every one of its panes on the host killed and the
-   * agent brought back up. Remote-only, and a real SSH operation, so unlike most
-   * of this catalogue it fails for reasons outside the app.
-   */
-  agent_reset: {
-    agent_type: TelemetryAgentType;
-    outcome: TelemetryOutcome;
-    failure_reason: TelemetryAgentResetFailure;
-  };
-  /**
    * A server was removed from this install.
    *
    * It carries no count of agents removed with it, because removing a server
@@ -453,7 +523,7 @@ export type TelemetryEventMap = {
    * so a count here would always be zero, which reads as an answer.
    */
   server_removed: {
-    server_kind: 'local' | 'remote_managed' | 'external';
+    server_kind: TelemetryServerKind;
   };
   /**
    * A session whose setup had not completed was provisioned again.
@@ -466,6 +536,25 @@ export type TelemetryEventMap = {
     location: TelemetryLocationKind;
     trigger: TelemetrySessionProvisionTrigger;
     outcome: TelemetryOutcome;
+  };
+  /**
+   * A session of an agent on the agent controller this app runs on this
+   * computer started, and its Switch server took the report. These agents
+   * have no session of their own in the app, so `session_started` never sees
+   * them; a session on another machine's controller is not reported at all.
+   */
+  managed_session_started: {
+    agent_type: TelemetryAgentType;
+    start_source: TelemetryManagedSessionStartSource;
+  };
+  /**
+   * A step towards an agent doing work, the first time this install reaches
+   * it. Derived from the events that mark each one, never sent twice, and only
+   * by an install that began on a version that reports them (`./activation`).
+   */
+  activation_milestone: {
+    milestone: TelemetryActivationMilestone;
+    path: TelemetryActivationPath;
   };
   /**
    * A remote session's terminal was attached, or could not be.
@@ -630,6 +719,11 @@ export type TelemetryEventMap = {
 
 export type TelemetryEventName = keyof TelemetryEventMap;
 
+/** One event and what it carries, as a union a `switch` on `name` narrows. */
+export type TelemetryEvent = {
+  [K in TelemetryEventName]: { name: K; properties: TelemetryEventMap[K] };
+}[TelemetryEventName];
+
 /**
  * The properties each event may carry, as data rather than as types alone.
  *
@@ -652,10 +746,12 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'connected_to_room',
   ],
   session_ended: ['agent_type', 'location', 'outcome'],
-  server_added: ['server_kind', 'outcome'],
+  server_added: ['server_kind', 'outcome', 'failure_reason'],
   update_checked: ['trigger', 'result'],
+  update_download_started: [],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
+  update_installed: ['from_version', 'trigger'],
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
@@ -668,7 +764,6 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'outcome',
     'failure_reason',
   ],
-  agent_reset: ['agent_type', 'outcome', 'failure_reason'],
   server_removed: ['server_kind'],
   session_provision_retried: ['agent_type', 'location', 'trigger', 'outcome'],
   setting_changed: ['setting_key'],
@@ -712,6 +807,8 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   renderer_crashed: [],
   telemetry_consent_changed: ['source', 'install_kind'],
   session_attached: ['agent_type', 'outcome'],
+  managed_session_started: ['agent_type', 'start_source'],
+  activation_milestone: ['milestone', 'path'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
 
 /**

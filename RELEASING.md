@@ -1,8 +1,8 @@
 # Releasing Switch
 
 This describes how to cut a release of the **Switch core stack** — the
-`switch-core`, `gateway`, `setup` and `switch-hosted-controller` container
-images, the Helm charts, and the standalone Docker Compose file. The Switch Console desktop app releases separately
+`switch-core`, `gateway`, `setup`, `switch-decision`,
+`switch-decision-strands` and `switch-hosted-controller` container images, the Helm charts, and the standalone Docker Compose file. The Switch Console desktop app releases separately
 (see `.github/workflows/switch-console-release.yml` and `console/docs/INSTALL.md`).
 
 ## Versioning
@@ -83,7 +83,10 @@ peer still on it, and it can never be raised past what is running in the field.
 5. The **`switch-release`** workflow (`.github/workflows/switch-release.yml`)
    then, on that tag:
    - builds multi-arch (`linux/amd64`, `linux/arm64`) images for `switch-core`,
-     `gateway`, and `setup` and pushes them to the container registry tagged
+     `gateway`, `setup` and `switch-decision` (and the hosted controller), and
+     an amd64-only `switch-decision-strands` (the Strands Decider model server,
+     CUDA and PyTorch, several GB; built without the Actions layer cache), and
+     pushes them to the container registry tagged
      `<version>` and `latest`;
    - builds, tests and packs the agent controller at the same version and
      publishes it as the `switch-agent-controller-v<version>` GitHub release
@@ -133,7 +136,7 @@ environment runs main from published, digest-pinned artifacts instead of
 building from source at deploy time.
 
 - **Separate packages.** Dev builds go to `ghcr.io/<owner>/dev/` (`dev/switch-core`,
-  `dev/gateway`, `dev/setup`, `dev/switch-hosted-controller`, `dev/charts/switch`,
+  `dev/gateway`, `dev/setup`, `dev/switch-decision`, `dev/switch-decision-strands`, `dev/switch-hosted-controller`, `dev/charts/switch`,
   `dev/charts/switch-hosted-controller`), so the release packages' tag lists
   hold releases and RCs only. Nothing is ever tagged `latest`.
 - **The dev charts carry a moving `main` tag.** Once both charts are pushed,
@@ -177,7 +180,11 @@ switchCore:
   imagePullPolicy: IfNotPresent
 ```
 
-and the same for `gateway` and `setup`. The hosted controller chart
+and the same for `gateway`, `setup` and `decision` (the `switch-decision`
+image, rendered only with `decision.enabled`; the CI render with the optional
+workloads on checks its pin), and for `decision.modelServer.strands.image`
+(`switch-decision-strands`, rendered with `decision.enabled` and the default
+`decision.modelServer.kind: strands`). The hosted controller chart
 (`charts/switch-hosted-controller`) is pinned through `image.repository` and
 `image.digest` instead, so its image renders as
 `ghcr.io/<owner>/switch-hosted-controller@sha256:…`, by digest with no tag.

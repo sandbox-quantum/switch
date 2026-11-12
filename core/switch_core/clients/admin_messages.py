@@ -43,9 +43,10 @@ ADMIN_MARKER = "com.switch.admin"
 PLATFORM_MARKER = "com.switch.platform"
 
 # Set by the collaboration bridge on a message the platform reported as posted
-# by an app (a workflow, an integration) rather than a person. Only the bridge
-# writes it, and only Slack reports it today. Following the conversation
-# (`delivery/conversation.py`) never delivers such a message.
+# by an app (a workflow, an integration, another Switch server's agent) rather
+# than a person. Only the bridge writes it; Slack, Discord and Mattermost report
+# it. Following the conversation (`delivery/conversation.py`) never delivers
+# such a message, and usage telemetry counts its sender as a bot, not a person.
 SENDER_IS_APP_MARKER = "com.switch.sender_is_app"
 
 
@@ -118,6 +119,7 @@ class AdminMessageType(StrEnum):
     TRUST_ALERTED = "trust_alerted"
     TRUST_ERRORED = "trust_errored"
     AGENT_LIFECYCLE = "agent_lifecycle"
+    AUTO_ROUTE_UNAVAILABLE = "auto_route_unavailable"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

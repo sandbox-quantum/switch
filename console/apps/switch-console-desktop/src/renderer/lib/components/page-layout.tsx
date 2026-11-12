@@ -86,6 +86,49 @@ export function PageSidebarGroups<T extends string>({
   );
 }
 
+/**
+ * `PageSidebarMenu` in sections split by a rule, for a page whose items fall
+ * into kinds without needing a heading to say so: the rule is enough.
+ * Empty sections are left out, so no two rules stand together.
+ */
+export function PageSidebarSections<T extends string>({
+  sections,
+  activeId,
+  onSelect,
+}: {
+  sections: ReadonlyArray<ReadonlyArray<PageSidebarItem<T>>>;
+  activeId: T;
+  onSelect: (item: PageSidebarItem<T>) => void;
+}) {
+  return (
+    <div className="sticky top-0 self-start py-10 [-webkit-app-region:drag]">
+      <nav className="flex w-52 flex-col [-webkit-app-region:no-drag]">
+        {sections
+          .filter((items) => items.length > 0)
+          .map((items, index) => (
+            <div
+              key={items[0]!.id}
+              role="group"
+              className={cn(
+                'flex flex-col gap-0.5',
+                index > 0 && 'mt-3 border-t border-border pt-3'
+              )}
+            >
+              {items.map((item) => (
+                <PageSidebarButton
+                  key={item.id}
+                  item={item}
+                  active={item.id === activeId}
+                  onSelect={onSelect}
+                />
+              ))}
+            </div>
+          ))}
+      </nav>
+    </div>
+  );
+}
+
 function PageSidebarButton<T extends string>({
   item,
   active,

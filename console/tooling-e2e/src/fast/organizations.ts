@@ -6,8 +6,9 @@ import type { FastScenario } from './scenario.ts';
  * Anyone signed in creates an organization, and its admin adds workspaces to
  * it: a new user, in the default workspace, creates an organization and lands
  * in its first workspace, adds a second, and sees both, in an organization
- * listed beside those they were already in. A plain member of the default
- * workspace may not add one there.
+ * listed beside those they were already in, with nothing left for its admin
+ * to fix, and each new workspace counted with its one user and no agents. A
+ * plain member of the default workspace may not add one there.
  *
  * Users and workspaces cannot be deleted, so this runs only on a stack thrown
  * away after the run.
@@ -19,8 +20,10 @@ export const organizations: FastScenario = {
       'GET /gateway/organizations',
       'POST /gateway/organizations',
       'GET /gateway/organizations/current',
+      'GET /gateway/organizations/current/issues',
       'GET /gateway/organizations/current/workspaces',
       'POST /gateway/organizations/current/workspaces',
+      'GET /gateway/tenants/counts',
     ],
     lane: 'fast',
     environments: ['ephemeral'],
@@ -62,7 +65,7 @@ export const organizations: FastScenario = {
     const { organization, workspace } = await founder.createOrganization(names.name('org'));
     expect(organization.role).toBe('org_admin');
     expect(workspace).toMatchObject({
-      role: 'owner',
+      role: 'admin',
       organization_role: 'org_admin',
       organization_id: organization.id,
     });
@@ -79,6 +82,19 @@ export const organizations: FastScenario = {
     const workspaces = await founder.organizationWorkspaces();
     expect(workspaces.map((row) => row.id).sort()).toEqual([workspace.id, second.id].sort());
     expect(workspaces.map((row) => row.id)).not.toContain(defaultWorkspace);
+
+    expect(await founder.organizationIssues(), 'nothing to fix in a new organization').toEqual([]);
+
+    const counts = await founder.workspaceCounts();
+    for (const id of [workspace.id, second.id]) {
+      expect(
+        counts.find((row) => row.id === id),
+        'a new workspace counts its admin and nothing else'
+      ).toEqual({ id, users: 1, agents: 0 });
+    }
+    expect(counts.map((row) => row.id), 'the default workspace is counted too').toContain(
+      defaultWorkspace
+    );
 
     const listed = await founder.organizations();
     expect(listed.find((row) => row.id === organization.id)?.role).toBe('org_admin');

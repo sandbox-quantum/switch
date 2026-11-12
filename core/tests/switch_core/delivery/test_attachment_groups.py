@@ -528,6 +528,7 @@ async def test_a_grouped_post_addressed_to_the_agent_is_reported_once(
             "room_id": scene.room.id,
             "sender_transport_user_id": scene.alice.transport_user_id,
             "from_platform": False,
+            "from_app": False,
             "agent_metadata": None,
             "agent_live": True,
             "has_attachment": True,

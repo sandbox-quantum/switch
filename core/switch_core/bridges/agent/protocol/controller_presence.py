@@ -52,11 +52,18 @@ from switch_core.bridges.agent.protocol.liveness import (
     TAKEN_OVER,
     Closure,
 )
+from switch_core.observability.catalogue import CONTROLLER_CONNECTIONS
+from switch_core.observability.metrics import metrics
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 
 logger = logging.getLogger(__name__)
+
+
+def _count_connection(event: str, reason: str = "none") -> None:
+    metrics().increment(CONTROLLER_CONNECTIONS, {"event": event, "reason": reason})
+
 
 # Why an agent left a controller's stream, as `agent.detached` reports it.
 DETACH_UNASSIGNED = "unassigned"
@@ -92,6 +99,11 @@ class UnknownControllerConnectionError(ControllerConnectionError):
             f"controller connection {connection_id} is not open; open a new one "
             "with your cursors"
         )
+
+
+class ConnectionNotLetGoError(UnknownControllerConnectionError):
+    """Another process holds the connection and has not recorded its socket
+    going. Refused as `unknown_connection` once waiting for that has run out."""
 
 
 class ControllerTakenOverError(ControllerConnectionError):
@@ -556,7 +568,7 @@ class ControllerPresence:
         previous = self._connections.pop(controller_id, None)
         if previous is not None:
             self._take_over(previous)
-            logger.info(
+            logger.debug(
                 "[CONTROLLER] controller=%s connection=%s taken over through "
                 "another process",
                 controller_id,
@@ -564,6 +576,7 @@ class ControllerPresence:
             )
 
     def _take_over(self, previous: ControllerConnection) -> None:
+        _count_connection("taken_over")
         previous.closure = TAKEN_OVER
         self._record_disconnected(previous, TAKEN_OVER.code)
         previous.stream_attached = False
@@ -660,7 +673,8 @@ class ControllerPresence:
             generation=generation,
             resume_cursors=resume_cursors,
         )
-        logger.info(
+        _count_connection("opened")
+        logger.debug(
             "[CONTROLLER] opened controller=%s connection=%s generation=%s agents=%d",
             controller_id,
             conn.id,
@@ -693,7 +707,8 @@ class ControllerPresence:
             generation=generation,
             resume_cursors=resume_cursors,
         )
-        logger.info(
+        _count_connection("adopted")
+        logger.debug(
             "[CONTROLLER] adopted controller=%s connection=%s generation=%s from "
             "another process",
             controller_id,
@@ -867,6 +882,7 @@ class ControllerPresence:
             del self._connections[conn.controller_id]
         if conn.closure is None:
             conn.closure = closure
+            _count_connection("closed", closure.code)
             logger.info(
                 "[CONTROLLER] closed controller=%s connection=%s code=%s beats=%d",
                 conn.controller_id,

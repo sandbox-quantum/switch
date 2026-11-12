@@ -23,6 +23,15 @@ channel Switch has no permission to touch, which somebody removes on the
 platform itself.
 """
 
+PrivateNoticeDelivery = Literal["ephemeral", "direct_message", "in_channel"]
+"""How a bridge says something to one person about a message they posted.
+
+`ephemeral` is shown in the channel to that person alone; `direct_message`
+goes to a private chat between them and the bot; `in_channel` is a platform
+where a bot can do neither unprompted, so the notice is posted where everyone
+in the channel sees it.
+"""
+
 
 class RetireOutcome(BaseModel):
     """What happened to a room's platform channel when the room was deleted.
@@ -39,6 +48,19 @@ class RetireOutcome(BaseModel):
         return cls(outcome="failed", reason=reason)
 
 
+class CreatedChannel(BaseModel):
+    """A channel a bridge provisioned for a room.
+
+    `name` is the name the platform shows for it, in the form the bridge
+    reports when the channel is renamed. It can differ from what was asked
+    for: the platform's naming rules applied, and a suffix where the name was
+    taken.
+    """
+
+    id: str
+    name: str
+
+
 class ChannelCreationUnsupported(ValueError):
     """Raised when a bridge will not create a channel for a new room.
 
@@ -49,6 +71,36 @@ class ChannelCreationUnsupported(ValueError):
     where an unexpected exception becomes an opaque 500 and the explanation
     never leaves the server.
     """
+
+
+class ChannelNotUsable(ValueError):
+    """A room was asked to use an existing channel the platform says it cannot.
+
+    Not found, or the Switch app is not in it. The message carries the
+    platform's own reason, since that is what tells the person what to fix.
+    """
+
+
+class ChannelInUse(ValueError):
+    """A room was asked to use a channel another room already uses.
+
+    A channel maps to at most one room. A `ValueError` so that paths without
+    a status of their own still answer it as the caller's mistake; the gateway
+    answers it with a 409.
+    """
+
+    def __init__(self, external_channel_id: str) -> None:
+        super().__init__(
+            f"Channel {external_channel_id} is already used by a room. A "
+            "channel can belong to only one room: choose another channel, or "
+            "move that room off it first."
+        )
+        self.external_channel_id = external_channel_id
+
+
+class PrivateChannelOwnerMissing(ValueError):
+    """A private channel was asked for on a platform that needs a person to own
+    it, and the person asking has no linked account there to name."""
 
 
 class WebhookDeliveryUnsupported(RuntimeError):
@@ -131,12 +183,16 @@ class InboundMessage(BaseModel):
     # tagged. Lets the bridge guide users who tag the app instead of an agent.
     self_mention_token: str | None = None
     # The platform reported this post as coming from an app rather than a
-    # person (a Slack workflow, a third-party integration). Such a post is
-    # relayed like any other, but it cannot answer a request: a decision is
-    # attributed to whoever made it, and an app made none. Only Slack reports
-    # it today; a platform that cannot tell an app from a person leaves this
-    # False and its cards accept the answer.
+    # person (a Slack workflow, a third-party integration, another Switch
+    # server's agent). Such a post is relayed like any other, but it cannot
+    # answer a request: a decision is attributed to whoever made it, and an app
+    # made none. Usage telemetry leaves it out of every count of people for the
+    # same reason. Slack, Discord and Mattermost report it. Telegram never
+    # delivers another bot's posts, and Teams does not mark them, so both leave
+    # this False and their cards accept the answer.
     sender_is_app: bool = False
+    # Content keys for the room message, beside its body.
+    extra_content: dict[str, object] = {}
 
 
 class InboundCommand(BaseModel):
@@ -171,7 +227,10 @@ class InboundInteraction(BaseModel):
 
     channel_id: str
     sender_id: str
+    # The handle Switch files the person under, and the name the platform
+    # shows them by, which is what a card says answered it.
     sender_name: str
+    sender_display_name: str
     action_id: str
     value: str
     # The platform's id for the message the control sits on, in the same form

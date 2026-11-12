@@ -70,10 +70,6 @@ logger = logging.getLogger(__name__)
 
 Scope = Literal["single", "all"]
 DeliveryFilter = Literal["all", "addressed"]
-# How a connection's stream reaches its client. `sse` is the event stream an
-# agent runtime built before the WebSocket still asks for, served for a
-# compatibility window and counted apart so we can see those clients drain.
-Transport = Literal["websocket", "sse"]
 
 # Refuse a client that cannot meet this server's protocol rather than degrading
 # in ways neither side can see. The runtime lives on the user's machine and
@@ -334,9 +330,6 @@ class ClientDeclaration:
     accepts: int | None = None
     artifact: str | None = None
     version: str | None = None
-    # Why a client that has the WebSocket opened the event stream instead, as
-    # `sse_fallback` cleaned it. Logged only: not recorded and not reported.
-    fallback: str | None = None
 
     @property
     def declares_protocol(self) -> bool:
@@ -364,31 +357,6 @@ class ClientDeclaration:
         }
 
 
-SSE_FALLBACK_REASONS = frozenset({"socket_never_opened"})
-
-
-def sse_fallback(reason: str | None, close_code: str | None) -> str | None:
-    """Why a client opened the event stream, as it goes in the log line.
-
-    A runtime that has the WebSocket asks for the event stream only when its
-    socket never opened, and says so, so the log can tell it apart from a
-    client built before the socket. Both values are the client's own, so an
-    unknown reason becomes "other" and a close code that is not a short number
-    is dropped.
-    """
-    if not reason:
-        return None
-    label = reason if reason in SSE_FALLBACK_REASONS else "other"
-    if (
-        close_code
-        and close_code.isascii()
-        and close_code.isdigit()
-        and len(close_code) <= 4
-    ):
-        return f"{label}:{close_code}"
-    return label
-
-
 def client_label(declaration: ClientDeclaration) -> str:
     """The declared artifact as a metric value: a registered name, or a bucket.
 
@@ -401,14 +369,6 @@ def client_label(declaration: ClientDeclaration) -> str:
     if declaration.artifact in ARTIFACT_VERSIONS:
         return declaration.artifact
     return "other"
-
-
-def _fallback_suffix(declaration: ClientDeclaration) -> str:
-    """` fallback=<why>` for the `[CONN]` log lines, or nothing when the
-    client did not fall back, so the line reads as it always has."""
-    if declaration.fallback is None:
-        return ""
-    return f" fallback={declaration.fallback}"
 
 
 class ProtocolVersionError(ConnectionError_):
@@ -464,8 +424,6 @@ class AgentConnection:
     # agent belongs to that no sibling has claimed.
     rooms: set[str] = field(default_factory=set)
     stream_attached: bool = False
-    # What the attached stream travels over, as of the last attach.
-    stream_transport: Transport = "websocket"
     # How many heartbeats this connection has received. Diagnostic: it is the
     # difference between a client that never started beating and one that beat
     # and then stopped, which the timestamp alone cannot tell you.
@@ -548,15 +506,28 @@ CONTROLLER_LABEL = ("controller", "agents-controller")
 
 
 def connection_transport(conn: AgentConnection) -> str:
-    """`websocket` or `sse` while a stream is attached, by what it travels over;
-    `detached` while it has dropped and the connection waits out its heartbeat
-    window for a reconnect."""
-    return conn.stream_transport if conn.stream_attached else "detached"
+    """`websocket` while the socket is attached; `detached` while the socket has
+    dropped and the connection waits out its heartbeat window for a reconnect."""
+    return "websocket" if conn.stream_attached else "detached"
 
 
 #: How a deleted agent's connections end, in whichever process holds them. A
 #: client that reopens is refused: its key names no agent any more.
 AGENT_DELETED = Closure(code="closed", message="the agent was deleted", room_id=None)
+
+#: How an agent's connections end when its key is re-issued, as handing the
+#: agent to a new owner does. Its connections authenticated with the old key
+#: once, when they opened, so they would otherwise outlive it. A client that
+#: reopens with the old key is refused.
+KEY_REISSUED = Closure(
+    code="closed",
+    message="the agent's key was re-issued; reconnect with the new key",
+    room_id=None,
+)
+
+#: Why an agent's connections were ended by deleting their rows, by the name a
+#: signal carries to the other processes (`connection_rows.py`).
+ENDINGS: dict[str, Closure] = {"deleted": AGENT_DELETED, "key_reissued": KEY_REISSUED}
 
 
 class ConnectionRows(Protocol):
@@ -581,9 +552,10 @@ class ConnectionRows(Protocol):
         """Read the agent's connections again from the rows."""
         ...
 
-    async def agent_deleted(self, agent_id: str) -> None:
-        """The agent was deleted, and its rows with it: end what this process
-        holds of it, and have every other process read its rows again."""
+    async def agent_ended(self, agent_id: str, ending: str) -> None:
+        """The agent's rows were deleted, with the agent or on its own
+        (`ENDINGS` names why): end what this process holds of it, and have
+        every other process read its rows again."""
         ...
 
     def closed(self, conn: AgentConnection) -> None:
@@ -618,6 +590,9 @@ class AgentConnectionRegistry:
         # and two room-claim failures — and a sixth added later would silently
         # report nothing. The registry stays unaware of what the callback does.
         self._on_close: Callable[[AgentConnection], None] = lambda conn: None
+        # Called with the id of an agent whose connections another process
+        # ended (`set_ended_elsewhere_listener`).
+        self._on_ended_elsewhere: Callable[[str], None] = lambda agent_id: None
         self._by_id: dict[str, AgentConnection] = {}
         self._by_agent: dict[str, set[str]] = {}
         self._slot_locks: dict[str, tuple[asyncio.Lock, int]] = {}
@@ -690,7 +665,6 @@ class AgentConnectionRegistry:
         position: Position,
         declaration: ClientDeclaration,
         expected_generation: int | None,
-        transport: Transport = "websocket",
     ) -> AgentConnection:
         """Open a connection, or reattach to one the client already owns.
 
@@ -752,7 +726,6 @@ class AgentConnectionRegistry:
             existing.last_beat = time.monotonic()
             existing.closure = None
             existing.stream_attached = True
-            existing.stream_transport = transport
             existing.stream_generation = self._new_incarnation()
             # Wake the stream this one replaces, so its client hears it was
             # taken over now rather than on the stream's next idle tick.
@@ -763,15 +736,12 @@ class AgentConnectionRegistry:
             existing.declaration = declaration
             metrics().increment(AGENT_CONNECTIONS_OPENED, {"kind": "reattach"})
             logger.info(
-                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s "
-                "transport=%s%s%s",
+                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s%s",
                 agent_id,
                 connection_id,
                 scope,
                 existing.stream_generation,
-                transport,
                 f" from process={moved_from}" if moved_from is not None else "",
-                _fallback_suffix(declaration),
             )
             return existing
 
@@ -790,7 +760,6 @@ class AgentConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
-            stream_transport=transport,
             stream_generation=self._new_incarnation(),
             declaration=declaration,
         )
@@ -802,7 +771,7 @@ class AgentConnectionRegistry:
         )
         logger.info(
             "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s "
-            "client=%s version=%s protocol=%s transport=%s%s",
+            "client=%s version=%s protocol=%s",
             agent_id,
             connection_id,
             scope,
@@ -813,8 +782,6 @@ class AgentConnectionRegistry:
             f"{floor}-{declaration.speaks}"
             if declaration.declares_protocol
             else "unknown",
-            transport,
-            _fallback_suffix(declaration),
         )
         return conn
 
@@ -842,6 +809,19 @@ class AgentConnectionRegistry:
         closed state rather than a connection mid-teardown.
         """
         self._on_close = listener
+
+    def set_ended_elsewhere_listener(self, listener: Callable[[str], None]) -> None:
+        """Register a callback for an agent whose connections another process
+        ended, called as soon as this process is told, before it reads the
+        agent's rows. The wiring drops the agent's cached keys with it, so a
+        client of an agent whose key was re-issued cannot reopen here on a key
+        this process still remembers. One listener, set once at wiring time;
+        it must not raise."""
+        self._on_ended_elsewhere = listener
+
+    def ended_elsewhere(self, agent_id: str) -> None:
+        """Another process ended this agent's connections (`connection_rows.py`)."""
+        self._on_ended_elsewhere(agent_id)
 
     def _forget(self, connection_id: str) -> AgentConnection | None:
         conn = self._by_id.pop(connection_id, None)
@@ -1231,8 +1211,35 @@ class AgentConnectionRegistry:
         """Each of the agent's sessions that connected to a room, and the room."""
         return dict(self._session_rooms.get(agent_id, {}))
 
-    def placed_rooms(self, agent_id: str) -> set[str]:
-        return set(self._session_rooms.get(agent_id, {}).values())
+    def _live_placements(self, agent_id: str) -> dict[str, str]:
+        """The agent's sessions placed over a connection that is still live,
+        and their rooms. A placement outlives the connection it arrived on, so
+        the session has its room back when that connection reattaches or the
+        watcher restates its placements on a new one, but nothing is in the
+        room in the meantime."""
+        placed = self._session_rooms.get(agent_id)
+        if not placed:
+            return {}
+        live = {conn.id for conn in self.for_agent(agent_id)}
+        owners = self._placement_owners.get(agent_id, {})
+        return {
+            session_id: room_id
+            for session_id, room_id in placed.items()
+            if owners.get(session_id) in live
+        }
+
+    def live_placed_rooms(self, agent_id: str) -> set[str]:
+        return set(self._live_placements(agent_id).values())
+
+    def live_session_in_room(self, agent_id: str, room_id: str) -> str | None:
+        return next(
+            (
+                session_id
+                for session_id, room in self._live_placements(agent_id).items()
+                if room == room_id
+            ),
+            None,
+        )
 
     def session_in_room(self, agent_id: str, room_id: str) -> str | None:
         return next(
@@ -1387,11 +1394,22 @@ class AgentConnectionRegistry:
         holds (`apply_rows`): this one at once, and the others when told. A
         registry that records nothing closes the connections it holds.
         """
+        await self._end_agent(agent_id, "deleted")
+
+    async def agent_key_reissued(self, agent_id: str) -> None:
+        """End the connections of an agent whose key was re-issued, here and
+        in every other process, as `agent_deleted` does. The caller deleted
+        their rows with the old key (`AgentConnectionStore.delete_agent`), so
+        each process closes what it holds when it reads them, even one that
+        missed being told."""
+        await self._end_agent(agent_id, "key_reissued")
+
+    async def _end_agent(self, agent_id: str, ending: str) -> None:
         if self._rows is not None:
-            await self._rows.agent_deleted(agent_id)
+            await self._rows.agent_ended(agent_id, ending)
             return
         for cid in list(self._by_agent.get(agent_id, ())):
-            self.close(cid, AGENT_DELETED)
+            self.close(cid, ENDINGS[ending])
 
     # ------------------------------------------------------------------
     # Keeping the copies of other processes' connections
@@ -1474,18 +1492,24 @@ class AgentConnectionRegistry:
             self._released = None
 
     def apply_rows(
-        self, agent_id: str, tenant_id: str, rows: AgentSlotRows, process_id: str
+        self,
+        agent_id: str,
+        tenant_id: str,
+        rows: AgentSlotRows,
+        process_id: str,
+        row_gone: Closure,
     ) -> list[AgentConnection]:
         """Make this agent's connections what the rows say.
 
         A connection held here that another process (or a later incarnation)
         has taken over is closed `taken_over`, so its stream tells its client.
-        One whose row was written and is gone is closed too: deleting the
-        agent deletes its rows. Copies of other processes' connections are
-        replaced by what is live now. Claims and placements are set from the
-        rows, and a connection held here whose rooms changed is woken, so its
-        stream reports the change and a session waiting for its first room
-        starts reading. Returns the connections closed as taken over.
+        One whose row was written and is gone is closed too, with `row_gone`:
+        deleting the agent deletes its rows, and so does re-issuing its key.
+        Copies of other processes' connections are replaced by what is live
+        now. Claims and placements are set from the rows, and a connection
+        held here whose rooms changed is woken, so its stream reports the
+        change and a session waiting for its first room starts reading.
+        Returns the connections closed as taken over.
 
         The rows are never older than what this process holds of the agent
         (`connection_rows.py` reads them under its slots, or leaves an agent
@@ -1500,7 +1524,7 @@ class AgentConnectionRegistry:
                 # Recorded once (`tenant_id` is set when its row is written),
                 # and the row is gone since.
                 if conn.tenant_id is not None:
-                    self.close(conn.id, AGENT_DELETED)
+                    self.close(conn.id, row_gone)
                 continue
             if row.closed:
                 continue
@@ -1555,7 +1579,6 @@ class AgentConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
-            stream_transport=cast(Transport, row.transport),
             stream_generation=row.incarnation,
             declaration=ClientDeclaration(speaks=row.speaks, accepts=row.accepts),
             held_by=row.process_id,

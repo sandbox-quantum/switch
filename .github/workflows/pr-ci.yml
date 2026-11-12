@@ -74,7 +74,9 @@ jobs:
       artifacts: ${{ steps.filter.outputs.artifacts }}
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
+      decision: ${{ steps.filter.outputs.decision }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -104,6 +106,13 @@ jobs:
               # checked against the server below.
               - 'scripts/e2e_surface.py'
               - 'console/tooling-e2e/surface/**'
+              # A core test holds switch-core's OTLP log encoding equal to the
+              # decision service's copy through this fixture.
+              - 'decision/tests/fixtures/**'
+            # The decision service: its own package, tested on its own.
+            decision:
+              - *shared
+              - 'decision/**'
             console:
               - *shared
               - 'console/**'
@@ -114,6 +123,16 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
+            # The step of the local-server bundle that builds the gateway's
+            # pages. The bundle itself is only built at release, so the console
+            # jobs below run (with this step) when it, or what it installs,
+            # changes, even where nothing else in console/ did.
+            local_server_bundle:
+              - *shared
+              - 'console/apps/switch-console-desktop/scripts/build-gateway-ui.mjs'
+              - 'console/apps/switch-console-desktop/scripts/build-local-server-bundle.mjs'
+              - 'gateway/package.json'
+              - 'gateway/package-lock.json'
             # The server, the stack the fast lane stands up, and the harness.
             e2e:
               - *shared
@@ -137,6 +156,8 @@ jobs:
               - 'deploy/hosted/chart/**'
               - 'deploy/hosted/render-check-values.yaml'
               - 'scripts/pin_chart_images.py'
+              - 'scripts/release_charts.sh'
+              - 'scripts/check_chart_decision.py'
               - '.github/workflows/switch-release.yml'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
@@ -236,11 +257,34 @@ jobs:
           --splitting-algorithm least_duration
           --timeout 300
 
+  decision:
+    name: Decision service
+    needs: changes
+    if: ${{ needs.changes.outputs.decision == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --project decision
+
+      - name: pytest
+        working-directory: decision
+        run: uv run pytest -q
+
   console:
     name: Switch Console
     needs: changes
-    if: ${{ needs.changes.outputs.console == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    if: ${{ needs.changes.outputs.console == 'true' || needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: console
@@ -296,6 +340,19 @@ jobs:
       - name: Test (vitest)
         run: pnpm -r run test
 
+      # The local-server bundle's gateway step, which otherwise first runs at release.
+      - name: Build the local server's gateway pages
+        if: ${{ !cancelled() && (needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'workflow_dispatch') }}
+        run: node apps/switch-console-desktop/scripts/build-gateway-ui.mjs ../gateway "$RUNNER_TEMP/gateway-ui"
+
+      - name: Upload buddy onboarding screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: buddy-onboarding-screenshots
+          path: console/apps/switch-console-desktop/build/acceptance/buddy-onboarding/
+          if-no-files-found: warn
+
   # The agent runner and the controller on native Windows (CHOO-3472): process
   # control, CLI lookup and permissions there take different code paths, and
   # their tests that start real processes only run on Windows. Scoped to the
@@ -303,7 +360,7 @@ jobs:
   console-windows:
     name: Switch Console (Windows)
     needs: changes
-    if: ${{ needs.changes.outputs.console == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.changes.outputs.console == 'true' || needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -346,6 +403,11 @@ jobs:
       - name: Test Console's embedded controller and Windows launching
         if: ${{ !cancelled() }}
         run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/embedded-controller src/main/core/execution-context
+
+      # The local-server bundle's gateway step, which runs npm through a shell on Windows.
+      - name: Build the local server's gateway pages
+        if: ${{ !cancelled() && (needs.changes.outputs.local_server_bundle == 'true' || github.event_name == 'workflow_dispatch') }}
+        run: node apps/switch-console-desktop/scripts/build-gateway-ui.mjs ../gateway "$RUNNER_TEMP/gateway-ui"
 
   artifacts:
     name: Artifact registry
@@ -397,6 +459,11 @@ jobs:
         # feature flag is checked too.
         run: |
           scripts/release_charts.sh build ghcr.io/render-check 0.0.0-check "$RUNNER_TEMP/chart" --placeholder-digests
+
+      - name: The decision service renders as configured
+        # Off renders nothing; on runs it, points switch-core at it and admits
+        # only switch-core; an endpoint elsewhere is wired without it.
+        run: python3 scripts/check_chart_decision.py
 
   gateway:
     name: Gateway UI

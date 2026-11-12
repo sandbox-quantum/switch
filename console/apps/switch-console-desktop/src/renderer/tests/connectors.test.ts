@@ -47,7 +47,7 @@ import {
   noAgentsText,
   offersAddAgent,
 } from '@renderer/features/connectors/grant-agents';
-import { adminNavTarget, workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
+import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 import {
   FLAGS_NOT_READ_YET,
   allFeatureFlagsOff,
@@ -771,43 +771,32 @@ describe('with the service_connections flag off', () => {
     error: null,
   });
 
-  it('leaves Connectors and Admin out of the nav', () => {
-    const shown = workspaceNavViews({
-      managed: false,
-      serviceConnections: false,
-      administers: true,
-    });
-    expect(shown).not.toContain('connectors');
-    expect(shown).not.toContain('admin');
-    expect(
-      workspaceNavViews({ managed: true, serviceConnections: true, administers: true })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates', 'admin']);
-  });
-
-  it('shows Admin only to whoever administers the workspace or runs its server', () => {
-    expect(
-      workspaceNavViews({ managed: false, serviceConnections: true, administers: false })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates']);
-    // The server's status lives under Admin, for whoever runs it, flag or role aside.
-    expect(
-      workspaceNavViews({ managed: true, serviceConnections: false, administers: false })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'admin']);
-  });
-
-  it('opens Admin on its sections, or on the server’s status where there are none to use', () => {
-    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: false })).toBe(
-      'admin'
-    );
-    expect(adminNavTarget({ serviceConnections: false, administers: true, frozen: false })).toBe(
-      'managedServer'
-    );
-    expect(adminNavTarget({ serviceConnections: true, administers: false, frozen: false })).toBe(
-      'managedServer'
-    );
-    // While the server can't answer, its status is the only entry that works.
-    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: true })).toBe(
-      'managedServer'
-    );
+  it('leaves Connectors out of the nav, and shows Admin when it has something for you', () => {
+    expect(workspaceNavViews({ serviceConnections: false, admin: false })).toEqual([
+      'server',
+      'serverAgents',
+      'serverRooms',
+      'library',
+      'templates',
+    ]);
+    // Admin's messaging apps and Switch Trust do not need service connections.
+    expect(workspaceNavViews({ serviceConnections: false, admin: true })).toEqual([
+      'server',
+      'serverAgents',
+      'serverRooms',
+      'library',
+      'templates',
+      'admin',
+    ]);
+    expect(workspaceNavViews({ serviceConnections: true, admin: true })).toEqual([
+      'server',
+      'serverAgents',
+      'serverRooms',
+      'library',
+      'templates',
+      'connectors',
+      'admin',
+    ]);
   });
 
   it('has no page to show, rather than an empty one', () => {

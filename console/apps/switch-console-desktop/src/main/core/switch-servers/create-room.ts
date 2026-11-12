@@ -1,4 +1,5 @@
 import { createRoom, GatewayError } from '@main/core/switch-servers/gateway-client';
+import { log } from '@main/lib/logger';
 import type {
   CreateRoomParams,
   CreateRoomResult,
@@ -22,12 +23,15 @@ function isBridgeFailure(detail: string): boolean {
   return /bridge/i.test(detail) && /not running|unavailable|not found/i.test(detail);
 }
 
+const EXISTING_CHANNEL_REFUSED =
+  'Switch couldn’t use that channel. Check the id, that the Switch app is in the channel, and that no other room already uses it.';
+
 /**
  * Create a room on `server` and map recoverable gateway failures onto a typed
  * {@link CreateRoomResult}, so the modal can name what went wrong instead of
  * surfacing a raw status line — or worse, appearing to do nothing.
  *
- * Unmapped failures still throw: an unexpected 500 is a bug, not a form error,
+ * Unmapped failures still throw: any other unexpected 500 is a bug, not a form error,
  * and should reach the logs rather than be flattened into the same inline
  * message as a typo in the room name.
  */
@@ -42,6 +46,10 @@ export async function createRoomOnServer(
       instructions: params.instructions,
       bridgeId: params.bridgeId,
       agentIds: params.agentIds,
+      userNames: params.userNames,
+      channel: params.channel,
+      groupId: params.groupId,
+      access: params.access,
     });
     return { kind: 'created', room };
   } catch (cause) {
@@ -52,6 +60,35 @@ export async function createRoomOnServer(
         return isBridgeFailure(message)
           ? { kind: 'bridge-unavailable', message }
           : { kind: 'invalid', message };
+      }
+      // The channel named is already another room's. The server says so in
+      // its own words, which name the channel and what to do instead.
+      if (cause.kind === 'http' && cause.status === 409 && cause.detail !== undefined)
+        return { kind: 'invalid', message: cause.detail };
+      // The messaging app turned the request down (`BridgeOperationError`): the
+      // server says so in its JSON error. A 502 without one comes from a proxy
+      // in front of the server (while it restarts, say), not the messaging app.
+      if (cause.kind === 'http' && cause.status === 502)
+        return cause.detail !== undefined
+          ? {
+              kind: 'error',
+              message: `The messaging app could not make the room: ${cause.detail}`,
+            }
+          : { kind: 'error', message: 'The server could not be reached. Try again in a moment.' };
+      // A server that checks a named channel says why it cannot use it, as a
+      // 409 or a 400 handled above. An older one let the failure escape as an
+      // unhandled 500 with no JSON error. Said so, since Console is where the
+      // id was typed, and logged, since it is still a server fault. A 500 the
+      // server chose to send carries its own detail and is thrown like any
+      // other.
+      if (
+        cause.kind === 'http' &&
+        cause.status === 500 &&
+        cause.detail === undefined &&
+        params.channel?.kind === 'existing'
+      ) {
+        log.warn('Creating a room on an existing channel failed on the server', cause);
+        return { kind: 'invalid', message: EXISTING_CHANNEL_REFUSED };
       }
       if (cause.kind === 'network') return { kind: 'error', message: cause.message };
     }

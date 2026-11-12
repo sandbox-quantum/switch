@@ -65,6 +65,7 @@ async def _read(session: AsyncSession, room_id: str, user: User) -> object:
         None,
         None,
         None,
+        None,
         user,
         False,  # type: ignore[arg-type]
     )
@@ -80,6 +81,7 @@ async def _write(session: AsyncSession, room_id: str, user: User) -> None:
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
         user,
         False,
     )
@@ -88,7 +90,9 @@ async def _write(session: AsyncSession, room_id: str, user: User) -> None:
 async def test_participants_read_a_private_room_and_change_nothing(
     session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def detail(_session: AsyncSession, room: Room, *_args: Any) -> str:
+    async def detail(
+        _session: AsyncSession, room: Room, *_args: Any, **_kwargs: Any
+    ) -> str:
         return room.id
 
     monkeypatch.setattr(rooms_module, "_build_room_detail", detail)

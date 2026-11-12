@@ -30,6 +30,7 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_claims,
     workspace_on,
 )
+from switch_core.gateway import hosted_controller
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
     controller_machine_idle,
@@ -55,6 +56,7 @@ from tests.switch_core.hosted_machine_helpers import (
     place_managed_agent,
     seed_machine,
 )
+from tests.telemetry_records import recording_telemetry
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
@@ -1384,3 +1386,76 @@ async def test_a_stopped_machine_enrolls_its_revoked_controller_at_its_next_star
         assert await enroll_revoked_again(session, here, datetime.now(UTC)) is not None
         await session.commit()
     assert (await machine_of(app.factory, app.machine_id)).revision == before
+
+
+@pytest.fixture
+def reported(monkeypatch):
+    """What the operator controller's routes report."""
+    service, sink = recording_telemetry()
+    monkeypatch.setattr(hosted_controller, "current_telemetry", lambda: service)
+    return sink
+
+
+@pytest.mark.parametrize(
+    ("values", "reason"),
+    [
+        ({"updated_at_minutes_ago": 11}, "not_scheduled"),
+        (
+            {"state": "provisioning", "running_observed_at_minutes_ago": 11},
+            "never_connected",
+        ),
+        ({"state": "provisioning", "updated_at_minutes_ago": 11}, "never_started"),
+    ],
+)
+async def test_each_timeout_is_reported_with_its_own_reason(
+    controller_app, reported, values, reason
+):
+    app = controller_app
+    now = datetime.now(UTC)
+    changes: dict[str, object] = {}
+    if "state" in values:
+        changes["state"] = values["state"]
+    if "updated_at_minutes_ago" in values:
+        changes["updated_at"] = now - timedelta(
+            minutes=values["updated_at_minutes_ago"]
+        )
+    if "running_observed_at_minutes_ago" in values:
+        changes["running_observed_at"] = now - timedelta(
+            minutes=values["running_observed_at_minutes_ago"]
+        )
+    await update_machine(app.factory, app.machine_id, **changes)
+
+    await list_machines(app.client)
+    await list_machines(app.client)
+
+    assert reported.events("cloud_machine_failed") == [{"reason": reason}]
+
+
+async def test_a_departed_owner_is_reported_once(controller_app, reported):
+    app = controller_app
+    async with app.factory() as session:
+        await session.delete(
+            await session.get(TenantMember, (require_tenant_id(), app.owner_id))
+        )
+        await session.commit()
+
+    assert (await prepare(app.client, app.machine_id)).status_code == 409
+    assert (await prepare(app.client, app.machine_id)).status_code == 409
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "owner_left"}]
+
+
+async def test_an_observed_error_is_reported_by_its_code_once(controller_app, reported):
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning")
+    for _ in range(2):
+        await observe(
+            app.client,
+            app.machine_id,
+            state="error",
+            revision=1,
+            error="The instance failed its status checks.",
+            error_code="machine_needs_attention",
+        )
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "needs_attention"}]

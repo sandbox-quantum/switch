@@ -119,6 +119,7 @@ class _AgentAddressed:
     room_id: str
     sender_transport_user_id: str
     from_platform: bool
+    from_app: bool
     known_agent_type: str
     agent_live: bool
     has_attachment: bool
@@ -220,6 +221,7 @@ class MessageTelemetry:
         room_id: str,
         sender_transport_user_id: str,
         from_platform: bool,
+        from_app: bool,
         agent_metadata: dict | None,
         agent_live: bool,
         has_attachment: bool,
@@ -237,6 +239,7 @@ class MessageTelemetry:
                 room_id=room_id,
                 sender_transport_user_id=sender_transport_user_id,
                 from_platform=from_platform,
+                from_app=from_app,
                 known_agent_type=normalise_known_agent_type(agent_metadata),
                 agent_live=agent_live,
                 has_attachment=has_attachment,
@@ -314,7 +317,11 @@ class MessageTelemetry:
         room = await self._room_facts(message.tenant_id, message.room_id)
         self._telemetry.emit(
             "room_message_sent",
-            sender_kind=_ROLE_KIND.get(message.sender_role, "unknown"),
+            sender_kind=(
+                "bot"
+                if message.sender_is_app
+                else _ROLE_KIND.get(message.sender_role, "unknown")
+            ),
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
             room_user_count=room.user_count,
@@ -338,11 +345,14 @@ class MessageTelemetry:
 
     async def _report_addressed(self, item: _AgentAddressed) -> None:
         room = await self._room_facts(item.tenant_id, item.room_id)
-        sender_kind = (
-            "platform"
-            if item.from_platform
-            else await self._sender_kind(item.tenant_id, item.sender_transport_user_id)
-        )
+        if item.from_platform:
+            sender_kind = "platform"
+        elif item.from_app:
+            sender_kind = "bot"
+        else:
+            sender_kind = await self._sender_kind(
+                item.tenant_id, item.sender_transport_user_id
+            )
         self._telemetry.emit(
             "agent_message_received",
             sender_kind=sender_kind,

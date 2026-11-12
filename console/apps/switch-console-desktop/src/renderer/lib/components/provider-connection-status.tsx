@@ -77,6 +77,11 @@ export function ProviderConnectionStatus({
     mutationFn: (command: string) => navigator.clipboard.writeText(command),
   });
   const data = query.data;
+  // The executable checked may sign in with a command of its own.
+  const loginCommand =
+    (data && 'loginCommand' in data ? data.loginCommand : undefined) ??
+    provider?.loginCommand ??
+    '';
   const checking = query.isFetching;
   const missing = data?.installed === false;
   const ready = data?.installed === true && data.status === 'authenticated';
@@ -151,13 +156,11 @@ export function ProviderConnectionStatus({
         <div className="mt-2 space-y-1">
           <p>Run in a terminal {sshHost ? `on ${sshHost}` : 'on this computer'}, then Recheck:</p>
           <div className="flex items-center gap-2 rounded bg-background px-2 py-1">
-            <code className="min-w-0 flex-1 text-xs break-all select-all">
-              {provider.loginCommand}
-            </code>
+            <code className="min-w-0 flex-1 text-xs break-all select-all">{loginCommand}</code>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => copy.mutate(provider.loginCommand)}
+              onClick={() => copy.mutate(loginCommand)}
               aria-label="Copy sign-in command"
             >
               {copy.isSuccess ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}

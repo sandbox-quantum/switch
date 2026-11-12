@@ -36,14 +36,19 @@ export class Journal<T> {
   }
 
   append(value: T): Promise<void> {
-    const copy = structuredClone(value);
+    return this.appendAll([value]);
+  }
+
+  /** Appends several entries with one write and one flush to disk. */
+  appendAll(values: T[]): Promise<void> {
+    const copies = structuredClone(values);
     const pending = this.tail.then(async () => {
       if (this.poisoned) throw new Error('Journal write failed; reload before continuing.');
       const file = await open(this.path, 'a', 0o600);
       try {
-        await file.writeFile(`${JSON.stringify(copy)}\n`);
+        await file.writeFile(copies.map((copy) => `${JSON.stringify(copy)}\n`).join(''));
         await file.sync();
-        this.records.push(copy);
+        this.records.push(...copies);
       } catch (error) {
         this.poisoned = true;
         throw error;

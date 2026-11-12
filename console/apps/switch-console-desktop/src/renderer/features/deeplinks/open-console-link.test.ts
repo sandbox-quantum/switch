@@ -95,13 +95,23 @@ describe('openConsoleLink', () => {
 
   it('opens a dialog over the page it belongs to', async () => {
     await openConsoleLink('switchdash://open/messaging-apps/connect');
-    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-1' });
+    expect(navigate).toHaveBeenCalledWith('admin', {
+      serverId: 'srv-1',
+      section: 'messaging-apps',
+    });
     expect(showModal).toHaveBeenCalledWith(
       'connectMessagingAppModal',
       expect.objectContaining({ serverId: 'srv-1' })
     );
     await openConsoleLink('switchdash://open/invite');
     expect(showModal).toHaveBeenCalledWith('invitePeopleModal', { workspaceId: 'ws-1' });
+  });
+
+  it('sends someone who cannot connect an app to their own accounts in Settings', async () => {
+    administers.mockReturnValueOnce(false);
+    await openConsoleLink('switchdash://open/messaging-apps/connect');
+    expect(navigate).toHaveBeenCalledWith('settings', { tab: 'messaging-apps' });
+    expect(showModal).not.toHaveBeenCalledWith('connectMessagingAppModal', expect.anything());
   });
 
   it('opens an agent on the section its tab names', async () => {

@@ -205,6 +205,8 @@ Artifacts land in `console/apps/switch-console-desktop/release/`.
   `switch-console` as a new package rather than an upgrade of `switchdash`, so
   remove the old one yourself (`sudo apt remove switchdash`) or the two sit
   side by side.
-- Switch Console releases use the `switch-console-v*` tag prefix and are published with
-  the repo-wide "Latest" badge **off**, so they never collide with other release
-  streams in this repo.
+- Stable Switch Console releases use the `switch-console-v*` tag prefix and are
+  published as the repo's **Latest** release, because that is the release the
+  stable auto-updater reads. Every other release in this repo, Switch Console
+  canaries included, is published with "Latest" off so that it never becomes
+  the stable update feed.

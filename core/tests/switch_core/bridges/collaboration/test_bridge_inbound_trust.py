@@ -49,12 +49,21 @@ class _FakeHumanActor:
 
 
 class _FakeAdapter:
+    """A platform with no private route, so every notice is posted in the
+    channel, where these tests read it."""
+
+    platform_name = "Fake"
+    private_notice_delivery = "in_channel"
+
     def __init__(self, *, raise_on_admin_message: bool = False) -> None:
         self.admin_messages: list[tuple[str, str, str | None, str]] = []
         self._raise_on_admin_message = raise_on_admin_message
 
     def translate_inbound(self, content: str) -> str:
         return content
+
+    def unlinkable_account_reason(self, _external_user_id: str) -> str | None:
+        return None
 
     async def admin_message(
         self,

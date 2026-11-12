@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 
+from switch_core.chats.views import _provider
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.known_agents import (
     ClaudeCodeKnownAgent,
@@ -71,6 +72,16 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
+        "deepseek-harness": ("deepseek-harness", "DeepSeek Harness"),
+        "pi": ("pi", "Pi"),
+        "copilot": ("copilot", "GitHub Copilot CLI"),
+        "kiro": ("kiro", "Kiro CLI"),
+        "mistral-vibe": ("mistral-vibe", "Mistral Vibe"),
+        "goose": ("goose", "Goose CLI"),
+        "qwen": ("qwen", "Qwen Code"),
+        "droid": ("droid", "Droid CLI"),
+        "cline": ("cline", "Cline CLI"),
+        "junie": ("junie", "Junie CLI"),
     }
 
 
@@ -83,8 +94,24 @@ _CONSOLE_SIGN_IN = {
     "claude": ("claude/sign-in.ts", r"CLAUDE_LOGIN = '([^']+)'"),
     "codex": ("codex/sign-in.ts", r"CODEX_LOGIN = '([^']+)'"),
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
-    "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
+    "antigravity": ("antigravity/runtime.ts", r"AGY_LOGIN = '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+    "deepseek-harness": (
+        "deepseek-harness/deepseek-harness-acp.ts",
+        r"DSH_LOGIN = '([^']+)'",
+    ),
+    "pi": ("pi/sign-in.ts", r"PI_LOGIN = '([^']+)'"),
+    "copilot": ("copilot/copilot-acp.ts", r"COPILOT_LOGIN = '([^']+)'"),
+    "kiro": ("kiro/kiro-acp.ts", r"KIRO_LOGIN = '([^']+)'"),
+    "mistral-vibe": (
+        "mistral-vibe/mistral-vibe-acp.ts",
+        r"MISTRAL_VIBE_LOGIN = '([^']+)'",
+    ),
+    "goose": ("goose/goose-adapter.ts", r"GOOSE_LOGIN = '([^']+)'"),
+    "qwen": ("qwen/qwen-acp.ts", r"QWEN_LOGIN = '([^']+)'"),
+    "droid": ("droid/droid-adapter.ts", r"DROID_LOGIN = '([^']+)'"),
+    "cline": ("cline/cline-adapter.ts", r"CLINE_LOGIN = '([^']+)'"),
+    "junie": ("junie/junie-adapter.ts", r"JUNIE_LOGIN = '([^']+)'"),
 }
 
 
@@ -103,7 +130,8 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
     assert str(raised.value) == (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie"
     )
 
 
@@ -198,3 +226,13 @@ class TestANewProvider:
             "known_agent_type": "newcli",
             "known_agent_options": {"auto_session": True, "repo_dir": "/w"},
         }
+
+    def test_a_registered_agent_of_it_shows_it_as_its_provider(
+        self, new_provider: AgentProvider
+    ) -> None:
+        agent = SimpleNamespace(metadata_={"known_agent_type": "newcli"})
+        assert _provider(agent, None) == "newcli"  # type: ignore[arg-type]
+        claude = SimpleNamespace(metadata_={"known_agent_type": "claude-code"})
+        assert _provider(claude, None) == "claude"  # type: ignore[arg-type]
+        unknown = SimpleNamespace(metadata_={"known_agent_type": "gemini"})
+        assert _provider(unknown, None) is None  # type: ignore[arg-type]

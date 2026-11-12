@@ -17,6 +17,9 @@ function createMemoryFs(initial: Record<string, string> = {}): PluginFs {
     async delete(path) {
       store.delete(path);
     },
+    async protectSecret(path) {
+      return store.has(path);
+    },
     async exists(path) {
       return store.has(path);
     },

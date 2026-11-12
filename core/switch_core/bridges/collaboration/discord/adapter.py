@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -24,8 +25,11 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
     AgentIdentity,
+    CardRejectedError,
     ChannelNotBindable,
+    MessagePartlySent,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -47,12 +51,20 @@ from switch_core.bridges.collaboration.discord.slash import (
     build_app_commands,
     reassemble_args,
 )
+from switch_core.bridges.collaboration.discord.ui_embeds import (
+    parse_card_custom_id,
+    settled_notice,
+    ui_spec_to_message,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -61,6 +73,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -87,6 +100,7 @@ from switch_core.room_wide_mention import (
     defuse_mass_mention_words_in_prose,
 )
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import UI_ACTION_PREFIX, UISpec
 
 logger = logging.getLogger(__name__)
 
@@ -273,15 +287,43 @@ def _parse_interrupt_id(custom_id: str) -> str | None:
     return turn_id
 
 
+def _render_card(
+    spec: UISpec, *, interactive: bool
+) -> tuple[list[discord.Embed], discord.ui.View | None]:
+    """`ui_spec_to_message`, with a card over Discord's limits refused before
+    anything is sent."""
+    try:
+        return ui_spec_to_message(spec, interactive=interactive)
+    except ValueError as error:
+        raise CardRejectedError(str(error)) from error
+
+
+@contextlib.contextmanager
+def _card_refusals() -> Iterator[None]:
+    """A card Discord answers with a 4xx was not posted: `CardRejectedError`,
+    so the text goes instead. A `ValueError` is not converted here: discord.py
+    parses the response inside the send, so one may mean the card did post."""
+    try:
+        yield
+    except discord.HTTPException as error:
+        if 400 <= error.status < 500 and error.status != 429:
+            raise CardRejectedError(str(error)) from error
+        raise
+
+
 def _press_action(custom_id: str) -> tuple[str, str] | None:
     """The Switch action a press carries and what it names, or None if not ours.
 
-    Two buttons arrive here and they name different things — a card's option
-    names the card, a stop names the turn — but they leave by the same door,
-    because what happens next is the same for both: acknowledge inside
+    Three buttons arrive here and they name different things — a request
+    card's option names the card, a stop names the turn, an agent card's
+    button names itself — but they leave by the same door,
+    because what happens next is the same for all: acknowledge inside
     Discord's three seconds, then hand the press to the shared inbound path and
     tell the presser alone whatever comes back.
     """
+    card_button = parse_card_custom_id(custom_id)
+    if card_button is not None:
+        return card_button
     turn_id = _parse_interrupt_id(custom_id)
     if turn_id is not None:
         return INTERRUPT_ACTION, turn_id
@@ -396,7 +438,7 @@ class _WebhookIdentity:
         if self._fallback == self._identifier:
             return payload
         if "embed" in payload or "embeds" in payload:
-            raise ValueError(
+            raise CardRejectedError(
                 "Webhook identity disclosure requires a payload without embeds"
             )
         disclosure = discord.Embed()
@@ -589,6 +631,10 @@ class DiscordAdapter(PlatformAdapter):
     # nobody.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@everyone"
+    #: Discord shows a bot's message to one member of a channel only in answer
+    #: to an interaction, and a posted message is not one, so a notice about
+    #: it goes to them as a direct message from the bot.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "direct_message"
 
     # The status is the turn's one post, so the clock rides along with the next
     # real change rather than rewriting a message somebody is reading. See the
@@ -664,6 +710,9 @@ class DiscordAdapter(PlatformAdapter):
         # Of those, the ones this application created — the only ones Discord
         # will let carry buttons. See `_application_owns`.
         self._owned_webhooks: set[int] = set()
+        # The press on an agent card's button, by message ref, held while the
+        # press is handled so `settle_card_press` can redraw that message.
+        self._pressed_cards: dict[str, discord.Interaction] = {}
         self._seen_ids: OrderedDict[int, None] = OrderedDict()
         self._seen_ids_max = 1000
         # Discord user id ↔ username caches, for mention translation both ways.
@@ -948,6 +997,125 @@ class DiscordAdapter(PlatformAdapter):
             where=f"channel {channel_id}",
         )
 
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as embeds and buttons (`ui_spec_to_message`) under
+        `fallback_text` as the message's content: the content is what a
+        notification previews and the only part of a message whose mentions
+        notify, so it stays even where it repeats the card. Raises before
+        posting (`CardRejectedError`) when the card or the text does not fit
+        one Discord message, or Discord refuses it, so the caller posts the
+        text alone."""
+        with _card_refusals():
+            target = await self._get_channel(int(channel_id))
+            lobby = self._channel_type_of(target) == "lobby"
+            content = (
+                f"**{await self.agent_label_for_body(sender_name)}**: {fallback_text}"
+                if lobby
+                else fallback_text
+            )
+            if len(content) > MAX_MESSAGE:
+                raise CardRejectedError(
+                    f"the card's text is {len(content)} characters, over Discord's "
+                    f"{MAX_MESSAGE}"
+                )
+            allowed_mentions = (
+                _ROOM_WIDE_MENTION if room_wide_mention else NO_MASS_MENTIONS
+            )
+            presses = self._on_interaction is not None
+            if lobby:
+                # The bot's own message, which may always carry buttons.
+                embeds, view = _render_card(spec, interactive=presses)
+                sent = await target.send(
+                    content,
+                    embeds=embeds,
+                    allowed_mentions=allowed_mentions,
+                    **({} if view is None else {"view": view}),
+                )
+                return f"{sent.channel.id}:{sent.id}"
+
+            webhook = await self._get_webhook(int(channel_id))
+            embeds, view = _render_card(
+                spec, interactive=presses and webhook.id in self._owned_webhooks
+            )
+            payload: dict[str, Any] = {
+                "content": content,
+                "embeds": embeds,
+                "allowed_mentions": allowed_mentions,
+                "wait": True,
+            }
+            if view is not None:
+                payload["view"] = view
+            if thread_root_id:
+                try:
+                    payload["thread"] = await self._ensure_thread(
+                        int(channel_id), thread_root_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to resolve Discord thread for root %s — posting at channel root",
+                        thread_root_id,
+                    )
+            agent = await self.agent_rendering(sender_name)
+            payload["avatar_url"] = agent.icon_url
+            sent = await _WebhookIdentity(agent.field_label, sender_name).send(
+                webhook, payload
+            )
+            return f"{sent.channel.id}:{sent.id}"
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Take every answering button off the card and say who chose what; a
+        card takes one answer, so only link buttons stay. Edited through the
+        press itself, which reaches a webhook's message and the bot's alike."""
+        ref = interaction.message_ref
+        press = self._pressed_cards.get(ref) if ref is not None else None
+        if press is None or press.message is None:
+            logger.warning(
+                "Cannot mark the card press in %s as done: no press is held for "
+                "message %s, so its buttons stay pressable",
+                interaction.channel_id,
+                ref,
+            )
+            return
+        message = press.message
+        view = discord.ui.View.from_message(message, timeout=None)
+        for item in list(view.children):
+            if getattr(item, "url", None) is None:
+                view.remove_item(item)
+        view.stop()
+        # In the last embed's footer rather than an embed of its own, which
+        # could take the card over Discord's embed count.
+        *embeds, last = message.embeds or [discord.Embed()]
+        footer = settled_notice(interaction.sender_display_name, label)
+        try:
+            await press.edit_original_response(
+                embeds=[*embeds, last.copy().set_footer(text=footer)],
+                view=view,
+            )
+        except (discord.HTTPException, ValueError) as error:
+            logger.warning(
+                "Discord refused to mark the card press on %s as done (%s), so "
+                "its buttons stay pressable",
+                ref,
+                error,
+            )
+
     async def _send_chunked(
         self,
         content: str,
@@ -962,9 +1130,10 @@ class DiscordAdapter(PlatformAdapter):
         said rather than its tail, and a thread created from it opens where the
         message begins.
 
-        A part failing mid-sequence leaves the message *visibly* truncated
-        rather than silently so: what was posted stays, and a short notice says
-        the rest did not make it.
+        `None` when not even the first part was taken. A later part failing
+        leaves the message *visibly* truncated rather than silently so: what
+        was posted stays, a short notice says the rest did not make it, and
+        `MessagePartlySent` is raised.
         """
         chunks = chunk_message(content)
         first_ref: str | None = None
@@ -980,8 +1149,15 @@ class DiscordAdapter(PlatformAdapter):
                     where,
                     e,
                 )
+                if first_ref is None:
+                    return None
                 await self._note_truncation(send, index, len(chunks))
-                return first_ref
+                raise MessagePartlySent(
+                    platform="Discord",
+                    first_ref=first_ref,
+                    delivered=index,
+                    total=len(chunks),
+                ) from e
             if first_ref is None:
                 first_ref = f"{sent.channel.id}:{sent.id}"
 
@@ -997,7 +1173,11 @@ class DiscordAdapter(PlatformAdapter):
                 "delivered — the rest was rejected by Discord."
             )
         except discord.HTTPException:
-            logger.exception("Failed to post Discord truncation notice")
+            logger.exception(
+                "Failed to post the Discord notice that a message is missing its "
+                "last %d parts; nothing in the channel says it is cut short",
+                total - delivered,
+            )
 
     async def send_attachment(
         self,
@@ -1186,6 +1366,36 @@ class DiscordAdapter(PlatformAdapter):
             ),
             where=f"channel {channel_id}",
         )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """A direct message from the bot, naming the channel the message was
+        posted in, split over several if it is past Discord's length cap.
+        Discord refuses it when the person does not accept direct messages
+        from members of the server, and that refusal is raised as
+        `PrivateNoticeRefused`."""
+        client = self._require_client()
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        body = (
+            f"About your message in <#{channel_id}>:\n"
+            f"{self.translate_outbound(content)}"
+        )
+        try:
+            for chunk in chunk_message(body):
+                await user.send(
+                    chunk,
+                    suppress_embeds=True,
+                    allowed_mentions=NO_MASS_MENTIONS,
+                )
+        except discord.Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -2379,7 +2589,8 @@ class DiscordAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         if channel_type in ("group", "direct"):
             raise ValueError(
                 f"Cannot create {channel_type} channels — they are initiated from the messaging platform"
@@ -2387,7 +2598,7 @@ class DiscordAdapter(PlatformAdapter):
 
         guild = await self._get_guild()
         channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(name),
+            name=self.channel_name_for(name),
             topic=topic,
             overwrites=(
                 self._private_channel_overwrites(guild)
@@ -2395,7 +2606,11 @@ class DiscordAdapter(PlatformAdapter):
                 else {}
             ),
         )
-        return str(channel.id)
+        return CreatedChannel(id=str(channel.id), name=channel.name)
+
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
+        return cls._sanitize_channel_name(room_name)
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         try:
@@ -2511,7 +2726,7 @@ class DiscordAdapter(PlatformAdapter):
         # the pair, visible only to the bridge and the user.
         guild = await self._get_guild()
         channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(f"dm-{user_name}-{agent_name}"),
+            name=self._sanitize_channel_name(f"{agent_name}-{user_name}"),
             topic=f"Direct conversation between {user_name} and {agent_name}",
             overwrites=self._private_channel_overwrites(guild),
         )
@@ -2558,14 +2773,76 @@ class DiscordAdapter(PlatformAdapter):
         which shared delivery does not carry, so on the shared connection one
         is not this bridge's either.
         """
-        target = await self._get_channel(int(channel_id))
+        target = await self._channel_to_bind(channel_id)
         if (
             getattr(target, "guild", None) is None
             and self._config.event_delivery == "shared"
         ):
             raise ChannelNotBindable(
                 f"Discord channel {channel_id} is a direct message, which this "
-                "connection does not carry."
+                "messaging app does not carry."
+            )
+
+    async def _channel_to_bind(self, channel_id: str) -> Any:
+        """The channel a room was asked to bind to, with Discord's reason when
+        it cannot be read: missing or hidden from the bot is the caller's to
+        fix (`ChannelNotUsable`), any other refusal is Discord's
+        (`BridgeOperationError`)."""
+        try:
+            numeric_id = int(channel_id)
+        except ValueError as error:
+            raise ChannelNotUsable(
+                f"{channel_id!r} is not a Discord channel id: those are numbers."
+            ) from error
+        try:
+            return await self._get_channel(numeric_id)
+        except discord.NotFound as error:
+            raise ChannelNotUsable(
+                f"Discord cannot find channel {channel_id}: {error.text or error}"
+            ) from error
+        except discord.Forbidden as error:
+            raise ChannelNotUsable(
+                f"Discord will not let the Switch bot see channel {channel_id} "
+                f"({error.text or error}). Give it access to the channel, then "
+                "try again."
+            ) from error
+        except discord.HTTPException as error:
+            raise BridgeOperationError(
+                f"Discord would not describe channel {channel_id} "
+                f"({error.status}): {error.text or error}"
+            ) from error
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists and the bot can read and post in it.
+
+        In a thread, posting is `send_messages_in_threads`: discord.py's
+        `Thread.permissions_for` returns the parent's permissions without
+        mapping one onto the other."""
+        channel = await self._channel_to_bind(channel_id)
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            # A DM or group DM: the bot is in it by definition.
+            return
+        me = getattr(guild, "me", None)
+        if me is None:
+            # The bot's own member is not in the guild cache, so its
+            # permissions cannot be read. Say so rather than pass unchecked.
+            raise BridgeOperationError(
+                f"Discord has not told the Switch bot its own permissions in "
+                f"the server of channel {channel_id}, so it cannot check that "
+                "it may post there. Try again in a moment."
+            )
+        permissions = channel.permissions_for(me)
+        is_thread = getattr(channel, "parent_id", None) is not None
+        may_post = (
+            permissions.send_messages_in_threads
+            if is_thread
+            else permissions.send_messages
+        )
+        if not permissions.view_channel or not may_post:
+            raise ChannelNotUsable(
+                f"The Switch bot cannot read and post in Discord channel "
+                f"{channel_id}. Give it access to the channel, then try again."
             )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
@@ -2994,6 +3271,10 @@ class DiscordAdapter(PlatformAdapter):
                 attachments=attachments,
                 attachment_failures=attachment_failures,
                 self_mention_token=str(bot_user_id) if self_mention else None,
+                # Another bot, or a webhook that is not one of ours (ours were
+                # dropped above): an integration posting, not a person.
+                sender_is_app=bool(getattr(author, "bot", False))
+                or getattr(message, "webhook_id", None) is not None,
             )
         )
 
@@ -3085,6 +3366,12 @@ class DiscordAdapter(PlatformAdapter):
         parent_id = getattr(channel, "parent_id", None)
         channel_id = str(parent_id if parent_id is not None else channel.id)
 
+        message_ref = f"{channel.id}:{message.id}"
+        card_ref = message_ref if action_id.startswith(UI_ACTION_PREFIX) else None
+        if card_ref is not None:
+            # shortcut: two presses on one card at once share this slot, so one
+            # may leave its buttons pressable; key by press if that matters.
+            self._pressed_cards[card_ref] = interaction
         notices: list[str] = []
         held = _PRESS_NOTICE.set(notices)
         try:
@@ -3093,13 +3380,16 @@ class DiscordAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     sender_id=str(user.id),
                     sender_name=name,
+                    sender_display_name=str(user.display_name),
                     action_id=action_id,
                     value=value,
-                    message_ref=f"{channel.id}:{message.id}",
+                    message_ref=message_ref,
                 )
             )
         finally:
             _PRESS_NOTICE.reset(held)
+            if card_ref is not None:
+                self._pressed_cards.pop(card_ref, None)
         if notices:
             await self._tell_presser(interaction, notices[0])
 
@@ -3605,7 +3895,7 @@ class DiscordAdapter(PlatformAdapter):
             filename = str(getattr(file, "filename", "") or "file")
             size = getattr(file, "size", None)
             if isinstance(size, int) and size > self._max_attachment_bytes:
-                logger.warning(
+                logger.info(
                     "Discord attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,
@@ -3657,7 +3947,7 @@ class DiscordAdapter(PlatformAdapter):
         guild = getattr(channel, "guild", None)
         if guild is not None and guild.id != self._guild_id:
             raise ChannelNotBindable(
-                f"Discord channel {channel_id} is not in this connection's server."
+                f"Discord channel {channel_id} is not in this messaging app's server."
             )
         return channel
 

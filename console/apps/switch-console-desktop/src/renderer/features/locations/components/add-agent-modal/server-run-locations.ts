@@ -2,8 +2,11 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 const MACHINE_PREFIX = 'machine:';
 
+/** A run location naming one of the server's machines. */
+export type MachineRunLocation = `machine:${string}`;
+
 /** The run location value for one of the server's machines. */
-export function machineRunLocation(machineId: string): string {
+export function machineRunLocation(machineId: string): MachineRunLocation {
   return `${MACHINE_PREFIX}${machineId}`;
 }
 

@@ -3,7 +3,9 @@ import {
   CreateRequestIds,
   canCreate,
   dropsStartingAgent,
+  DEFAULT_ROOM_OPTIONS,
   roomCreateRequest,
+  roomOptionsReady,
   startingAgentResolution,
 } from './room-create-request';
 
@@ -15,7 +17,10 @@ const form = {
   instructions: '',
   agentIds: ['a1'],
   memberUserIds: ['u2'],
+  userNames: [],
   requestId: 'req',
+  bridgeType: null,
+  options: DEFAULT_ROOM_OPTIONS,
 };
 
 describe('roomCreateRequest', () => {
@@ -30,8 +35,27 @@ describe('roomCreateRequest', () => {
         requestId: 'req',
         greeting: null,
         kind: 'group',
+        description: 'Reviews',
+        instructions: undefined,
+        groupId: null,
+        access: null,
       },
     });
+  });
+
+  it('gives a Switch Console chat its group and access, but no channel', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: null,
+      options: {
+        channel: { kind: 'new', private: true },
+        groupId: 'g1',
+        access: 'read_only',
+      },
+    });
+    expect(request.kind).toBe('chat');
+    expect(request.params).toMatchObject({ groupId: 'g1', access: 'read_only' });
+    expect(request.params).not.toHaveProperty('channel');
   });
 
   it('never sends an id twice', () => {
@@ -55,8 +79,66 @@ describe('roomCreateRequest', () => {
         instructions: undefined,
         bridgeId: 'b1',
         agentIds: [],
+        userNames: [],
+        // A new public channel and the server's default access, as before.
+        channel: { kind: 'new', private: false },
+        groupId: null,
+        access: null,
       },
     });
+  });
+
+  it('gives a bridged room its people by their username on the app, once each', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: 'b1',
+      userNames: ['bob', 'carol', 'bob'],
+    });
+    expect(request.kind === 'room' && request.params.userNames).toEqual(['bob', 'carol']);
+  });
+
+  it('carries the More options: a private channel, a group and an access choice', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: 'b1',
+      options: { channel: { kind: 'new', private: true }, groupId: 'g1', access: 'read_only' },
+    });
+    expect(request.kind === 'room' && request.params).toMatchObject({
+      channel: { kind: 'new', private: true },
+      groupId: 'g1',
+      access: 'read_only',
+    });
+  });
+
+  it('binds an existing channel by its id, written as its app writes it', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: 'b1',
+      bridgeType: 'slack',
+      options: {
+        channel: { kind: 'existing', externalChannelId: ' c123 ' },
+        groupId: null,
+        access: null,
+      },
+    });
+    expect(request.kind === 'room' && request.params.channel).toEqual({
+      kind: 'existing',
+      externalChannelId: 'C123',
+    });
+  });
+});
+
+describe('roomOptionsReady', () => {
+  it('needs a channel id only when binding an existing channel', () => {
+    expect(roomOptionsReady(DEFAULT_ROOM_OPTIONS, 'slack')).toBe(true);
+    const existing = (id: string) => ({
+      ...DEFAULT_ROOM_OPTIONS,
+      channel: { kind: 'existing' as const, externalChannelId: id },
+    });
+    expect(roomOptionsReady(existing('  '), 'slack')).toBe(false);
+    expect(roomOptionsReady(existing('C0123ABCD'), 'slack')).toBe(true);
+    // An id not of the app's shape is held back, with the reason shown beside it.
+    expect(roomOptionsReady(existing('general'), 'slack')).toBe(false);
   });
 });
 
@@ -79,6 +161,15 @@ describe('CreateRequestIds', () => {
     expect(ids.for({ ...chatForm, name: 'Ship reviews', memberUserIds: ['u2'] })).toBe('id-3');
     ids.succeeded();
     expect(ids.for({ ...chatForm, name: 'Ship reviews', memberUserIds: ['u2'] })).toBe('id-4');
+  });
+
+  it('takes a new id when the room’s settings change, as the server refuses them under the old one', () => {
+    let n = 0;
+    const ids = new CreateRequestIds(() => `id-${++n}`);
+    const chatForm = { bridgeId: null, name: 'r', agentIds: [], memberUserIds: [] };
+    const first = ids.for({ ...chatForm, settings: ['A'] });
+    expect(ids.for({ ...chatForm, settings: ['A'] })).toBe(first);
+    expect(ids.for({ ...chatForm, settings: ['B'] })).toBe('id-2');
   });
 });
 

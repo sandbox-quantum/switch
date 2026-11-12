@@ -179,15 +179,14 @@ class TestWhoMayCall:
         [
             ("member", "user", 403),
             ("admin", "user", 200),
-            ("owner", "user", 200),
             ("member", "admin", 200),
             # The operator may enter any workspace, on `platform_access`,
             # which the workspace's audit log records.
             (None, "admin", 200),
         ],
-        ids=["member", "admin", "owner", "operator-as-member", "operator-not-a-member"],
+        ids=["member", "admin", "operator-as-member", "operator-not-a-member"],
     )
-    async def test_only_admins_owners_and_the_operator(
+    async def test_only_admins_and_the_operator(
         self, harness: Harness, member_role, user_role, expected
     ) -> None:
         user = await _person(
@@ -246,6 +245,7 @@ class TestResults:
             "datadog",
             "github",
             "google-workspace",
+            "notion",
         }
         assert services["datadog"] == {
             "slug": "datadog",

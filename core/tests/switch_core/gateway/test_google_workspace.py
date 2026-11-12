@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 from datetime import timedelta
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -17,15 +18,28 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.operations.my_context import (
+    _services as my_context_services,
+)
 from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
-from switch_core.connections.broker import Principal, ServiceBroker
+from switch_core.connections.broker import (
+    Principal,
+    ServiceBroker,
+    ServiceError,
+    _scopes_changed,
+)
 from switch_core.connections.flows import ServiceFlows
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import (
+    CATALOG,
+    Connection,
+    with_access_profiles,
+)
 from switch_core.connections.oauth_clients import LOOPBACK_CALLBACK_PATH
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
-from switch_core.db.models import ServiceConnection, User
+from switch_core.db.models import TENANT_ZERO_ID, ServiceConnection, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
@@ -79,10 +93,12 @@ def _world(
     *,
     client_settings: bool = True,
     disabled: dict[str, str] | None = None,
+    catalog: dict[str, Connection] = CATALOG,
+    workspace_gate: bool = False,
 ) -> World:
     google = FakeGoogle()
     adapters = build_adapters(
-        CATALOG,
+        catalog,
         github_app=None,
         oauth_clients=(
             {
@@ -104,14 +120,14 @@ def _world(
     broker = ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
-        catalog=CATALOG,
+        catalog=catalog,
         adapters=adapters,
         organization_apps=None,
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
-        workspace_gate=False,
+        workspace_gate=workspace_gate,
         public_url=PUBLIC,
     )
     harness = build_harness(session_factory)
@@ -227,8 +243,7 @@ class TestTheClientSignedInThrough:
             )
         assert completed.status_code == 400
         assert completed.json()["detail"] == (
-            "This server's Google Workspace app changed during your sign-in. "
-            "Start it again."
+            "Switch's Google Workspace app changed during your sign-in. Start it again."
         )
         assert [
             request
@@ -295,6 +310,207 @@ class TestSignIn:
         assert not WRITE_ONLY & set(connection.granted_scopes)
 
 
+DRIVE_FILE = with_access_profiles(CATALOG, {SERVICE: "drive-file"})
+WRITE_ONLY_DRIVE_FILE = (WRITE_ONLY - {GOOGLE_SCOPE + "drive"}) | {
+    GOOGLE_SCOPE + "drive.file"
+}
+
+
+class TestTheDriveFileProfile:
+    async def test_signs_in_without_googles_restricted_drive_scopes(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, catalog=DRIVE_FILE)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        [authorization] = world.google.authorizations
+        scopes = set(authorization["scope"].split())
+        assert {
+            "openid",
+            GOOGLE_SCOPE + "userinfo.email",
+        } | WRITE_ONLY_DRIVE_FILE <= scopes
+        assert not {GOOGLE_SCOPE + "drive", GOOGLE_SCOPE + "drive.readonly"} & scopes
+        connection = await _connection(session_factory, ada.id)
+        assert connection.consent == "write"
+
+    async def test_a_sign_in_without_the_write_scopes_is_read_only(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, catalog=DRIVE_FILE)
+        world.google.unticked = set(WRITE_ONLY_DRIVE_FILE)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        assert connection.consent == "read"
+
+    async def test_a_granted_agent_is_told_drive_reaches_only_what_it_creates(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, catalog=DRIVE_FILE)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        async with session_factory() as session:
+            agent = await add_agent(session, name="planner", owner_id=ada.id)
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=ada.id,
+                service=SERVICE,
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id=connection.account_id,
+                created_by=ada.id,
+            )
+            await session.commit()
+            [grant] = await world.broker.grants_for(
+                session, agent, Principal.agent_key()
+            )
+        assert (
+            grant["skill"]["content"]
+            == CATALOG[SERVICE].skill_files["drive-file/SKILL.md"]
+        )
+
+
+async def _status(world: World, client: httpx.AsyncClient, user: User) -> str:
+    listed = await client.get("/gateway/service-connections", cookies=cookies_for(user))
+    assert listed.status_code == 200, listed.text
+    [google] = [c for c in listed.json()["connections"] if c["slug"] == SERVICE]
+    return google["status"]
+
+
+class TestTheProfileChanging:
+    """A connection made before the server changed SERVICE_ACCESS_PROFILES
+    holds scopes its sign-in no longer asks for, or lacks ones it does."""
+
+    @pytest.mark.parametrize(
+        ("before", "after", "unticked"),
+        [
+            (CATALOG, DRIVE_FILE, set()),
+            # Still holds drive.readonly, which drive-file avoids.
+            (CATALOG, DRIVE_FILE, WRITE_ONLY),
+            (DRIVE_FILE, CATALOG, set()),
+            (DRIVE_FILE, CATALOG, WRITE_ONLY_DRIVE_FILE),
+        ],
+        ids=[
+            "full-write-to-drive-file",
+            "full-read-to-drive-file",
+            "drive-file-write-to-full",
+            "drive-file-read-to-full",
+        ],
+    )
+    async def test_a_connection_out_of_step_needs_reconnecting(
+        self, session_factory, before, after, unticked
+    ) -> None:
+        world = _world(session_factory, catalog=before)
+        world.google.unticked = set(unticked)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        async with session_factory() as session:
+            agent = await add_agent(session, name="planner", owner_id=ada.id)
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=ada.id,
+                service=SERVICE,
+                access=connection.consent,
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id=connection.account_id,
+                created_by=ada.id,
+            )
+            await session.commit()
+
+        later = _world(session_factory, catalog=after)
+        async with later.harness.client() as client:
+            assert await _status(later, client, ada) == "needs_reauthorization"
+        async with session_factory() as session:
+            with pytest.raises(ServiceError) as issuing:
+                await later.broker.issue(
+                    session, agent.id, Principal.agent_key(), SERVICE
+                )
+            with pytest.raises(ServiceError) as granting:
+                await later.broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=ada.id,
+                    service=SERVICE,
+                    access=None,
+                    tool_mode=None,
+                    tools=None,
+                    resources={},
+                )
+        for refused in (issuing.value, granting.value):
+            assert (refused.status_code, refused.code) == (409, "connector_revoked")
+        assert issuing.value.message == (
+            "The agent's owner must reconnect Google Workspace: Switch now "
+            "asks for other Google Workspace access than the sign-in granted. "
+            "Reconnect it in Switch Console, under Connectors."
+        )
+        assert granting.value.message == (
+            "Reconnect Google Workspace in Switch Console, under Connectors, first."
+        )
+        assert later.google.token_requests == []
+
+    async def test_an_agent_reads_a_connection_out_of_step_as_needing_reconnecting(
+        self, session_factory
+    ) -> None:
+        """`get_my_context` tells an agent what its owner's Connections page
+        says, so it does not offer a service that will refuse it."""
+        world = _world(session_factory, catalog=CATALOG)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+
+        later = _world(session_factory, catalog=DRIVE_FILE)
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            services = await my_context_services(
+                session,
+                SimpleNamespace(service_broker=later.broker),
+                {SERVICE: connection},
+                [],
+                {},
+            )
+        [google] = [entry for entry in services if entry["slug"] == SERVICE]
+        assert google["connection"] == "needs_reauthorization"
+
+    @pytest.mark.parametrize(
+        ("catalog", "unticked"),
+        [
+            (CATALOG, set()),
+            (CATALOG, WRITE_ONLY),
+            (DRIVE_FILE, set()),
+            (DRIVE_FILE, WRITE_ONLY_DRIVE_FILE),
+        ],
+        ids=["full-write", "full-read", "drive-file-write", "drive-file-read"],
+    )
+    async def test_a_connection_in_step_stays_active(
+        self, session_factory, catalog, unticked
+    ) -> None:
+        world = _world(session_factory, catalog=catalog)
+        world.google.unticked = set(unticked)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            assert await _status(world, client, ada) == "active"
+
+    @pytest.mark.parametrize("service", ["atlassian", "airtable"])
+    def test_an_entry_without_access_profiles_is_not_checked(self, service) -> None:
+        connection = ServiceConnection(
+            service=service, consent="write", granted_scopes=["not-asked-for"]
+        )
+        assert not _scopes_changed(connection, DRIVE_FILE[service])
+
+
 class TestAgents:
     async def test_a_granted_agent_gets_gws_and_the_owners_token(
         self, session_factory
@@ -351,6 +567,104 @@ class TestAgents:
         assert refreshed.access_token != before["access_token"]
 
 
+class TestReconnect:
+    """Google ends every sign-in of the account through the client when any
+    of them is revoked, so a reconnect must not revoke the sign-in it
+    replaces: that would end the new one too."""
+
+    async def test_reconnecting_keeps_the_new_sign_in_working(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            first = json.loads(
+                TEST_KEYRING.decrypt(
+                    (await _connection(session_factory, ada.id)).encrypted_secret
+                )
+            )
+            await _connect(world, client, ada)
+        second = json.loads(
+            TEST_KEYRING.decrypt(
+                (await _connection(session_factory, ada.id)).encrypted_secret
+            )
+        )
+        assert second["refresh_token"] != first["refresh_token"]
+        assert world.google.revoked == []
+        assert second["access_token"] in world.google.live_access
+        adapter = world.broker._adapters[SERVICE]
+        refreshed = await adapter.refresh(ConnectionSecret(second))
+        assert refreshed.access_token in world.google.live_access
+
+    async def test_reconnecting_another_account_revokes_the_old_one(
+        self, session_factory
+    ) -> None:
+        """A revocation ends one account's sign-ins only, so the old
+        account's is revoked as before."""
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            first = json.loads(
+                TEST_KEYRING.decrypt(
+                    (await _connection(session_factory, ada.id)).encrypted_secret
+                )
+            )
+            world.google.account = {
+                "sub": "100000000000000000002",
+                "email": "ada.other@example.test",
+            }
+            await _connect(world, client, ada)
+        second = json.loads(
+            TEST_KEYRING.decrypt(
+                (await _connection(session_factory, ada.id)).encrypted_secret
+            )
+        )
+        assert [revoked["token"] for revoked in world.google.revoked] == [
+            first["refresh_token"]
+        ]
+        assert first["refresh_token"] not in world.google.live_refresh
+        adapter = world.broker._adapters[SERVICE]
+        refreshed = await adapter.refresh(ConnectionSecret(second))
+        assert refreshed.access_token in world.google.live_access
+
+    async def test_a_sign_in_switch_does_not_keep_leaves_the_connection_working(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, workspace_gate=True)
+        ada = await add_member(session_factory, "ada")
+
+        async def switch(enabled: bool) -> None:
+            async with session_factory() as session:
+                await WorkspaceServiceStore().set_enabled(
+                    session, SERVICE, enabled, ada.id
+                )
+                await session.commit()
+
+        await switch(True)
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+            state, secret, code = await _signed_in(world, client, ada)
+            # Switched off while the person was at Google.
+            await switch(False)
+            refused = await client.post(
+                f"{FLOWS}/{state}/complete",
+                json={"completion_secret": secret, "code": code},
+                cookies=cookies_for(ada),
+            )
+        assert refused.status_code == 403, refused.text
+        kept = json.loads(
+            TEST_KEYRING.decrypt(
+                (await _connection(session_factory, ada.id)).encrypted_secret
+            )
+        )
+        assert world.google.revoked == []
+        adapter = world.broker._adapters[SERVICE]
+        refreshed = await adapter.refresh(ConnectionSecret(kept))
+        assert refreshed.access_token in world.google.live_access
+
+
 class TestDisconnect:
     async def test_disconnecting_revokes_the_sign_in_at_google(
         self, session_factory
@@ -378,9 +692,8 @@ class TestAvailability:
             (
                 False,
                 {},
-                "Google Workspace is not set up on this server. Whoever runs your "
-                "Switch server can set it up in Switch Console, under Admin → "
-                "Connector apps.",
+                "Google Workspace is not set up here. Whoever runs Switch can set "
+                "it up in Switch Console, under Admin → Connector apps.",
                 "app_not_set_up",
             ),
             (

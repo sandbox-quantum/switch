@@ -6,11 +6,13 @@ import {
   TELEMETRY_ENDPOINT_KEY,
 } from '../env-file';
 import type { LocalServerSecrets } from '../secret-values';
+import { GATEWAY_UI_ENV } from './gateway-ui';
 import { DATABASE, OWNER_ROLE, RUNTIME_ROLE } from './postgres-cluster';
 
 export type NativeCoreSettingsParams = {
-  /** switch-core's port on loopback, which serves both the agent API and the
-   * gateway API — there is no separate dashboard process in native mode. */
+  /** switch-core's port on loopback, which serves the agent API, the gateway
+   * API and the gateway's pages — there is no separate dashboard process in
+   * native mode. */
   apiPort: number;
   postgresPort: number;
   /** Where switch-core takes Mattermost's button presses, when it runs one. */
@@ -21,6 +23,9 @@ export type NativeCoreSettingsParams = {
   telemetryInternal: boolean;
   /** The relay the server sends its usage to: the one the app reports to. */
   telemetryEndpoint: string;
+  /** The gateway's built pages, for switch-core to serve on its own address;
+   * null to run without them. */
+  gatewayUiDir: string | null;
 };
 
 export function nativeApiUrl(apiPort: number): string {
@@ -71,5 +76,8 @@ export function buildNativeCoreSettings(params: NativeCoreSettingsParams): Recor
     // Tells the server's agents that Switch Console runs it, as the Docker
     // stack's `.env` does.
     MANAGED_BY_CONSOLE: 'true',
+    // Only ever a directory with a build in it: switch-core refuses to start
+    // on one without.
+    ...(params.gatewayUiDir === null ? {} : { [GATEWAY_UI_ENV]: params.gatewayUiDir }),
   };
 }

@@ -34,12 +34,14 @@ from switch_core.db.models import TENANT_ZERO_ID, Client, Message, Room
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -47,6 +49,7 @@ from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessSto
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.messages.notify import MessageListener
 from switch_core.ownership import Ownership
 from switch_core.process_lease import ProcessLease
@@ -128,6 +131,7 @@ async def _process(
         external_user_store=ExternalUserStore(),
         document_store=DocumentStore(),
         reference_store=ReferenceStore(),
+        package_store=PackageStore(),
         agent_session_store=AgentSessionStore(),
         room_service=MagicMock(),
         user_store=UserStore(),
@@ -136,6 +140,13 @@ async def _process(
         connections=AgentConnectionRegistry(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,
+        decision_availability=DecisionAvailability(
+            enabled=False,
+            server=ServerDefault(
+                endpoint_url=None, api_key=None, bedrock_enabled=False
+            ),
+            store=DecisionSettingsStore(),
+        ),
     )
     lease = process_lease_on(session_factory)
     ownership = Ownership(

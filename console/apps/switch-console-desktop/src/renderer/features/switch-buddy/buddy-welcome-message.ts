@@ -29,7 +29,8 @@ export function buddyWelcomeMessage({
   agentName: string;
 }): string {
   return [
-    `Hi${firstName ? ` ${firstName}` : ''}, I’m **${agentName}**, your assistant for everything Switch. 👋`,
+    // The intro calls it switch-buddy; the name it goes by from here on carries the person too.
+    `Hi${firstName ? ` ${firstName}` : ''}, I’m **${agentName}**, your ${agentName === 'switch-buddy' ? 'assistant' : 'switch-buddy'} for everything Switch. 👋`,
     '',
     `Switch brings your agents to where your team already works: ${platformList()}. Your team talks to agents in the channels they already use, and people and agents work together in shared rooms.`,
     '',
@@ -43,10 +44,10 @@ export function buddyWelcomeMessage({
   ].join('\n');
 }
 
-/** What the buddy says first in the Slack channel it continues in, once setup is done. */
-export function buddySlackOpener(firstName: string | null): string {
+/** What the buddy says first in the Slack or Discord channel it continues in, once setup is done. */
+export function buddyChannelOpener(firstName: string | null, platform: string): string {
   return [
-    `Hi${firstName ? ` ${firstName}` : ''}, setup is done: Slack is connected and this is our private channel. 🎉`,
+    `Hi${firstName ? ` ${firstName}` : ''}, setup is done: ${platform} is connected and this is our private channel. 🎉`,
     'From here I can help you create agents and bring them into your team’s channels.',
     'What do you mostly work on?',
   ].join('\n\n');

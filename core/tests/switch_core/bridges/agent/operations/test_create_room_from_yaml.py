@@ -21,7 +21,6 @@ from switch_core.bridges.agent.operations.definitions import create_room_from_ya
 from switch_core.db.models import (
     Room,
     RoomGroup,
-    RoomLink,
 )
 
 SINGLE_ROOM_YAML = """\
@@ -97,16 +96,14 @@ async def test_single_room_with_params_and_creator_builtin(env):
 
 
 @pytest.mark.asyncio
-async def test_group_provisioned_with_links(env):
-    result = await _call(env["agent_id"], yaml=GROUP_YAML, inputs={"team": "alpha"})
-    assert result["group_name"] == "alpha group"
-    assert {r["room_name"] for r in result["rooms"]} == {"alpha main", "alpha support"}
-    assert result["errors"] == []
+async def test_a_group_document_is_refused_and_makes_nothing(env):
+    """An agent acts without its owner's admin reach, and only a workspace
+    admin puts rooms in a group."""
+    with pytest.raises(PermissionError, match="workspace admin"):
+        await _call(env["agent_id"], yaml=GROUP_YAML, inputs={"team": "alpha"})
     async with env["session_factory"]() as session:
-        group = await session.get(RoomGroup, result["group_id"])
-        assert group is not None
-        links = (await session.execute(select(RoomLink))).scalars().all()
-        assert [link.label for link in links] == ["support"]
+        assert (await session.execute(select(RoomGroup))).scalars().all() == []
+        assert (await session.execute(select(Room))).scalars().all() == []
 
 
 KICKOFF_YAML = """\

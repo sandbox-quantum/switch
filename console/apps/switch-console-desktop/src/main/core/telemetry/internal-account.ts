@@ -59,7 +59,9 @@ export function emailFromJwt(jwt: string): string | null {
  * briefly locked would sign people out of servers they were not even using.
  * So it is worked out once, from the token in hand, when a session is stored.
  */
-const store = new KV<{ accounts: Record<string, TelemetryInternal> }>('telemetry-accounts');
+const store = new KV<{ accounts: Record<string, TelemetryInternal>; ever_internal: boolean }>(
+  'telemetry-accounts'
+);
 
 let writes: Promise<void> = Promise.resolve();
 
@@ -72,11 +74,17 @@ function update(change: (accounts: Record<string, TelemetryInternal>) => void): 
   return writes;
 }
 
-/** Record the account a server's session was issued to. */
+/**
+ * Record the account a server's session was issued to.
+ *
+ * A staff account is also remembered for the installation, beyond its session:
+ * see `currentInternalFlag`.
+ */
 export function recordSessionAccount(serverId: string, jwt: string): Promise<void> {
+  const internal = internalFrom([emailFromJwt(jwt)]);
   return update((accounts) => {
-    accounts[serverId] = internalFrom([emailFromJwt(jwt)]);
-  });
+    accounts[serverId] = internal;
+  }).then(() => (internal === 'true' ? store.set('ever_internal', true) : undefined));
 }
 
 /** Forget a server's account when its session goes. */
@@ -90,8 +98,16 @@ export function forgetSessionAccount(serverId: string): Promise<void> {
  * Across every server this installation holds a session for. A session stored
  * before this was recorded reads as unknown until it is next renewed or
  * signed in again.
+ *
+ * Once a staff account has signed in here, the installation stays internal
+ * after that session goes: staff who sign out, or whose session lapses, are
+ * still staff using it, and dropping back to `unknown` would count their usage
+ * as a customer's in every chart that excludes staff. Nothing can mark the
+ * events sent before that first sign-in, which is why dashboards also exclude
+ * installs that ever reported `true`.
  */
 export async function currentInternalFlag(): Promise<TelemetryInternal> {
+  if ((await store.get('ever_internal')) === true) return 'true';
   const answers = Object.values((await store.get('accounts')) ?? {});
   if (answers.includes('true')) return 'true';
   return answers.includes('false') ? 'false' : 'unknown';

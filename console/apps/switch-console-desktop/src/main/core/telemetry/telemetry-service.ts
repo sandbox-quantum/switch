@@ -3,7 +3,7 @@ import { resolveAppVersion } from '@main/core/app/utils';
 import { log } from '@main/lib/logger';
 import { resolveTelemetryConfig, type TelemetryDisabledReason } from './config';
 import { isTelemetryAllowed } from './consent';
-import type { TelemetryEventMap, TelemetryEventName } from './events';
+import type { TelemetryEvent, TelemetryEventMap, TelemetryEventName } from './events';
 import { getInstallId } from './install-id';
 import type { TelemetryInternal } from './internal-account';
 import { buildOtlpPayload, postTelemetryEvent, TelemetrySendError } from './relay-client';
@@ -23,9 +23,20 @@ class TelemetryService {
    * because it reads the servers store, which reports through this service.
    */
   private internalSource: () => Promise<TelemetryInternal> = async () => 'unknown';
+  /**
+   * Told of each event once it has been sent, which is how the activation
+   * milestones follow the events that mark them (`./activation`). Registered
+   * at boot rather than imported, for the same reason as the internal source:
+   * it reports through this service.
+   */
+  private sentListener: (event: TelemetryEvent) => void = () => {};
 
   setInternalSource(source: () => Promise<TelemetryInternal>): void {
     this.internalSource = source;
+  }
+
+  setSentListener(listener: (event: TelemetryEvent) => void): void {
+    this.sentListener = listener;
   }
 
   /**
@@ -71,6 +82,7 @@ class TelemetryService {
     });
 
     await postTelemetryEvent(payload, resolution.config);
+    this.sentListener({ name, properties } as TelemetryEvent);
   }
 
   /**

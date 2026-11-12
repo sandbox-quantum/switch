@@ -32,6 +32,10 @@ const followServerApiUrl = vi.hoisted(() => vi.fn());
 const listCloudMachines = vi.hoisted(() => vi.fn());
 const ensureCloudMachine = vi.hoisted(() => vi.fn());
 const serverFlags = vi.hoisted(() => ({ hosted_agents: true }));
+const { DuplicateServerUrlError, NotTheServerAddressError } = vi.hoisted(() => ({
+  DuplicateServerUrlError: class extends Error {},
+  NotTheServerAddressError: class extends Error {},
+}));
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load.
@@ -113,10 +117,12 @@ vi.mock('./gateway-client', () => ({
 vi.mock('./server-address', () => ({
   assertServerAddress,
   assertServesDashboard,
+  NotTheServerAddressError,
 }));
 vi.mock('./servers-store', () => ({
   getServer,
   addServer,
+  DuplicateServerUrlError,
   findServerByUrl,
   findServerByWebAddress,
   deleteSessionCookie: vi.fn(),
@@ -494,10 +500,10 @@ describe('createWorkspace', () => {
   });
 
   it('returns the local row for the workspace the gateway minted', async () => {
-    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'admin' });
     listWorkspacesForServer.mockResolvedValue([
       workspaceRow({ id: 'ws-1', tenantId: 't1' }),
-      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Acme', role: 'owner' }),
+      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Acme', role: 'admin' }),
     ]);
 
     const created = await switchServersController.createWorkspace({
@@ -516,7 +522,7 @@ describe('createWorkspace', () => {
    * success the install has no trace of.
    */
   it('raises when the reconcile that records the workspace fails', async () => {
-    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'admin' });
     reconcileServerWorkspaces.mockRejectedValue(new Error('the gateway stopped answering'));
 
     await expect(
@@ -529,7 +535,7 @@ describe('createWorkspace', () => {
   // nothing, would leave the app scoped to a workspace that is not the one just
   // made — so it says so instead.
   it('raises when the new workspace did not land locally', async () => {
-    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'admin' });
     listWorkspacesForServer.mockResolvedValue([workspaceRow({ id: 'ws-1', tenantId: 't1' })]);
 
     await expect(
@@ -560,13 +566,13 @@ describe('addOrganizationWorkspace', () => {
       id: 't9',
       slug: 'labs',
       name: 'Labs',
-      role: 'owner',
+      role: 'admin',
       organizationId: 'o1',
       organizationRole: 'org_admin',
     });
     listWorkspacesForServer.mockResolvedValue([
       workspaceRow({ id: 'ws-1', tenantId: 't1' }),
-      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Labs', role: 'owner' }),
+      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Labs', role: 'admin' }),
     ]);
 
     const created = await switchServersController.addOrganizationWorkspace({
@@ -730,6 +736,7 @@ describe('adding a server by URL', () => {
     expect(trackEvent).toHaveBeenCalledExactlyOnceWith('server_added', {
       server_kind: 'external',
       outcome: 'success',
+      failure_reason: 'none',
     });
   });
 
@@ -745,7 +752,9 @@ describe('adding a server by URL', () => {
   });
 
   it('adds nothing, and reports the failure, when the address is a dashboard’s', async () => {
-    assertServerAddress.mockRejectedValueOnce(new Error('answered with a web page'));
+    assertServerAddress.mockRejectedValueOnce(
+      new NotTheServerAddressError('answered with a web page')
+    );
 
     await expect(switchServersController.addServer(params)).rejects.toThrow(
       'answered with a web page'
@@ -754,6 +763,18 @@ describe('adding a server by URL', () => {
     expect(trackEvent).toHaveBeenCalledExactlyOnceWith('server_added', {
       server_kind: 'external',
       outcome: 'failure',
+      failure_reason: 'not_the_server_address',
+    });
+  });
+
+  it('reports an address another server already has as already added', async () => {
+    addServer.mockRejectedValue(new DuplicateServerUrlError('already the address of S'));
+
+    await expect(switchServersController.addServer(params)).rejects.toThrow('already');
+    expect(trackEvent).toHaveBeenCalledExactlyOnceWith('server_added', {
+      server_kind: 'external',
+      outcome: 'failure',
+      failure_reason: 'already_added',
     });
   });
 
@@ -765,6 +786,7 @@ describe('adding a server by URL', () => {
     expect(trackEvent).toHaveBeenCalledWith('server_added', {
       server_kind: 'external',
       outcome: 'failure',
+      failure_reason: 'error',
     });
   });
 });
@@ -797,8 +819,9 @@ describe('connecting to Switch Cloud', () => {
     });
     expect(assertServerAddress).not.toHaveBeenCalled();
     expect(trackEvent).toHaveBeenCalledWith('server_added', {
-      server_kind: 'external',
+      server_kind: 'cloud',
       outcome: 'success',
+      failure_reason: 'none',
     });
   });
 

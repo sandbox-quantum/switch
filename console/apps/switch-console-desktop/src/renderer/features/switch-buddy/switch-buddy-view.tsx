@@ -84,11 +84,13 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
           machine={{
             icon: Laptop,
             text: 'This computer',
+            status: null,
             title: 'switch-buddy runs on this computer.',
           }}
           sections={agentSections(serviceConnections, undefined)}
           selected={null}
           onSelect={null}
+          onOpenMachine={null}
         />
         <Section title="Direct chats">
           <SidebarMenuRow isActive onClick={() => {}}>

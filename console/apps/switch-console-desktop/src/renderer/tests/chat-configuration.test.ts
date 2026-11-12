@@ -7,9 +7,11 @@ import {
   addAllToChat,
   addLabel,
   addToChat,
+  ChatAddParticipantPanel,
   InviteHint,
-  RoomConfigurationPanel,
-} from '@renderer/features/switch-rooms/room-configuration-panel';
+} from '@renderer/features/switch-rooms/room-add-participants';
+import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
+import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
@@ -40,7 +42,7 @@ const agent = {
   ownedByViewer: false,
 };
 
-function render(canManage: boolean): string {
+function render(canManage: boolean, panel: 'side' | 'configuration' | 'add' = 'side'): string {
   chat.current = {
     roomId: 'r',
     name: 'Planning',
@@ -64,43 +66,40 @@ function render(canManage: boolean): string {
     createElement(
       QueryClientProvider,
       { client },
-      createElement(RoomConfigurationPanel, { roomId: 'r' })
+      panel === 'side'
+        ? createElement(RoomSidePanel, { roomId: 'r' })
+        : panel === 'configuration'
+          ? createElement(RoomConfigurationPanel, { roomId: 'r' })
+          : createElement(ChatAddParticipantPanel, {
+              serverId: 's',
+              workspaceId: null,
+              chat: chat.current,
+              memberIds: new Set(['u1', 'u2']),
+              onAddedPeople: () => {},
+            })
     )
   );
 }
 
-describe('RoomConfigurationPanel for a group chat', () => {
-  it('lists the chat’s agents and people, with add and remove for a manager', () => {
+describe('a group chat’s participant column', () => {
+  it('lists the chat’s agents and people, with adding and a menu per member for a manager', () => {
     const html = render(true);
-    expect(html).toContain('Planning');
     expect(html).toContain('Helper');
-    expect(html).toContain('1 agent · 2 people');
-    expect(html).toContain('Add participants');
-    expect(html).not.toMatch(/>\s*Add agent\s*</);
-    expect(html).not.toContain('Add person');
-    expect(html).not.toContain('From a template');
-    expect(html).toContain('aria-label="Remove Helper"');
-    expect(html).toContain('aria-label="Remove Bob"');
-    expect(html).not.toContain('aria-label="Remove Alice"');
-  });
-
-  it('keeps the add field open under the header, above the cards, with the invite line under it', () => {
-    const html = render(true);
-    const field = html.indexOf('id="chat-add-participant"');
-    expect(field).toBeGreaterThan(html.indexOf('Add participants'));
-    expect(html.indexOf('Don&#x27;t see someone?')).toBeGreaterThan(field);
-    expect(html.indexOf('aria-label="Remove Helper"')).toBeGreaterThan(field);
-    // Nothing picked yet: Add sits beside the field, disabled.
-    expect(html).toMatch(/<button[^>]* disabled=""[^>]*><span[^>]*>Add<span data-slot="shortcut"/);
+    expect(html).toContain('Bob');
+    expect(html).toContain('aria-label="Add participants"');
+    expect(html).not.toContain('aria-label="Add people"');
+    expect(html).toContain('aria-label="Helper in this room"');
+    expect(html).toContain('aria-label="Bob in this room"');
+    // The owner stays: there is no one to hand the chat to.
+    expect(html).not.toContain('aria-label="Alice in this room"');
   });
 
   it('offers no adding to a manager while the server does not offer group chats', () => {
     flags.group_chats = false;
     try {
       const html = render(true);
-      expect(html).not.toContain('Add participants');
-      expect(html).not.toContain('id="chat-add-participant"');
-      expect(html).toContain('aria-label="Remove Bob"');
+      expect(html).not.toContain('aria-label="Add participants"');
+      expect(html).toContain('aria-label="Bob in this room"');
     } finally {
       flags.group_chats = true;
     }
@@ -109,11 +108,28 @@ describe('RoomConfigurationPanel for a group chat', () => {
   it('shows the participants without controls to someone who cannot manage', () => {
     const html = render(false);
     expect(html).toContain('Bob');
-    expect(html).not.toContain('Add participants');
+    expect(html).not.toContain('aria-label="Add participants"');
+    expect(html).not.toContain('in this room"');
+  });
+});
+
+describe('adding to a group chat', () => {
+  it('puts the invite line under the field, and holds Add until someone is picked', () => {
+    const html = render(true, 'add');
+    const field = html.indexOf('id="chat-add-participant"');
+    expect(field).toBeGreaterThan(-1);
+    expect(html.indexOf('Don&#x27;t see someone?')).toBeGreaterThan(field);
+    expect(html).toMatch(/<button[^>]* disabled=""[^>]*><span[^>]*>Add<span data-slot="shortcut"/);
+  });
+});
+
+describe('a group chat’s configuration', () => {
+  it('leaves who is in the chat to the participant column, and keeps Leave room', () => {
+    const html = render(false, 'configuration');
+    expect(html).not.toContain('Group chat in Switch Console');
     expect(html).not.toContain('id="chat-add-participant"');
     // Leaving needs no manager rights.
     expect(html).toContain('Leave room…');
-    expect(html).not.toContain('aria-label="Remove');
   });
 });
 
@@ -140,10 +156,10 @@ describe('chatMembersQueryKey', () => {
 });
 
 describe('group chat people', () => {
-  it('labels the owner and everyone else as a member', () => {
+  it('labels the owner, and nobody else', () => {
     const html = render(false);
     expect(html).toMatch(/Alice<\/span><span[^>]*>owner</);
-    expect(html).toMatch(/Bob<\/span><span[^>]*>member</);
+    expect(html).not.toMatch(/Bob<\/span><span[^>]*>/);
     expect(html).not.toContain('>person<');
   });
 

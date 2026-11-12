@@ -9,6 +9,7 @@ import pytest
 from discord.http import handle_message_parameters
 
 from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
 from switch_core.bridges.collaboration.discord import connection as connection_module
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -213,9 +214,10 @@ class _FakeClient:
 
 
 class _Author:
-    def __init__(self, user_id: int, name: str) -> None:
+    def __init__(self, user_id: int, name: str, *, bot: bool = False) -> None:
         self.id = user_id
         self.name = name
+        self.bot = bot
 
 
 def _gateway_message(
@@ -322,6 +324,25 @@ def test_own_webhook_message_dropped_but_foreign_webhook_bridged() -> None:
 
     assert len(captured) == 1
     assert captured[0].message_ref == f"{CHANNEL_ID}:2"
+    # Someone else's webhook is an integration posting, not a person.
+    assert captured[0].sender_is_app is True
+
+
+def test_another_bot_is_bridged_as_an_app_and_a_person_is_not() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+    channel = _FakeChannel()
+
+    _run(
+        adapter._handle_message(
+            _gateway_message(
+                channel=channel, author=_Author(55, "ci-bot", bot=True), message_id=1
+            )
+        )
+    )
+    _run(adapter._handle_message(_gateway_message(channel=channel, message_id=2)))
+
+    assert [m.sender_is_app for m in captured] == [True, False]
 
 
 def test_system_messages_skipped() -> None:
@@ -757,12 +778,55 @@ def test_failed_part_leaves_a_visible_truncation_notice() -> None:
         return await original(**kwargs)
 
     webhook.send = flaky  # type: ignore[method-assign]
-    ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
+    with pytest.raises(MessagePartlySent) as raised:
+        _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
 
     # Part 1 landed, part 2 failed: the reader is told rather than left with a
-    # message that just stops.
+    # message that just stops, and the caller is told which message it was.
     assert "Only 1 of" in webhook.sent[-1]["content"]
-    assert ref == f"{CHANNEL_ID}:901"
+    assert raised.value.first_ref == f"{CHANNEL_ID}:901"
+    assert raised.value.delivered == 1
+
+
+def test_a_refused_truncation_notice_is_logged_and_still_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
+    body = "\n".join(f"line {i}" for i in range(1000))
+    original = webhook.send
+
+    async def only_the_first(**kwargs: Any) -> Any:
+        if webhook.sent:
+            raise discord.HTTPException(_FakeResponse(), "refused")
+        return await original(**kwargs)
+
+    webhook.send = only_the_first  # type: ignore[method-assign]
+    with pytest.raises(MessagePartlySent):
+        _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
+
+    assert len(webhook.sent) == 1
+    assert "nothing in the channel says it is cut short" in caplog.text
+
+
+def test_a_refused_first_part_is_no_message() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
+
+    async def refused(**kwargs: Any) -> Any:
+        raise discord.HTTPException(_FakeResponse(), "refused")
+
+    webhook.send = refused  # type: ignore[method-assign]
+    body = "\n".join(f"line {i}" for i in range(1000))
+
+    assert _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body)) is None
+    assert webhook.sent == []
 
 
 def test_send_message_with_thread_root_posts_into_thread() -> None:

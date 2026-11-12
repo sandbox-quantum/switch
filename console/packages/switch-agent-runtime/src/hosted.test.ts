@@ -97,6 +97,21 @@ describe('the tool catalog', () => {
     );
   });
 
+  it('tells the agent what Switch Trust did to what it sent', async () => {
+    const trust = { outcome: 'redacted', delivered: 'see [redacted]', alert: 'errored' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ event_id: 'event', trust }))
+    );
+    const ctx = context();
+    writeFileSync(join(ctx.cwd, 'notes.md'), 'hello');
+    const result = await catalog.call(ctx, 'send_attachment', {
+      path: 'notes.md',
+      caption: 'see secret',
+    });
+    expect(result.content[0]!.text).toContain(`Switch Trust: ${JSON.stringify(trust)}`);
+  });
+
   it('downloads into the caller’s media directory', async () => {
     vi.stubGlobal(
       'fetch',

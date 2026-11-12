@@ -27,7 +27,7 @@ import logging
 import threading
 from collections import deque
 
-from switch_core.logging_context import CONTEXT_FIELDS
+from switch_core.logging_context import CONTEXT_FIELDS, structured_fields
 from switch_core.observability.otlp import (
     AttributeValue,
     LogRecord,
@@ -126,6 +126,10 @@ class OtlpLogHandler(logging.Handler):
             value = getattr(record, field, None)
             if value is not None:
                 attributes[field] = str(value)
+        for group, fields in structured_fields(record).items():
+            for name, value in fields.items():
+                if value is not None:
+                    attributes[f"{group}.{name}"] = value
 
         if record.exc_info:
             exc_type, exc_value, _ = record.exc_info

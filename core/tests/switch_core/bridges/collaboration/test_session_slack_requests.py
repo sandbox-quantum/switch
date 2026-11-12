@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from slack_sdk.socket_mode.request import SocketModeRequest
 
+from switch_core.bridges.collaboration.adapter import RequestCard
 from switch_core.bridges.collaboration.session.form import (
     Unanswerable,
     posted_form,
@@ -347,7 +348,12 @@ def test_the_card_reaches_slack_with_its_blocks_and_a_text_fallback() -> None:
 
     ref = _run(
         adapter.post_blocks(
-            "C1", "flint-tracker", message.text, message.blocks, "C1:111.0"
+            "C1",
+            "flint-tracker",
+            message.text,
+            message.blocks,
+            "C1:111.0",
+            reply_broadcast=False,
         )
     )
 
@@ -357,6 +363,30 @@ def test_the_card_reaches_slack_with_its_blocks_and_a_text_fallback() -> None:
     assert posted["blocks"] == message.blocks
     assert posted["text"] == message.text
     assert posted["thread_ts"] == "111.0"
+
+
+@pytest.mark.parametrize(
+    ("asked_at_root", "thread", "broadcast"),
+    [
+        (True, "C1:111.0", True),
+        (False, "C1:111.0", False),
+        (True, None, False),
+    ],
+)
+def test_a_card_asked_at_the_channel_root_is_broadcast_from_its_thread(
+    asked_at_root: bool, thread: str | None, broadcast: bool
+) -> None:
+    """Threaded under a channel-root message, a question nobody opens the
+    thread for goes unanswered: the same message is shown in the channel too.
+    One already in a conversation's thread, or already at the root, is not."""
+    adapter, client = _adapter()
+    card = RequestCard(open_request(), REFERENCE, asked_at_root=asked_at_root)
+
+    ref = _run(adapter.post_rich("C1", "flint-tracker", card, thread))
+
+    assert ref == "C1:1.0"
+    assert client.posted[0].get("reply_broadcast", False) is broadcast
+    assert client.posted[0]["blocks"]
 
 
 # ── The press ────────────────────────────────────────────────────────────────

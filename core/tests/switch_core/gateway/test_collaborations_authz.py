@@ -27,6 +27,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.authz import Principal
 from switch_core.bridges.agent.auth import PUBLIC_PATH_PREFIXES
 from switch_core.bridges.collaboration.models import DirectoryUser
 from switch_core.db.models import Client, CollaborationBridge, User
@@ -34,6 +35,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import get_current_user, require_tenant_admin
 from switch_core.gateway.collaborations import (
+    _claimants,
     _require_directory_account,
     claim_bridge_identity,
     release_bridge_identity,
@@ -314,6 +316,9 @@ class _NoRunningBridges:
         live adapter."""
         return True
 
+    def supports_private_channels(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Read from the adapter class for the same reason."""
         return True
@@ -365,3 +370,21 @@ async def test_set_default_unknown_bridge_is_404(
                 _admin(),
             )
         assert exc.value.status_code == 404
+
+
+class TestWhoMayUnlinkAClaim:
+    def test_each_claimant_says_whether_the_caller_may_drop_their_claim(self) -> None:
+        claims = [
+            SimpleNamespace(user_id="me", verified_at=None),
+            SimpleNamespace(user_id="them", verified_at=None),
+        ]
+        names = {"me": "Me", "them": "Them"}
+
+        def unlinkable(viewer: Principal) -> dict[str, bool]:
+            return {
+                c.user_id: c.can_unlink
+                for c in _claimants(claims, names, viewer)  # type: ignore[arg-type]
+            }
+
+        assert unlinkable(Principal("me", False)) == {"me": True, "them": False}
+        assert unlinkable(Principal("me", True)) == {"me": True, "them": True}

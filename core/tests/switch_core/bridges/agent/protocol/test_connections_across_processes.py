@@ -11,6 +11,7 @@ what crosses between the two.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -25,18 +26,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.api.handlers import (
-    connection_beat,
     connection_placements,
     connection_subscribe,
 )
 from switch_core.bridges.agent.api.operations import resolve_caller
 from switch_core.bridges.agent.api.schemas import (
-    ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionSubscribeRequest,
 )
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
+    KEY_REISSUED,
     PROTOCOL_VERSION,
     AgentConnection,
     AgentConnectionRegistry,
@@ -60,6 +60,8 @@ from switch_core.db.models import (
     AgentConnectionRoom,
     AgentRoomRead,
     AgentSessionPlacement,
+    Client,
+    Room,
     SwitchCoreProcess,
     Tenant,
 )
@@ -72,6 +74,7 @@ from switch_core.signals import SignalBus
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import TEST_KEYRING
 from tests.db_buffer import db_buffer_on, seed_agent, seed_room
+from tests.routing import Process as RoutingProcess
 from tests.routing import (
     add_member,
     make_agent,
@@ -253,16 +256,64 @@ async def _subscribe(
 
 
 async def _place(
-    process: Process, generation: int, placements: dict[str, str]
+    process: Process,
+    generation: int,
+    placements: dict[str, str],
+    *,
+    connection_id: str = CONN,
 ) -> dict[str, Any]:
     return await connection_placements(
         AGENT,
         ConnectionPlacementsRequest(
-            connection_id=CONN, placements=placements, generation=generation
+            connection_id=connection_id, placements=placements, generation=generation
         ),
         agent=_Agent(),  # type: ignore[arg-type]
         protocol=process.protocol,
     )
+
+
+async def _placed_then_lapsed(
+    processes: tuple[Process, Process],
+    session_factory: SessionFactory,
+    integration_profile: dict[str, Any],
+) -> tuple[RoutingProcess, Room, Client, Client]:
+    """An agent named helper with a session placed in a room over a
+    connection held by the first process, which then lapses; and a writer on
+    the second process, which has seen the lapse."""
+    a, b = processes
+    writer = process_on(session_factory, connections=b.registry)
+    room = await make_room(session_factory)
+    alice = await make_person(session_factory, "alice")
+    helper, helper_client = await make_agent(session_factory, "helper")
+    async with session_factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == helper.id)
+            .values(integration_profile=integration_profile)
+        )
+        await session.commit()
+    await add_member(session_factory, room, alice)
+    await add_member(session_factory, room, helper_client, agent=helper)
+    conn = await _open(a, agent_id=helper.id, connection_id="conn-helper", scope="all")
+    await connection_placements(
+        helper.id,
+        ConnectionPlacementsRequest(
+            connection_id="conn-helper",
+            placements={"session-1": room.id},
+            generation=conn.stream_generation,
+        ),
+        agent=SimpleNamespace(  # type: ignore[arg-type]
+            id=helper.id, tenant_id=TENANT_ZERO_ID, metadata_=None
+        ),
+        protocol=a.protocol,
+    )
+    await _eventually(lambda: room.id in rooms_occupied(helper.id, b.registry))
+
+    conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+    assert [closed.id for closed in a.registry.sweep()] == ["conn-helper"]
+    await _eventually(lambda: not b.registry.is_live(helper.id))
+    assert b.registry.placements(helper.id) == {"session-1": room.id}
+    return writer, room, alice, helper_client
 
 
 class TestPresence:
@@ -338,6 +389,54 @@ class TestPresence:
 
         assert not b.registry.is_live(AGENT)
 
+    async def test_a_process_that_shut_down_is_not_a_warning(
+        self,
+        processes: tuple[Process, Process],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Every deploy shuts the old processes down; the lease alert is for
+        one that crashed or lost the database, not for that."""
+        a, b = processes
+        await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        a.run.cancel()  # type: ignore[union-attr]
+        await a.lease.stop()
+        caplog.set_level(logging.INFO)
+
+        await b.shared.check_leases()
+
+        assert not b.registry.is_live(AGENT)
+        said = [r for r in caplog.records if a.lease.process_id in r.getMessage()]
+        assert [r.levelname for r in said] == ["INFO"]
+        assert "shut down" in said[0].getMessage()
+
+    async def test_a_process_that_stopped_renewing_is_a_warning(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        a, b = processes
+        await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        a.run.cancel()  # type: ignore[union-attr]
+        async with session_factory() as session:
+            await session.execute(
+                update(SwitchCoreProcess)
+                .where(SwitchCoreProcess.id == a.lease.process_id)
+                .values(
+                    beat_at=SwitchCoreProcess.beat_at - LEASE_TTL - timedelta(seconds=1)
+                )
+            )
+            await session.commit()
+        caplog.set_level(logging.INFO)
+
+        await b.shared.check_leases()
+
+        said = [r for r in caplog.records if a.lease.process_id in r.getMessage()]
+        assert [r.levelname for r in said] == ["WARNING"]
+        assert "stopped holding their lease" in said[0].getMessage()
+
     async def test_the_runtime_state_sweep_sees_a_session_placed_elsewhere(
         self, processes: tuple[Process, Process]
     ) -> None:
@@ -359,6 +458,74 @@ class TestPresence:
         await _eventually(lambda: ROOM in rooms_occupied(AGENT, b.registry))
 
         assert b.registry.session_room(AGENT, "session-1") == ROOM
+
+    async def test_a_placement_whose_connection_lapsed_is_not_presence(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """A client that dies with a session placed leaves the placement
+        behind, so it has its room back when the same connection reattaches.
+        Until then nothing is in the room, on either process, and the agent is
+        not available."""
+        a, b = processes
+        conn = await _open(a, scope="all")
+        await _place(a, conn.stream_generation, {"session-1": ROOM})
+        await _eventually(lambda: ROOM in rooms_occupied(AGENT, b.registry))
+
+        conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+        assert [closed.id for closed in a.registry.sweep()] == [CONN]
+        await _eventually(lambda: not b.registry.is_live(AGENT))
+
+        for process in (a, b):
+            assert agents_present_in([AGENT], ROOM, process.registry) == set()
+            assert rooms_occupied(AGENT, process.registry) == set()
+            for model in ("auto_session", "session_addressable"):
+                recipient = _recipient_on(process)
+                agent = SimpleNamespace(
+                    id=AGENT, integration_profile={"connection_model": model}
+                )
+                assert not await recipient._is_available(object(), agent, ROOM), model
+        assert a.registry.placements(AGENT) == {"session-1": ROOM}
+        async with session_factory() as session:
+            placed = (
+                await session.execute(
+                    select(
+                        AgentSessionPlacement.session_id, AgentSessionPlacement.room_id
+                    ).where(AgentSessionPlacement.agent_id == AGENT)
+                )
+            ).all()
+        assert [tuple(row) for row in placed] == [("session-1", ROOM)]
+
+        await _open(a, scope="all")
+
+        assert agents_present_in([AGENT], ROOM, a.registry) == {AGENT}
+        await _eventually(lambda: ROOM in rooms_occupied(AGENT, b.registry))
+
+    async def test_a_lapsed_placement_counts_again_once_restated_on_a_new_connection(
+        self, processes: tuple[Process, Process]
+    ) -> None:
+        """A watcher that comes back on a new connection id owns nothing until
+        it restates its placements, which it does on every connect."""
+        a, b = processes
+        conn = await _open(a, scope="all")
+        await _place(a, conn.stream_generation, {"session-1": ROOM})
+        conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+        assert [closed.id for closed in a.registry.sweep()] == [CONN]
+
+        fresh = await _open(a, connection_id="conn-2", scope="all")
+
+        assert agents_present_in([AGENT], ROOM, a.registry) == set()
+        assert a.registry.live_session_in_room(AGENT, ROOM) is None
+
+        await _place(
+            a, fresh.stream_generation, {"session-1": ROOM}, connection_id="conn-2"
+        )
+
+        assert a.registry.live_session_in_room(AGENT, ROOM) == "session-1"
+        await _eventually(
+            lambda: agents_present_in([AGENT], ROOM, b.registry) == {AGENT}
+        )
 
 
 class TestRoutedAnywhere:
@@ -386,6 +553,46 @@ class TestRoutedAnywhere:
         assert len(await own_events(session_factory, helper.id)) == 1
         # No "not online" notice from the writer, which holds no connection.
         assert await said_by(session_factory, room, helper_client) == []
+
+    async def test_a_session_whose_connection_lapsed_owes_the_not_online_notice(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        writer, room, alice, helper_client = await _placed_then_lapsed(
+            processes, session_factory, {"connection_model": "auto_session"}
+        )
+
+        await writer.say(room, "@helper can you look at this", sender=alice)
+        await writer.idle()
+
+        said = await said_by(session_factory, room, helper_client)
+        assert len(said) == 1, [s.body for s in said]
+        assert "not online in this room" in (said[0].body or "")
+
+    async def test_a_command_for_a_session_whose_connection_lapsed_finds_none_live(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """Not relayed to the lapsed session, which would tell the room the
+        agent's controller is not connected rather than that nothing of the
+        agent's is live here."""
+        writer, room, alice, helper_client = await _placed_then_lapsed(
+            processes,
+            session_factory,
+            {
+                "connection_model": "auto_session",
+                "command_capabilities": {"interrupt": "session_dependent"},
+            },
+        )
+
+        await writer.command(room, "interrupt", "@helper", sender=alice)
+        await writer.idle()
+
+        said = await said_by(session_factory, room, helper_client)
+        assert len(said) == 1, [s.body for s in said]
+        assert "no active session in this room" in (said[0].body or "")
 
     async def test_a_removal_written_through_the_other_process_releases_the_claim(
         self,
@@ -580,28 +787,6 @@ class TestServedAnywhere:
             )
         assert claimant == "conn-2"
 
-    async def test_an_old_clients_beat_on_the_other_process_reaches_the_holder(
-        self, processes: tuple[Process, Process]
-    ) -> None:
-        a, b = processes
-        conn = await _open(a)
-        conn.last_beat = time.monotonic() - 4
-        stale = conn.last_beat
-
-        with tenant_scope(TENANT_ZERO_ID):
-            answer = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=conn.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=b.protocol,
-            )
-
-        assert answer["ok"] is True
-        await _eventually(lambda: conn.last_beat > stale)
-        assert conn.beats == 1
-
     async def test_a_session_command_relayed_on_the_other_process_reaches_the_watcher(
         self, processes: tuple[Process, Process]
     ) -> None:
@@ -629,17 +814,6 @@ class TestTakeover:
         await _eventually(lambda: loser.closure is not None)
         assert loser.closure is not None
         assert loser.closure.code == "taken_over"
-        # The loser's late beat on the process it was on is refused as taken
-        # over, on the recorded row rather than on that process's memory.
-        with tenant_scope(TENANT_ZERO_ID), pytest.raises(HTTPException) as refused:
-            await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(connection_id=CONN, generation=held),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
-        assert refused.value.status_code == 409
-        assert refused.value.detail["code"] == "taken_over"
         # And its reattach naming what it held is refused without moving
         # anything, wherever it lands.
         with pytest.raises(SupersededReattachError):
@@ -708,18 +882,8 @@ class TestTakeover:
             agent=_Agent(),  # type: ignore[arg-type]
             protocol=a.protocol,
         )
-        with tenant_scope(TENANT_ZERO_ID):
-            beat = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=second.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
 
         assert answer["placements"] == {"session-1": ROOM}
-        assert beat["ok"] is True
         assert first.closure is not None
         assert first.closure.code == "taken_over"
         assert second.closure is None
@@ -1100,6 +1264,74 @@ async def _delete_agent_row(session_factory: SessionFactory) -> None:
         await session.commit()
 
 
+async def _end_agent_rows(session_factory: SessionFactory) -> None:
+    """Delete the agent's connection rows and keep the agent, as handing it to
+    a new owner does when it re-issues the agent's key."""
+    async with session_factory() as session:
+        await AgentConnectionStore().delete_agent(
+            session, tenant_id=TENANT_ZERO_ID, agent_id=AGENT
+        )
+        await session.commit()
+
+
+class TestAnAgentWhoseKeyWasReissued:
+    """The agent stays, but its connections authenticated with the old key
+    when they opened. They end wherever their sockets are held."""
+
+    async def test_reissued_through_the_other_process_its_connection_closes(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        told: list[str] = []
+        a.registry.set_ended_elsewhere_listener(told.append)
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await b.registry.agent_key_reissued(AGENT)
+
+        await _eventually(lambda: conn.closure is not None)
+        assert conn.closure == KEY_REISSUED
+        assert told == [AGENT]
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+        async with session_factory() as session:
+            assert await session.get(Agent, AGENT) is not None
+
+    async def test_a_holder_never_told_closes_it_on_its_next_pass(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, _ = processes
+        conn = await _open(a)
+
+        await _end_agent_rows(session_factory)
+        await a.shared.reload_all()
+
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not a.registry.is_live(AGENT)
+
+    async def test_the_agent_reconnects_afterwards(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        await _open(a)
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await a.registry.agent_key_reissued(AGENT)
+        assert not a.registry.is_live(AGENT)
+
+        await _open(b)
+        await _eventually(lambda: a.registry.is_live(AGENT))
+
+
 class TestADeletedAgent:
     """Deleting an agent deletes its connections' rows. Its connections end
     wherever their sockets are held, not only in the process deleting it."""
@@ -1224,3 +1456,30 @@ class TestIncarnationsDrawnAtOnce:
 
         generations = [conn.stream_generation for conn in opened]
         assert len(set(generations)) == 2
+
+    async def test_agents_opening_a_stream_per_room_at_once_all_open(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """Agents each opening one stream per room, all at the same moment,
+        as hosted agents and Console do on start: every open succeeds, each
+        on a number of its own."""
+        a, _ = processes
+        agents = [AGENT, "agent-2", "agent-3"]
+        for agent_id in agents[1:]:
+            await seed_agent(session_factory, agent_id)
+
+        opened = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    _open(a, agent_id=agent_id, connection_id=f"{agent_id}-{room}")
+                    for agent_id in agents
+                    for room in range(3)
+                )
+            ),
+            WAIT_SECONDS,
+        )
+
+        generations = [conn.stream_generation for conn in opened]
+        assert len(set(generations)) == len(agents) * 3

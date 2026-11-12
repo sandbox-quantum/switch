@@ -11,3 +11,12 @@ export function isHttpsOrLoopback(url: URL): boolean {
     url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname))
   );
 }
+
+/** Whether `url` names this computer itself, so only programs on it can reach it there. */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}

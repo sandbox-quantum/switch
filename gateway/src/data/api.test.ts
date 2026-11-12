@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   addBridgeToTeam,
+  createApiKey,
   createUser,
   errorText,
   fetchSession,
@@ -9,13 +10,12 @@ import {
   fetchTeamsAppPackage,
   removeBridgeFromTeam,
   setDefaultTeamsTeam,
+  signOutEverywhere,
 } from "./api";
 
 describe("errorText", () => {
   it("returns a string detail as is", () => {
-    expect(errorText("Only a workspace owner may grant ownership", "x")).toBe(
-      "Only a workspace owner may grant ownership",
-    );
+    expect(errorText("Cannot demote the last admin", "x")).toBe("Cannot demote the last admin");
   });
 
   it("joins validation messages", () => {
@@ -99,12 +99,12 @@ describe("fetchTeamPlacements", () => {
   });
 
   it("throws the server's own words on a connection that is not running", async () => {
-    respond(409, { detail: "The Teams connection is not running; try again in a moment." });
+    respond(409, { detail: "The Teams messaging app is not running; try again in a moment." });
     const err = await fetchTeamPlacements("b1").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(409);
     expect((err as ApiError).message).toBe(
-      "The Teams connection is not running; try again in a moment.",
+      "The Teams messaging app is not running; try again in a moment.",
     );
   });
 });
@@ -219,5 +219,45 @@ describe("fetchTeamsAppPackage", () => {
     await expect(fetchTeamsAppPackage("b1")).rejects.toThrow(
       "This deployment has no distributed Teams app.",
     );
+  });
+});
+
+describe("signOutEverywhere", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the server to end every session", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await signOutEverywhere();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/auth/sessions/revoke");
+    expect(init.method).toBe("POST");
+  });
+
+  it("throws when the server refuses", async () => {
+    respond(401, { detail: "Session ended" });
+    await expect(signOutEverywhere()).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("createApiKey", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([[90], [365], ["never" as const]])("sends the chosen lifetime %s", async (lifetime) => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ id: "k", label: "l", key: "s", created_at: "c", expires_at: null }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createApiKey("l", lifetime);
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ label: "l", expires_in_days: lifetime });
   });
 });

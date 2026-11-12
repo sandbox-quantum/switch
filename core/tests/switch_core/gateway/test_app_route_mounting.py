@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from switch_core.gateway.app import create_gateway_app
+from switch_core.organization_directory import LocalDirectory
 from tests.switch_core.test_config_teams_app import _config
 
 
@@ -35,6 +36,7 @@ def _app(**overrides: object) -> object:
         invitation_store=MagicMock(),
         join_domain_store=MagicMock(),
         organization_store=MagicMock(),
+        organization_directory=LocalDirectory(),
         template_store=MagicMock(),
         usage_store=MagicMock(),
         budget_store=MagicMock(),

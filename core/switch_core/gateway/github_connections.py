@@ -59,7 +59,7 @@ def service(request: Request) -> GitHubConnections:
     """The server's own GitHub App."""
     value = request.app.state.github_connections
     if value is None:
-        raise HTTPException(503, "GitHub connections are not enabled on this server.")
+        raise HTTPException(503, "GitHub connectors are not turned on here.")
     return cast(GitHubConnections, value)
 
 
@@ -181,7 +181,7 @@ async def start(
         ) from None
     except FlowsBusyError:
         raise HTTPException(
-            503, "GitHub connection is busy. Please try again shortly."
+            503, "The GitHub connector is busy. Please try again shortly."
         ) from None
     return {
         "id": body.state,
@@ -454,7 +454,11 @@ async def connection_status(
         status = 422 if error.code == CONNECTOR_REVOKED else error.status_code
         raise HTTPException(status, error.message) from None
     if token is None:
-        return {"status": "not_connected", "install_url": github.install_url}
+        return {
+            "status": "not_connected",
+            "install_url": github.install_url,
+            "can_revoke": False,
+        }
     try:
         reach = await github.repositories(token)
     except GitHubAuthorizationError as error:
@@ -463,7 +467,7 @@ async def connection_status(
         raise HTTPException(502, str(error)) from None
     row = await STORE.get_connection(session, user_id, "github")
     if row is None:
-        raise HTTPException(409, "GitHub connection changed. Please retry.")
+        raise HTTPException(409, "The GitHub connector changed. Please retry.")
     await session.commit()
     return {
         "status": "connected",
@@ -473,6 +477,8 @@ async def connection_status(
         # this sign-in: connecting again and authorizing them shows those.
         "sso_hidden_organizations": reach.sso_hidden,
         "install_url": github.install_url,
+        # The caller's own connection, theirs to disconnect.
+        "can_revoke": True,
     }
 
 

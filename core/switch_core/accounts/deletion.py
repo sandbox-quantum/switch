@@ -4,8 +4,16 @@ Everything they own goes, and everything that only names them stops naming
 them, so the `users` row can be deleted without any foreign key holding it
 back. What other people depend on is handed over or kept: rooms they created
 stay, with no owner, for the workspace's admins to manage, and the invitations,
-join domains and messaging installs they set up pass to another owner of the
+join domains and messaging installs they set up pass to another admin of the
 workspace.
+
+What they said in rooms stays, as part of everyone else's conversations, but
+no longer under their name: their messages, the copies stored for agents, the
+member client that sent them and the Console chat descriptions that listed
+them all name a `FORMER_MEMBER_NAME` instead. Invitations addressed to their
+e-mail address are deleted in every workspace. A workspace admin can erase
+the messages themselves (`retention/erasure.py`); the audit log keeps the
+account's id (`docs/design/data-retention.md`).
 
 Nothing is deleted until every refusal has been checked, so a refused deletion
 leaves the account exactly as it was. The refusals are the cases where going
@@ -13,15 +21,23 @@ ahead would strand something nobody else could reach:
 
 - the server's own administrator account, which the server recreates on every
   start anyway;
-- a workspace with other people in it whose only owner is this person;
+- a workspace with other people in it whose only admin is this person;
 - an organization with other people in it whose only `org_admin` is this
   person;
 - a cloud machine, whose teardown is driven from its row;
 - an active messaging app installed in a workspace nobody else is in, which
   would keep receiving messages for no one.
 
-A workspace the person is alone in is left empty rather than deleted: the
-schema cannot delete a workspace yet.
+A workspace the person is alone in is deleted once it is empty
+(`workspace_deletion.py`). Rooms they created stay, so a workspace with any
+room left, or anything else that refuses its deletion, is left empty instead,
+for the operator to see.
+
+A workspace the person has left, or been removed from, can still hold rows
+that name them: removing a member deletes their keys and connections but not
+what they own there. Those workspaces are found too (`with_former_workspaces`)
+and cleared the same way, or the final `DELETE FROM users` would fail on a
+foreign key after the other workspaces were already done.
 
 `USER_REFERENCES` names every column that points at a user and how this module
 deals with it; a test holds it to the database, so a new column that points at
@@ -35,17 +51,24 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import Select, case, delete, exists, func, or_, select, update
 
+from switch_core.accounts.workspace_deletion import (
+    WorkspaceDeletionRefused,
+    delete_workspace,
+)
+from switch_core.accounts.workspace_deletion import refusal as workspace_refusal
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
 from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.base import Base
 from switch_core.db.models import (
     AgentController,
     AgentControllerEnrollmentCode,
     AgentControllerOperation,
     AgentDefinition,
+    Client,
     CloudMachine,
     Document,
     Invitation,
@@ -71,7 +94,10 @@ from switch_core.db.models import (
     User,
     WorkspaceServiceSetting,
 )
+from switch_core.db.rls_ddl import GLOBAL_TABLES
 from switch_core.db.session_scope import organization_session, tenant_session
+from switch_core.db.stores.erasure_store import FORMER_MEMBER_NAME, ErasureStore
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
@@ -141,10 +167,68 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("chat_reads", "user_id"): "database cascades",
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
-    ("clients", "user_id"): "database clears",
+    # A schedule speaks for its author, so it goes with them.
+    ("room_schedules", "author_id"): "database cascades",
+    ("clients", "user_id"): "cleared",
     ("organization_app_credentials", "updated_by"): "database clears",
     ("organization_service_settings", "updated_by"): "database clears",
+    ("tenant_retention_policies", "updated_by_user_id"): "database clears",
+    ("person_erasures", "requested_by_user_id"): "database clears",
 }
+
+
+#: How many of the person's messages are renamed per transaction.
+RENAME_BATCH = 1000
+
+# The role recorded for a workspace the person is no longer a member of.
+FORMER_MEMBER = "former member"
+
+
+def _holds_rows_in_workspace(tenant_id: str, user_id: str) -> Select[tuple[bool]]:
+    """Whether any row this module deals with in `tenant_id` names `user_id`.
+
+    The columns come from `USER_REFERENCES`, so a column added there is
+    probed here too. Membership is left out: a former member has none. Names
+    its tenant as well as relying on the policy, so a connection the policy
+    does not apply to cannot find another workspace's rows."""
+    probes = [
+        exists().where(
+            Base.metadata.tables[table].c.tenant_id == tenant_id,
+            Base.metadata.tables[table].c[column] == user_id,
+        )
+        for (table, column), handling in USER_REFERENCES.items()
+        if table not in GLOBAL_TABLES
+        and table != "tenant_members"
+        and handling not in ("database cascades", "database clears")
+    ]
+    return select(or_(*probes))
+
+
+def _reference_type_heir(slug: str, user_id: str) -> Select[tuple[str]]:
+    """Who a reference type in use passes to: an admin of the workspace who
+    has a reference of that type, else whoever owns the oldest such
+    reference; ties go to the oldest reference, then the lowest id."""
+    rank = case((TenantMember.role == "admin", 0), else_=1)
+    return (
+        select(Reference.owner_id)
+        .outerjoin(
+            TenantMember,
+            (TenantMember.tenant_id == Reference.tenant_id)
+            & (TenantMember.user_id == Reference.owner_id),
+        )
+        .where(Reference.type == slug, Reference.owner_id != user_id)
+        .order_by(rank, Reference.created_at, Reference.id)
+        .limit(1)
+    )
+
+
+class TenantClients(Protocol):
+    """Stops the clients the server runs for a deleted workspace, here and in
+    every other process. The client lifecycle's."""
+
+    async def reconcile_tenant(self, tenant_id: str) -> None: ...
+
+    def announce(self, tenant_id: str) -> None: ...
 
 
 class ControllerRevoker(Protocol):
@@ -161,11 +245,32 @@ class AccountDeletionRefused(Exception):
     do first, in words for the person."""
 
 
+class AccountDeletionIncomplete(Exception):
+    """Deleting the account failed partway. Each workspace is left in its own
+    transaction, so the ones in `completed` stay left; the account itself and
+    every other workspace are as they were. The cause is chained."""
+
+    def __init__(self, user_id: str, completed: list[Workspace]) -> None:
+        super().__init__(
+            f"Deleting the account of user {user_id} failed after leaving "
+            f"{len(completed)} workspace(s)"
+        )
+        self.user_id = user_id
+        self.completed = completed
+
+
 @dataclass(frozen=True)
 class Workspace:
     id: str
     name: str
     role: str
+
+
+def is_server_administrator(user: User, admin_email: str) -> bool:
+    """The server's administrator account: an operator, or the account at the
+    configured admin e-mail, which the server recreates every time it starts,
+    so it is never deleted."""
+    return user.role == "admin" or user.email.lower() == admin_email.lower()
 
 
 @dataclass
@@ -182,16 +287,40 @@ class AccountDeletion:
     agents: AgentStore
     api_keys: ApiKeyStore
     templates: TemplateStore
+    clients: TenantClients
     admin_email: str
+
+    async def with_former_workspaces(
+        self, user_id: str, workspaces: list[Workspace]
+    ) -> list[Workspace]:
+        """`workspaces`, the person's memberships, plus every other workspace
+        that still holds a row naming them, as `FORMER_MEMBER`."""
+        member_of = {workspace.id for workspace in workspaces}
+        former: list[Workspace] = []
+        for tenant_id in sorted(await all_tenant_ids(self.session_factory)):
+            if tenant_id in member_of:
+                continue
+            async with tenant_session(self.session_factory, tenant_id) as session:
+                if not await session.scalar(
+                    _holds_rows_in_workspace(tenant_id, user_id)
+                ):
+                    continue
+                tenant = await session.get(Tenant, tenant_id)
+                if tenant is None:
+                    raise RuntimeError(f"Workspace {tenant_id} vanished during lookup")
+                former.append(
+                    Workspace(id=tenant_id, name=tenant.name, role=FORMER_MEMBER)
+                )
+        return [*workspaces, *former]
 
     async def refusal(
         self, session: AsyncSession, user: User, workspaces: list[Workspace]
     ) -> str | None:
         """Why the account cannot be deleted now, or None when it can."""
-        if user.role == "admin" or user.email.lower() == self.admin_email.lower():
+        if is_server_administrator(user, self.admin_email):
             return (
-                "This is the server's administrator account, which can't be "
-                "deleted. The server recreates it every time it starts."
+                "This is Switch's administrator account, which can't be "
+                "deleted. Switch recreates it every time it starts."
             )
         machine = await session.scalar(
             select(CloudMachine.id).where(
@@ -217,16 +346,20 @@ class AccountDeletion:
             if organization_refusal is not None:
                 return organization_refusal
             members = await self.users.list_tenant_members(session)
-            alone = all(member.id == user.id for member, _ in members)
+            # A former member is never alone in a workspace: what they left
+            # there is handed over or cleared like anything else they left.
+            alone = workspace.role != FORMER_MEMBER and all(
+                member.id == user.id for member, _ in members
+            )
             if (
                 not alone
                 and await self.users.tenant_role(session, workspace.id, user.id)
-                == "owner"
-                and await self.users.count_owners(session) <= 1
+                == "admin"
+                and await self.users.lock_admins(session) <= 1
             ):
                 return (
-                    f"You're the only owner of {workspace.name}, which has other "
-                    "members. Make one of them an owner first."
+                    f"You're the only admin of {workspace.name}, which has other "
+                    "users. Make one of them an admin first."
                 )
             if alone:
                 platform = await session.scalar(
@@ -268,33 +401,49 @@ class AccountDeletion:
             return None
         return (
             f"You're the only organization admin of {organization.name}, which "
-            "has other members. Make one of them an organization admin first."
+            "has other users. Make one of them an organization admin first."
         )
 
     async def delete(
-        self, session: AsyncSession, user: User, workspaces: list[Workspace]
+        self,
+        session: AsyncSession,
+        user: User,
+        workspaces: list[Workspace],
+        actor_id: str,
     ) -> None:
         """Delete the account. `session` is the caller's, and carries the
         deletion of the rows that belong to no workspace; the caller has
-        checked `refusal` first, and `AccountDeletionRefused` is raised before
-        anything is changed if an organization's last `org_admin` check no
-        longer holds."""
+        checked `refusal` first. `actor_id` is who asked: the person
+        themselves, or the server's operator; each workspace's audit log names
+        them.
+
+        Raises `AccountDeletionRefused` before anything is changed if an
+        organization's last `org_admin` check no longer holds, and
+        `AccountDeletionIncomplete` when it fails partway."""
         user_id = user.id
         await self._leave_organizations_as_admin(user, workspaces)
-        for workspace in workspaces:
-            await self._leave_workspace(user_id, workspace)
-        await self._hand_over_server_settings(session, user_id)
-        await session.execute(
-            delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
-        )
-        await session.execute(
-            delete(CloudMachine).where(
-                CloudMachine.owner_id == user_id, CloudMachine.state == "deleted"
+        completed: list[Workspace] = []
+        try:
+            for workspace in workspaces:
+                await self._leave_workspace(user, workspace, actor_id)
+                completed.append(workspace)
+            await self._delete_invitations_to(user.email)
+            await self._hand_over_server_settings(session, user_id)
+            await session.execute(
+                delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
             )
+            await session.execute(
+                delete(CloudMachine).where(
+                    CloudMachine.owner_id == user_id, CloudMachine.state == "deleted"
+                )
+            )
+            await session.execute(delete(User).where(User.id == user_id))
+            await session.commit()
+        except Exception as error:
+            raise AccountDeletionIncomplete(user_id, completed) from error
+        logger.info(
+            "Deleted the account of user %s at the request of %s", user_id, actor_id
         )
-        await session.execute(delete(User).where(User.id == user_id))
-        await session.commit()
-        logger.info("Deleted the account of user %s", user_id)
 
     async def _leave_organizations_as_admin(
         self, user: User, workspaces: list[Workspace]
@@ -303,7 +452,9 @@ class AccountDeletion:
         write that could leave an organization without an `org_admin` takes
         (`OrganizationStore.lock_admins`), so `refusal` holds against another
         admin stepping down at the same moment. Every check runs before any
-        row goes."""
+        row goes. Only Switch's rows go: a membership in a directory kept
+        outside Switch (`organization_directory.py`) is the person's beyond
+        Switch, and stays there."""
         organizations: dict[str, str] = {}
         for workspace in workspaces:
             async with tenant_session(self.session_factory, workspace.id) as session:
@@ -344,7 +495,7 @@ class AccountDeletion:
                     assert organization is not None
                     raise AccountDeletionRefused(
                         f"You're the only organization admin of {organization.name}, "
-                        "which has other members. Make one of them an "
+                        "which has other users. Make one of them an "
                         "organization admin first."
                     )
             for organization_id, session in held:
@@ -383,9 +534,18 @@ class AccountDeletion:
             .values(updated_by=admin_id)
         )
 
-    async def _leave_workspace(self, user_id: str, workspace: Workspace) -> None:
+    async def _leave_workspace(
+        self, user: User, workspace: Workspace, actor_id: str
+    ) -> None:
+        user_id = user.id
         tenant_id = workspace.id
         async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._still_not_the_last_admin(
+                session,
+                user_id,
+                workspace,
+                "Nothing of theirs there has changed",
+            )
             agent_ids = [
                 agent.id for agent in await self.agents.get_by_owner(session, user_id)
             ]
@@ -419,7 +579,18 @@ class AccountDeletion:
         if controller_ids:
             await self._revoke_controllers(tenant_id, user_id, controller_ids)
 
+        member = await self._rename_messages(user_id, tenant_id)
+
         async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._still_not_the_last_admin(
+                session,
+                user_id,
+                workspace,
+                "Their agents there are already deleted, their chats archived "
+                "and their messages renamed",
+            )
+            if member is not None:
+                await self._retire_member(session, member, user.name)
             successor = await self._successor(session, user_id)
             try:
                 removed_services = await self.broker.remove_connections(
@@ -444,7 +615,7 @@ class AccountDeletion:
             await record_audit_event(
                 session,
                 tenant_id=tenant_id,
-                actor_user_id=user_id,
+                actor_user_id=actor_id,
                 action=AuditAction.ACCOUNT_DELETED,
                 target_type="user",
                 target_id=user_id,
@@ -479,20 +650,157 @@ class AccountDeletion:
                     warning,
                 )
 
+        if workspace.role != FORMER_MEMBER and successor is None:
+            await self._close_if_empty(user_id, tenant_id, actor_id)
+
+    async def _rename_messages(self, user_id: str, tenant_id: str) -> Client | None:
+        """Rename what the person sent in the workspace from Switch Console,
+        in batches of their own transactions so a long history holds no long
+        lock. Returns their member client, or None if they never used one."""
+        erasures = ErasureStore()
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            member = await erasures.member_client_of(session, user_id)
+        if member is None:
+            return None
+        while True:
+            async with (
+                tenant_session(self.session_factory, tenant_id) as session,
+                session.begin(),
+            ):
+                renamed = await erasures.rename_sent_by(
+                    session,
+                    transport_user_id=member.transport_user_id,
+                    name=FORMER_MEMBER_NAME,
+                    limit=RENAME_BATCH,
+                )
+            if renamed < RENAME_BATCH:
+                return member
+
+    async def _retire_member(
+        self, session: AsyncSession, member: Client, user_name: str
+    ) -> None:
+        """In the transaction that takes the person out of the workspace:
+        rename anything sent since the batches, the agents' copies and the
+        Console chat descriptions, then the member client itself, which
+        unlinks it from the account."""
+        erasures = ErasureStore()
+        while (
+            await erasures.rename_sent_by(
+                session,
+                transport_user_id=member.transport_user_id,
+                name=FORMER_MEMBER_NAME,
+                limit=RENAME_BATCH,
+            )
+            == RENAME_BATCH
+        ):
+            pass
+        await erasures.rename_agent_copies(
+            session, transport_user_id=member.transport_user_id, name=FORMER_MEMBER_NAME
+        )
+        await erasures.rename_in_console_chats(
+            session,
+            client_id=member.id,
+            old_names={user_name, member.display_name},
+            name=FORMER_MEMBER_NAME,
+        )
+        await erasures.retire_member_client(session, member.id, FORMER_MEMBER_NAME)
+
+    async def _delete_invitations_to(self, email: str) -> None:
+        """Delete every invitation addressed to `email`, in every workspace,
+        live or not: they would otherwise keep the address of someone who
+        has left Switch."""
+        for tenant_id in sorted(await all_tenant_ids(self.session_factory)):
+            async with (
+                tenant_session(self.session_factory, tenant_id) as session,
+                session.begin(),
+            ):
+                await session.execute(
+                    delete(Invitation).where(
+                        Invitation.tenant_id == tenant_id,
+                        func.lower(Invitation.email) == email.lower(),
+                    )
+                )
+
+    async def _close_if_empty(
+        self, user_id: str, tenant_id: str, actor_id: str
+    ) -> None:
+        """Delete a workspace the person leaves with nobody in it, once its
+        tokens are revoked; leave it, saying why, when anything is left.
+        Leaving it is never a reason to fail the account's deletion: the
+        person has already left it, committed."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            members = await self.users.list_tenant_members(session)
+            if members:
+                return
+            reason = await workspace_refusal(session, tenant_id, user_id)
+            if reason is not None:
+                logger.info(
+                    "Workspace %s is left empty, not deleted, with user %s: %s",
+                    tenant_id,
+                    user_id,
+                    reason,
+                )
+                return
+            try:
+                key_hashes = await delete_workspace(
+                    session, tenant_id, user_id, actor_id
+                )
+            except WorkspaceDeletionRefused as refused:
+                # Something arrived since the check above.
+                await session.rollback()
+                logger.warning(
+                    "Workspace %s is left empty, not deleted, with user %s: %s",
+                    tenant_id,
+                    user_id,
+                    refused,
+                )
+                return
+            await session.commit()
+        for key_hash in key_hashes:
+            self.protocol.api_key_cache.invalidate(key_hash)
+        await self.clients.reconcile_tenant(tenant_id)
+        self.clients.announce(tenant_id)
+        logger.info(
+            "Deleted workspace %s, emptied by deleting user %s", tenant_id, user_id
+        )
+
+    async def _still_not_the_last_admin(
+        self, session: AsyncSession, user_id: str, workspace: Workspace, done: str
+    ) -> None:
+        """Check `refusal`'s last-admin rule again, with the admin rows locked:
+        another admin may have been demoted or removed since `refusal` read
+        them. It runs before anything in the workspace changes, and again in
+        the transaction that removes the membership; `done` says, for the
+        error, what has changed by then.
+
+        Their own membership row decides, not `workspace.role`: that is the
+        role they act with, which is `admin` for the organization's
+        `org_admin` whatever their row says, and only an `admin` row counts
+        towards keeping the workspace one."""
+        if await self.users.tenant_role(session, workspace.id, user_id) != "admin":
+            return
+        members = await self.users.list_tenant_members(session)
+        if all(member.id == user_id for member, _ in members):
+            return
+        if await self.users.lock_admins(session) <= 1:
+            raise RuntimeError(
+                f"Stopped deleting user {user_id} part-way: they became the only "
+                f"admin of workspace {workspace.id}, which has other members, after "
+                f"the deletion was checked. {done}; make another member an admin "
+                "and delete the account again."
+            )
+
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:
         """Who takes over what the workspace still needs from this person: an
-        owner, else an admin, else nobody when they are alone in it."""
+        admin, else nobody when no other admin is in it. Among several, the
+        longest-standing admin, then the lowest id, so the same workspace
+        always picks the same person."""
         ranked = sorted(
-            (
-                (membership.role, member.id)
-                for member, membership in await self.users.list_tenant_members(session)
-                if member.id != user_id
-            ),
-            key=lambda entry: {"owner": 0, "admin": 1}.get(entry[0], 2),
+            (membership.created_at, member.id)
+            for member, membership in await self.users.list_tenant_members(session)
+            if member.id != user_id and membership.role == "admin"
         )
-        if not ranked or ranked[0][0] not in {"owner", "admin"}:
-            return None
-        return ranked[0][1]
+        return ranked[0][1] if ranked else None
 
     async def _revoke_controllers(
         self, tenant_id: str, user_id: str, controller_ids: list[str]
@@ -546,9 +854,12 @@ class AccountDeletion:
             except ReferenceTypeInUseError:
                 # Other people's references are of this type: it passes to one
                 # of them rather than leaving their references with no type.
-                heir = await session.scalar(
-                    select(Reference.owner_id).where(Reference.type == slug).limit(1)
-                )
+                heir = await session.scalar(_reference_type_heir(slug, user_id))
+                if heir is None:
+                    raise RuntimeError(
+                        f"Reference type {slug} is in use but has no other "
+                        "reference owner to pass to"
+                    )
                 await session.execute(
                     update(ReferenceType)
                     .where(ReferenceType.type == slug)

@@ -121,26 +121,23 @@ def github_needs_https(kind: AppKind | None, public_url: str | None) -> bool:
 def not_set_up(name: str) -> str:
     """What members are told about a service whose app is not set up here."""
     return (
-        f"{name} is not set up on this server. Whoever runs your Switch server "
-        "can set it up in Switch Console, under Admin → Connector apps."
+        f"{name} is not set up here. Whoever runs Switch can set it up in "
+        "Switch Console, under Admin → Connector apps."
     )
 
 
 def cannot_work_here(name: str) -> str:
     """What members are told about a service whose app this server can't
     have: GitHub's, on a server without an https address."""
-    return (
-        f"{name} can't be used on this server: it needs the server to have an "
-        "https address."
-    )
+    return f"{name} can't be used here: it needs Switch to have an https address."
 
 
 def needs_public_url(name: str) -> str:
     """What members are told about a service whose sign-ins return only to
     the server, on a server without a public address."""
     return (
-        f"{name} can't be connected on this server: it needs the server's "
-        "public address (GATEWAY_PUBLIC_URL)."
+        f"{name} can't be connected here: it needs Switch's public address "
+        "(GATEWAY_PUBLIC_URL)."
     )
 
 
@@ -348,6 +345,10 @@ class ConnectorApps:
     def http(self) -> httpx.AsyncClient:
         """How this server reaches vendors, held to its outbound policy."""
         return self._http
+
+    @property
+    def catalog(self) -> dict[str, Connection]:
+        return self._catalog
 
     def definition(self, service: str) -> ConnectionDefinition:
         return self._catalog[service].definition

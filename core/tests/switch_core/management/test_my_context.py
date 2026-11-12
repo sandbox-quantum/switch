@@ -30,9 +30,11 @@ from switch_core.db.models import (
     ExternalUserClaim,
     MessagingInstall,
     ServiceGrant,
+    Tenant,
     TenantMember,
     User,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS, SWITCH_CLOUD
@@ -53,6 +55,12 @@ from tests.switch_core.management.harness import (
 class _Lifecycle:
     def get_registered_types(self) -> list[str]:
         return ["discord", "slack"]
+
+    def supports_channel_creation(self, _platform: str) -> bool:
+        return True
+
+    def supports_private_channels(self, _platform: str) -> bool:
+        return False
 
 
 class _Installer:
@@ -79,6 +87,13 @@ def _config(
             key: key == SWITCH_CLOUD and cloud for key in KNOWN_FEATURE_FLAGS
         },
         managed_by_console=managed_by_console,
+        deployment_kind=(
+            "switch_cloud"
+            if cloud
+            else "managed_by_console"
+            if managed_by_console
+            else "self_hosted"
+        ),
     )
 
 
@@ -305,6 +320,69 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
     ]
 
 
+async def _another_workspace_with_a_bridge(harness: Harness) -> str:
+    """A second workspace with a Slack bridge of its own; returns its id.
+
+    The suite connects as the owner, which row-level security exempts, so
+    only the store's own tenant filter keeps this bridge out of Ada's
+    workspace's answers."""
+    async with harness.session_factory() as session:
+        session.add(Tenant(id="tenant-other", slug="other", name="Other"))
+        await session.commit()
+    async with tenant_session(harness.session_factory, "tenant-other") as session:
+        client = Client(
+            type="bridge",
+            transport_user_id="@other-slack-bridge:test",
+            display_name="other slack",
+        )
+        session.add(client)
+        await session.flush()
+        bridge = CollaborationBridge(
+            type="slack",
+            display_name="Other Workspace Slack",
+            status="active",
+            is_default=True,
+            client_id=client.id,
+        )
+        session.add(bridge)
+        await session.commit()
+        return bridge.id
+
+
+async def test_it_lists_only_its_own_workspaces_messaging_apps(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, _ = await _setup(harness)
+    other_bridge_id = await _another_workspace_with_a_bridge(harness)
+
+    apps = (await _context(client, buddy_id, key))["messaging_apps"]
+
+    assert sorted(app["name"] for app in apps["connected"]) == [
+        "Acme Discord",
+        "Acme Slack",
+    ]
+    assert other_bridge_id not in {app["id"] for app in apps["connected"]}
+
+
+async def test_list_bridges_lists_only_its_own_workspaces_bridges(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, _ = await _setup(harness)
+    other_bridge_id = await _another_workspace_with_a_bridge(harness)
+
+    response = await client.post(
+        f"/agents/{buddy_id}/ops/list_bridges", json={}, headers=bearer(key)
+    )
+
+    assert response.status_code == 200, response.text
+    bridges = response.json()["result"]
+    assert sorted(b["display_name"] for b in bridges) == [
+        "Acme Discord",
+        "Acme Slack",
+    ]
+    assert other_bridge_id not in {b["id"] for b in bridges}
+
+
 async def test_a_link_from_before_confirmation_reads_as_unverified(
     harness: Harness, client: httpx.AsyncClient
 ) -> None:
@@ -346,12 +424,12 @@ async def test_an_admin_is_told_so(harness: Harness, client: httpx.AsyncClient) 
     async with harness.session_factory() as session:
         membership = await session.get(TenantMember, (TENANT_ZERO_ID, ada_id))
         assert membership is not None
-        membership.role = "owner"
+        membership.role = "admin"
         await session.commit()
 
     person = (await _context(client, buddy_id, key))["person"]
 
-    assert person["workspace_role"] == "owner"
+    assert person["workspace_role"] == "admin"
     assert person["workspace_admin"] is True
 
 

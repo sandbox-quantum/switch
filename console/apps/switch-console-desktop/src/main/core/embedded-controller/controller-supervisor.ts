@@ -3,8 +3,10 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import {
   isProviderRecheckReply,
+  isSessionStartedNotice,
   PROVIDER_RECHECK_KIND,
   type ProviderRecheckRequest,
+  type SessionStartedNotice,
   STOP_MESSAGE,
 } from '@switch-console/agent-providers';
 import type { EmbeddedControllerPhase } from '@shared/core/embedded-controller/embedded-controller';
@@ -81,6 +83,8 @@ export type SupervisorDeps = {
   onFinal: (exit: ControllerFinalExit) => void;
   /** One line the controller wrote, at the level it wrote it at. */
   onLine: (level: ControllerLogLevel, line: string) => void;
+  /** A session of one of its agents started, and Switch took the report. */
+  onSessionStarted: (notice: SessionStartedNotice) => void;
   now: () => number;
   backoff: ControllerBackoff;
 };
@@ -227,6 +231,9 @@ export class ControllerSupervisor {
     };
     child.once('error', (error) => finish(null, null, error));
     child.once('exit', (code, signal) => finish(code, signal, null));
+    child.on('message', (message) => {
+      if (isSessionStartedNotice(message)) this.deps.onSessionStarted(message);
+    });
     this.read(child.stdout, 'stdout');
     this.read(child.stderr, 'stderr');
     // A child that died before reading closes the pipe under us; its exit says why.

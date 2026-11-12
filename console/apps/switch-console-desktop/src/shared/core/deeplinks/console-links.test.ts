@@ -65,13 +65,19 @@ describe('parseConsoleLink', () => {
 });
 
 describe("switch-buddy's instructions", () => {
-  const instructions = readFileSync(
-    join(
-      __dirname,
-      '../../../../../../../core/switch_core/official_templates/switch-buddy/AGENT.md'
-    ),
-    'utf8'
-  );
+  // AGENT.md, plus the playbook it points at for the rarer pages.
+  const instructions = ['AGENT.md', 'PLAYBOOK.md']
+    .map((name) =>
+      readFileSync(
+        join(
+          __dirname,
+          '../../../../../../../core/switch_core/official_templates/switch-buddy',
+          name
+        ),
+        'utf8'
+      )
+    )
+    .join('\n');
   const links = [...instructions.matchAll(/switchdash:\/\/open\/[^\s`)|]+/g)].map((match) =>
     match[0].replace(/<[a-z-]+>/g, 'sample-id')
   );

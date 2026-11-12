@@ -107,6 +107,7 @@ async def _search(
         _StubUserStore(),  # type: ignore[arg-type]
         _StubLifecycle(adapter_result),  # type: ignore[arg-type]
         SimpleNamespace(id="u1", role="user", name="u1"),  # type: ignore[arg-type]
+        False,
     )
 
 

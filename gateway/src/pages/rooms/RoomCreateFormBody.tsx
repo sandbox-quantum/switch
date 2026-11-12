@@ -29,8 +29,15 @@ import { useNavigate } from "react-router";
 import { type RoomRoleSpec, createRoom } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
-import { useAgents, useBridges, useBridgeUsers, useRoomGroups } from "../../data/hooks";
+import {
+  useAgents,
+  useBridges,
+  useBridgeUsers,
+  useRoomGroups,
+} from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
 import { flattenTree } from "./groupTree";
+import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
 
 type ChannelSource = "existing" | "new";
 
@@ -39,6 +46,8 @@ export default function RoomCreateFormBody() {
   const { data: agents } = useAgents();
   const { data: bridges } = useBridges();
   const { data: groups } = useRoomGroups();
+  // Only a workspace admin may put a room in a group.
+  const { canAdminTenant } = useAuth();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -46,7 +55,9 @@ export default function RoomCreateFormBody() {
   const [bridgeId, setBridgeId] = useState("");
   const [channelSource, setChannelSource] = useState<ChannelSource>("new");
   const [externalChannelId, setExternalChannelId] = useState("");
-  const [newChannelType, setNewChannelType] = useState<"channel_public" | "channel_private">("channel_public");
+  const [newChannelType, setNewChannelType] = useState<
+    "channel_public" | "channel_private"
+  >("channel_public");
   const [agentIds, setAgentIds] = useState<string[]>([]);
   // Per-agent opt-in: ids of selected agents whose subagents to also add.
   const [includeSubagentsFor, setIncludeSubagentsFor] = useState<string[]>([]);
@@ -75,19 +86,31 @@ export default function RoomCreateFormBody() {
   // turned it off for this connection.
   const channelCreationBlocked =
     !!selectedBridge &&
-    !(selectedBridge.channel_creation_supported && selectedBridge.channel_creation_enabled);
+    !(
+      selectedBridge.channel_creation_supported &&
+      selectedBridge.channel_creation_enabled
+    );
 
   // A connection whose chats arrive only one way takes no channel id either,
   // and says how its rooms come about instead.
   const existingChannelRefusal = selectedBridge?.channel_ids_refused ?? null;
-  const noChannelSource = channelCreationBlocked && existingChannelRefusal !== null;
+  const noChannelSource =
+    channelCreationBlocked && existingChannelRefusal !== null;
+  const privateChannelsSupported =
+    selectedBridge?.private_channels_supported ?? true;
+  const privateChannelNeedsLinkedAccount =
+    selectedBridge?.private_channel_needs_linked_account ?? false;
+  // A private choice the chosen connection cannot make is sent as public.
+  const effectiveChannelType = privateChannelsSupported
+    ? newChannelType
+    : "channel_public";
 
   const channelCreationBlockedReason = useMemo(() => {
     if (!selectedBridge || !channelCreationBlocked) return null;
     if (!selectedBridge.channel_creation_supported) {
       return `${selectedBridge.display_name} cannot create channels from Switch. Create the channel on the platform, then add the app to it.`;
     }
-    return "Channel creation is turned off for this connection. An admin can turn it on in Messaging Apps.";
+    return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
   }, [selectedBridge, channelCreationBlocked]);
 
   // If the user had "Create new channel" selected and then picks a bridge
@@ -99,7 +122,11 @@ export default function RoomCreateFormBody() {
   }, [channelCreationBlocked, noChannelSource, channelSource]);
 
   const addRole = useCallback(
-    () => setRoles((rs) => [...rs, { name: "", instructions: "", exclusive: false }]),
+    () =>
+      setRoles((rs) => [
+        ...rs,
+        { name: "", instructions: "", exclusive: false },
+      ]),
     [],
   );
   const updateRole = useCallback(
@@ -140,11 +167,20 @@ export default function RoomCreateFormBody() {
     if (!name.trim() || !description.trim()) return false;
     if (hasBridge) {
       if (noChannelSource) return false;
-      if (channelSource === "existing" && !externalChannelId.trim()) return false;
+      if (channelSource === "existing" && !externalChannelId.trim())
+        return false;
       return true;
     }
     return agentIds.length >= 1;
-  }, [name, description, hasBridge, noChannelSource, channelSource, externalChannelId, agentIds]);
+  }, [
+    name,
+    description,
+    hasBridge,
+    noChannelSource,
+    channelSource,
+    externalChannelId,
+    agentIds,
+  ]);
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -158,7 +194,7 @@ export default function RoomCreateFormBody() {
         if (channelSource === "existing") {
           extId = externalChannelId.trim();
         } else {
-          channelType = newChannelType;
+          channelType = effectiveChannelType;
         }
       } else {
         channelType = "channel_public";
@@ -208,7 +244,7 @@ export default function RoomCreateFormBody() {
     hasBridge,
     channelSource,
     externalChannelId,
-    newChannelType,
+    effectiveChannelType,
     agentIds,
     includeSubagentsFor,
     joinEventListeners,
@@ -249,9 +285,15 @@ export default function RoomCreateFormBody() {
         helperText="Surfaced to agents on connect. Use this to set the room's purpose, rules, or expected outputs."
       />
 
-      <AccessSelect value={access} onChange={setAccess} disabled={submitting} />
+      <AccessSelect
+        value={access}
+        onChange={setAccess}
+        disabled={submitting}
+        helpers={ROOM_ACCESS_HELPERS}
+        optionLabels={ROOM_ACCESS_OPTION_LABELS}
+      />
 
-      {(groups ?? []).length > 0 && (
+      {canAdminTenant && (groups ?? []).length > 0 && (
         <TextField
           select
           label="Group (optional)"
@@ -272,7 +314,10 @@ export default function RoomCreateFormBody() {
 
       <Divider />
       <Stack spacing={1}>
-        <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+        <Typography
+          variant="overline"
+          sx={{ color: "text.secondary", display: "block" }}
+        >
           Roles (optional)
         </Typography>
         <Typography variant="caption" color="text.secondary">
@@ -285,7 +330,8 @@ export default function RoomCreateFormBody() {
             sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}
           >
             <Stack spacing={1}>
-              <Stack direction="row" spacing={1} alignItems="center">
+              {/* On the field's box, not its label above it. */}
+              <Stack direction="row" spacing={1} alignItems="flex-end">
                 <TextField
                   label="Name"
                   size="small"
@@ -304,8 +350,14 @@ export default function RoomCreateFormBody() {
                     />
                   }
                   label="Exclusive"
+                  sx={{ height: 36 }}
                 />
-                <IconButton size="small" onClick={() => removeRole(idx)}>
+                <IconButton
+                  size="small"
+                  onClick={() => removeRole(idx)}
+                  aria-label={`Remove role ${role.name || idx + 1}`}
+                  sx={{ height: 36 }}
+                >
                   <DeleteOutline fontSize="small" />
                 </IconButton>
               </Stack>
@@ -313,7 +365,9 @@ export default function RoomCreateFormBody() {
                 label="Instructions"
                 size="small"
                 value={role.instructions}
-                onChange={(e) => updateRole(idx, { instructions: e.target.value })}
+                onChange={(e) =>
+                  updateRole(idx, { instructions: e.target.value })
+                }
                 fullWidth
                 multiline
                 rows={2}
@@ -375,9 +429,13 @@ export default function RoomCreateFormBody() {
             />
           </RadioGroup>
 
-          {(noChannelSource ? existingChannelRefusal : channelCreationBlockedReason) && (
+          {(noChannelSource
+            ? existingChannelRefusal
+            : channelCreationBlockedReason) && (
             <Alert severity="info" variant="outlined">
-              {noChannelSource ? existingChannelRefusal : channelCreationBlockedReason}
+              {noChannelSource
+                ? existingChannelRefusal
+                : channelCreationBlockedReason}
             </Alert>
           )}
 
@@ -394,14 +452,29 @@ export default function RoomCreateFormBody() {
             <TextField
               select
               label="Channel type"
-              value={newChannelType}
+              value={effectiveChannelType}
               onChange={(e) =>
-                setNewChannelType(e.target.value as "channel_public" | "channel_private")
+                setNewChannelType(
+                  e.target.value as "channel_public" | "channel_private",
+                )
               }
               fullWidth
+              helperText={
+                effectiveChannelType === "channel_private" &&
+                privateChannelNeedsLinkedAccount
+                  ? selectedBridge?.bridge_type === "teams"
+                    ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
+                    : `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
+                  : undefined
+              }
             >
               <MenuItem value="channel_public">Public channel</MenuItem>
-              <MenuItem value="channel_private">Private channel</MenuItem>
+              <MenuItem
+                value="channel_private"
+                disabled={!privateChannelsSupported}
+              >
+                Private channel
+              </MenuItem>
             </TextField>
           )}
         </>
@@ -416,7 +489,9 @@ export default function RoomCreateFormBody() {
           const ids = selected.map((a) => a.id);
           setAgentIds(ids);
           // Drop subagent opt-ins for agents that were just removed.
-          setIncludeSubagentsFor((prev) => prev.filter((id) => ids.includes(id)));
+          setIncludeSubagentsFor((prev) =>
+            prev.filter((id) => ids.includes(id)),
+          );
         }}
         getOptionLabel={(a) => a.name}
         isOptionEqualToValue={(a, b) => a.id === b.id}

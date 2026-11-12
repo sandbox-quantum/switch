@@ -1,4 +1,4 @@
-import { MoreVertical, Power, PowerOff, Trash2 } from 'lucide-react';
+import { ArrowRightLeft, MoreVertical, Power, PowerOff, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -25,6 +25,7 @@ import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-b
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -117,13 +118,10 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
                       ? UNSAVED_CHAT_NAME
                       : null))}
             </span>
-            {room && (
-              <span className="shrink-0 [-webkit-app-region:no-drag]">
-                <RoomTabs roomId={room} fallback={embeddedRoomFallbackTab(room)} />
-              </span>
-            )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            {/* At the right, so the tabs stay put however long the room's name is. */}
+            {room && <RoomTabs roomId={room} fallback={embeddedRoomFallbackTab(room)} />}
             {room && <OpenInMessagingApp roomId={room} />}
             {server &&
               serverState(server) !== 'connected' &&
@@ -170,6 +168,7 @@ function ManagedAgentActionsMenu({ agent }: { agent: ManagedAgentView }) {
 function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
   const { busy, setDesiredState, remove } = useManagedAgentActions(agent);
   const chatsOn = useFeatureFlags(agent.serverId).agent_chats;
+  const showMoveModal = useShowModal('moveAgentModal');
 
   return (
     <>
@@ -184,6 +183,10 @@ function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
           Turn on agent
         </DropdownMenuItem>
       )}
+      <DropdownMenuItem disabled={busy} onClick={() => showMoveModal({ agent })}>
+        <ArrowRightLeft className="size-4" />
+        Move to another device…
+      </DropdownMenuItem>
       {!chatsOn && (
         <>
           <DropdownMenuSeparator />

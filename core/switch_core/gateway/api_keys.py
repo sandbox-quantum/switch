@@ -3,14 +3,17 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal, can_delete_api_key, owns
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import HASH_ONLY_KEY_TYPES, ApiKey, User
+from switch_core.db.models import HASH_ONLY_KEY_TYPES, Agent, ApiKey, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -44,6 +47,19 @@ def _key_type(value: str) -> str:
 router = APIRouter()
 
 
+async def _signed_in_with(session: AsyncSession, keys: list[ApiKey]) -> set[str]:
+    """Which of `keys` an agent still signs in with: its own key, which goes
+    with it (`authz.can_delete_api_key`)."""
+    agent_keys = [k.id for k in keys if k.type == "agent"]
+    if not agent_keys:
+        return set()
+    return set(
+        await session.scalars(
+            select(Agent.api_key_id).where(Agent.api_key_id.in_(agent_keys))
+        )
+    )
+
+
 @router.get("")
 async def list_api_keys(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -57,6 +73,10 @@ async def list_api_keys(
         for k in await api_key_store.get_by_user(session, user.id)
         if k.type not in HASH_ONLY_KEY_TYPES
     ]
+    signed_in_with = await _signed_in_with(session, keys)
+    # The caller's own keys, whatever their role: administering the workspace
+    # gives no reach over anyone's keys here.
+    principal = Principal(user.id, False)
     return [
         ApiKeyDetail(
             id=k.id,
@@ -64,6 +84,11 @@ async def list_api_keys(
             type=k.type,
             key_prefix=k.key_hash[:12],
             created_at=str(k.created_at),
+            expires_at=k.expires_at,
+            can_reveal=owns(principal, k.user_id),
+            can_delete=can_delete_api_key(
+                principal, k.user_id, an_agent_signs_in_with_it=k.id in signed_in_with
+            ),
         )
         for k in keys
     ]
@@ -79,6 +104,11 @@ async def create_api_key(
 ) -> CreateApiKeyResponse:
     plaintext = secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
+    expires_at = (
+        None
+        if req.expires_in_days == "never"
+        else datetime.now(UTC) + timedelta(days=req.expires_in_days)
+    )
 
     key = ApiKey(
         user_id=user.id,
@@ -86,6 +116,7 @@ async def create_api_key(
         encrypted_key=config.keyring.encrypt(plaintext),
         label=req.label,
         type="registration",
+        expires_at=expires_at,
     )
     await api_key_store.create(session, key)
     await record_audit_event(
@@ -95,11 +126,15 @@ async def create_api_key(
         action=AuditAction.API_KEY_CREATED,
         target_type="api_key",
         target_id=key.id,
-        details={"label": key.label, "type": key.type},
+        details={
+            "label": key.label,
+            "type": key.type,
+            "expires_at": None if expires_at is None else expires_at.isoformat(),
+        },
     )
     await session.commit()
 
-    logger.info("Created API key '%s' for user %s", req.label, user.email)
+    logger.info("Created API key '%s' for user %s", req.label, user.id)
     emit_safely(
         current_telemetry(), "api_key_created", {"key_type": _key_type(key.type)}
     )
@@ -108,6 +143,7 @@ async def create_api_key(
         label=key.label,
         key=plaintext,
         created_at=str(key.created_at),
+        expires_at=key.expires_at,
     )
 
 
@@ -149,8 +185,22 @@ async def delete_api_key(
     key = await api_key_store.get(session, key_id)
     if key is None or key.type in HASH_ONLY_KEY_TYPES:
         raise HTTPException(status_code=404, detail="API key not found")
-    if key.user_id != user.id:
+    principal = Principal(user.id, False)
+    if not owns(principal, key.user_id):
         raise HTTPException(status_code=403, detail="Not authorized to delete this key")
+    if not can_delete_api_key(
+        principal,
+        key.user_id,
+        an_agent_signs_in_with_it=key.id in await _signed_in_with(session, [key]),
+    ):
+        # The agent row refers to it, so deleting it would fail anyway.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This is an agent's own key, which it still signs in with. "
+                "Delete the agent to retire it."
+            ),
+        )
     key_hash = key.key_hash
     await record_audit_event(
         session,
@@ -165,7 +215,7 @@ async def delete_api_key(
     await session.commit()
     get_protocol().api_key_cache.invalidate(key_hash)
 
-    logger.info("Deleted API key '%s' for user %s", key.label, user.email)
+    logger.info("Deleted API key '%s' for user %s", key.label, user.id)
     emit_safely(
         current_telemetry(),
         "api_key_revoked",

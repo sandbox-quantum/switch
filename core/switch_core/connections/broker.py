@@ -69,6 +69,7 @@ from switch_core.connections.organization_apps import (
     OrganizationApp,
     OrganizationApps,
 )
+from switch_core.connections.registry import every_scope
 from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -139,7 +140,7 @@ UNREVOCABLE_UNKNOWN = (
     "Some access already given to agents cannot be taken back and may keep "
     "working until it expires."
 )
-SWITCHED_OFF = "Switched off on this server."
+SWITCHED_OFF = "Switched off here."
 # Why a connection needs reconnecting: the operator replaced the app it
 # signed in through.
 CLIENT_REPLACED = "client_replaced"
@@ -208,6 +209,25 @@ def _client_replaced(
         and current is not None
         and current != connection.oauth_client_id
     )
+
+
+def _scopes_changed(connection: ServiceConnection, entry: Connection) -> bool:
+    """Whether `connection` was granted other scopes than a sign-in to
+    `entry` asks for now, so it must reconnect: it lacks one its level needs,
+    or holds one no level asks for. Only an entry with access profiles is
+    checked, as only there does the server choose what a sign-in asks for
+    (`SERVICE_ACCESS_PROFILES`)."""
+    definition = entry.definition
+    if not definition.access_profiles or definition.access is None:
+        return False
+    level = (
+        definition.access.write
+        if _consent(connection) == "write"
+        else definition.access.read
+    )
+    granted = set(connection.granted_scopes)
+    needed = set(level.scopes or []) if level is not None else set()
+    return not needed <= granted or not granted <= set(every_scope(definition))
 
 
 @dataclass(frozen=True)
@@ -637,8 +657,7 @@ class ServiceBroker:
                 503,
                 INTERNAL,
                 choice.problem
-                or f"{self._entry(service).definition.name} is not available on "
-                "this server.",
+                or f"{self._entry(service).definition.name} is not available here.",
                 retryable=False,
             )
         return choice.adapter
@@ -702,7 +721,7 @@ class ServiceBroker:
                 403,
                 GRANT_MISSING,
                 f"Agent {agent.name} has no {name} grant. Its owner can grant "
-                f"{name} to it under the agent's Connections.",
+                f"{name} to it from the agent's page.",
                 retryable=False,
             )
         if grant.owner_id != owner_id:
@@ -741,8 +760,8 @@ class ServiceBroker:
             raise ServiceError(
                 404,
                 CONNECTOR_NOT_CONNECTED,
-                f"The agent's owner has not connected {name}. Connect it under "
-                "Settings, Connections.",
+                f"The agent's owner has not connected {name}. Connect it in "
+                "Switch Console, under Connectors.",
                 retryable=False,
             )
         if connection.status != "active":
@@ -750,7 +769,17 @@ class ServiceBroker:
                 409,
                 CONNECTOR_REVOKED,
                 f"The agent's owner must reconnect {name}: its sign-in was "
-                "revoked or has lapsed. Reconnect it under Settings, Connections.",
+                "revoked or has lapsed. Reconnect it in Switch Console, under "
+                "Connectors.",
+                retryable=False,
+            )
+        if _scopes_changed(connection, entry):
+            raise ServiceError(
+                409,
+                CONNECTOR_REVOKED,
+                f"The agent's owner must reconnect {name}: Switch now asks "
+                f"for other {name} access than the sign-in granted. Reconnect it "
+                "in Switch Console, under Connectors.",
                 retryable=False,
             )
         if grant.account_id != connection.account_id:
@@ -775,7 +804,7 @@ class ServiceBroker:
             raise ServiceError(
                 403,
                 FORBIDDEN,
-                f"This grant asks for write access, but the {name} connection "
+                f"This grant asks for write access, but the {name} connector "
                 "allows only reading. Reconnect with write access, or make the "
                 "grant read-only.",
                 retryable=False,
@@ -1142,8 +1171,8 @@ class ServiceBroker:
                 raise ServiceError(
                     409,
                     CONNECTOR_REVOKED,
-                    f"The agent's owner must reconnect {name} under Settings, "
-                    "Connections.",
+                    f"The agent's owner must reconnect {name} in Switch Console, "
+                    "under Connectors.",
                     retryable=False,
                 )
             if _client_replaced(connection, adapter):
@@ -1154,8 +1183,7 @@ class ServiceBroker:
                 raise self._revoked(
                     service,
                     ReauthorizationRequiredError(
-                        f"{name} was connected through an app this server no "
-                        "longer uses."
+                        f"{name} was connected through an app Switch no longer uses."
                     ),
                 )
             secret = self._secret(connection)
@@ -1166,7 +1194,7 @@ class ServiceBroker:
                     raise ServiceError(
                         500,
                         INTERNAL,
-                        f"The {name} connection holds no token.",
+                        f"The {name} connector holds no token.",
                         retryable=False,
                     )
                 await session.commit()
@@ -1206,8 +1234,8 @@ class ServiceBroker:
         return ServiceError(
             409,
             CONNECTOR_REVOKED,
-            f"{error} The agent's owner must reconnect {name} under Settings, "
-            "Connections.",
+            f"{error} The agent's owner must reconnect {name} in Switch Console, "
+            "under Connectors.",
             retryable=False,
         )
 
@@ -1234,6 +1262,31 @@ class ServiceBroker:
     def _signed_in(self, connection: ServiceConnection) -> SignIn:
         return SignIn(self._secret(connection), connection.oauth_client_id)
 
+    def _shares_grant(
+        self,
+        service: str,
+        held: tuple[str | None, str],
+        revoked: tuple[str | None, str],
+    ) -> bool:
+        """Whether revoking a sign-in would also end the one held: the vendor
+        ends every sign-in of an account through a client when one is revoked
+        (`revocation_ends_grant`), and both are the same account's through the
+        same client. Each is (OAuth client, account id); a sign-in from before
+        clients were recorded went through the server's client.
+        """
+        entry = self._catalog.get(service)
+        oauth = None if entry is None else entry.definition.auth.oauth
+        if oauth is None or not oauth.revocation_ends_grant:
+            return False
+        server = self._adapters.get(service)
+        server_client = None if server is None else server.current_client_id()
+        held_client = held[0] or server_client
+        return (
+            held_client is not None
+            and held_client == (revoked[0] or server_client)
+            and held[1] == revoked[1]
+        )
+
     async def _revoker(
         self, session: AsyncSession, service: str, oauth_client_id: str | None
     ) -> ServiceAdapter:
@@ -1249,7 +1302,7 @@ class ServiceBroker:
         server = self._adapters.get(service)
         if here is None and server is None:
             raise ServiceUnavailableError(
-                f"{name} is not set up on this server, so Switch could not "
+                f"{name} is not set up here, so Switch could not "
                 f"revoke the sign-in. Revoke it at {name}."
             )
         # A sign-in from before clients were recorded predates organizations'
@@ -1356,6 +1409,27 @@ class ServiceBroker:
             source=choice.source,
         )
 
+    def connection_status(
+        self, standing: ServiceStanding, connection: ServiceConnection | None
+    ) -> str:
+        """The connection's status, as a person or their agent acts on it: one
+        made through an app this server has since replaced, or granted other
+        scopes than this server now asks for, needs reconnecting before anyone
+        uses it and finds out."""
+        if connection is None:
+            return "not_connected"
+        if connection.status == "active" and (
+            standing.client_replaced(connection) or self.scopes_changed(connection)
+        ):
+            return "needs_reauthorization"
+        return connection.status
+
+    def scopes_changed(self, connection: ServiceConnection) -> bool:
+        """Whether `connection` was granted other scopes than a sign-in asks
+        for on this server now, so it must reconnect."""
+        entry = self._catalog.get(connection.service)
+        return entry is not None and _scopes_changed(connection, entry)
+
     def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
         """Use `adapter` for `service` from the next call on, or none, where
         the server's app applies.
@@ -1380,11 +1454,7 @@ class ServiceBroker:
     def _reason(self, service: str, choice: _Choice) -> str:
         """Why `service` cannot be used through `choice`, in a sentence."""
         unavailable = self._unavailable(service, choice)
-        return (
-            "Not available on this server."
-            if unavailable is None
-            else unavailable.reason
-        )
+        return "Not available here." if unavailable is None else unavailable.reason
 
     def server_serves(self, service: str) -> bool:
         """Whether a workspace that goes through the server's app for
@@ -1424,11 +1494,11 @@ class ServiceBroker:
                 return Unavailable("organization_app_unusable", choice.problem)
             if kind is not None:
                 return Unavailable("app_not_set_up", not_set_up(name))
-            return Unavailable("not_set_up", f"{name} is not set up on this server.")
+            return Unavailable("not_set_up", f"{name} is not set up here.")
         if not adapter.can_issue:
             return Unavailable(
                 "not_fully_set_up",
-                f"{name} can be connected on this server but not granted to "
+                f"{name} can be connected here but not granted to "
                 "agents: it is not fully set up.",
             )
         return None
@@ -1475,14 +1545,14 @@ class ServiceBroker:
             raise ServiceError(
                 409,
                 CONNECTOR_NOT_CONNECTED,
-                f"Connect {name} under Settings, Connections first.",
+                f"Connect {name} in Switch Console, under Connectors, first.",
                 retryable=False,
             )
-        if connection.status != "active":
+        if connection.status != "active" or _scopes_changed(connection, entry):
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"Reconnect {name} under Settings, Connections first.",
+                f"Reconnect {name} in Switch Console, under Connectors, first.",
                 retryable=False,
             )
         if _passes_through(entry):
@@ -1491,7 +1561,7 @@ class ServiceBroker:
                     422,
                     VALIDATION_ERROR,
                     f"A {name} grant is on or off: the agent reaches what your "
-                    f"{name} connection does. Leave out access and tools.",
+                    f"{name} connector does. Leave out access and tools.",
                     retryable=False,
                 )
             access = _consent(connection)
@@ -1500,7 +1570,7 @@ class ServiceBroker:
             raise ServiceError(
                 422,
                 VALIDATION_ERROR,
-                f"Your {name} connection allows only reading. Reconnect with "
+                f"Your {name} connector allows only reading. Reconnect with "
                 "write access to grant writing.",
                 retryable=False,
             )
@@ -1663,7 +1733,7 @@ class ServiceBroker:
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"Your {name} connection changed. Please retry.",
+                f"Your {name} connector changed. Please retry.",
                 retryable=True,
             )
         previous = await self._store.get_grant(session, agent.id, service)
@@ -1750,6 +1820,14 @@ class ServiceBroker:
             previous = await self._store.get_connection(session, user_id, service)
             kept = previous is not None and (
                 self._secret(previous).access_token == secret.access_token
+                # Revoking it would end the kept one too, at a vendor that
+                # revokes whole grants. It stays live at the vendor, in the
+                # grant the kept one holds.
+                or self._shares_grant(
+                    service,
+                    (previous.oauth_client_id, previous.account_id),
+                    (oauth_client_id, account_id),
+                )
             )
             await session.rollback()
             note = (
@@ -1771,6 +1849,7 @@ class ServiceBroker:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         previous = await self._store.get_connection(session, user_id, service)
         replaced = None if previous is None else self._signed_in(previous)
+        replaced_account = "" if previous is None else previous.account_id
         issued_on_it = (
             ServiceTokenIssuance.owner_id == user_id,
             ServiceTokenIssuance.service == service,
@@ -1799,7 +1878,17 @@ class ServiceBroker:
         await session.commit()
 
         warnings = []
-        if replaced is not None and replaced.secret.access_token != secret.access_token:
+        if (
+            replaced is not None
+            and replaced.secret.access_token != secret.access_token
+            # At a vendor that revokes whole grants, revoking the same
+            # account's old sign-in would end the new one too.
+            and not self._shares_grant(
+                service,
+                (oauth_client_id, account_id),
+                (replaced.oauth_client_id, replaced_account),
+            )
+        ):
             try:
                 adapter = await self._revoker(
                     session, service, replaced.oauth_client_id
@@ -2233,9 +2322,7 @@ class ServiceBroker:
             adapter = adapters[service]
             try:
                 if adapter is None or encrypted is None:
-                    raise ServiceUnavailableError(
-                        f"{service} is not available on this server."
-                    )
+                    raise ServiceUnavailableError(f"{service} is not available here.")
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_issued(self._keyring.decrypt(encrypted))
                 return row_id

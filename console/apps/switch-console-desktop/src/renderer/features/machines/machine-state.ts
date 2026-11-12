@@ -1,0 +1,371 @@
+import type {
+  MachineDetail,
+  ManagedAgentView,
+  OwnedMachine,
+} from '@shared/core/managed-agents/managed-agents';
+import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { isLoopbackUrl } from '@shared/core/switch-servers/loopback';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+
+export type MachineTone = 'ok' | 'warning' | 'problem' | 'idle';
+
+/** A short label with its tone, and the sentence behind it for its hover title. */
+export type MachineBadge = { label: string; tone: MachineTone; title: string };
+
+const DISCONNECT_REASON: Record<string, string> = {
+  socket_closed: 'its controller stopped or lost its connection',
+  heartbeat_lapsed: 'its connection stopped responding',
+  server_shutdown: 'the Switch server it was connected to restarted',
+  server_lost: 'the Switch server it was connected to stopped responding',
+  taken_over: 'another instance of its controller took over',
+  revoked: 'it was removed',
+};
+
+function when(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
+/** Whether the machine is connected, with when it connected or when and why it stopped. */
+export function machineConnection(machine: MachineDetail): MachineBadge {
+  const connection = machine.connection;
+  if (machine.state === 'revoked')
+    return {
+      label: 'Removed',
+      tone: 'idle',
+      title: machine.revokedAt ? `Removed from Switch ${when(machine.revokedAt)}.` : 'Removed.',
+    };
+  // Online is decided by the server; the connection ledger can be empty even
+  // then (the server sends none until it has recorded a connect), so it only
+  // adds when.
+  if (machine.state === 'online')
+    return {
+      label: 'Online',
+      tone: 'ok',
+      title: connection ? `Connected since ${when(connection.connectedAt)}.` : 'Connected.',
+    };
+  if (machine.state === 'unknown' || connection === null)
+    return {
+      label: 'Never connected',
+      tone: 'idle',
+      title: 'Has never connected to Switch. It does once its controller is started.',
+    };
+  const why = connection.disconnectReason
+    ? (DISCONNECT_REASON[connection.disconnectReason] ?? connection.disconnectReason)
+    : null;
+  const at = connection.disconnectedAt ? ` ${when(connection.disconnectedAt)}` : '';
+  return { label: 'Offline', tone: 'problem', title: `Disconnected${at}${why ? `: ${why}` : ''}.` };
+}
+
+/**
+ * The last time Switch heard from the machine at all: now while it is
+ * connected, else the latest of its status report, its connecting and its
+ * going.
+ */
+export function lastContact(machine: MachineDetail, now: Date): string | null {
+  if (machine.state === 'online') return now.toISOString();
+  const times = [
+    machine.lastSeenAt,
+    machine.connection?.connectedAt,
+    machine.connection?.disconnectedAt,
+  ]
+    .filter((time): time is string => typeof time === 'string')
+    .sort((a, b) => Date.parse(b) - Date.parse(a));
+  return times[0] ?? null;
+}
+
+/**
+ * The device type, as the person tells devices apart: this computer, an SSH
+ * host this Console set up, the Switch cloud machine, another computer running
+ * Switch Console, or a standalone machine running the agents controller.
+ */
+export function machineKindLabel(machine: Pick<MachineDetail, 'local' | 'cloud' | 'kind'>): string {
+  if (machine.local?.kind === 'this-computer') return 'This computer';
+  if (machine.local?.kind === 'ssh-host') return 'SSH host';
+  if (machine.cloud) return 'Switch cloud';
+  if (machine.kind === 'console') return 'Computer';
+  return 'Standalone machine';
+}
+
+const OS_NAMES: Record<string, string> = {
+  macos: 'macOS',
+  darwin: 'macOS',
+  linux: 'Linux',
+  windows: 'Windows',
+  win32: 'Windows',
+};
+
+/** Its operating system, version and architecture, as it reported them; null when it did not. */
+export function platformLabel(platform: MachineDetail['platform']): string | null {
+  if (!platform) return null;
+  const os = OS_NAMES[platform.os.toLowerCase()] ?? platform.os;
+  return [platform.osVersion ? `${os} ${platform.osVersion}` : os, platform.arch]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * Where the controller stands against the release Switch names for it: on it,
+ * updated with Console, or behind and why. Null badge when there is nothing
+ * to flag.
+ */
+export function controllerRelease(machine: MachineDetail): {
+  title: string;
+  badge: { label: string; tone: MachineTone } | null;
+} {
+  const release = machine.release;
+  if (release === null || release.current)
+    return {
+      title:
+        release !== null
+          ? `Runs ${release.wanted}, the release Switch names.`
+          : machine.kind === 'console' || machine.updatedBy === 'console'
+            ? 'Updates with Switch Console, which runs it.'
+            : 'Switch names no controller release for this machine.',
+      badge: null,
+    };
+  const names = `Runs ${machine.version ?? 'an unknown version'}; Switch names ${release.wanted}.`;
+  const update = machine.update;
+  if (machine.state !== 'online' || !update || update.target !== release.wanted)
+    return {
+      title: `${names} ${
+        machine.state === 'online'
+          ? 'It has said nothing about moving to it: a controller older than self-update never does, and needs reinstalling once.'
+          : 'It moves to it once it is connected again.'
+      }`,
+      badge: { label: 'Behind', tone: 'warning' },
+    };
+  if (update.state === 'waiting_idle')
+    return {
+      title: `${names} It moves to it once no session is running on it.`,
+      badge: { label: 'Updating when idle', tone: 'warning' },
+    };
+  if (update.state === 'restart_needed')
+    return {
+      title: `${names} ${update.problem ?? 'It installed it; restart it to run it.'}`,
+      badge: { label: 'Restart needed', tone: 'warning' },
+    };
+  return {
+    title: `${names} ${update.problem ?? 'It did not say why.'}`,
+    badge: { label: 'Update failed', tone: 'problem' },
+  };
+}
+
+const KIND_ORDER: Record<string, number> = { 'this-computer': 0, 'ssh-host': 1 };
+const STATE_ORDER: Record<MachineDetail['state'], number> = {
+  online: 0,
+  offline: 1,
+  unknown: 2,
+  revoked: 3,
+};
+
+/**
+ * The machines in the order the page lists them, the removed ones apart: this
+ * computer first, then its SSH hosts, then the rest, each by whether it is
+ * connected and then by name.
+ */
+export function arrangeMachines(machines: MachineDetail[]): {
+  live: MachineDetail[];
+  removed: MachineDetail[];
+} {
+  const rank = (machine: MachineDetail) => KIND_ORDER[machine.local?.kind ?? ''] ?? 2;
+  const sorted = [...machines].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      STATE_ORDER[a.state] - STATE_ORDER[b.state] ||
+      a.name.localeCompare(b.name)
+  );
+  return {
+    live: sorted.filter((machine) => machine.state !== 'revoked'),
+    removed: sorted
+      .filter((machine) => machine.state === 'revoked')
+      .sort((a, b) => (b.revokedAt ?? '').localeCompare(a.revokedAt ?? '')),
+  };
+}
+
+/** How full a resource is, as "X free of Y", or null when the machine reported none of it. */
+export function resourceLabel(
+  free: number,
+  total: number,
+  format: (bytes: number) => string
+): string | null {
+  if (total <= 0) return null;
+  return `${format(free)} free of ${format(total)}`;
+}
+
+/** Something about the machine to act on or wait for, shown above its details. */
+export type MachineNotice = { key: string; tone: MachineTone; title: string; body: string };
+
+/**
+ * What needs saying before the details: that it is offline, removed or never
+ * connected, that its controller is behind the release Switch names, and
+ * which installed providers cannot run an agent. None for a healthy machine.
+ */
+export function machineNotices(machine: MachineDetail): MachineNotice[] {
+  const connection = machineConnection(machine);
+  if (machine.state === 'revoked')
+    return [
+      {
+        key: 'connection',
+        tone: 'idle',
+        title: 'Removed',
+        body: `${connection.title} It no longer runs agents and cannot reconnect.`,
+      },
+    ];
+  const notices: MachineNotice[] = [];
+  if (machine.state === 'offline')
+    notices.push({
+      key: 'connection',
+      tone: 'problem',
+      title: 'Offline',
+      body: `${connection.title} The agents placed on it do not run until it is back.`,
+    });
+  else if (
+    machine.state === 'unknown' ||
+    (machine.state !== 'online' && machine.connection === null)
+  )
+    notices.push({
+      key: 'connection',
+      tone: 'idle',
+      title: 'Not connected yet',
+      body: connection.title,
+    });
+  const release = controllerRelease(machine);
+  if (release.badge)
+    notices.push({
+      key: 'release',
+      tone: release.badge.tone,
+      title: `Controller: ${release.badge.label.toLowerCase()}`,
+      body: release.title,
+    });
+  const stuck = machine.providers.filter((p) => !p.ready && p.problem !== 'not installed');
+  if (stuck.length > 0)
+    notices.push({
+      key: 'providers',
+      tone: 'warning',
+      title:
+        stuck.length === 1 ? 'A provider cannot run agents' : 'Some providers cannot run agents',
+      body: stuck
+        .map((p) => `${providerDisplayName(p.provider) ?? p.provider}: ${p.problem ?? 'not ready'}`)
+        .join(' · '),
+    });
+  return notices;
+}
+
+/** How many sessions it runs, against its limit when it enforces one (a limit of 0 means none). */
+export function sessionsLabel(resources: NonNullable<MachineDetail['resources']>): string {
+  return resources.sessionsMax > 0
+    ? `${resources.sessionsRunning} of ${resources.sessionsMax}`
+    : `${resources.sessionsRunning}`;
+}
+
+/** Where a machine stands as a place to move an agent to, and the line saying so. */
+export type MoveTarget = { selectable: boolean; tone: MachineTone; line: string };
+
+/** The provider problems Switch refuses a placement for, as the machine reports them. */
+const REFUSED_PROBLEMS = new Set(['not installed', 'not logged in', 'login expired']);
+
+/**
+ * Whether an agent running `provider` can be moved to `machine`, by the rules
+ * Switch places it by: the machine is connected, and has the provider
+ * installed and not signed out. A sign-in it has not checked yet is let
+ * through, as Switch lets it through.
+ */
+export function moveTarget(machine: OwnedMachine, provider: string): MoveTarget {
+  const name = providerDisplayName(provider) ?? provider;
+  if (machine.state === 'revoked')
+    return { selectable: false, tone: 'idle', line: 'Removed from Switch.' };
+  if (machine.state !== 'online')
+    return {
+      selectable: false,
+      tone: 'idle',
+      line: 'Offline. Bring it online to move agents here.',
+    };
+  const reported = machine.providers.find((p) => p.provider === provider);
+  if (!reported)
+    return { selectable: false, tone: 'warning', line: `${name} isn't installed here.` };
+  if (reported.ready) return { selectable: true, tone: 'ok', line: `Ready: ${name} signed in` };
+  if (reported.problem !== null && REFUSED_PROBLEMS.has(reported.problem))
+    return {
+      selectable: false,
+      tone: 'warning',
+      line:
+        reported.problem === 'not installed'
+          ? `${name} isn't installed here.`
+          : reported.problem === 'login expired'
+            ? `${name}'s sign-in has expired here. Sign in first.`
+            : `${name} isn't signed in here. Sign in first.`,
+    };
+  return {
+    selectable: true,
+    tone: 'warning',
+    line: `${name}: ${reported.problem ?? 'not checked yet'}`,
+  };
+}
+
+/** The groups the machines page filters by: what a machine is, as the person tells them apart. */
+export type MachineCategory = 'cloud' | 'ssh-host' | 'computer';
+
+export const MACHINE_CATEGORY_LABELS: Record<MachineCategory, string> = {
+  cloud: 'Cloud',
+  'ssh-host': 'SSH hosts',
+  computer: 'Computers',
+};
+
+/**
+ * Which group a machine falls in: the Switch cloud machine, an SSH host this
+ * Console set up, or any other computer, this one and headless controllers
+ * alike. An SSH host enrolled from another Console is a computer here, since
+ * only the Console that set it up knows it is one.
+ */
+export function machineCategory(machine: Pick<MachineDetail, 'local' | 'cloud'>): MachineCategory {
+  if (machine.cloud) return 'cloud';
+  if (machine.local?.kind === 'ssh-host') return 'ssh-host';
+  return 'computer';
+}
+
+/**
+ * What an empty filter says: how a device of that kind joins, or why none can.
+ * New agent offers an SSH host only where the server is reachable from it: a
+ * server Console runs on this computer, or any server at a loopback address,
+ * from no SSH host; one Console runs on a host, from that host only.
+ */
+export function emptyCategoryText(
+  category: MachineCategory,
+  server: Pick<SwitchServer, 'name' | 'url' | 'managed' | 'managementKind' | 'sshHost'>
+): string {
+  switch (category) {
+    case 'cloud':
+      return 'Your Switch cloud device shows here once you create an agent with Switch cloud as its run location.';
+    case 'computer':
+      return 'This computer joins when you run a managed agent on it, and another computer once it is enrolled with Add device.';
+    case 'ssh-host':
+      if (server.managed && server.managementKind === 'remote')
+        return `${server.name} runs on ${server.sshHost}, so only that host can run its agents over SSH. It joins when you create an agent on it.`;
+      if (server.managed || isLoopbackUrl(server.url))
+        return `${server.name} runs on this computer and only this computer can reach it, so an SSH host cannot run its agents. To run agents on another computer, use a server it can reach.`;
+      return 'An SSH host joins when you create an agent with it as the run location, and Switch Console sets its controller up.';
+  }
+}
+
+/**
+ * How many of the person's agents are placed on a device, as far as their
+ * agent list says: not yet read, could not be read, or a count. Removing a
+ * device warns about the agents it strands, so it waits for the list.
+ */
+export type PlacedAgents =
+  | { kind: 'known'; count: number }
+  | { kind: 'loading' }
+  | { kind: 'unreadable' };
+
+export function placedAgents(
+  managed: { data: ManagedAgentView[] | null | undefined; isError: boolean },
+  machineId: string
+): PlacedAgents {
+  if (managed.isError) return { kind: 'unreadable' };
+  if (managed.data === undefined) return { kind: 'loading' };
+  return {
+    kind: 'known',
+    count: (managed.data ?? []).filter((agent) => agent.machine?.id === machineId).length,
+  };
+}

@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type * as AgentProviders from '@switch-console/agent-providers';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -17,7 +18,8 @@ vi.mock('node:os', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   homedir: mocks.home,
 }));
-vi.mock('@switch-console/agent-providers', () => ({
+vi.mock('@switch-console/agent-providers', async (importOriginal) => ({
+  isProcessAlive: (await importOriginal<typeof AgentProviders>()).isProcessAlive,
   ensureSharedProcess: mocks.ensure,
   runAgentHost: mocks.runWatcher,
   openSwitchStream: () => ({}),

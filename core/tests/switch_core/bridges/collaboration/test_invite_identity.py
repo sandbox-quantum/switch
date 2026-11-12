@@ -76,6 +76,7 @@ async def test_telegram_membership_update_keeps_its_actor():
 async def test_teams_prefers_the_actor_aad_identity_for_both_join_types():
     app, user = AsyncMock(), AsyncMock()
     adapter = SimpleNamespace(
+        _report_rename=AsyncMock(),
         _inbound_channel_type=AsyncMock(return_value="group"),
         _resolve_channel_name=AsyncMock(return_value="private"),
         _team_of_channel={},

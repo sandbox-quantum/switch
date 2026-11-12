@@ -46,6 +46,7 @@ from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connector_apps import router as connector_apps_router
+from switch_core.gateway.decision_settings import router as decision_settings_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
@@ -66,11 +67,13 @@ from switch_core.gateway.organization_services import (
     router as organization_services_router,
 )
 from switch_core.gateway.organizations import router as organizations_router
+from switch_core.gateway.ownership import router as ownership_router
 from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.providers import router as providers_router
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
+from switch_core.gateway.room_schedules import router as room_schedules_router
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
@@ -81,10 +84,14 @@ from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.gateway.trust_settings import router as trust_settings_router
+from switch_core.gateway.workos_sign_in_routes import (
+    router as workos_sign_in_router,
+)
 from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
 from switch_core.keys import Purpose
+from switch_core.organization_directory import OrganizationDirectory
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
@@ -110,6 +117,7 @@ def create_gateway_app(
     invitation_store: InvitationStore,
     join_domain_store: JoinDomainStore,
     organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     template_store: TemplateStore,
     usage_store: UsageStore,
     budget_store: BudgetStore,
@@ -139,6 +147,7 @@ def create_gateway_app(
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
         organization_store=organization_store,
+        organization_directory=organization_directory,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,
@@ -177,6 +186,9 @@ def create_gateway_app(
     # Sign-ins under way, GitHub's and the catalog's, in Postgres so that any
     # switch-core process can take any step of one.
     app.state.sign_in_flows = SignInFlows(session_factory, config.keyring)
+    # Set by the server when changes to linked organizations' members are
+    # sent to WorkOS (`workos_sign_in.py`).
+    app.state.workos_sign_in = None
     app.state.service_flows = ServiceFlows(
         config.gateway_public_url, app.state.sign_in_flows
     )
@@ -217,6 +229,7 @@ def create_gateway_app(
     )
     app.include_router(auth_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
+    app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
@@ -232,13 +245,16 @@ def create_gateway_app(
     )
     app.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
     app.include_router(references_router, tags=["references"])
+    app.include_router(room_schedules_router, tags=["room-schedules"])
     app.include_router(room_links_router, tags=["linked-rooms"])
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
+    app.include_router(ownership_router, tags=["ownership"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])
+    app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,
