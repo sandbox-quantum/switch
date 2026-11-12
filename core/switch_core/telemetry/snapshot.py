@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from switch_core import messaging_platforms
+from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG, SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     Agent,
@@ -65,10 +66,14 @@ from switch_core.telemetry.internal import internal_email_condition
 
 logger = logging.getLogger(__name__)
 
-# `clients.type` for a human: one human actor per external user per bridge, and the
-# only row in the schema that stands for "a person did something".
+# `clients.type` for a human on a messaging platform: one human actor per
+# external user per bridge.
 HUMAN_CLIENT_TYPE = "user"
 AGENT_CLIENT_TYPE = "agent"
+# Every `clients.type` that stands for "a person did something": the platform
+# actor above, and the `member` client a Switch account writes Switch Console
+# chats through (one per account per tenant). Each is one chat identity.
+HUMAN_CLIENT_TYPES = (HUMAN_CLIENT_TYPE, MEMBER_CLIENT_TYPE)
 
 
 # What a participant said, as opposed to everything else the transport stores in
@@ -111,7 +116,8 @@ class UsageCounts:
     # `user_count`.
     user_internal_count: int = 0
     # Switch accounts that used a room with an agent: an account counts when a
-    # chat account it has claimed spoke. Counted from the ids below once every
+    # chat account it has claimed spoke, or when it spoke in Switch Console
+    # through its own `member` client. Counted from the ids below once every
     # tenant is in, since one account can be active in several tenants and a
     # per-tenant count would add it once for each.
     user_active_1d: int = 0
@@ -122,8 +128,9 @@ class UsageCounts:
     user_internal_active_7d: int = 0
     active_user_ids_1d: set[str] = field(default_factory=set)
     active_user_ids_7d: set[str] = field(default_factory=set)
-    # Chat identities — a Slack, Mattermost or other platform account — that
-    # used a room with an agent, whether or not anyone has claimed them. One
+    # Chat identities — a Slack, Mattermost or other platform account, or a
+    # Switch account's Switch Console `member` client — that used a room with
+    # an agent, whether or not anyone has claimed them. One
     # person on two platforms is two identities, and most identities belong to
     # no Switch account, which is why this runs above `user_active_*`.
     # `chat_identity_count` is the whole population they are drawn from.
@@ -144,6 +151,19 @@ class UsageCounts:
     # the same ids. Bots never link an account, so it needs no bot rule.
     account_active_1d: int = 0
     account_active_7d: int = 0
+    # Of those, accounts that spoke through Switch Console themselves rather
+    # than (or as well as) through a claimed platform account. A set across
+    # tenants for the same reason as `active_user_ids_*`.
+    console_account_active_1d: int = 0
+    console_account_active_7d: int = 0
+    console_account_ids_1d: set[str] = field(default_factory=set)
+    console_account_ids_7d: set[str] = field(default_factory=set)
+    # Of those, accounts with no platform account active in the same window,
+    # in any tenant: people Switch reaches only through Console.
+    console_only_account_active_1d: int = 0
+    console_only_account_active_7d: int = 0
+    platform_account_ids_1d: set[str] = field(default_factory=set)
+    platform_account_ids_7d: set[str] = field(default_factory=set)
     # The other tiers, as chat identities like `chat_identity_active_*`:
     # anyone who said anything in any room, and anyone Switch has seen in a
     # room — see `_activity_tiers` for what that can and cannot see.
@@ -157,6 +177,11 @@ class UsageCounts:
     room_active_7d: int = 0
     room_archived_count: int = 0
     room_internal_only_count: int = 0
+    # Unarchived Switch Console chats: 1-1 with an agent, and with more than
+    # one person in them; and those with an interaction in the last week.
+    room_console_chat_direct_count: int = 0
+    room_console_chat_group_count: int = 0
+    room_console_chat_active_7d: int = 0
     room_membership_total: int = 0
     room_users_max: int = 0
     agent_count: int = 0
@@ -208,6 +233,10 @@ class UsageCounts:
             "bot_identity_active_7d": self.bot_identity_active_7d,
             "account_active_1d": self.account_active_1d,
             "account_active_7d": self.account_active_7d,
+            "console_account_active_1d": self.console_account_active_1d,
+            "console_account_active_7d": self.console_account_active_7d,
+            "console_only_account_active_1d": self.console_only_account_active_1d,
+            "console_only_account_active_7d": self.console_only_account_active_7d,
             "chat_identity_posted_1d": self.chat_identity_posted_1d,
             "chat_identity_posted_7d": self.chat_identity_posted_7d,
             "chat_identity_in_room_count": self.chat_identity_in_room_count,
@@ -218,6 +247,9 @@ class UsageCounts:
             "room_active_7d": self.room_active_7d,
             "room_archived_count": self.room_archived_count,
             "room_internal_only_count": self.room_internal_only_count,
+            "room_console_chat_direct_count": self.room_console_chat_direct_count,
+            "room_console_chat_group_count": self.room_console_chat_group_count,
+            "room_console_chat_active_7d": self.room_console_chat_active_7d,
             "room_membership_total": self.room_membership_total,
             "room_users_mean": (
                 round(self.room_membership_total / self.room_count, 2)
@@ -265,6 +297,7 @@ class NewlyActiveRoom:
     channel_type: str
     agent_count: int
     created_by_kind: str
+    console_chat: bool
 
 
 def _rooms_with_an_agent(tenant_id: str) -> CompoundSelect:
@@ -355,7 +388,7 @@ def _human_message_conditions(tenant_id: str) -> tuple[Any, ...]:
     """The message half of `_human_activity_conditions`: a person said it, and
     it is live traffic rather than a backfill."""
     return (
-        Client.type == HUMAN_CLIENT_TYPE,
+        Client.type.in_(HUMAN_CLIENT_TYPES),
         Client.tenant_id == tenant_id,
         Message.seq > 0,
         *_spoken(),
@@ -379,12 +412,13 @@ def _human_interaction(
     )
 
 
-def _active_accounts(
+def _platform_accounts(
     tenant_id: str, since: datetime, until: datetime
 ) -> Select[tuple[str]]:
-    """Distinct Switch accounts that used a room in `[since, until)`: an account
-    is active when a chat account it has claimed spoke. A chat account several
-    people claim makes each of them active. See `_human_activity_conditions`."""
+    """Distinct Switch accounts that used a room in `[since, until)` through a
+    messaging platform: a chat account they have claimed spoke. A chat account
+    several people claim makes each of them active. See
+    `_human_activity_conditions`."""
     return (
         select(distinct(ExternalUserClaim.user_id))
         .select_from(Message)
@@ -407,6 +441,27 @@ def _active_accounts(
             Message.sent_at >= since,
             Message.sent_at < until,
             *_human_activity_conditions(tenant_id),
+        )
+    )
+
+
+def _console_accounts(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str | None]]:
+    """Distinct Switch accounts that used a room with an agent in
+    `[since, until)` through Switch Console: their `member` client spoke. See
+    `_human_activity_conditions`."""
+    return (
+        select(distinct(Client.user_id))
+        .select_from(Message)
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            Message.sent_at < until,
+            *_human_activity_conditions(tenant_id),
+            Client.type == MEMBER_CLIENT_TYPE,
+            Client.user_id.is_not(None),
         )
     )
 
@@ -518,7 +573,7 @@ def _activity_tiers(
         .where(
             ClientRoom.tenant_id == tenant_id,
             Client.tenant_id == tenant_id,
-            Client.type == HUMAN_CLIENT_TYPE,
+            Client.type.in_(HUMAN_CLIENT_TYPES),
             Room.tenant_id == tenant_id,
             Room.archived_at.is_(None),
         )
@@ -532,6 +587,24 @@ def _activity_tiers(
         select(func.count()).select_from(posters).scalar_subquery(),
         select(func.count()).select_from(seen).scalar_subquery(),
     )
+
+
+async def _account_ids(
+    session: AsyncSession, tenant_id: str, since: datetime, until: datetime
+) -> tuple[set[str], set[str]]:
+    """The accounts active in `[since, until)` through a messaging platform,
+    and those active through Switch Console. An account can be in both."""
+    platform = set(
+        (await session.execute(_platform_accounts(tenant_id, since, until))).scalars()
+    )
+    console = {
+        user_id
+        for user_id in (
+            await session.execute(_console_accounts(tenant_id, since, until))
+        ).scalars()
+        if user_id is not None
+    }
+    return platform, console
 
 
 async def _count(session: AsyncSession, query: Select[Any]) -> int:
@@ -560,17 +633,19 @@ async def collect_tenant_counts(
     day_ago = now - _DAY
     week_ago = now - _WEEK
 
-    counts.active_user_ids_1d |= set(
-        (await session.execute(_active_accounts(tenant_id, day_ago, now))).scalars()
-    )
-    counts.active_user_ids_7d |= set(
-        (await session.execute(_active_accounts(tenant_id, week_ago, now))).scalars()
-    )
+    platform_1d, console_1d = await _account_ids(session, tenant_id, day_ago, now)
+    platform_7d, console_7d = await _account_ids(session, tenant_id, week_ago, now)
+    counts.active_user_ids_1d |= platform_1d | console_1d
+    counts.active_user_ids_7d |= platform_7d | console_7d
+    counts.platform_account_ids_1d |= platform_1d
+    counts.platform_account_ids_7d |= platform_7d
+    counts.console_account_ids_1d |= console_1d
+    counts.console_account_ids_7d |= console_7d
     counts.chat_identity_count += await _scalar(
         session,
         select(func.count())
         .select_from(Client)
-        .where(Client.tenant_id == tenant_id, Client.type == HUMAN_CLIENT_TYPE),
+        .where(Client.tenant_id == tenant_id, Client.type.in_(HUMAN_CLIENT_TYPES)),
     )
     counts.chat_identity_active_1d += await _count(
         session, _active_humans(tenant_id, day_ago, now)
@@ -631,6 +706,32 @@ async def collect_tenant_counts(
         select(func.count()).select_from(Room).where(*live, Room.bridge_id.is_(None)),
     )
 
+    # Switch Console chats, of every origin `room_count` splits by: a chat is
+    # one whoever made it. A direct chat becomes a private channel once a
+    # second person is in it, so everything that is not direct is a group.
+    console_chat = Room.metadata_.has_key(CHAT_OPERATION_ID_KEY)
+    direct = Room.channel_type == "direct"
+    counts.room_console_chat_direct_count += await _scalar(
+        session,
+        select(func.count()).select_from(Room).where(*live, console_chat, direct),
+    )
+    counts.room_console_chat_group_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Room)
+        .where(*live, console_chat, ~direct | Room.channel_type.is_(None)),
+    )
+    counts.room_console_chat_active_7d += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Room)
+        .where(
+            Room.tenant_id == tenant_id,
+            console_chat,
+            Room.id.in_(_human_interaction(tenant_id, week_ago, now)),
+        ),
+    )
+
     # Human membership per room, as a total and a maximum. The mean is derived
     # from the total rather than averaged per tenant, so a deployment with one
     # busy tenant and one idle one reports the real figure instead of the mean
@@ -644,7 +745,7 @@ async def collect_tenant_counts(
         .where(
             ClientRoom.tenant_id == tenant_id,
             Client.tenant_id == tenant_id,
-            Client.type == HUMAN_CLIENT_TYPE,
+            Client.type.in_(HUMAN_CLIENT_TYPES),
             *live,
             (kind == "user") | kind.is_(None),
         )
@@ -733,7 +834,7 @@ async def collect_tenant_counts(
         .group_by(Client.type)
     )
     for client_type, count in by_sender.all():
-        if client_type == HUMAN_CLIENT_TYPE:
+        if client_type in HUMAN_CLIENT_TYPES:
             counts.message_from_human_1d += count
         elif client_type == AGENT_CLIENT_TYPE:
             counts.message_from_agent_1d += count
@@ -823,7 +924,7 @@ async def _collect_turns(
     between two windows.
     """
     kind = case(
-        (Client.type == HUMAN_CLIENT_TYPE, "human"),
+        (Client.type.in_(HUMAN_CLIENT_TYPES), "human"),
         (Client.type == AGENT_CLIENT_TYPE, "agent"),
         else_="other",
     )
@@ -933,6 +1034,14 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "user_internal_active_7d",
         "active_user_ids_1d",
         "active_user_ids_7d",
+        "console_account_active_1d",
+        "console_account_active_7d",
+        "console_account_ids_1d",
+        "console_account_ids_7d",
+        "console_only_account_active_1d",
+        "console_only_account_active_7d",
+        "platform_account_ids_1d",
+        "platform_account_ids_7d",
         "room_users_max",
         "connector_counts",
     }
@@ -943,6 +1052,10 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
     total.room_users_max = max(total.room_users_max, tenant.room_users_max)
     total.active_user_ids_1d |= tenant.active_user_ids_1d
     total.active_user_ids_7d |= tenant.active_user_ids_7d
+    total.console_account_ids_1d |= tenant.console_account_ids_1d
+    total.console_account_ids_7d |= tenant.console_account_ids_7d
+    total.platform_account_ids_1d |= tenant.platform_account_ids_1d
+    total.platform_account_ids_7d |= tenant.platform_account_ids_7d
     for platform, count in tenant.connector_counts.items():
         total.connector_counts[platform] += count
 
@@ -1027,6 +1140,14 @@ async def collect_usage(
     counts.user_active_7d = len(counts.active_user_ids_7d)
     counts.account_active_1d = counts.user_active_1d
     counts.account_active_7d = counts.user_active_7d
+    counts.console_account_active_1d = len(counts.console_account_ids_1d)
+    counts.console_account_active_7d = len(counts.console_account_ids_7d)
+    counts.console_only_account_active_1d = len(
+        counts.console_account_ids_1d - counts.platform_account_ids_1d
+    )
+    counts.console_only_account_active_7d = len(
+        counts.console_account_ids_7d - counts.platform_account_ids_7d
+    )
     counts.duration_ms = round((time.monotonic() - started) * 1000)
     return counts
 
@@ -1041,11 +1162,16 @@ class PeriodCounts:
     room_active: int = 0
     person_identity_active: int = 0
     account_ids: set[str] = field(default_factory=set)
+    console_account_ids: set[str] = field(default_factory=set)
     tenant_failed_count: int = 0
 
     @property
     def account_active(self) -> int:
         return len(self.account_ids)
+
+    @property
+    def console_account_active(self) -> int:
+        return len(self.console_account_ids)
 
 
 async def collect_period_counts(
@@ -1066,11 +1192,7 @@ async def collect_period_counts(
             async with tenant_session(session_factory, tenant_id) as session:
                 rooms = await _count(session, _human_interaction(tenant_id, start, end))
                 people = await _count(session, _active_people(tenant_id, start, end))
-                accounts = set(
-                    (
-                        await session.execute(_active_accounts(tenant_id, start, end))
-                    ).scalars()
-                )
+                platform, console = await _account_ids(session, tenant_id, start, end)
         except Exception:
             logger.exception(
                 "Usage period: failed to collect counts for tenant %s", tenant_id
@@ -1079,7 +1201,8 @@ async def collect_period_counts(
             continue
         counts.room_active += rooms
         counts.person_identity_active += people
-        counts.account_ids |= accounts
+        counts.account_ids |= platform | console
+        counts.console_account_ids |= console
     if failed_tenants:
         logger.error(
             "Usage period %s to %s: excluded %d of %d tenant(s): %s. Its counts "
@@ -1204,6 +1327,7 @@ async def newly_active_rooms(
                         Room.bridge_id,
                         Room.metadata_["created_by_kind"].astext,
                         agent_count,
+                        Room.metadata_.has_key(CHAT_OPERATION_ID_KEY),
                     )
                     .join(first_interaction, first_interaction.c.room_id == Room.id)
                     .outerjoin(agent_joined, agent_joined.c.room_id == Room.id)
@@ -1226,6 +1350,7 @@ async def newly_active_rooms(
                     bridge_id,
                     kind,
                     agents,
+                    console_chat,
                 ) in rows:
                     tenant_found.append(
                         NewlyActiveRoom(
@@ -1239,6 +1364,7 @@ async def newly_active_rooms(
                             channel_type=normalise_channel_type(channel_type),
                             agent_count=int(agents or 0),
                             created_by_kind=normalise_actor_kind(kind),
+                            console_chat=bool(console_chat),
                         )
                     )
         except Exception:

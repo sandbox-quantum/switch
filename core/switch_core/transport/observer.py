@@ -1,8 +1,9 @@
 """What the transport tells the rest of Switch about a message once it is sent.
 
-The transport is the one place every participant's message passes through, so
-it is where "a message was said in a room" can be observed without each writer
-having to remember to report it. It knows nothing about who is listening: it
+Nearly every participant's message passes through the transport, so it is
+where "a message was said in a room" can be observed without each writer
+having to remember to report it. The exception is a Switch Console chat
+message, which `ChatService.send` writes through the router and reports itself. It knows nothing about who is listening: it
 hands over the facts it already holds, after the commit, and carries on.
 """
 
@@ -28,6 +29,9 @@ class ParticipantMessage:
     #: The bridge marked the post as an integration's, not a person's
     #: (`SENDER_IS_APP_MARKER`). Only ever true for a `human` writer.
     sender_is_app: bool
+    #: Written in Switch Console by a person's own `member` client, rather
+    #: than relayed from a messaging app. Only ever true for a `human` writer.
+    from_console: bool
     has_attachment: bool
     in_thread: bool
 

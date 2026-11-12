@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -28,7 +29,12 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.telemetry import messages as messages_module
-from switch_core.telemetry.messages import MessageTelemetry, _RoomFacts, _TtlCache
+from switch_core.telemetry.messages import (
+    MessageTelemetry,
+    _RoomFacts,
+    _Sender,
+    _TtlCache,
+)
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 from switch_core.transport.observer import ParticipantMessage
@@ -167,6 +173,7 @@ def _said(world: _World, sender_client_id: str, role: str) -> ParticipantMessage
         sender_client_id=sender_client_id,
         sender_role=role,
         sender_is_app=False,
+        from_console=False,
         has_attachment=False,
         in_thread=False,
     )
@@ -181,6 +188,7 @@ def _said_in(
         sender_client_id=sender_client_id,
         sender_role=sender_role,
         sender_is_app=False,
+        from_console=False,
         has_attachment=False,
         in_thread=False,
     )
@@ -192,6 +200,7 @@ async def _a_slack_room(tenant_id: str, room_id: str) -> _RoomFacts:
         channel_type="channel_public",
         user_count=1,
         agent_count=1,
+        console_chat="false",
     )
 
 
@@ -246,8 +255,10 @@ class TestRoomMessageSent:
                 "switch_core.room_message_sent",
                 {
                     "sender_kind": "user",
+                    "sender_surface": "messaging_app",
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
+                    "console_chat": "false",
                     "room_user_count": 2,
                     "room_agent_count": 1,
                     "has_attachment": False,
@@ -294,6 +305,7 @@ class TestRoomMessageSent:
                 sender_client_id=human.id,
                 sender_role="human",
                 sender_is_app=False,
+                from_console=False,
                 has_attachment=True,
                 in_thread=True,
             )
@@ -321,6 +333,7 @@ class TestRoomMessageSent:
                 sender_client_id="whoever",
                 sender_role="human",
                 sender_is_app=False,
+                from_console=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -331,6 +344,37 @@ class TestRoomMessageSent:
         assert properties["channel_type"] == "unknown"
         assert properties["room_user_count"] == -1
         assert properties["room_agent_count"] == -1
+        assert properties["console_chat"] == "unknown"
+
+    async def test_a_console_chat_message_says_where_it_was_written(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A person writing in Switch Console writes through their `member`
+        client, which is one of the room's people like a platform identity."""
+        async with session_factory() as session:
+            room = await _room(session, bridge_platform=None, channel_type="direct")
+            room.metadata_ = {CHAT_OPERATION_ID_KEY: "op"}
+            member = await _client(session, MEMBER_CLIENT_TYPE)
+            agent = await _agent(session, "claude-code")
+            await _join(session, member.id, room)
+            await _join(session, agent.client_id, room)
+            await session.commit()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.observe(
+            dataclasses.replace(
+                _said_in(room.id, sender_client_id=member.id), from_console=True
+            )
+        )
+
+        [(_, properties)] = await _reported(messages, service, sink)
+        assert properties["sender_kind"] == "user"
+        assert properties["sender_surface"] == "console"
+        assert properties["console_chat"] == "true"
+        assert properties["room_user_count"] == 1
+        assert properties["room_agent_count"] == 1
 
 
 class TestAgentMessageSent:
@@ -354,6 +398,7 @@ class TestAgentMessageSent:
             "known_agent_type": "codex",
             "bridge_platform": "slack",
             "channel_type": "channel_private",
+            "console_chat": "false",
             "room_user_count": 2,
             "has_attachment": False,
             "in_thread": False,
@@ -403,9 +448,11 @@ class TestAgentMessageReceived:
                 "switch_core.agent_message_received",
                 {
                     "sender_kind": "user",
+                    "sender_surface": "messaging_app",
                     "known_agent_type": "claude-code",
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
+                    "console_chat": "false",
                     "has_attachment": False,
                     "agent_live": True,
                 },
@@ -445,6 +492,11 @@ class TestAgentMessageReceived:
             "platform",
             "unknown",
         ]
+        assert [p["sender_surface"] for _, p in reported] == [
+            "none",
+            "none",
+            "unknown",
+        ]
         assert {p["known_agent_type"] for _, p in reported} == {"none"}
 
     async def test_an_integration_asking_an_agent_is_a_bot(
@@ -468,6 +520,35 @@ class TestAgentMessageReceived:
 
         reported = await _reported(messages, service, sink)
         assert [p["sender_kind"] for _, p in reported] == ["bot"]
+
+
+class TestConsoleSenders:
+    async def test_a_person_asking_from_console_is_a_user_in_console(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world = await _world(session_factory)
+        async with session_factory() as session:
+            member = await _client(session, MEMBER_CLIENT_TYPE)
+            await session.commit()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.agent_addressed(
+            tenant_id=TENANT_ZERO,
+            room_id=world.room.id,
+            sender_transport_user_id=member.transport_user_id,
+            from_platform=False,
+            from_app=False,
+            agent_metadata=None,
+            agent_live=True,
+            has_attachment=False,
+        )
+
+        [(_, properties)] = await _reported(messages, service, sink)
+        assert properties["sender_kind"] == "user"
+        assert properties["sender_surface"] == "console"
+        assert properties["console_chat"] == "false"
 
 
 class TestFailingLookups:
@@ -536,6 +617,7 @@ class TestFailingLookups:
                 sender_client_id="someone",
                 sender_role="human",
                 sender_is_app=False,
+                from_console=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -850,20 +932,26 @@ class TestHowLongLookupsAreKept:
         )
         telemetry = MessageTelemetry(telemetry=MagicMock(), session_factory=MagicMock())
         room = _RoomFacts(
-            bridge_platform="slack", channel_type="channel", user_count=2, agent_count=1
+            bridge_platform="slack",
+            channel_type="channel",
+            user_count=2,
+            agent_count=1,
+            console_chat="false",
         )
         telemetry._rooms.put(("t", "room"), room)
-        telemetry._sender_kinds.put(("t", "@alice:test"), "user")
+        telemetry._senders.put(("t", "@alice:test"), _Sender("user", "messaging_app"))
         telemetry._agent_runtimes.put(("t", "client"), "claude_code")
 
         clock.now += 14 * 60
         assert telemetry._rooms.get(("t", "room")) == room
         clock.now += 2 * 60
         assert telemetry._rooms.get(("t", "room")) is None
-        assert telemetry._sender_kinds.get(("t", "@alice:test")) == "user"
+        assert telemetry._senders.get(("t", "@alice:test")) == _Sender(
+            "user", "messaging_app"
+        )
         assert telemetry._agent_runtimes.get(("t", "client")) == "claude_code"
         clock.now += 45 * 60
-        assert telemetry._sender_kinds.get(("t", "@alice:test")) is None
+        assert telemetry._senders.get(("t", "@alice:test")) is None
         assert telemetry._agent_runtimes.get(("t", "client")) is None
 
 
@@ -1128,6 +1216,7 @@ class TestShutdown:
                         sender_client_id="someone",
                         sender_role="human",
                         sender_is_app=False,
+                        from_console=False,
                         has_attachment=False,
                         in_thread=False,
                     )
@@ -1209,6 +1298,7 @@ class TestShutdown:
                 sender_client_id="someone",
                 sender_role="human",
                 sender_is_app=False,
+                from_console=False,
                 has_attachment=False,
                 in_thread=False,
             )

@@ -52,11 +52,19 @@ from switch_core.session_activity.listener import (
     Change,
 )
 from switch_core.signals import SignalBus
+from switch_core.telemetry.service import TelemetryService
+from switch_core.telemetry.sink import TelemetryRecord
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.observer import (
+    IgnoreParticipantMessages,
+    ParticipantMessage,
+    ParticipantMessageObserver,
+)
 from switch_core.trust.client import NullTrustClient
 from tests.conftest import TEST_KEYRING
 from tests.routing import router_on
 from tests.switch_core.gateway.agent_route_harness import add_agent
+from tests.telemetry_records import declared
 
 _MESSAGE_STORE = MessageStore()
 
@@ -167,6 +175,49 @@ class _FakeActivityListener:
             await subscription.on_resync()
 
 
+class RecordingSink:
+    """Keeps every telemetry record it is sent."""
+
+    def __init__(self) -> None:
+        self.sent: list[TelemetryRecord] = []
+
+    def send(self, record: TelemetryRecord) -> None:
+        self.sent.append(record)
+
+    async def aclose(self) -> None:
+        return None
+
+    def named(self, event: str) -> list[dict[str, object]]:
+        """The declared properties of every `event` sent, in order."""
+        return [
+            declared(record)
+            for record in self.sent
+            if record.name == f"switch_core.{event}"
+        ]
+
+
+def recording_telemetry(sink: RecordingSink) -> TelemetryService:
+    return TelemetryService(
+        sink=sink,
+        enabled=True,
+        client_id="deployment-uuid",
+        version="1.0.0",
+        telemetry_environment="prod",
+        telemetry_internal=False,
+        deployment_kind="self_hosted",
+    )
+
+
+class RecordingObserver:
+    """Keeps every participant message it is told about."""
+
+    def __init__(self) -> None:
+        self.observed: list[ParticipantMessage] = []
+
+    def observe(self, message: ParticipantMessage) -> None:
+        self.observed.append(message)
+
+
 class _Harness(SimpleNamespace):
     client: httpx.AsyncClient
     factory: async_sessionmaker[AsyncSession]
@@ -176,6 +227,8 @@ class _Harness(SimpleNamespace):
     activity: _FakeActivityListener
     lifecycle: _FakeLifecycle
     connections: AgentConnectionRegistry
+    observer: RecordingObserver
+    telemetry: RecordingSink
     alice: User
     bob: User
     carol: User
@@ -272,6 +325,8 @@ def _chat_service(
     listener: _FakeListener,
     activity: _FakeActivityListener,
     connections: AgentConnectionRegistry,
+    message_observer: ParticipantMessageObserver,
+    telemetry: TelemetryService | None,
 ) -> tuple[ChatService, RoomService]:
     """A chat service and the room service it works through, built as one
     switch-core process builds them."""
@@ -315,6 +370,8 @@ def _chat_service(
         buddy_slack_handoff_enabled=True,
         connections=connections,
         trust_client=NullTrustClient(),
+        message_observer=message_observer,
+        telemetry=telemetry,
     )
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service
@@ -335,12 +392,16 @@ async def chats(
     listener = _FakeListener()
     activity = _FakeActivityListener()
     connections = AgentConnectionRegistry()
+    observer = RecordingObserver()
+    sink = RecordingSink()
     service, room_service = _chat_service(
         session_factory,
         lifecycle=lifecycle,
         listener=listener,
         activity=activity,
         connections=connections,
+        message_observer=observer,
+        telemetry=recording_telemetry(sink),
     )
 
     app = FastAPI()
@@ -367,6 +428,8 @@ async def chats(
             activity=activity,
             lifecycle=lifecycle,
             connections=connections,
+            observer=observer,
+            telemetry=sink,
             alice=alice,
             bob=bob,
             carol=carol,
@@ -437,6 +500,8 @@ async def two_processes(
         listener=_FakeListener(),
         activity=_FakeActivityListener(),
         connections=connections,
+        message_observer=IgnoreParticipantMessages(),
+        telemetry=None,
     )
     processes = [
         _process(chats.factory, postgres_url, chats.service, chats.connections),

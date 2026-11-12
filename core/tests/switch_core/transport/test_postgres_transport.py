@@ -412,6 +412,7 @@ class TestTheParticipantMessageObserver:
                 sender_client_id=client_id,
                 sender_role="human",
                 sender_is_app=False,
+                from_console=False,
                 has_attachment=False,
                 in_thread=False,
             )

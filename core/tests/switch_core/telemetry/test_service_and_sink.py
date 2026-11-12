@@ -175,6 +175,7 @@ class TestTagging:
             room_active=0,
             person_identity_active=0,
             account_active=0,
+            console_account_active=0,
             tenant_failed_count=0,
         )
         await service.aclose()

@@ -40,6 +40,7 @@ class TestTheRemovalEventsExist:
                 "age_days": 12.5,
                 "was_ever_active": "true",
                 "agent_count": 3,
+                "console_chat": False,
             },
         )
 
@@ -55,6 +56,7 @@ class TestTheRemovalEventsExist:
                 "age_days": 12.5,
                 "was_ever_active": "unknown",
                 "agent_count": 3,
+                "console_chat": False,
             },
         )
 
@@ -68,6 +70,7 @@ class TestTheRemovalEventsExist:
             "age_days": 12.5,
             "was_ever_active": True,
             "agent_count": 3,
+            "console_chat": False,
         }
         with pytest.raises(TelemetryCatalogueError, match="expected one of"):
             validate("room_deleted", payload)  # type: ignore[arg-type]

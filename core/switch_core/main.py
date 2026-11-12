@@ -1344,6 +1344,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
         trust_client=trust_client,
+        message_observer=message_telemetry,
+        telemetry=telemetry,
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).

@@ -51,6 +51,7 @@ def _room(
         channel_type="channel_public",
         agent_count=1,
         created_by_kind=kind,
+        console_chat=False,
     )
 
 

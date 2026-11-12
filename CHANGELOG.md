@@ -181,6 +181,26 @@ version of their own to them without also giving them a release of their own.
   Rooms page, with what is left to do by hand.
 
 #### Changed
+- **Usage telemetry counts people who use Switch Console chats.** What someone
+  writes in Console was left out of every people, active-room, message and
+  turn count in the daily snapshot and the period counts, and sent no
+  `room_message_sent` at all. It now counts like a post from Slack: the
+  person's Console identity is one more chat identity and their account is
+  active. The new `console_account_active_1d` / `_7d` say how many active
+  accounts spoke in Console, so the rise on upgrade can be told from growth,
+  and `console_only_account_active_*` how many used nothing else. The
+  snapshot also counts Console chats (`room_console_chat_direct_count`,
+  `_group_count`, `_active_7d`), and `usage_period` carries
+  `console_account_active`. Message events gain `sender_surface`
+  (`messaging_app`, `console`, `none`, `unknown`) and `console_chat`; the room
+  events (`room_created`, `room_became_active`, `room_archived`,
+  `room_deleted`) gain `console_chat`. New events report a Console chat
+  becoming a group (`console_chat_became_group`), people and agents added to
+  and removed from rooms in Console (`console_member_added`,
+  `console_member_removed`), and rooms taken off and put back on someone's
+  list (`console_room_hidden`, `console_room_shown`).
+  `agent_message_received` reports a Console sender as `user` rather than
+  `unknown`.
 - **The morning report's graph explains itself.** `daily_report.py` draws the
   graph of the day itself instead of taking a Datadog snapshot, with a title,
   the time span, labelled axes, a legend and a caption on how to read it, so

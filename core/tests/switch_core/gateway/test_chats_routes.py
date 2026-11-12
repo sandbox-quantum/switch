@@ -50,7 +50,12 @@ from switch_core.gateway.chats import (
     chat_events,
 )
 from switch_core.session_activity.listener import Change
-from tests.switch_core.gateway.conftest import _Harness, _Process
+from tests.switch_core.gateway.conftest import (
+    RecordingSink,
+    _Harness,
+    _Process,
+    recording_telemetry,
+)
 
 
 def _code(response: httpx.Response) -> str:
@@ -515,6 +520,69 @@ async def test_a_send_that_failed_before_commit_posts_once_on_retry(
     assert len(rows) == 3
     groups = {row.content["com.switch.attachment_group"]["id"] for row in rows}
     assert len(groups) == 1
+
+
+async def test_a_send_is_reported_once_as_a_participant_message(
+    chats: _Harness,
+) -> None:
+    """The transport reports every participant message it writes; a chat send
+    is written through the router instead, so it reports itself: once per
+    post however many files it carries, and not again on a retry."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    for upload_id in ("u1", "u2"):
+        staged = await chats.upload(
+            chats.alice, room_id, upload_id, b"png", f"{upload_id}.png"
+        )
+        assert staged.status_code == 200, staged.text
+    chats.observer.observed.clear()
+
+    root = await chats.send(
+        chats.alice, room_id, "s1", "two files", uploadIds=["u1", "u2"]
+    )
+    assert root.status_code == 200, root.text
+    again = await chats.send(
+        chats.alice, room_id, "s1", "two files", uploadIds=["u1", "u2"]
+    )
+    assert again.status_code == 200, again.text
+    reply = await chats.send(
+        chats.alice,
+        room_id,
+        "s2",
+        "reply",
+        threadRootId=root.json()["messages"][0]["messageId"],
+    )
+    assert reply.status_code == 200, reply.text
+
+    async with chats.factory() as session:
+        member = (
+            await session.execute(
+                select(Client).where(
+                    Client.user_id == chats.alice.id, Client.type == "member"
+                )
+            )
+        ).scalar_one()
+    assert [
+        (m.room_id, m.sender_client_id, m.sender_role, m.has_attachment, m.in_thread)
+        for m in chats.observer.observed
+    ] == [
+        (room_id, member.id, "human", True, False),
+        (room_id, member.id, "human", False, True),
+    ]
+    assert not any(m.sender_is_app for m in chats.observer.observed)
+
+
+async def test_a_chat_is_reported_as_a_console_chat_when_made(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = RecordingSink()
+    monkeypatch.setattr(chats.room_service, "_telemetry", recording_telemetry(sink))
+    agent = await chats.agent("helper", owner=chats.alice)
+
+    await chats.new_chat(chats.alice, agent, "c1")
+
+    [created] = sink.named("room_created")
+    assert created["console_chat"] is True
 
 
 async def test_one_request_id_from_two_users_is_two_sends(chats: _Harness) -> None:

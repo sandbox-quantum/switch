@@ -359,11 +359,11 @@ never invisible.
 | `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly twenty queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
 | `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
-| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account. Superseded by `account_active_1d`, the same figure; sent for one more stable release |
+| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke, or when it spoke in Switch Console itself. One person on two platforms, or on a platform and in Console, is one account. Superseded by `account_active_1d`, the same figure; sent for one more stable release |
 | `user_active_7d` | number | same over 7 days. Superseded by `account_active_7d` |
 | `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
 | `user_internal_active_7d` | number | same over 7 days |
-| `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
+| `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts, claimed by an account or not, and each account's Switch Console identity once it has used Console chat — that exist. See "Switch Console chats" |
 | `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d`. Counts integrations as well as people; superseded by `person_identity_active_1d` plus `bot_identity_active_1d`, and sent for one more stable release |
 | `chat_identity_active_7d` | number | same over 7 days. Superseded likewise |
 | `person_identity_active_1d` | number | **the headline count of people** — distinct chat identities that used a room with an agent in 24h and never posted as an app in that window, linked to a Switch account or not. One person on two platforms is two identities. See "People, bots and accounts" |
@@ -372,6 +372,10 @@ never invisible.
 | `bot_identity_active_7d` | number | same over 7 days |
 | `account_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h, the same figure as `user_active_1d` under the name it keeps. The floor of the people count: an account exists only for someone who linked one |
 | `account_active_7d` | number | same over 7 days |
+| `console_account_active_1d` | number | of `account_active_1d`, accounts that spoke in Switch Console themselves, whether or not they also spoke on a platform. See "Switch Console chats" |
+| `console_account_active_7d` | number | same over 7 days |
+| `console_only_account_active_1d` | number | of `console_account_active_1d`, accounts with no claimed platform account active in the same 24h, in any workspace: people Switch reached only through Console |
+| `console_only_account_active_7d` | number | same over 7 days |
 | `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
 | `chat_identity_posted_7d` | number | same over 7 days |
 | `chat_identity_in_room_count` | number | distinct chat identities Switch has seen in a room: a member of at least one unarchived room of any origin, or anyone who said anything in the last 7 days. Not a channel's whole audience — see "Tiers of activity" |
@@ -382,6 +386,9 @@ never invisible.
 | `room_active_7d` | number | same over 7 days |
 | `room_archived_count` | number | archived rooms, both kinds |
 | `room_internal_only_count` | number | rooms with no external channel |
+| `room_console_chat_direct_count` | number | unarchived Switch Console chats with one person in them (`direct`), of any origin. Already counted in `room_count` and its siblings |
+| `room_console_chat_group_count` | number | unarchived Switch Console chats that are groups: a direct chat becomes one when a second person joins it |
+| `room_console_chat_active_7d` | number | Switch Console chats, archived or not, with an interaction in 7 days. Of `room_active_7d` |
 | `room_membership_total` | number | user–room memberships summed over rooms |
 | `room_users_mean` | number | mean human members per room |
 | `room_users_max` | number | largest human membership of any one room |
@@ -430,6 +437,26 @@ so for the first week after upgrading, an integration that has not posted
 since can still count as a person. `account_active_*` is the floor:
 integrations never link a Switch account, and most people never link one
 either.
+
+**Switch Console chats.** A person writing in Switch Console — a 1-1 chat with
+an agent, a group chat, or any other room they are a member of there — writes
+through their own `member` client, one per account per workspace, rather than
+through a platform's chat identity. That client counts as one more chat
+identity, always a person, in every count above, and its account is active
+directly, with no claim needed. So someone on Slack and in Console is two
+identities in `person_identity_active_*` and one account in
+`account_active_*`. `console_account_active_*` is how many of the active
+accounts spoke in Console; `account_active_* - console_account_active_*` is
+those that reached Switch only through a platform, and
+`console_only_account_active_*` those that reached it only through Console;
+the rest used both. The `room_console_chat_*` counts say how many Console
+chats there are, one-to-one or group, and how many are in use. Per event,
+`sender_surface` says whether a message was written in Console or relayed
+from a messaging app, and `console_chat` (on the message and room events)
+whether its room is a Console chat: a person can write in Console in a room
+that is not one, such as a Slack-bridged room they joined there. Servers released before this
+change left Console use out of every people, room-activity, message and turn
+count, so those figures rise on upgrade by up to the Console share.
 
 **What counts as a message.** Every durable event is a row in the message log:
 arrivals, tool- and LLM-call reports and task transitions sit beside the
@@ -497,6 +524,7 @@ the sum across deployments is the real figure.
 | `room_active` | number | distinct rooms a person used with an agent in the period: `room_active_*`'s definition |
 | `person_identity_active` | number | distinct people who did, bots excluded: `person_identity_active_*`'s definition |
 | `account_active` | number | distinct Switch accounts among them: `account_active_*`'s definition, deduplicated across tenants |
+| `console_account_active` | number | of `account_active`, accounts that spoke in Switch Console: `console_account_active_*`'s definition |
 | `tenant_failed_count` | number | tenants whose counts could not be read, left out of the three above, as on the snapshot |
 
 **Chart it at its own interval.** Filter on one `period`, set the interval to
@@ -636,6 +664,7 @@ when Switch is first told about the bridge.
 | `has_instructions` | boolean |
 | `created_by_kind` | `user` \| `agent` \| `system` |
 | `from_template` | boolean |
+| `console_chat` | boolean — Switch Console made the room as a chat (1-1 or group) |
 
 **`room_became_active`** — the first interaction in a room, once per room.
 
@@ -646,6 +675,7 @@ when Switch is first told about the bridge.
 | `channel_type` | channel type |
 | `agent_count` | number |
 | `created_by_kind` | `user` \| `agent` \| `system` |
+| `console_chat` | boolean — as for `room_created` |
 
 `created_by_kind` rides along rather than agent-created rooms being dropped, so
 the headline chart can filter to user-created rooms while the question "do
@@ -658,7 +688,8 @@ a slow average.
 
 **`room_archived`** — `bridge_platform`, `age_days` (number), `was_ever_active`
 (tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
-itself could not be run, which is not evidence the room was never used).
+itself could not be run, which is not evidence the room was never used),
+`console_chat` (boolean, as for `room_created`).
 
 **`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 
@@ -678,7 +709,7 @@ experiment, the second a deliberate clean-up.
 
 **`room_deleted`** — `bridge_platform`, `channel_type`, `created_by_kind`,
 `age_days`, `was_ever_active` (tri-state, see `room_archived` above),
-`agent_count`. The activity flag is read before the delete, because the
+`agent_count`, `console_chat` (boolean). The activity flag is read before the delete, because the
 cascade takes the room's messages with it and afterwards every room looks like
 it was never used.
 
@@ -790,8 +821,10 @@ Either way a database incident shows in the charts as a burst of `unknown`
 rather than as missing messages.
 
 **`room_message_sent`** — everything a participant chose to say in a room: the
-population the tenant is metered for, reported by the transport after the
-write commits. What Switch posts on a participant's behalf — greetings, command
+population the tenant is metered for, reported after the write commits by the
+transport, or for a Switch Console chat message (which does not pass through
+the transport) by the chat service. Servers released before this change sent
+nothing for a Console chat message. What Switch posts on a participant's behalf — greetings, command
 replies, offline and refusal notices, a template's kickoff — is not in it.
 Neither is a command a person types (`!reset`, a slash command): commands are
 not metered, although the snapshot's activity counts treat one as something
@@ -800,9 +833,11 @@ the person said.
 | Property | Type |
 |---|---|
 | `sender_kind` | `user` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `bot` is an integration's post (see "People, bots and accounts"); before that value existed those were `user` |
+| `sender_surface` | `messaging_app` \| `console` \| `none` — where a person or integration wrote it; `none` for an agent |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
-| `room_user_count` | number — human members of the room, `-1` if it could not be read |
+| `console_chat` | tri-state — Switch Console made the room as a chat; `unknown` if the room could not be read |
+| `room_user_count` | number — human members of the room, platform identities and Switch Console members alike, `-1` if it could not be read |
 | `room_agent_count` | number — agent members, `-1` if it could not be read |
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
@@ -829,10 +864,12 @@ the requests an agent could act on as they arrived.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `bot` \| `agent` \| `platform` \| `unknown` — `bot` as for `room_message_sent` |
+| `sender_kind` | `user` \| `bot` \| `agent` \| `platform` \| `unknown` — `bot` as for `room_message_sent`. A person writing in Switch Console is `user`; servers released before this change sent `unknown` |
+| `sender_surface` | `messaging_app` \| `console` \| `none` \| `unknown` — as for `room_message_sent`; `unknown` when the sender could not be looked up |
 | `known_agent_type` | the receiving agent's runtime |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
+| `console_chat` | tri-state, as for `room_message_sent` |
 | `has_attachment` | boolean |
 | `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker refused the message (stopped, broken, or a full mailbox); always false for a `session_passive` agent, which reads its messages later rather than live |
 
@@ -846,9 +883,34 @@ separates an agent answering people from agents talking among themselves.
 | `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
+| `console_chat` | tri-state, as for `room_message_sent` — an agent answering in a Console chat |
 | `room_user_count` | number, `-1` if the room could not be read |
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
+
+### Switch Console chats
+
+What people do to their chats in Switch Console, reported by the chat service
+once the change commits, so a change that rolls back is never reported. A chat
+being made is `room_created` with `console_chat = true`; it is not reported
+again here. Console lets a person manage any room they are in, not only the
+chats it made, so the membership and list events carry `console_chat` too.
+Each reports a change only: adding someone already in, or hiding a room that is
+already hidden, reports nothing.
+
+| Event | Properties | Sent when |
+|---|---|---|
+| `console_chat_became_group` | `trigger`: `person_added` / `agent_added` · `age_days` (number) | a direct chat turned group, for good, because a second person or a second agent joined it. The creator rejoining is not a second person |
+| `console_member_added` | `member_kind`: `person` / `agent` · `channel_type` (the room's after the add) · `console_chat` (boolean) | a manager added someone to a room from Console. Not the owner of an agent being put in a chat with it, which Switch does itself |
+| `console_member_removed` | `member_kind` · `left` (boolean): a person taking themselves out rather than a manager removing them, always `false` for an agent · `channel_type` · `console_chat` | someone was taken out of a room from Console |
+| `console_room_hidden` | `channel_type` · `age_days` (number) · `console_chat` | a person took a room off their own list |
+| `console_room_shown` | as `console_room_hidden` | a person put a hidden room back. Not a room that came back on its own because something new was said in it, which is not reported at all |
+
+`trigger` says which kind of chat people grow into groups: one shared with
+colleagues, or one given more agents. `age_days` on `console_chat_became_group`
+is how long a chat stayed 1-1 before it did. Hidden and shown, with their ages,
+separate tidying a list from abandoning a chat; a chat that is archived is
+`room_archived` with `console_chat`.
 
 ### Decision routing — one per decision
 
@@ -939,6 +1001,12 @@ person on a messaging platform and `bot` an integration posting there (see
 "People, bots and accounts"); `platform` is Switch itself speaking; `unknown` a
 sender whose client could not be looked up.
 
+`sender_surface`: `messaging_app` | `console` | `none` | `unknown`. Where a
+person wrote: relayed from a messaging app (a person or an integration there),
+or in Switch Console by their own account. `none` for a sender that is not a
+person — an agent, or Switch itself. With `sender_kind` it splits `user`, which
+covers both. Servers released before it sent no Console messages to split.
+
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
 
@@ -952,7 +1020,9 @@ not losing.
 
 **Tri-state facts**: `true` | `false` | `unknown`, for a yes/no property the
 server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,
-`connector_removed`.`was_ever_connected`). Not a boolean, deliberately — a
+`connector_removed`.`was_ever_connected`, and `console_chat` on the message
+events, which read the room through a lookup that can fail; the room events
+hold the row, so theirs is a boolean). Not a boolean, deliberately — a
 property that can be unknown is a three-valued fact, and collapsing the failed
 case into `false` reports a guess as a claim the code has no evidence for.
 

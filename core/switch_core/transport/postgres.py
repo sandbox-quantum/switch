@@ -1320,6 +1320,7 @@ class PostgresTransport:
                     sender_client_id=self.client_id,
                     sender_role=self._actor_role,
                     sender_is_app=content.get(SENDER_IS_APP_MARKER) is True,
+                    from_console=False,
                     has_attachment=kind == "media",
                     in_thread=thread_root_of(content) is not None,
                 )
