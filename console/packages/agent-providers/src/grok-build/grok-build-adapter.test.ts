@@ -15,11 +15,11 @@ describe('grokBuildAcp', () => {
     expect(grokBuildAcp.loginCommand).toBe(GROK_BUILD_LOGIN);
     expect(grokBuildAcp.inheritEnv).toEqual(['XAI_API_KEY']);
     expect(grokBuildAcp.capabilities).toEqual({
-      modelSwitchInSession: false,
+      modelSwitchInSession: true,
       steering: false,
       resume: true,
       approvals: true,
-      userInput: false,
+      userInput: true,
     });
     expect(createGrokBuildAdapter).toBeTypeOf('function');
   });
@@ -33,9 +33,39 @@ describe('grokBuildAcp', () => {
       })
     ).toEqual({
       command: '/usr/local/bin/grok',
-      args: ['agent', 'stdio'],
+      args: ['--no-auto-update', 'agent', 'stdio'],
       env: { XAI_API_KEY: 'test-key' },
     });
+  });
+
+  it('routes mcp server tools correctly', () => {
+    expect(
+      grokBuildAcp.mcpServerOf?.({
+        title: 'use_tool',
+        rawInput: { tool_name: 'switch__read_file' },
+      } as any)
+    ).toBe('switch');
+    expect(
+      grokBuildAcp.mcpServerOf?.({
+        title: 'switch__read_file',
+        rawInput: {},
+      } as any)
+    ).toBe('switch');
+  });
+
+  it('recognizes subagent tasks', () => {
+    expect(
+      grokBuildAcp.itemType?.({
+        title: 'spawn_subagent',
+        rawInput: {},
+      } as any)
+    ).toBe('subagent');
+    expect(
+      grokBuildAcp.itemType?.({
+        title: 'any_task',
+        rawInput: { variant: 'Task' },
+      } as any)
+    ).toBe('subagent');
   });
 
   describe('checkSignIn', () => {
