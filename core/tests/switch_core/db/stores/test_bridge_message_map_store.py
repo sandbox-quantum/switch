@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -167,3 +169,106 @@ class TestBridgeMessageMapStore:
         async with session_factory() as session:
             posted = await store.get_by_external_post_id(session, bridge_id, "post1")
         assert posted is not None and posted.external_channel_id == "chan-2"
+
+
+class TestCardAnswer:
+    async def _posted(self, session: AsyncSession, store: BridgeMessageMapStore) -> str:
+        bridge_id = await _make_bridge(session)
+        await store.create(
+            session,
+            BridgeMessageMap(
+                bridge_id=bridge_id,
+                external_channel_id="chan-1",
+                transport_event_id="$card",
+                external_post_id="post1",
+            ),
+        )
+        await session.commit()
+        return bridge_id
+
+    async def test_the_first_answer_stands(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        first = {"by": "alice", "label": "Approve"}
+        async with session_factory() as session:
+            bridge_id = await self._posted(session, store)
+            assert (
+                await store.answer_card(
+                    session, bridge_id=bridge_id, external_post_id="post1", answer=first
+                )
+                is None
+            )
+            assert (
+                await store.answer_card(
+                    session,
+                    bridge_id=bridge_id,
+                    external_post_id="post1",
+                    answer={"by": "bob", "label": "Reject"},
+                )
+                == first
+            )
+
+    async def test_concurrent_answers_record_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_id = await self._posted(session, store)
+
+        async def answer(by: str) -> dict | None:
+            async with session_factory() as session:
+                earlier = await store.answer_card(
+                    session,
+                    bridge_id=bridge_id,
+                    external_post_id="post1",
+                    answer={"by": by, "label": "Approve"},
+                )
+                await asyncio.sleep(0.05)
+                await session.commit()
+                return earlier
+
+        results = await asyncio.gather(*(answer(f"u{i}") for i in range(5)))
+
+        assert results.count(None) == 1
+        winner = next(f"u{i}" for i, r in enumerate(results) if r is None)
+        assert all(r == {"by": winner, "label": "Approve"} for r in results if r)
+
+    async def test_a_cleared_answer_can_be_given_again(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_id = await self._posted(session, store)
+            await store.answer_card(
+                session,
+                bridge_id=bridge_id,
+                external_post_id="post1",
+                answer={"by": "alice", "label": "Approve"},
+            )
+            await store.clear_card_answer(
+                session, bridge_id=bridge_id, external_post_id="post1"
+            )
+            assert (
+                await store.answer_card(
+                    session,
+                    bridge_id=bridge_id,
+                    external_post_id="post1",
+                    answer={"by": "bob", "label": "Reject"},
+                )
+                is None
+            )
+
+    async def test_an_unknown_post_is_an_error(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_id = await self._posted(session, store)
+            with pytest.raises(LookupError):
+                await store.answer_card(
+                    session,
+                    bridge_id=bridge_id,
+                    external_post_id="nope",
+                    answer={"by": "alice", "label": "Approve"},
+                )

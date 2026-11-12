@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["httpx"]
+# dependencies = ["httpx", "matplotlib"]
 # ///
 """The morning report: one post that says whether switch-core was fine over the
 last day, with the graphs that show it.
@@ -22,7 +22,7 @@ morning: a pool that came close to full, latency creeping up, agents still on
 the old connection, events dropped for agents that were away.
 
 Environment:
-  DD_API_KEY, DD_APP_KEY   read access to the metrics and graph snapshots
+  DD_API_KEY, DD_APP_KEY   read access to metrics, and to logs for why bridges fail
   DD_SITE                  default datadoghq.com
   SERVICE                  the switch-core service to report on, default switch-core
   SWITCH_URL, SWITCH_AGENT_ID, SWITCH_ROOM_ID, SWITCH_TOKEN
@@ -36,12 +36,23 @@ After a post it sends one point on switch.daily_report.posted, which the
 
 from __future__ import annotations
 
+import io
+import itertools
 import os
 import sys
+import textwrap
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import httpx
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.dates as mdates  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.ticker import StrMethodFormatter  # noqa: E402
 
 DAY = 24 * 3600
 
@@ -154,6 +165,10 @@ class Graph:
     # Grouped by pod or app where it helps, so the comment can say which one.
     detail: str
     unit: str = "ms"
+    # What the y axis measures, written on it.
+    axis: str = ""
+    # A name for each query's line when the query isn't split by pod or app.
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -196,6 +211,8 @@ def featured_graphs(service: str) -> list[Graph]:
             "Stretches above the dashed red line at 10 s. A single spike is one "
             "bad minute; the alert needs 15 minutes above it.",
             f"p95:switch.messages.delivery_lag{{{s}}}",
+            axis="Time to reach the room, ms (p95)",
+            labels=("All pods",),
         ),
         Graph(
             "api",
@@ -209,6 +226,8 @@ def featured_graphs(service: str) -> list[Graph]:
             "the agents do goes through the API, so this is how fast Switch "
             "feels to them.",
             f"p95:switch.http.request.duration{{{s},{streams}}}",
+            axis="Response time, ms (p95)",
+            labels=("All pods",),
         ),
         Graph(
             "agents",
@@ -222,6 +241,8 @@ def featured_graphs(service: str) -> list[Graph]:
             "Short spikes are agents reconnecting after a deploy.",
             f"sum:switch.agents.connected{{{s}}} by {{pod_name}}",
             unit="",
+            axis="Agent connections",
+            labels=("All pods",),
         ),
         Graph(
             "pool",
@@ -235,6 +256,7 @@ def featured_graphs(service: str) -> list[Graph]:
             "once. That's what happened from 30 Oct to 2 Nov.",
             pool,
             unit="%",
+            axis="Connections in use, % of the pool",
         ),
         Graph(
             "stalls",
@@ -246,6 +268,7 @@ def featured_graphs(service: str) -> list[Graph]:
             "Spikes towards the dashed red line at 1 s. During a stall every "
             "message on that pod waits, so stalls show up as late messages.",
             f"max:switch.runtime.event_loop_lag{{{s}}} by {{pod_name}}",
+            axis="Longest wait in the minute, ms",
         ),
         Graph(
             "errors",
@@ -263,6 +286,8 @@ def featured_graphs(service: str) -> list[Graph]:
             "errors a day are background; a lost message never is.",
             f"sum:switch.http.requests{{{s},status_class:5xx}} by {{route}}.as_count()",
             unit="",
+            axis="Count in the hour",
+            labels=("Server errors (5xx)", "Messages not saved"),
         ),
         Graph(
             "traffic",
@@ -276,6 +301,8 @@ def featured_graphs(service: str) -> list[Graph]:
             "load, without one they're a bug.",
             f"sum:switch.http.requests{{{s}}}.as_rate()",
             unit=" requests/s",
+            axis="Requests per second",
+            labels=("Today",),
         ),
         Graph(
             "bridges",
@@ -288,6 +315,7 @@ def featured_graphs(service: str) -> list[Graph]:
             "app's rooms stop hearing from the agents.",
             f"sum:switch.bridges.running{{{s}}} by {{platform}}",
             unit="",
+            axis="Bridges running",
         ),
     ]
 
@@ -603,24 +631,6 @@ class Datadog:
             top.get("computes", {}).get("c0", 0)
         )
 
-    def snapshot(self, graph_def: str, title: str, start: int, end: int) -> bytes:
-        """A PNG of one graph. Datadog renders it after answering, so the
-        image is fetched until it is ready."""
-        response = self.http.get(
-            "/graph/snapshot",
-            params={"graph_def": graph_def, "title": title, "start": start, "end": end},
-        )
-        response.raise_for_status()
-        url = response.json()["snapshot_url"]
-        for _ in range(20):
-            image = httpx.get(url, timeout=30)
-            if image.status_code == 200 and image.headers.get(
-                "content-type", ""
-            ).startswith("image/"):
-                return image.content
-            time.sleep(3)
-        raise TimeoutError(f"snapshot {title!r} never rendered")
-
 
 def measure(dd: Datadog, service: str, start: int, end: int) -> dict[str, float | None]:
     s = f"service:{service}"
@@ -662,24 +672,149 @@ def measure(dd: Datadog, service: str, start: int, end: int) -> dict[str, float 
     }
 
 
-def graph_def(graph: Graph) -> str:
-    """A Datadog graph definition: grey lines, the alert's limit as a dashed
-    red marker, and last week as a second line for traffic."""
-    requests = [
-        f'{{"q":"{q}","type":"line","style":{{"palette":"grey"}}}}'
-        for q in graph.queries
-    ]
+@dataclass(frozen=True)
+class Drawn:
+    """One line (or set of bars) on the graph of the day."""
+
+    label: str
+    points: list[tuple[float, float]]
+    # Last week's line, drawn dashed and grey behind today's.
+    last_week: bool = False
+
+
+def graph_lines(dd: Datadog, graph: Graph, start: int, end: int) -> list[Drawn]:
+    """What the graph of the day draws: one line per pod or app when the query
+    is split, the query's own name when it isn't, and for traffic the same
+    hours a week earlier, moved onto today's axis."""
+    drawn = []
+    for i, query in enumerate(graph.queries):
+        # Oldest first, so pods that run side by side get neighbouring colours.
+        split = dd.series(query, start, end)
+        for name, points in sorted(split.items(), key=lambda kv: kv[1][:1]):
+            label = name or (graph.labels[i] if i < len(graph.labels) else "")
+            drawn.append(Drawn(label, points))
     if graph.key == "traffic":
-        requests.append(
-            f'{{"q":"week_before({graph.queries[0]})","type":"line",'
-            '"style":{"palette":"grey","type":"dashed"}}'
+        week = 7 * DAY
+        before = dd.series(graph.queries[0], start - week, end - week)
+        for points in before.values():
+            moved = [(t + week, v) for t, v in points]
+            drawn.append(Drawn("Same hours last week", moved, last_week=True))
+    return drawn
+
+
+# Line colours in a fixed order, picked to stay apart for colour-blind
+# readers (Okabe and Ito). Red is left out: it marks the alert's limit. A day
+# with deploys has more pods than colours; they repeat, and since only two or
+# three pods run at once, the ones that share a colour don't overlap.
+COLOURS = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#000000")
+LIMIT_COLOUR = "#C62828"
+LAST_WEEK_COLOUR = "#9AA3AD"
+
+
+def caption(graph: Graph) -> str:
+    """The figure's caption: how to read the graph, and the limit when it has
+    one, so the image reads on its own when it is forwarded without the post."""
+    text = f"Figure 1. {graph.how_to_read}"
+    if graph.limit is not None:
+        text += f" Dashed red: the alert's limit, {_limit(graph.limit, graph.unit)}."
+    return text
+
+
+def draw(
+    graph: Graph, drawn: list[Drawn], service: str, start: int, end: int
+) -> Figure:
+    """The graph of the day, with a title, the time span, labelled axes, a
+    legend and a caption. Raises ValueError when there is nothing to draw."""
+    if not any(d.points for d in drawn):
+        raise ValueError("no data to draw")
+    fig, ax = plt.subplots(figsize=(11.5, 6), dpi=150)
+    top = 0.0
+    shown = [d for d in drawn if d.points]
+    bars = graph.key == "errors"
+    width = 3600 / DAY / (len(shown) + 1)
+    colour = itertools.cycle(COLOURS)
+    for i, d in enumerate(shown):
+        x = [datetime.fromtimestamp(t, UTC) for t, _ in d.points]
+        y = [v for _, v in d.points]
+        top = max(top, *y)
+        if d.last_week:
+            ax.plot(
+                x,
+                y,
+                color=LAST_WEEK_COLOUR,
+                linestyle="--",
+                lw=1.5,
+                label=d.label,
+                zorder=1,
+            )
+        elif bars:
+            at = [mdates.date2num(t) + (i - (len(shown) - 1) / 2) * width for t in x]
+            ax.bar(
+                at,
+                y,
+                width=width,
+                color=next(colour),
+                label=d.label,
+                zorder=2,
+            )
+        else:
+            ax.plot(x, y, color=next(colour), lw=1.8, label=d.label, zorder=2)
+    if graph.limit is not None:
+        ax.axhline(
+            graph.limit,
+            color=LIMIT_COLOUR,
+            linestyle="--",
+            lw=1.5,
+            label=f"Alert limit ({_limit(graph.limit, graph.unit)})",
+            zorder=3,
         )
-    markers = (
-        f',"markers":[{{"value":"y = {graph.limit:g}","type":"error dashed"}}]'
-        if graph.limit is not None
-        else ""
+        top = max(top, graph.limit)
+    ax.set_ylim(0, top * 1.12 or 1)
+    ax.set_xlim(datetime.fromtimestamp(start, UTC), datetime.fromtimestamp(end, UTC))
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=3, tz=UTC))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=UTC))
+    ax.set_xlabel("Time (UTC)")
+    ax.set_ylabel(graph.axis)
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+    ax.grid(axis="y", color="#E3E8EF", lw=0.8)
+    ax.spines[["top", "right"]].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#9AA3AD")
+    ax.tick_params(colors="#5D6B7A")
+    if any(d.label for d in shown) or graph.limit is not None:
+        ax.legend(
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1),
+            frameon=False,
+            fontsize=9,
+        )
+    span = (
+        f"{service}, {datetime.fromtimestamp(start, UTC):%d %b %H:%M} to "
+        f"{datetime.fromtimestamp(end, UTC):%d %b %H:%M} UTC"
     )
-    return f'{{"viz":"timeseries","requests":[{",".join(requests)}]{markers}}}'
+    fig.text(0.05, 0.955, graph.title, fontsize=14, fontweight="bold")
+    fig.text(0.05, 0.915, span, fontsize=10, color="#5D6B7A")
+    fig.text(
+        0.05,
+        0.03,
+        textwrap.fill(caption(graph), 140),
+        fontsize=9,
+        color="#5D6B7A",
+        va="bottom",
+    )
+    fig.subplots_adjust(left=0.07, right=0.8, top=0.87, bottom=0.2)
+    return fig
+
+
+def figure(
+    graph: Graph, drawn: list[Drawn], service: str, start: int, end: int
+) -> bytes:
+    """The graph of the day (`draw`) as a PNG."""
+    fig = draw(graph, drawn, service, start, end)
+    out = io.BytesIO()
+    fig.savefig(out, format="png", facecolor="white")
+    plt.close(fig)
+    return out.getvalue()
 
 
 def series_name(scope: str) -> str:
@@ -806,10 +941,9 @@ def main() -> int:
     print(text, flush=True)
     images = []
     try:
-        images.append(
-            ("graph.png", dd.snapshot(graph_def(graph), graph.title, start, end))
-        )
-    except (httpx.HTTPError, TimeoutError) as error:
+        lines_drawn = graph_lines(dd, graph, start, end)
+        images.append(("graph.png", figure(graph, lines_drawn, service, start, end)))
+    except (httpx.HTTPError, ValueError) as error:
         # The verdict matters more than the picture: post without it.
         print(f"graph {graph.title!r} skipped: {error}", file=sys.stderr, flush=True)
     if post(text, images):

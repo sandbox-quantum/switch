@@ -19,6 +19,11 @@ it('parses the idle-sleeping machine summary Core serves', () => {
   expect(cloudMachineSchema.parse(idleSleeping)).toEqual(idleSleeping);
 });
 
+it('reads a machine from a server without the administrator stop as not stopped by one', () => {
+  const { stopped_by_admin: _omitted, ...older } = idleSleeping as Record<string, unknown>;
+  expect(cloudMachineSchema.parse(older).stopped_by_admin).toBe(false);
+});
+
 it('refuses a machine in a state it does not know', () => {
   expect(() =>
     cloudMachineSchema.parse({ ...(idleSleeping as object), state: 'hibernating' })

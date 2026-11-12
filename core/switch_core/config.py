@@ -444,6 +444,12 @@ class SwitchConfig(BaseSettings):
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
 
+    # Test and canary servers only. Lets a person wipe their own account
+    # through `POST /auth/me/reset-test-account`: the messaging apps, rooms,
+    # agents, machines, workspaces and organization they alone are in, and
+    # the account itself. Irreversible. Off everywhere else.
+    gateway_allow_test_account_reset: bool = False
+
     # Who keeps the record of organizations and their members
     # (`organization_directory.py`). "local": this server, in its own tables.
     # "workos": the WorkOS environment behind the gateway's OIDC sign-in, read

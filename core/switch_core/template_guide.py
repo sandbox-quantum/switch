@@ -51,7 +51,7 @@ A condition reads one param: "{param}" (true when it has a value) or
 ## An agent (type: agent)
 
   instructions: text             # REQUIRED. The agent's brief.
-  provider: claude | codex | opencode | antigravity | cursor | "{param}"   # REQUIRED
+  provider: claude | codex | opencode | antigravity | cursor | deepseek-harness | pi | copilot | mistral-vibe | junie | "{param}"   # REQUIRED
   machine: machine name or id | "{param}"           # REQUIRED: where it runs
   directory: path | "{param}"                       # REQUIRED
   name: identifier               # optional; else derived from display_name.
@@ -132,8 +132,8 @@ attaches one that exists, and a missing, ambiguous or unreadable one stops
 the run; a full entry creates a new one of a reference type (google_drive,
 confluence, github, jira, or one the server defines), private unless
 read_visibility / write_visibility say otherwise. docs are documents created
-in the room; its agents see each one's description and load the content
-when they need it. Capturing a room writes roles and docs in full and
+in the room; its agents see each one's description, load the content
+when they need it, and any of them may update or delete it. Capturing a room writes roles and docs in full and
 references by id:
 
     roles:

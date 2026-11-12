@@ -33,6 +33,7 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     receivesWebhooks: false,
     privateChannels: null,
     privateChannelNeedsLinkedAccount: false,
+    publicChannelAddsCreator: false,
     webhookUrl: null,
     ...overrides,
   };

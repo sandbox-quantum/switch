@@ -37,7 +37,7 @@ from switch_core.connections.adapters.oauth import (
     StaticClient,
 )
 from switch_core.connections.broker import Principal, ServiceBroker
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
@@ -226,6 +226,199 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
+
+
+INTROSPECTED = STATIC.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    "    introspection: true\n"
+    "    account_id: [workspace_id, user_id]\n"
+    "    label: username\n",
+)
+
+
+class TestIntrospection:
+    async def test_reads_the_workspace_and_user_the_vendor_says_the_token_is(
+        self, vendor
+    ) -> None:
+        vendor.introspected["username"] = "Ada"
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("ws-1:user-1", "Ada")
+        assert vendor.paths.count(f"{ISSUER}/introspect") == 1
+        assert IDENTITY_URL not in vendor.paths
+
+    async def test_asks_as_the_client_does_at_the_token_endpoint(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        [asked] = vendor.introspections
+        assert asked == {
+            "token": secret.access_token,
+            "token_type_hint": "access_token",
+            "client_id": STATIC_CLIENT_ID,
+            "client_secret": STATIC_CLIENT_SECRET,
+        }
+
+    async def test_a_public_client_sends_only_its_id(self, vendor) -> None:
+        vendor.clients["public-client"] = None
+        http = vendor.client()
+        adapter = OAuthAdapter(
+            _definition(INTROSPECTED),
+            StaticClient(
+                OAuthClientCredentials("public-client", None, authentication=None)
+            ),
+            http,
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "ws-1:user-1"
+        [asked] = vendor.introspections
+        assert set(asked) == {"token", "token_type_hint", "client_id"}
+
+    async def test_an_inactive_token_names_no_account(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        vendor.live_access.clear()
+        with pytest.raises(ReauthorizationRequiredError, match="not active"):
+            await adapter.identify(secret.access_token or "")
+
+    @pytest.mark.parametrize("active", ["missing", "true", 1, None])
+    async def test_only_active_true_names_an_account(self, vendor, active) -> None:
+        if active == "missing":
+            vendor.introspect_without_active = True
+        else:
+            vendor.introspected["active"] = active
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ReauthorizationRequiredError, match="not active"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_the_ids_in_the_token_response_are_never_read(self, vendor) -> None:
+        vendor.token_extras = {"workspace_id": "from-token", "user_id": "from-token"}
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        assert "workspace_id" not in secret.values
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "ws-1:user-1"
+
+    async def test_asks_with_basic_where_the_vendor_takes_only_that(
+        self, vendor
+    ) -> None:
+        vendor.metadata["token_endpoint_auth_methods_supported"] = [
+            "client_secret_basic"
+        ]
+        sent: list[httpx.Request] = []
+
+        def record(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return vendor.handle(request)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(record))
+        client = StaticClient(
+            OAuthClientCredentials(
+                STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+            )
+        )
+        adapter = OAuthAdapter(_definition(INTROSPECTED), client, http)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "ws-1:user-1"
+        [asked] = [r for r in sent if r.url.path == "/introspect"]
+        assert asked.headers["authorization"].startswith("Basic ")
+        [form] = vendor.introspections
+        assert "client_secret" not in form
+
+    @pytest.mark.parametrize("missing", ["workspace_id", "user_id"])
+    async def test_an_answer_without_both_ids_is_refused(self, vendor, missing) -> None:
+        del vendor.introspected[missing]
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await adapter.identify(secret.access_token or "")
+
+    @pytest.mark.parametrize("value", ["", "   ", True, None, ["ws-1"], {"id": "ws-1"}])
+    async def test_an_id_that_is_not_one_value_is_refused(self, vendor, value) -> None:
+        vendor.introspected["workspace_id"] = value
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_a_separator_inside_an_id_names_no_other_account(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        vendor.introspected.update(workspace_id="a:b", user_id="c")
+        first = await adapter.identify(secret.access_token or "")
+        vendor.introspected.update(workspace_id="a", user_id="b:c")
+        second = await adapter.identify(secret.access_token or "")
+        assert (first.account_id, second.account_id) == ("a%3Ab:c", "a:b%3Ac")
+
+    async def test_without_an_advertised_endpoint_no_account_is_named(
+        self, vendor
+    ) -> None:
+        secret = await _sign_in(_adapter(vendor, INTROSPECTED)[0], vendor)
+        del vendor.metadata["introspection_endpoint"]
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        with pytest.raises(ServiceAdapterError, match="offers no token introspection"):
+            await adapter.identify(secret.access_token or "")
+        assert vendor.introspections == []
+
+    async def test_a_sign_in_without_introspection_is_refused_before_consent(
+        self, vendor
+    ) -> None:
+        revocable = INTROSPECTED.replace(
+            "    client_settings: EXAMPLE\n",
+            "    client_settings: EXAMPLE\n    revocation_discovered: true\n",
+        )
+        secret = await _sign_in(_adapter(vendor, revocable)[0], vendor)
+        del vendor.metadata["introspection_endpoint"]
+        adapter, _ = _adapter(vendor, revocable)
+        with pytest.raises(ServiceAdapterError, match="offers no token introspection"):
+            await adapter.authorization_url(
+                redirect_uri=REDIRECT,
+                state="state-1",
+                code_challenge=s256(secrets.token_urlsafe(48)),
+                scopes=["read:items", "write:items"],
+            )
+        renewed = await adapter.refresh(secret)
+        assert renewed.access_token in vendor.live_access
+        await adapter.revoke_connection(renewed)
+        assert renewed.values["refresh_token"] not in vendor.live_refresh
+
+    async def test_an_endpoint_that_is_not_https_is_refused(self, vendor) -> None:
+        vendor.metadata["introspection_endpoint"] = "http://auth.example.test/x"
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        with pytest.raises(ServiceAdapterError, match="introspection endpoint"):
+            await adapter.endpoints()
+
+    async def test_a_refused_client_is_an_error_not_a_lapsed_sign_in(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        vendor.clients[STATIC_CLIENT_ID] = "SYNTHETIC-ROTATED-SECRET"
+        with pytest.raises(ServiceAdapterError, match="HTTP 401") as raised:
+            await adapter.identify(secret.access_token or "")
+        assert not isinstance(raised.value, ReauthorizationRequiredError)
+
+    async def test_a_get_identity_reads_several_paths_too(self, vendor) -> None:
+        vendor.account = {"id": 7, "org": "org-1", "email": "ada@example.test"}
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    account_id: account.id\n",
+                "    account_id: [account.org, account.id]\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("org-1:7", "ada@example.test")
+        assert vendor.introspections == []
 
 
 class TestRefresh:
@@ -768,3 +961,62 @@ class TestThroughTheBroker:
         assert vendor.revoked == []
         async with session_factory() as session:
             assert await STORE.get_connection(session, owner.id, "example") is None
+
+
+class TestTheShippedGitLabEntry:
+    """GitLab's token must also reach the REST API (the identity read, and
+    the calls its MCP tools make), so no sign-in names the MCP server as its
+    `resource`."""
+
+    async def test_no_sign_in_request_names_a_resource(self) -> None:
+        sent: list[httpx.Request] = []
+
+        def gitlab(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            if request.url.path == "/oauth/token":
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": "example-access",
+                        "token_type": "Bearer",
+                        "expires_in": 7200,
+                        "refresh_token": "example-refresh",
+                        "scope": "mcp read_api read_user",
+                    },
+                )
+            return httpx.Response(404)
+
+        definition = CATALOG["gitlab"].definition
+        assert definition.access is not None and definition.access.write is not None
+        adapter = OAuthAdapter(
+            definition,
+            StaticClient(
+                OAuthClientCredentials(
+                    STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+                )
+            ),
+            httpx.AsyncClient(transport=httpx.MockTransport(gitlab)),
+        )
+        for level in (definition.access.read, definition.access.write):
+            url = await adapter.authorization_url(
+                redirect_uri=REDIRECT,
+                state="s",
+                code_challenge=s256("verifier"),
+                scopes=level.scopes,
+            )
+            query = parse_qs(urlsplit(url).query)
+            assert url.startswith("https://gitlab.com/oauth/authorize?")
+            assert query["scope"] == [" ".join(level.scopes)]
+            assert "resource" not in query
+        signed_in = await adapter.exchange_code(
+            code="example-code",
+            verifier="verifier",
+            redirect_uri=REDIRECT,
+            scopes=definition.access.read.scopes,
+        )
+        await adapter.refresh(signed_in.secret)
+        assert [str(request.url) for request in sent] == [
+            "https://gitlab.com/oauth/token"
+        ] * 2
+        for request in sent:
+            assert "resource" not in parse_qs(request.content.decode())
