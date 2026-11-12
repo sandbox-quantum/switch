@@ -100,20 +100,20 @@ const WD = '/home/agent/repo';
 describe('codexLaunchProfile', () => {
   it('writes the profile under ~/.codex keyed on the (dir, slug) and loads with --profile', () => {
     const profile = codexLaunchProfile({
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       values: { model: 'gpt-5.6-terra' },
     });
     expect(profile).not.toBeNull();
-    expect(profile!.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
+    expect(profile!.args).toEqual(['--profile', codexProfileName('codex-agent', WD)]);
     expect(profile!.files).toEqual([
       {
-        relativePath: codexProfileRelativePath('codex-hoot', WD),
+        relativePath: codexProfileRelativePath('codex-agent', WD),
         content: expect.stringContaining('model = "gpt-5.6-terra"'),
       },
     ]);
-    expect(codexProfileRelativePath('codex-hoot', WD)).toBe(
-      `.codex/${codexProfileName('codex-hoot', WD)}.config.toml`
+    expect(codexProfileRelativePath('codex-agent', WD)).toBe(
+      `.codex/${codexProfileName('codex-agent', WD)}.config.toml`
     );
   });
 
@@ -123,16 +123,16 @@ describe('codexLaunchProfile', () => {
     // (`$(…)`, backticks). Two fixed tokens is the whole command-line surface.
     const instructions = 'be terse\n$(whoami) and "quotes"';
     const profile = codexLaunchProfile({
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       values: { instructions },
     })!;
 
     expect(profile.files).toHaveLength(1);
-    expect(profile.files[0].relativePath).toBe(codexProfileRelativePath('codex-hoot', WD));
+    expect(profile.files[0].relativePath).toBe(codexProfileRelativePath('codex-agent', WD));
     const parsed = parseTOML(profile.files[0].content) as Record<string, unknown>;
     expect(parsed.developer_instructions).toBe(instructions);
-    expect(profile.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
+    expect(profile.args).toEqual(['--profile', codexProfileName('codex-agent', WD)]);
     expect(profile.args.join(' ')).not.toContain('whoami');
   });
 
@@ -164,11 +164,11 @@ describe('codexProfileName', () => {
   it('gives two agents that share a name in different dirs distinct profiles', () => {
     // Agent names are unique only within a location, so the working dir must
     // discriminate — otherwise the second launch overwrites the first's profile.
-    expect(codexProfileName('hoot', '/dir/one')).not.toBe(codexProfileName('hoot', '/dir/two'));
+    expect(codexProfileName('switch', '/dir/one')).not.toBe(codexProfileName('switch', '/dir/two'));
   });
 
   it('is stable for the same (slug, dir)', () => {
-    expect(codexProfileName('hoot', WD)).toBe(codexProfileName('hoot', WD));
+    expect(codexProfileName('switch', WD)).toBe(codexProfileName('switch', WD));
   });
 
   it('keeps slugs that differ only in rewritten characters on distinct profiles', () => {

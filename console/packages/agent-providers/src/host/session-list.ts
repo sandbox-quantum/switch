@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { sessionSchema, type Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import { IS_PROCESS_ALIVE, isProcessAlive } from '../process-alive';
 import { sharedSessionsBase } from './launch';
 
 /**
@@ -10,7 +11,8 @@ import { sharedSessionsBase } from './launch';
  * Each session's host keeps its own record under the agent's host directory.
  * `readHostSessions` reads them; it is self-contained so the same source runs
  * in-process (a watcher answering `list`) and as `LIST_SCRIPT` under `node -e`
- * on a host Console reaches over SSH.
+ * on a host Console reaches over SSH. It takes `isProcessAlive` as `processAlive`
+ * for the same reason.
  *
  * A null `agentId` lists every agent's sessions on the host, each with the
  * agent that owns it: answering for one agent reads every session directory
@@ -20,7 +22,8 @@ export function readHostSessions(
   nodeFs: typeof fs,
   nodePath: typeof path,
   agentId: string | null,
-  base: string
+  base: string,
+  processAlive: typeof isProcessAlive
 ): ListedSession[] {
   const readJson = (file: string): unknown => {
     for (let attempt = 0; ; attempt++) {
@@ -55,15 +58,16 @@ export function readHostSessions(
     }
   };
   const alive = (root: string): boolean => {
+    let pid: unknown;
     try {
-      const owner = JSON.parse(
+      pid = JSON.parse(
         nodeFs.readFileSync(nodePath.join(root, 'supervisor', 'owner.json'), 'utf8')
-      );
-      process.kill(owner.pid, 0);
-      return true;
+      ).pid;
     } catch {
       return false;
     }
+    if (!Number.isSafeInteger(pid) || (pid as number) <= 0) return false;
+    return processAlive(pid as number, 'recorded');
   };
   let names: string[] = [];
   try {
@@ -125,11 +129,10 @@ export type ListedSession = {
  * [base]` prints the listing as JSON. An empty agent id lists every agent's
  * sessions; an empty base is the default one.
  */
-export const LIST_SCRIPT = `
-const path = require('node:path');
+export const LIST_SCRIPT = `${IS_PROCESS_ALIVE}const path = require('node:path');
 const [agentId, baseArg] = process.argv.slice(1);
 const base = baseArg || path.join(require('node:os').homedir(), '.local', 'state', 'switch', 'sdk-sessions');
-process.stdout.write(JSON.stringify((${readHostSessions.toString()})(require('node:fs'), path, agentId || null, base)));
+process.stdout.write(JSON.stringify((${readHostSessions.toString()})(require('node:fs'), path, agentId || null, base, isProcessAlive)));
 `;
 
 const listedSchema = z.array(
@@ -180,5 +183,5 @@ function listedSessions(listed: z.infer<typeof listedSchema>): Session[] {
 
 /** This agent's sessions under this machine's shared-session base. */
 export function listSessions(agentId: string): Session[] {
-  return hostSessions(readHostSessions(fs, path, agentId, sharedSessionsBase()));
+  return hostSessions(readHostSessions(fs, path, agentId, sharedSessionsBase(), isProcessAlive));
 }

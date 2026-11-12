@@ -1,6 +1,6 @@
 """Run every scenario against a decision service and print how it did.
 
-    uv run python eval/eval.py [--url http://localhost:8230] [--file eval/scenarios_hard.json]
+    uv run python eval/eval.py [--url http://localhost:8230] [--file eval/scenarios_hard.json|scenarios_extra60.json|scenarios_names.json]
         [--threshold 0.6] [--backend anthropic]
 
 DECISION_SERVICE_TOKEN and ANTHROPIC_API_KEY are read from the environment when set.

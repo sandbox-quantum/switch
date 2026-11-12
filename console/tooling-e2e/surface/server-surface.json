@@ -12,9 +12,11 @@
     "create_room_document",
     "create_room_from_yaml",
     "create_room_group",
+    "create_room_schedule",
     "define_role",
     "delete_role",
     "delete_room_document",
+    "delete_room_schedule",
     "delete_template",
     "edit_role",
     "get_advanced_config",
@@ -40,9 +42,11 @@
     "list_references",
     "list_roles",
     "list_room_groups",
+    "list_room_schedules",
     "list_rooms",
     "list_templates",
     "load_internal_documents",
+    "pause_room_schedule",
     "post_message",
     "read_context",
     "release_role",
@@ -58,6 +62,7 @@
     "update_agent_detail",
     "update_room",
     "update_room_document",
+    "update_room_schedule",
     "update_template"
   ],
   "gatewayRoutes": [
@@ -259,6 +264,11 @@
     },
     {
       "route": "DELETE /gateway/rooms/{room_id}/roles/{name}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/schedules/{schedule_id}",
       "auth": "session",
       "flags": []
     },
@@ -854,6 +864,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/{room_id}/schedules",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/{room_id}/yaml",
       "auth": "session",
       "flags": []
@@ -955,6 +970,11 @@
     },
     {
       "route": "GET /gateway/tenants/{tenant_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/members/{user_id}/removal",
       "auth": "session",
       "flags": []
     },
@@ -1450,6 +1470,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/rooms/{room_id}/schedules",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/rooms/{room_id}/sync-name",
       "auth": "session",
       "flags": []
@@ -1654,6 +1679,16 @@
     },
     {
       "route": "PUT /gateway/rooms/{room_id}/protection",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}/paused",
       "auth": "session",
       "flags": []
     },

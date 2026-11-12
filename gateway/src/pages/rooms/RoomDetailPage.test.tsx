@@ -240,6 +240,63 @@ describe("RoomDetailPage permissions", () => {
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
   });
 
+  it("lists a Switch Console chat's members as its people, to change in Console", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        bridge_id: null,
+        bridge_display_name: null,
+        is_console_chat: true,
+        connected_user_count: 2,
+        connected_user_names: ["Ada Lovelace", "Grace Hopper"],
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.getByText("People (2)")).toBeTruthy();
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+    expect(screen.getByText("Grace Hopper")).toBeTruthy();
+    expect(screen.queryByText(/Connected users/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add user" })).toBeNull();
+  });
+
+  it("lists two people who share a name as two people", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        bridge_id: null,
+        bridge_display_name: null,
+        is_console_chat: true,
+        connected_user_count: 2,
+        connected_user_names: ["Alex", "Alex"],
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.getAllByText("Alex")).toHaveLength(2);
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
+    errors.mockRestore();
+  });
+
+  it("lists no people for a room on no app that is not a Console chat", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: { ...room, bridge_id: null, bridge_display_name: null },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.queryByText(/^People \(/)).toBeNull();
+  });
+
   it("lets someone taking part in a room they cannot edit unlink its resources", () => {
     viewAs({ can_write: false, can_manage: false, can_unlink: true });
 

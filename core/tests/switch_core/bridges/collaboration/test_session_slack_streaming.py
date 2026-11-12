@@ -749,7 +749,7 @@ async def test_a_turn_that_cannot_stream_is_posted_and_the_reason_logged(
     adapter = _adapter(client)
     break_it(adapter)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         ref = await adapter.post_rich(
             CHANNEL, "Agent", TurnActivity([_tool("t1", "Read")], _turn()), THREAD
         )
@@ -874,7 +874,7 @@ async def test_a_closed_stream_is_forgotten_and_the_turn_edited_at_once(
     )
 
     client.append_error = "stopped_by_user"
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         await adapter.update_rich(
             CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 61.0), THREAD
         )
@@ -1898,7 +1898,7 @@ async def test_a_rate_limit_that_freezes_every_card_says_so(caplog: Any) -> None
     _strand(adapter, ref)
 
     client.update_error = "ratelimited"
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         with pytest.raises(RichContentThrottled):
             await adapter.update_rich(
                 CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 9.0), THREAD

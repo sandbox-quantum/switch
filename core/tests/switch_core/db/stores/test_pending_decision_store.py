@@ -4,6 +4,7 @@ and kept apart by workspace."""
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import timedelta
 
@@ -63,6 +64,14 @@ async def _claim(
         return claimed
 
 
+def _pending(room_id: str, seq: int) -> Pending:
+    return Pending(room_id, seq, f"$m{seq}", 0.0, time.monotonic())
+
+
+def _keys(pendings: list[Pending]) -> list[tuple[str, int, str]]:
+    return [(p.room_id, p.room_seq, p.message_key) for p in pendings]
+
+
 async def test_one_message_per_room_oldest_first(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -81,10 +90,10 @@ async def test_one_message_per_room_oldest_first(
     assert again == []
     async with session_factory() as session:
         assert await STORE.finish(
-            session, tenant_id=TENANT_ZERO_ID, pending=Pending(ops, 5, "$m5")
+            session, tenant_id=TENANT_ZERO_ID, pending=_pending(ops, 5)
         )
         await session.commit()
-    assert await _claim(session_factory) == [Pending(ops, 7, "$m7")]
+    assert _keys(await _claim(session_factory)) == [(ops, 7, "$m7")]
 
 
 async def test_a_lapsed_lease_is_claimed_again(
@@ -101,7 +110,7 @@ async def test_a_lapsed_lease_is_claimed_again(
         )
         await session.commit()
 
-    assert await _claim(session_factory) == [Pending(room, 1, "$m1")]
+    assert _keys(await _claim(session_factory)) == [(room, 1, "$m1")]
 
 
 async def test_finish_says_whether_the_row_was_still_there(
@@ -109,7 +118,7 @@ async def test_finish_says_whether_the_row_was_still_there(
 ) -> None:
     room = await _room(session_factory)
     await _add(session_factory, room, 1)
-    pending = Pending(room, 1, "$m1")
+    pending = _pending(room, 1)
 
     async with session_factory() as session:
         assert await STORE.finish(session, tenant_id=TENANT_ZERO_ID, pending=pending)
@@ -140,7 +149,9 @@ async def test_old_rows_expire_and_young_ones_stay(
         await session.commit()
         left = (await session.scalars(select(PendingDecision.room_seq))).all()
 
-    assert expired == [Pending(room, 1, "$m1")]
+    assert _keys(expired) == [(room, 1, "$m1")]
+    # The age is the database's own: the row was stamped three minutes back.
+    assert 179 <= expired[0].age_seconds <= 190
     assert left == [2]
 
 

@@ -9,6 +9,8 @@ from switch_core.db.models import TENANT_ZERO_ID, TenantNotBoundError, require_t
 from switch_core.logging_config import build_handler
 from switch_core.logging_context import (
     CONTEXT_FIELDS,
+    MCP_IDENTITY_DIAGNOSTICS,
+    STRUCTURED_FIELDS,
     LogContextFilter,
     bind_log_context,
     current_log_context,
@@ -381,3 +383,58 @@ def test_access_logs_remove_authorization_query_parameters(monkeypatch, format):
     assert len(capture.lines) == 1
     assert "/gateway/provider-connections/github/callback" in capture.lines[0]
     assert "SYNTHETIC" not in capture.lines[0]
+
+
+def test_root_handler_redacts_identity_diagnostics(monkeypatch) -> None:
+    """The MCP SDK logs raw vendor messages on the root logger."""
+    config = _config(monkeypatch, LOG_FORMAT="json")
+    capture = _Capture(build_handler(config, None, "core-0-abcd1234"))
+    logger = logging.getLogger("example.sdk")
+    logger.propagate = False
+    logger.handlers = [capture]
+    active = MCP_IDENTITY_DIAGNOSTICS.set(True)
+    try:
+        logger.warning("vendor-marker %s", "example-bearer-value")
+    finally:
+        MCP_IDENTITY_DIAGNOSTICS.reset(active)
+    logger.warning("vendor-marker outside")
+    logger.handlers = []
+    assert len(capture.lines) == 2
+    assert "vendor-marker" not in capture.lines[0]
+    assert "example-bearer-value" not in capture.lines[0]
+    assert "vendor-marker outside" in capture.lines[1]
+
+
+def test_a_structured_group_is_rendered_as_an_object(json_lines) -> None:
+    logger, lines = json_lines
+
+    with log_context(room_id="room-1", decision_id="d-1"):
+        logger.info(
+            "Decision routing: outcome=delivered",
+            extra={
+                STRUCTURED_FIELDS: {
+                    "decision": {"outcome": "delivered", "candidates": 2}
+                }
+            },
+        )
+
+    line = _one(lines)
+    assert line["decision"] == {"outcome": "delivered", "candidates": 2}
+    assert line["room_id"] == "room-1"
+    assert line["decision_id"] == "d-1"
+
+
+def test_a_structured_group_never_replaces_a_standard_field(json_lines) -> None:
+    logger, lines = json_lines
+
+    logger.info("hello", extra={STRUCTURED_FIELDS: {"message": {"forged": True}}})
+
+    assert _one(lines)["message"] == "hello"
+
+
+def test_a_line_without_a_structured_group_is_unchanged(json_lines) -> None:
+    logger, lines = json_lines
+
+    logger.info("plain")
+
+    assert "decision" not in _one(lines)

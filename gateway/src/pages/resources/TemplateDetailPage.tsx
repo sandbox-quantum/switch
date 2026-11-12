@@ -29,7 +29,7 @@ import {
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
 import DeleteTemplateDialog from "./DeleteTemplateDialog";
 import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import TemplateFindings from "./TemplateFindings";
@@ -99,7 +99,7 @@ export default function TemplateDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate(LIST_URL)} size="small">
+        <IconButton onClick={() => navigate(LIST_URL)} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>

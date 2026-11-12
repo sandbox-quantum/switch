@@ -505,6 +505,24 @@ AGENT_CONNECTIONS_EXPIRED = _spec(
     "alone cannot show.",
 )
 
+# Agent controller connections, by what happened to one: `opened` (a fresh
+# open on this process), `adopted` (a socket attaching here to a connection
+# another process opened), `taken_over` (closed here because a newer
+# connection replaced it through another process), and `closed` with the
+# close code as `reason` (heartbeat_lapsed, taken_over, ...). These were
+# info log lines, hundreds of thousands a day on pilot while controllers
+# reconnected every few seconds; a rate is what says that is happening.
+CONTROLLER_CONNECTIONS = _spec(
+    "switch.controllers.connections",
+    "sum",
+    "{connection}",
+    "Agent controller connection events, by event: opened, adopted, "
+    "taken_over, closed (with the close code as reason). A steady rate "
+    "against a flat count of controllers is reconnect churn.",
+    "event",
+    "reason",
+)
+
 # Every stream open, by what it was. `reattach` is a live connection whose
 # socket came back; `after_lapse` and `after_close` are a connection id this
 # process closed recently, coming back; `fresh` is one this process has never
@@ -630,6 +648,137 @@ RUNTIME_GC_PAUSE = _spec(
     bounds=(0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0),
 )
 
+# ── Decision routing ─────────────────────────────────────────────────────────
+# Auto-route asks a decision backend which agent, if any, should answer a
+# person's untagged message (`decision/client.py`, `delivery/router.py`).
+# `backend` is the kind of backend that was asked — `server_default`,
+# `endpoint`, `haiku_anthropic`, `haiku_bedrock` or `machine` — never which
+# endpoint, workspace or machine: those are per tenant and live in the decision
+# record the router logs for each message.
+DECISION_LATENCY_BOUNDS_MS: tuple[float, ...] = (
+    25.0,
+    50.0,
+    100.0,
+    200.0,
+    300.0,
+    500.0,
+    750.0,
+    1000.0,
+    1500.0,
+    2000.0,
+    3000.0,
+    5000.0,
+    10000.0,
+    30000.0,
+    120000.0,
+)
+DECISION_REQUESTS = _spec(
+    "switch.decision.requests",
+    "sum",
+    "{decision}",
+    "Decisions asked of a backend, by backend and outcome: `agent` (it picked "
+    "one), `none` (it picked nobody, or its pick fell below the threshold) or "
+    "`failed` (no usable answer).",
+    "backend",
+    "outcome",
+)
+DECISION_FAILURES = _spec(
+    "switch.decision.failures",
+    "sum",
+    "{failure}",
+    "Decisions that got no usable answer, by backend and reason (`timeout`, "
+    "`unreachable`, `error_status`, `bad_answer`, `key_unreadable`, "
+    "`endpoint_refused`).",
+    "backend",
+    "reason",
+)
+# What a failed answer said went wrong behind the service, from the fixed
+# `error_kind` the decision service sends. Anything else, including an
+# endpoint that sends none, is `unknown`: the body is never read.
+DECISION_BACKEND_ERRORS = _spec(
+    "switch.decision.backend_errors",
+    "sum",
+    "{error}",
+    "Failed answers by what the backend said went wrong behind it: the model "
+    "server unreachable, timing out or erroring, the model not loaded, "
+    "credentials missing, the upstream refusing, or `unknown`.",
+    "backend",
+    "kind",
+)
+DECISION_DURATION = _spec(
+    "switch.decision.duration",
+    "histogram",
+    "ms",
+    "Wall time of one decision request, measured by Switch around the whole "
+    "request, failures included. Compare with switch.decision.model_time: the "
+    "gap is the network and the backend's queue.",
+    "backend",
+    bounds=DECISION_LATENCY_BOUNDS_MS,
+)
+DECISION_MODEL_TIME = _spec(
+    "switch.decision.model_time",
+    "histogram",
+    "ms",
+    "How long the backend says its model took for an answered decision. "
+    "Missing for an endpoint that does not say.",
+    "backend",
+    bounds=DECISION_LATENCY_BOUNDS_MS,
+)
+DECISION_CONFIDENCE = _spec(
+    "switch.decision.confidence",
+    "histogram",
+    "1",
+    "The backend's confidence in each answered decision, 0 to 1, for setting "
+    "the threshold: how many answers fall just under it.",
+    "backend",
+    bounds=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+# One per undecided message, however it ended — the one place every path meets
+# (`MessageRouter._record_settled`). A message decided twice, after a lease
+# lapsed or a restart, is counted once per attempt that settled it.
+DECISION_SETTLED = _spec(
+    "switch.decision.settled",
+    "sum",
+    "{message}",
+    "Undecided messages by how they ended: `delivered`, `nobody_chosen`, "
+    "`nobody_failed`, `triage`, `dropped_not_member`, `dropped_not_allowed`, "
+    "`expired`, `settled_elsewhere` or `unavailable`.",
+    "outcome",
+)
+DECISION_WAIT = _spec(
+    "switch.decision.wait",
+    "histogram",
+    "ms",
+    "Time from a person's message to it being settled, queueing included: "
+    "what the person waited for an answer to start.",
+    "outcome",
+    bounds=DECISION_LATENCY_BOUNDS_MS,
+)
+# Sampled from the database by the decision sweep (`decision/pending_gauge.py`).
+# Every replica reports the same server-wide value, so read these with max.
+DECISION_PENDING = _spec(
+    "switch.decision.pending",
+    "gauge",
+    "{message}",
+    "Messages waiting for a decision, across the server. Every replica reports "
+    "the same value: read with max, not sum.",
+)
+DECISION_PENDING_OLDEST_AGE = _spec(
+    "switch.decision.pending.oldest_age",
+    "gauge",
+    "s",
+    "Age of the oldest message waiting for a decision. Messages past the "
+    "pending limit (two minutes by default) are dropped as expired. Read with "
+    "max.",
+)
+DECISION_NOTICES = _spec(
+    "switch.decision.notices",
+    "sum",
+    "{notice}",
+    '"Auto-route is unavailable" notices posted to rooms (at most one an hour '
+    "per room).",
+)
+
 # ── Health ───────────────────────────────────────────────────────────────────
 # One series per dependency, so a dashboard shows which one broke.
 HEALTH_CHECK = _spec(
@@ -684,6 +833,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_CONNECTIONS_EXPIRED,
         AGENT_OPENS_DEFERRED,
         AGENT_CONNECTIONS_OPENED,
+        CONTROLLER_CONNECTIONS,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
         SERVICE_TOKEN_REQUESTS,
@@ -695,6 +845,17 @@ CATALOGUE: dict[str, MetricSpec] = {
         RUNTIME_STARTS,
         RUNTIME_GC_COLLECTIONS,
         RUNTIME_GC_PAUSE,
+        DECISION_REQUESTS,
+        DECISION_FAILURES,
+        DECISION_BACKEND_ERRORS,
+        DECISION_DURATION,
+        DECISION_MODEL_TIME,
+        DECISION_CONFIDENCE,
+        DECISION_SETTLED,
+        DECISION_WAIT,
+        DECISION_PENDING,
+        DECISION_PENDING_OLDEST_AGE,
+        DECISION_NOTICES,
         HEALTH_CHECK,
     )
 }

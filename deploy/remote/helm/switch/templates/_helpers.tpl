@@ -722,6 +722,44 @@ SHA-256.
 {{- end }}
 
 {{/*
+Where to send OTLP, from switchCore.observability: nothing when no collector is
+named. switch-core passes `metrics: true`; the decision service exports logs
+only, so it gets no metrics settings. Each line starts with a newline.
+Usage: {{- include "switch.otlpEnv" (dict "root" . "metrics" true) }}
+*/}}
+{{- define "switch.otlpEnv" -}}
+{{- $root := .root }}
+{{- $metrics := .metrics }}
+{{- with $root.Values.switchCore.observability }}
+{{- if .otlpEndpoint }}
+- name: OTLP_ENDPOINT
+  value: {{ .otlpEndpoint | quote }}
+- name: DEPLOYMENT_ID
+  value: {{ .deploymentId | quote }}
+{{- if $metrics }}
+- name: OTLP_METRICS_ENABLED
+  value: {{ .metrics | quote }}
+{{- end }}
+- name: OTLP_LOGS_ENABLED
+  value: {{ .logs | quote }}
+{{- if $metrics }}
+- name: OTLP_EXPORT_INTERVAL_SECONDS
+  value: {{ .exportIntervalSeconds | quote }}
+{{- end }}
+- name: OTLP_TIMEOUT_SECONDS
+  value: {{ .timeoutSeconds | quote }}
+{{- if $root.Values.secrets.otlpHeaders }}
+- name: OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "switch.secretName" $root }}
+      key: OTLP_HEADERS
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 switch-core container env. Shared by the switch-core Deployment and the
 pre-upgrade migration Job so they always run against the same configuration
 (env.py builds a full SwitchConfig, so the migration Job needs every var too).
@@ -912,6 +950,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $signupMode | quote }}
 - name: GATEWAY_MAX_WORKSPACES_PER_USER
   value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+{{- with .Values.switchCore.signup.refusedHeader }}
+- name: GATEWAY_SIGNUP_REFUSED_HEADER
+  value: {{ . | quote }}
+{{- end }}
 {{- include "switch.organizationDirectoryEnv" . }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}
@@ -1027,29 +1069,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: ENVIRONMENT
   value: {{ . | quote }}
 {{- end }}
-{{- with .Values.switchCore.observability }}
-{{- if .otlpEndpoint }}
-- name: OTLP_ENDPOINT
-  value: {{ .otlpEndpoint | quote }}
-- name: DEPLOYMENT_ID
-  value: {{ .deploymentId | quote }}
-- name: OTLP_METRICS_ENABLED
-  value: {{ .metrics | quote }}
-- name: OTLP_LOGS_ENABLED
-  value: {{ .logs | quote }}
-- name: OTLP_EXPORT_INTERVAL_SECONDS
-  value: {{ .exportIntervalSeconds | quote }}
-- name: OTLP_TIMEOUT_SECONDS
-  value: {{ .timeoutSeconds | quote }}
-{{- if $.Values.secrets.otlpHeaders }}
-- name: OTLP_HEADERS
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "switch.secretName" $ }}
-      key: OTLP_HEADERS
-{{- end }}
-{{- end }}
-{{- end }}
+{{- include "switch.otlpEnv" (dict "root" . "metrics" true) }}
 - name: TELEMETRY_ENABLED
   value: {{ .Values.switchCore.telemetry.enabled | quote }}
 {{- if .Values.switchCore.telemetry.enabled }}

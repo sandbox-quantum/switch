@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -13,7 +13,7 @@ import {
   SESSION_STARTED_KIND,
   type SessionStartedNotice,
 } from '@switch-console/agent-providers';
-import { withWindowsAgyBinDir } from '@switch-console/plugins/agents';
+import { withWindowsAgyBinDir, withWindowsGitBashDir } from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -399,7 +399,15 @@ async function setInfoCommand(args: string[]): Promise<number> {
 function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
     if (process.platform === 'win32') {
-      process.env.PATH = withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA);
+      process.env.PATH = withWindowsGitBashDir(
+        withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+        {
+          localAppData: process.env.LOCALAPPDATA,
+          programFiles: process.env.ProgramFiles,
+          programFilesX86: process.env['ProgramFiles(x86)'],
+        },
+        existsSync
+      );
       return;
     }
     const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');

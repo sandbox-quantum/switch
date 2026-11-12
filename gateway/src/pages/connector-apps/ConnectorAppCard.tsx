@@ -26,7 +26,7 @@ import {
   checkConnectorApp,
   importConnectorApp,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import {
   actionLabel,
   attention,

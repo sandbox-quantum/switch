@@ -17,15 +17,34 @@ metadata (RFC 9728) names the authorization server, whose metadata
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import functools
 import hashlib
+import json
+import logging
 import re
 import time
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
+from fastmcp import Client
+from fastmcp.client.logging import LogMessage
+from fastmcp.client.transports import StreamableHttpTransport
+from mcp.shared.exceptions import McpError
+from mcp.types import (
+    CONNECTION_CLOSED,
+    INVALID_PARAMS,
+    CallToolRequest,
+    CallToolRequestParams,
+    CallToolResult,
+    ClientRequest,
+    TextContent,
+    Tool,
+)
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -38,12 +57,69 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.logging_context import (
+    MCP_IDENTITY_DIAGNOSTICS,
+    McpIdentityDiagnosticFilter,
+)
+from switch_core.outbound import (
+    GuardedAsyncClient,
+    OutboundHostUnresolved,
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_transport,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
+# The MCP identity call's limits: its whole time, the bytes of one response
+# and of all of them, the tools/list pages it reads, and the tool's result.
+MCP_IDENTITY_SECONDS: float = 15
+MCP_RESPONSE_BYTES = 1024 * 1024
+MCP_IDENTITY_BYTES = 4 * 1024 * 1024
+MCP_TOOL_PAGES = 20
+MCP_RESULT_BYTES = 64 * 1024
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
 ClientAuthentication = Literal["client_secret_post", "client_secret_basic"]
+
+McpIdentityReason = Literal[
+    "tool_not_found",
+    "not_read_only",
+    "needs_arguments",
+    "tool_error",
+    "bad_result",
+    "protocol_error",
+]
+
+_MCP_IDENTITY_FAILURES: dict[McpIdentityReason, str] = {
+    "tool_not_found": "the server lists no single tool with the catalog's name",
+    "not_read_only": "the identity tool is not marked read-only",
+    "needs_arguments": "the identity tool needs arguments",
+    "tool_error": "the identity tool returned an error",
+    "bad_result": "the server's answer is too large or is not one JSON object",
+    "protocol_error": "the server's answer is not valid MCP",
+}
+
+
+class McpIdentityError(ServiceAdapterError):
+    """MCP identity failed for one reason from a fixed set. The message is
+    fixed text, because vendor text can hold account data or credentials."""
+
+    def __init__(self, service: str, reason: McpIdentityReason) -> None:
+        super().__init__(
+            f"{service} could not identify the account through MCP: "
+            f"{_MCP_IDENTITY_FAILURES[reason]} ({reason})."
+        )
+        self.reason: McpIdentityReason = reason
+
+
+# The root handler's filter (`logging_config.py`) sees only what reaches
+# root. `fastmcp.client.client` stops at the `fastmcp` logger, which does not
+# propagate and has its own handlers, so it needs this filter.
+# `mcp.client.streamable_http` reaches root; its filter covers handlers Core
+# did not install, such as pytest's `caplog`.
+for _sdk_logger in ("mcp.client.streamable_http", "fastmcp.client.client"):
+    logging.getLogger(_sdk_logger).addFilter(McpIdentityDiagnosticFilter())
 
 
 @dataclass(frozen=True)
@@ -67,9 +143,9 @@ class AuthorizationEndpoints:
     revocation: str | None
     # Where a token is introspected (RFC 7662), as the metadata advertises it.
     introspection: str | None
-    # The MCP server the endpoints were discovered from, named as the
-    # `resource` of every authorization and token request (RFC 8707). None
-    # where the catalog names the endpoints.
+    # The resource the MCP server's metadata names (its URL where it names
+    # none), sent as the `resource` of every authorization and token request
+    # (RFC 8707). None where the catalog names the endpoints.
     resource: str | None
     client_authentication: ClientAuthentication
 
@@ -147,9 +223,203 @@ def s256(verifier: str) -> str:
 
 
 def _https(url: object, what: str) -> str:
-    if not isinstance(url, str) or urlsplit(url).scheme != "https":
+    try:
+        parts = urlsplit(url) if isinstance(url, str) else None
+        valid = (
+            parts is not None
+            and parts.scheme == "https"
+            and bool(parts.hostname)
+            and parts.username is None
+            and parts.password is None
+        )
+    except ValueError:
+        valid = False
+    if not valid:
         raise ServiceAdapterError(f"The vendor's {what} is not an https URL.")
+    assert isinstance(url, str)
     return url
+
+
+def _resource_covers(resource: str, url: str) -> bool:
+    """Whether `resource` is the MCP server at `url` or a parent path of it
+    on the same origin.
+
+    RFC 9728 §3.3 wants an exact match for metadata found through
+    WWW-Authenticate, but Airtable advertises its origin for its `/mcp`
+    server. So this takes the same origin, and the MCP Python SDK's path
+    rule: a prefix on a segment boundary. A live test on 2026-11-09 showed that
+    Airtable ignores `resource`, so the origin works for it.
+
+    RFC 8707 forbids a fragment, and Core takes no query either.
+    """
+    if "?" in resource or "#" in resource:
+        return False
+    advertised = urlsplit(resource)
+    server = urlsplit(url)
+    try:
+        origins = [
+            (
+                parts.scheme.lower(),
+                parts.hostname,
+                443 if parts.port is None else parts.port,
+            )
+            for parts in (advertised, server)
+        ]
+    except ValueError:
+        return False
+    if origins[0] != origins[1]:
+        return False
+    return f"{server.path.rstrip('/')}/".startswith(f"{advertised.path.rstrip('/')}/")
+
+
+class _BudgetExceeded(Exception):
+    def __init__(self) -> None:
+        super().__init__("The MCP identity call read more than its byte budget.")
+
+
+@dataclass
+class _McpBudget:
+    """The bytes the MCP identity call may read, per response and in total."""
+
+    per_response: int
+    total: int
+    deadline: asyncio.Timeout
+    used: int = 0
+    tripped: bool = False
+
+    def trip(self) -> None:
+        # The first trip ends the call; the deadline cannot move after that.
+        if self.tripped:
+            return
+        self.tripped = True
+        # The SDK swallows a read error in its task group and waits for an
+        # answer that never comes, so the call ends now instead.
+        self.deadline.reschedule(asyncio.get_running_loop().time())
+
+
+class _BudgetStream(httpx.AsyncByteStream):
+    def __init__(self, inner: httpx.AsyncByteStream, budget: _McpBudget) -> None:
+        self._inner = inner
+        self._budget = budget
+        self._seen = 0
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._inner:
+            self._seen += len(chunk)
+            self._budget.used += len(chunk)
+            if (
+                self._seen > self._budget.per_response
+                or self._budget.used > self._budget.total
+            ):
+                self._budget.trip()
+                raise _BudgetExceeded()
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+class _BudgetTransport(httpx.AsyncBaseTransport):
+    """Counts the bytes of each response as they arrive, JSON or SSE."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, budget: _McpBudget) -> None:
+        self._inner = inner
+        self._budget = budget
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self._inner.handle_async_request(request)
+        if request.method == "POST" and response.status_code == 404:
+            # The SDK reads a 404 as an ended session and drops the status,
+            # so it is raised here the way the SDK raises any other 4xx.
+            await response.aclose()
+            raise httpx.HTTPStatusError("Not Found", request=request, response=response)
+        # Compressed bytes do not bound the decoded size.
+        if response.headers.get("content-encoding", "identity").lower() != "identity":
+            await response.aclose()
+            self._budget.trip()
+            raise _BudgetExceeded()
+        assert isinstance(response.stream, httpx.AsyncByteStream)
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            stream=_BudgetStream(response.stream, self._budget),
+            extensions=response.extensions,
+        )
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _mcp_http_client(
+    *,
+    budget: _McpBudget,
+    policy: OutboundPolicy,
+    verify: bool,
+    headers: dict[str, str] | None,
+    auth: httpx.Auth | None,
+    follow_redirects: bool,
+    timeout: httpx.Timeout,
+) -> httpx.AsyncClient:
+    """The identity call's own client and transport, held to the shared
+    client's policy. Closing it never closes the shared client's transport.
+    Redirects are not followed, whatever the SDK asks."""
+    return httpx.AsyncClient(
+        headers={**(headers or {}), "Accept-Encoding": "identity"},
+        auth=auth,
+        follow_redirects=False,
+        trust_env=False,
+        timeout=timeout,
+        transport=_BudgetTransport(guarded_transport(policy, verify=verify), budget),
+    )
+
+
+async def _drop_vendor_log(message: LogMessage) -> None:
+    # A vendor's log notification is its own text, which Core never logs.
+    return None
+
+
+def _leaves(error: BaseException) -> Iterator[BaseException]:
+    """The exceptions in `error`, with every exception group opened and
+    every explicit cause followed: fastmcp raises a connect failure as a
+    RuntimeError from the transport's error."""
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        else:
+            yield current
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+
+
+def _accepts_no_arguments(schema: object) -> bool:
+    """Whether a tool's input schema says it needs no arguments: an object
+    schema with no required property. Nothing else is read, so a vendor's
+    schema costs no work: a JSON Schema validator can spend minutes of CPU
+    time on a small hostile schema. A tool that still refuses `{}` fails
+    loudly when called (`tool_error`)."""
+    return (
+        isinstance(schema, dict)
+        and schema.get("type") == "object"
+        and schema.get("required", []) == []
+    )
+
+
+def _identity_body(result: CallToolResult) -> dict[str, Any] | None:
+    """The one JSON object an identity tool returned, or None."""
+    if result.structuredContent is not None:
+        return result.structuredContent
+    if len(result.content) != 1 or not isinstance(result.content[0], TextContent):
+        return None
+    try:
+        body = json.loads(result.content[0].text)
+    except (ValueError, RecursionError):
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def _path_value(document: Any, path: str) -> Any:
@@ -277,6 +547,13 @@ class OAuthAdapter:
             ],
             "protected resource metadata",
         )
+        # Checked before its authorization servers are trusted: metadata for
+        # another server names that server's.
+        advertised = _https(resource.get("resource", mcp_url), "resource identifier")
+        if not _resource_covers(advertised, mcp_url):
+            raise ServiceAdapterError(
+                f"{self._name}'s MCP server names another server as its resource."
+            )
         servers = resource.get("authorization_servers")
         if not isinstance(servers, list) or not servers:
             raise ServiceAdapterError(
@@ -338,7 +615,7 @@ class OAuthAdapter:
                 if introspection is None
                 else _https(introspection, "introspection endpoint")
             ),
-            resource=mcp_url,
+            resource=advertised,
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
@@ -461,11 +738,13 @@ class OAuthAdapter:
             "response_type": "code",
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
-            "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        access = self._definition.access
+        if access is None or not access.unscoped:
+            query["scope"] = " ".join(scopes)
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:
@@ -497,21 +776,41 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
-        if self._identity.introspection:
+        if self._identity.mcp_tool is not None:
+            body = await self._mcp_identity(access_token)
+        elif self._identity.introspection:
             body = await self._introspect(access_token)
         else:
-            body = await self._account(access_token)
+            assert self._identity.url is not None
+            response = await self._send(
+                self._http.build_request(
+                    "GET",
+                    self._identity.url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
+            )
+            if response.status_code == 401:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} refused the new sign-in when asked whose it is."
+                )
+            if response.status_code != 200:
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is "
+                    f"(HTTP {response.status_code})."
+                )
+            body = self._json(response, "account")
         paths = self._identity.account_id
-        parts = [
-            _path_value(body, path)
-            for path in (paths if isinstance(paths, list) else [paths])
-        ]
-        if not all(
-            type(part) is int or (isinstance(part, str) and part) for part in parts
-        ):
+        parts = (
+            [_path_value(body, path) for path in paths]
+            if isinstance(paths, list)
+            else [_path_value(body, paths)]
+        )
+        if any(type(part) not in (str, int) or not str(part).strip() for part in parts):
             raise ServiceAdapterError(f"{self._name} did not name the account's id.")
-        # Each part escaped, so a separator inside one cannot make another
-        # account's id.
+        # Escape each component so a separator in an id cannot alias another account.
         account_id = (
             ":".join(quote(str(part), safe="") for part in parts)
             if isinstance(paths, list)
@@ -521,29 +820,6 @@ class OAuthAdapter:
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
-
-    async def _account(self, access_token: str) -> dict[str, Any]:
-        assert self._identity.url is not None
-        response = await self._send(
-            self._http.build_request(
-                "GET",
-                self._identity.url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                },
-            )
-        )
-        if response.status_code == 401:
-            raise ReauthorizationRequiredError(
-                f"{self._name} refused the new sign-in when asked whose it is."
-            )
-        if response.status_code != 200:
-            raise ServiceAdapterError(
-                f"{self._name} would not say whose sign-in this is "
-                f"(HTTP {response.status_code})."
-            )
-        return self._json(response, "account")
 
     async def _introspect(self, access_token: str) -> dict[str, Any]:
         """What the authorization server says of the token (RFC 7662), asked
@@ -580,6 +856,165 @@ class OAuthAdapter:
                 f"{self._name} says the new sign-in is not active."
             )
         return body
+
+    async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
+        if self._mcp_url is None or self._identity.mcp_tool is None:
+            raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
+        http = self._http
+        if not isinstance(http, GuardedAsyncClient):
+            raise ServiceAdapterError(
+                f"{self._name} was not asked whose sign-in this is: Core's HTTP "
+                "client is not held to its outbound policy."
+            )
+        deadline = asyncio.timeout(MCP_IDENTITY_SECONDS)
+        budget = _McpBudget(MCP_RESPONSE_BYTES, MCP_IDENTITY_BYTES, deadline)
+        failure: ServiceAdapterError | None = None
+        result: CallToolResult | None = None
+        diagnostics = MCP_IDENTITY_DIAGNOSTICS.set(True)
+        try:
+            async with deadline:
+                result = await self._call_identity_tool(http, access_token, budget)
+        except Exception as error:
+            failure = self._mcp_failure(error, budget)
+        except BaseExceptionGroup as group:
+            # A cancel the SDK's task group wrapped: ours if the deadline
+            # passed, otherwise the caller's, which must go on.
+            if not (budget.tripped or deadline.expired()):
+                raise
+            failure = self._mcp_failure(group, budget)
+        finally:
+            MCP_IDENTITY_DIAGNOSTICS.reset(diagnostics)
+        # Raised here, not in the handler, so the error carries no SDK
+        # exception: those hold vendor text and the request's bearer token.
+        if failure is not None:
+            raise failure
+        assert result is not None
+        if result.isError:
+            raise McpIdentityError(self._name, "tool_error")
+        if len(result.model_dump_json().encode()) > MCP_RESULT_BYTES:
+            raise McpIdentityError(self._name, "bad_result")
+        body = _identity_body(result)
+        if body is None:
+            raise McpIdentityError(self._name, "bad_result")
+        return body
+
+    async def _call_identity_tool(
+        self, http: GuardedAsyncClient, access_token: str, budget: _McpBudget
+    ) -> CallToolResult:
+        assert self._mcp_url is not None and self._identity.mcp_tool is not None
+        transport = StreamableHttpTransport(
+            self._mcp_url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            httpx_client_factory=functools.partial(
+                _mcp_http_client,
+                budget=budget,
+                policy=http.policy,
+                verify=http.verify,
+            ),
+        )
+        async with Client(
+            transport,
+            timeout=MCP_IDENTITY_SECONDS,
+            init_timeout=MCP_IDENTITY_SECONDS,
+            log_handler=_drop_vendor_log,
+        ) as client:
+            # Paged here, not by the SDK, which stops quietly on a repeated
+            # cursor and reads any number of pages.
+            tools: list[Tool] = []
+            cursor: str | None = None
+            seen: set[str] = set()
+            for _ in range(MCP_TOOL_PAGES):
+                page = await client.list_tools_mcp(cursor=cursor)
+                tools.extend(page.tools)
+                cursor = page.nextCursor
+                if not cursor:
+                    break
+                if cursor in seen:
+                    raise McpIdentityError(self._name, "bad_result")
+                seen.add(cursor)
+            else:
+                raise McpIdentityError(self._name, "bad_result")
+            matches = [tool for tool in tools if tool.name == self._identity.mcp_tool]
+            if len(matches) != 1:
+                raise McpIdentityError(self._name, "tool_not_found")
+            tool = matches[0]
+            if tool.annotations is None or tool.annotations.readOnlyHint is not True:
+                raise McpIdentityError(self._name, "not_read_only")
+            if not _accepts_no_arguments(tool.inputSchema):
+                raise McpIdentityError(self._name, "needs_arguments")
+            # Sent as a plain request: the SDK's `call_tool` checks the result
+            # against the vendor's outputSchema, which can fetch any URL.
+            try:
+                result: CallToolResult = await client.session.send_request(
+                    ClientRequest(
+                        CallToolRequest(
+                            params=CallToolRequestParams(
+                                name=self._identity.mcp_tool, arguments={}
+                            )
+                        )
+                    ),
+                    CallToolResult,
+                )
+            except McpError as refused:
+                # A tool can refuse `{}` this way, not with an isError result.
+                if refused.error.code == INVALID_PARAMS:
+                    raise McpIdentityError(self._name, "tool_error") from None
+                raise
+            return result
+
+    def _mcp_failure(
+        self, error: BaseException, budget: _McpBudget
+    ) -> ServiceAdapterError:
+        """A new error, of fixed text, for what failed in the identity call."""
+        if budget.tripped:
+            return McpIdentityError(self._name, "bad_result")
+        leaves = list(_leaves(error))
+        for leaf in leaves:
+            if isinstance(leaf, McpIdentityError):
+                return McpIdentityError(self._name, leaf.reason)
+        for leaf in leaves:
+            # A name that does not resolve is not the policy's refusal: it
+            # is unreachable, below.
+            if isinstance(leaf, OutboundURLRefused) and not isinstance(
+                leaf, OutboundHostUnresolved
+            ):
+                return ServiceAdapterError(
+                    f"{self._name}'s MCP server address is not allowed by this "
+                    "server's outbound policy."
+                )
+        for leaf in leaves:
+            if isinstance(leaf, httpx.HTTPStatusError):
+                status = leaf.response.status_code
+                if status == 401:
+                    return ReauthorizationRequiredError(
+                        f"{self._name} refused the new sign-in when asked whose it is."
+                    )
+                if status == 429 or status >= 500:
+                    return ServiceUnavailableError(
+                        f"{self._name} is unavailable (HTTP {status}). "
+                        "Please try again."
+                    )
+                if 400 <= status < 500:
+                    return ServiceAdapterError(
+                        f"{self._name} would not say whose sign-in this is "
+                        f"(HTTP {status})."
+                    )
+                # A redirect, which Core does not follow, is not an MCP answer.
+                return McpIdentityError(self._name, "protocol_error")
+        if budget.deadline.expired() or any(
+            isinstance(
+                leaf, (TimeoutError, httpx.TransportError, OutboundHostUnresolved)
+            )
+            or (
+                isinstance(leaf, McpError)
+                and leaf.error.code in (httpx.codes.REQUEST_TIMEOUT, CONNECTION_CLOSED)
+            )
+            for leaf in leaves
+        ):
+            return ServiceUnavailableError(
+                f"{self._name} could not be reached. Please try again."
+            )
+        return McpIdentityError(self._name, "protocol_error")
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 

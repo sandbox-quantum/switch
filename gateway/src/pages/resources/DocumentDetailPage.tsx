@@ -28,7 +28,7 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { usePackages } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 
@@ -82,6 +82,7 @@ export default function DocumentDetailPage() {
         <IconButton
           onClick={() => navigate("/resources?tab=documents")}
           size="small"
+          aria-label="Back"
         >
           <ArrowBack />
         </IconButton>

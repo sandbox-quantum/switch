@@ -38,18 +38,50 @@ follow the time picker. The other dashboards are where you go next, for causes.
 Keep it that way when you edit it: one question per tile, at most five series
 per chart, a limit drawn on any chart an alert reads, and colour only for state.
 
+Below the signals, "Digging into error logs" is where you go once something is
+red and you want the why. It reads switch-core's own logs on pilot, errors and
+warnings only: errors over time by the logger that wrote them, the most
+frequent messages with their ids folded into one pattern (usually the fastest
+way to the cause), warnings by logger, and the latest errors as they arrived.
+Its note links the same view in Logs and Error Tracking. The log panels filter
+on `service:switch-core env:pilot`: logs carry no `pod_name`, staging's pods
+share pilot's name but are tagged `env:prod` only, and development reports as
+`switch-core-dev`.
+
 ## Alerts
 
 Every monitor in `monitors.json` is something a user would notice and someone
 should act on now: no data, the database unreachable or refusing connections,
 the pool full for 10 minutes, messages not delivered, failing or late, a
-messaging app bridge down, server errors, a slow API, a stalled server, or
-agents dropping off together. Each says what users see and what to check, posts
+messaging app bridge down, server errors, a slow API, a stalled server,
+agents dropping off together, or auto-route decisions failing, backing up or
+expiring (see [Decision routing](#decision-routing)). Each says what users see and what to check, posts
 when it fires, again every hour while it stays firing (`renotify_interval: 60`),
 and once more when it recovers. A crashed bridge also gets an alert that names
 it (`switch.bridges.crashed`), and "the morning report didn't post" fires when
 the 09:00 report has been silent for 25 hours, so a quiet channel can be
 trusted.
+
+Four more alerts read logs rather than metrics, for failures that only show
+up there: a request failing with an unhandled error (`Exception in ASGI
+application`), a pod losing the lease on its agents' connections without
+shutting down (a pod shut down in a deploy is logged at info and does not
+fire it), a bridge
+failing to post for 10 minutes (more
+than 10 `Could not publish` lines, so one message retrying briefly stays
+quiet), and a burst of more than 25 errors in 15 minutes. Before this change the
+worst 15 minutes of the first week of November held 54 errors, almost all the
+Slack identity error now logged as a warning; without it the worst was 7. Log alerts filter on
+`service:switch-core env:pilot`, for the reason the board's log panels do.
+
+"Agent controllers keep reconnecting" watches `switch.controllers.connections`
+with `event:opened`, for the reconnect storm seen on pilot in November (about
+7,500 controller connections opened every six hours, so around 625 every 30
+minutes, about 570 when this was written): more than 900 in 30 minutes fires,
+so it is quiet at today's level and says when the storm gets worse. Lower it
+to 450 once the reconnect loop is fixed. A rollout reconnects each controller
+once or twice, which stays below either. `event:taken_over` on the
+same metric is the churn's signature; the signal board shows every event.
 
 Priority follows what a user loses: P1 when Switch is down or messages are
 lost, P2 when some people or one platform are affected, P3 when it is slow but
@@ -62,7 +94,8 @@ answer is "that's fine", tune it or delete it that week.
 
 Error alerts count failures rather than taking a percentage. At low traffic one
 failure among a handful of requests reads as a high error rate, so a percentage
-would page on noise.
+would page on noise. "Decisions are failing" is the one exception, and it keeps
+a minimum volume for the same reason: see [Decision routing](#decision-routing).
 
 ## The morning report
 
@@ -107,8 +140,10 @@ and `multi-pod-dashboard.json` are not touched by it; import those by hand with
 **Histogram panels need two things, not one.** Request latency, delivery lag,
 database query duration, pool hold and wait time (`switch.db.pool.hold.duration`,
 `switch.db.pool.wait.duration`), platform call duration, rate-limit hold-backs,
-the agent buffer's scan length and duration, and garbage-collection pauses
-(`switch.runtime.gc_pause`) are OTLP histograms, and the
+the agent buffer's scan length and duration, garbage-collection pauses
+(`switch.runtime.gc_pause`), and decision duration, model time, confidence and
+wait (`switch.decision.duration`, `switch.decision.model_time`,
+`switch.decision.confidence`, `switch.decision.wait`) are OTLP histograms, and the
 `p95:`/`p99:` queries here assume the collector exports them to Datadog as
 *distributions*. Check the collector's
 histogram mode — in the older `histograms` mode they arrive as separate
@@ -121,11 +156,12 @@ Metrics Summary, and add the tag each panel groups by to that metric's
 configured tag set (`route` for requests, `operation` for database queries and
 the agent buffer, `caller` for pool hold time but not wait time, `generation` for
 garbage-collection pauses, `bridge` and `platform` for bridge calls, `platform`
-and `delivery` for rate-limit hold-backs), or
+and `delivery` for rate-limit hold-backs, `backend` for decision duration, model
+time and confidence, `outcome` for decision wait), or
 `p95: … by {…}` returns nothing on a fresh account. Empty is the honest outcome either way; a panel is never silently
 switched to a different statistic.
 
-The two latency **monitors** depend on the same thing, and fail more quietly
+The three latency **monitors** (the API, delivery, and decisions) depend on the same thing, and fail more quietly
 than a panel does: an alert over a percentile that is not enabled evaluates
 against no series and sits healthy for ever. Check them after enabling
 percentiles, not before.
@@ -151,10 +187,75 @@ is Datadog's idiom for a no-data monitor: the threshold never fires, and
 emitted every interval unconditionally — a request counter would read zero on a
 quiet night and a heartbeat that can legitimately be absent is not a heartbeat.
 
+## Decision routing
+
+With auto-route on, a person's untagged message waits while a decision backend
+(the server's default decision service, a workspace's own endpoint, Haiku, or
+one of the workspace's machines) picks which agent, if any, should answer it.
+The "Decision routing" section at the bottom of `dashboard.json` follows that
+from both ends:
+
+- **Per request to a backend:** decisions per second by outcome (`agent`,
+  `none`, `failed`), failures by reason, the errors a backend reported behind
+  it by kind, and duration beside model time by backend, so the gap between
+  them shows the network and the backend's queue rather than the model.
+- **Per message:** how each undecided message ended (`settled`, by outcome),
+  how long the person waited (`wait`), how many are waiting now and how old the
+  oldest is, and the "auto-route is unavailable" notices posted to rooms.
+- **The confidence distribution,** for setting a workspace's threshold: how
+  many answers land just under it.
+- **The default decision service's health check** (`check:decision`). It exists
+  only when the server has a default decision endpoint, and it never takes
+  switch-core out of service: a down decision pod must not take core with it.
+
+`backend` is the kind of backend that was asked, never which endpoint,
+workspace or machine. Those are per tenant, and live in the decision record
+switch-core logs for each message.
+
+**Pending is read with `max`, never `sum`.** `switch.decision.pending` and
+`switch.decision.pending.oldest_age` are sampled from the database, so every
+pod reports the same server-wide value; summed, they would read two pods as
+twice the backlog. `multi-pod-dashboard.json` shows pending per pod so you can
+see that they agree. The machine-state gauge arrives with "run on my machines",
+and is read with `sum`, since each pod counts only the machines connected to it.
+
+**The monitors:**
+
+- *Decisions are failing:* more than 20% of decisions in the last 15 minutes
+  failed, counted against at least 10. It divides the 15-minute failure count
+  by the 15-minute request count raised to at least 10 (`moving_rollup`, then
+  `clamp_min`), so a quiet room needs three failures, not one, before it fires.
+  Trigger it once on purpose after import: a query Datadog evaluates
+  differently from what was meant fails silent, like an unenabled percentile.
+- *The default decision service is unhealthy:* the health check above, below 1
+  for 5 minutes. It points at the decision pod, not core.
+- *Undecided messages are backing up:* the oldest waiting message over 60 s for
+  5 minutes, half the default two-minute limit, so it fires before messages are
+  dropped.
+- *Decisions are expiring:* any message dropped at the limit in 15 minutes.
+  Each is a question nobody answered.
+- *Decisions are slow:* p95 duration over 1.5 s for 30 minutes, as a
+  **warning only**. Datadog requires a critical threshold, and the number in the
+  query is it; it is set to 120 s, far past the decision timeout (5 s by
+  default), so the monitor never goes critical and the 1.5 s warning is the one that notifies.
+
+**Why there is no no-data monitor for decisions.** A quiet night, or a server
+where nobody has turned auto-route on, makes no decisions at all, so silence is
+not a fault. A dead process is already caught by "switch-core has stopped
+reporting".
+
+**Why decisions are alerted on latency.** The rule below is not to alert on
+latency short of what users feel. Decisions have an explicit target of under a
+second, and a person sees nothing at all until the decision is made, so a slow
+decision is felt directly. The long window and warning severity keep it a
+notice rather than a page.
+
 ## What is deliberately not alerted on
 
-**Latency, below a level users feel.** The two latency monitors fire only when
-it is plainly bad (API p95 over 2 s, delivery p95 over 10 s, sustained). On
+**Latency, below a level users feel.** The API and delivery latency monitors
+fire only when it is plainly bad (API p95 over 2 s, delivery p95 over 10 s,
+sustained). Slow decisions get a warning; see
+[Decision routing](#decision-routing). On
 pilot in early November the API p95 stayed under 1 s even while the database
 pool was full, so 2 s is a symptom, not noise. Anything slower than usual but
 not yet that bad is for the dashboard.
@@ -183,7 +284,8 @@ it.
 `multi-pod-dashboard.json` shows switch-core per pod (`pod_name`), to see
 whether work is shared between pods and whether anything is handled twice.
 Gauges are split by pod; platform events, messages and the database server's
-own counters show one total. Pick the deployment with `env` and `service`. It
+own counters show one total. Messages waiting for a decision are split by pod
+too, but should read the same on every pod: the value is server-wide. Pick the deployment with `env` and `service`. It
 needs a build that tags points with `pod_name`; earlier builds show one
 unsplit series.
 

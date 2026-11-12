@@ -761,6 +761,131 @@ describe('ClaudeAdapter turn attribution', () => {
     expect(recorder.ofType('runtime.error')[0]?.message).toBe(
       'API Error: 400 ... The message size (30296644 bytes) exceeds 30.000MB limit.'
     );
+    expect(done.usageLimit).toBeUndefined();
+  });
+
+  it('fails a turn the CLI stopped at the usage limit, even on a plain success result', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'long task' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const notice = "You've hit your 5-hour limit · resets 8:40am";
+    query.emit({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 1_800_000_000, rateLimitType: 'five_hour' },
+      uuid: 'rate-1',
+      session_id: 'native-1',
+    });
+    query.emit({
+      ...assistantMessage('msg-limit', [{ type: 'text', text: notice }]),
+      error: 'rate_limit',
+    });
+    query.emit(resultMessage([String(sent?.uuid)], { result: notice }));
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(notice);
+    expect(done.usageLimit).toEqual({ resetsAt: 1_800_000_000_000 });
+    expect(recorder.ofType('runtime.error')[0]?.message).toBe(notice);
+  });
+
+  it('fails a turn whose result reports the usage limit, without a reset time it was not given', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      resultMessage([String(sent?.uuid)], {
+        is_error: true,
+        result: "You've reached your weekly limit · resets Nov 14",
+      })
+    );
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe("You've reached your weekly limit · resets Nov 14");
+    expect(done.usageLimit).toEqual({ resetsAt: null });
+  });
+
+  it('fails a throttled 429 the way any rejected request fails, not as the usage limit', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const throttle = 'API Error: 429 {"type":"rate_limit_error","message":"Too many requests"}';
+    query.emit({
+      ...assistantMessage('msg-throttle', [{ type: 'text', text: throttle }]),
+      error: 'rate_limit',
+    });
+    query.emit(
+      resultMessage([String(sent?.uuid)], {
+        is_error: true,
+        api_error_status: 429,
+        result: throttle,
+      })
+    );
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(throttle);
+    expect(done.usageLimit).toBeUndefined();
+  });
+
+  it('takes a 429 for the usage limit when the CLI reported the limit rejected', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const text = 'API Error: 429 {"type":"rate_limit_error"}';
+    query.emit({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 1_800_000_000 },
+      uuid: 'rate-1',
+      session_id: 'native-1',
+    });
+    query.emit({
+      ...assistantMessage('msg-limit', [{ type: 'text', text }]),
+      error: 'rate_limit',
+    });
+    query.emit(resultMessage([String(sent?.uuid)], { result: text }));
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(text);
+    expect(done.usageLimit).toEqual({ resetsAt: 1_800_000_000_000 });
+  });
+
+  it('keeps a turn that only saw a usage warning or an overage switch completed', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 1_800_000_000, isUsingOverage: true },
+      uuid: 'rate-1',
+      session_id: 'native-1',
+    });
+    query.emit(
+      assistantMessage('msg-1', [{ type: 'text', text: "You've hit your limit, says the user" }])
+    );
+    query.emit(resultMessage([String(sent?.uuid)], { result: 'done' }));
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('completed');
+    expect(done.usageLimit).toBeUndefined();
+  });
+
+  it('leaves a turn someone stopped interrupted even when the limit notice came first', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit({
+      ...assistantMessage('msg-limit', [{ type: 'text', text: "You've hit your 5-hour limit" }]),
+      error: 'rate_limit',
+    });
+    query.emit(
+      resultMessage([String(sent?.uuid)], { terminal_reason: 'aborted_streaming', result: '' })
+    );
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('interrupted');
+    expect(done.usageLimit).toBeUndefined();
   });
 
   it('ignores a result for sends this adapter never made', async () => {

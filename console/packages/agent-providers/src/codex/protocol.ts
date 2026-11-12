@@ -104,7 +104,17 @@ export interface CodexTurnInterruptParams {
 export interface CodexTurn {
   id: string;
   status: CodexTurnStatus;
-  error: { message: string } | null;
+  error: CodexTurnError | null;
+}
+
+/**
+ * `codexErrorInfo` classifies the failure: a string for a unit variant such
+ * as `usageLimitExceeded`, an object for one that carries data. Older servers
+ * leave it out.
+ */
+export interface CodexTurnError {
+  message: string;
+  codexErrorInfo?: string | Record<string, unknown> | null;
 }
 
 export interface CodexTurnStartResponse {

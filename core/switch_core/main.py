@@ -181,6 +181,7 @@ from switch_core.db.tenant_lookup import (
     all_tenant_ids,
     tenants_with_pending_decisions,
 )
+from switch_core.decision.pending_gauge import PendingDecisionGauge
 from switch_core.decision.setup import build_decision_client
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
@@ -205,6 +206,7 @@ from switch_core.observability.bootstrap import (
     RuntimeProbes,
     start_observability,
 )
+from switch_core.observability.metrics import metrics
 from switch_core.observability.pool import (
     WaitTimedQueuePool,
     install_hold_timer,
@@ -225,6 +227,7 @@ from switch_core.retention.audit_history import check_purge_privilege
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
+from switch_core.room_schedules import own_room_schedules
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
@@ -366,12 +369,14 @@ async def _decision_sweep_loop(
     session_factory: async_sessionmaker[AsyncSession],
     router: MessageRouter,
     concurrency: int,
+    pending_gauge: PendingDecisionGauge,
 ) -> None:
     """Decide the messages waiting for the decision service: the process that
     wrote one starts at once, and this is what decides one whose process
     stopped first, or that a restart left behind. Every process runs it; each
     message is claimed by one. Only tenants with a message waiting are
-    visited, `concurrency` at a time."""
+    visited, `concurrency` at a time. Each pass first samples the waiting
+    queue for the operator's metrics (`decision/pending_gauge.py`)."""
     with no_tenant():
         while True:
             await asyncio.sleep(DECISION_SWEEP_SECONDS)
@@ -380,6 +385,13 @@ async def _decision_sweep_loop(
             except Exception:
                 logger.exception("Decision sweep failed")
                 continue
+            try:
+                await pending_gauge.sample(session_factory, tenants)
+            except Exception:
+                logger.exception(
+                    "Could not sample the decision queue; its gauges go quiet "
+                    "until a sample succeeds"
+                )
             await sweep_pending_decisions(tenants, router.decide_pending, concurrency)
 
 
@@ -621,21 +633,6 @@ async def _snapshot_loop(reporter: SnapshotReporter) -> None:
     # whichever one happened to be bound when the task was created.
     with no_tenant():
         await reporter.run_forever()
-
-
-class _QuietPollFilter(logging.Filter):
-    _SUPPRESSED = [
-        "/events?timeout=",
-        "/room-history?",
-        "/agents/",
-    ]
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(p in msg for p in self._SUPPRESSED)
-
-
-logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
 
 
 async def _prepare_database(config: SwitchConfig) -> None:
@@ -1065,6 +1062,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
+    # Room schedules post from whichever process owns them (`room_schedules.py`).
+    own_room_schedules(ownership, session_factory, client_lifecycle)
     # Every process runs each tenant's admin actor, so the process that wrote
     # a message posts the heads-up it owes (`clients/mention_warnings.py`).
     router.use_admin(
@@ -1495,6 +1494,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
         bridges_crashed=collab_lifecycle.crashed,
+        bridges_started=collab_lifecycle.started_names,
         consumers_running=client_lifecycle.running_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
@@ -1592,6 +1592,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 session_factory=session_factory,
                 probes=probes,
                 process_id=process_id,
+                optional_checks=[
+                    check
+                    for check in (decision_client.health_check(),)
+                    if check is not None
+                ],
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
@@ -1601,15 +1606,20 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
-            decision_task = (
-                asyncio.create_task(
+            decision_task = None
+            if config.decision_routing_enabled:
+                pending_gauge = PendingDecisionGauge(
+                    sweep_seconds=DECISION_SWEEP_SECONDS
+                )
+                metrics().register_observer(pending_gauge.readings)
+                decision_task = asyncio.create_task(
                     _decision_sweep_loop(
-                        session_factory, router, config.decision_sweep_concurrency
+                        session_factory,
+                        router,
+                        config.decision_sweep_concurrency,
+                        pending_gauge,
                     )
                 )
-                if config.decision_routing_enabled
-                else None
-            )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )

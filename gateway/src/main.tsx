@@ -3,7 +3,7 @@ import "@fontsource/space-grotesk/400.css";
 import "@fontsource/space-grotesk/500.css";
 import "@fontsource/space-grotesk/600.css";
 import "@fontsource/space-grotesk/700.css";
-import "./theme/hoot.css";
+import "./theme/tokens.css";
 
 import { CssBaseline, GlobalStyles, InitColorSchemeScript, ThemeProvider } from "@mui/material";
 import { StrictMode } from "react";

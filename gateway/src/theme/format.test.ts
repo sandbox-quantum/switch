@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { platformLabel } from "./hootFormat";
+import { platformLabel } from "./format";
 
 describe("platformLabel", () => {
   it("names the Teams platform after Microsoft's own app, not a bare title case", () => {

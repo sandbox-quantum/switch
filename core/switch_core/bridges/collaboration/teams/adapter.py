@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
@@ -358,6 +359,12 @@ _TEAMS_MARKUP = _TeamsMarkup()
 # account (`29:…`, `8:orgid:…`) or a bare Entra object id.
 _TEAMS_ID = re.compile(
     r"^(?:\d+:\S+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
+# An Entra (Azure AD) object id: the only kind of Teams account Graph will
+# make a channel's owner. A channel account (`29:…`) cannot be.
+_ENTRA_OBJECT_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
 # A newline with no newline either side of it.
@@ -775,6 +782,7 @@ class TeamsAdapter(PlatformAdapter):
     #: Switch does not arrange, so a notice about someone's message is posted
     #: in the channel where everyone sees it.
     private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
+    private_channel_needs_owner: ClassVar[bool] = True
     docs_slug: ClassVar[str | None] = "microsoft-teams"
     # Graph delivers a channel's messages to every subscription made for it,
     # so only the process holding the bridge makes, adopts and renews them.
@@ -980,6 +988,9 @@ class TeamsAdapter(PlatformAdapter):
         # channel id -> its display name; "" records that Graph was asked and
         # could not say, so it is not asked again on every message.
         self._channel_names: dict[str, str] = {}
+        # team thread id -> the team's name as activities last gave it, which
+        # is the old name a `teamRenamed` activity does not carry.
+        self._team_names: dict[str, str] = {}
         # channel id -> when a Graph read of it last failed (monotonic), so the
         # retry is throttled without being abandoned. See `_read_channel`.
         self._channel_read_failed_at: dict[str, float] = {}
@@ -2603,11 +2614,11 @@ class TeamsAdapter(PlatformAdapter):
 
     # ── Channels ─────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _sanitize_channel_name(name: str) -> str:
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
         """Teams channel display names disallow several characters and cap at
         50 chars. Replace the reserved set and trim."""
-        cleaned = re.sub(r'[~#%&*{}+/\\:<>?|\'"]', "-", name).strip(" .-")
+        cleaned = re.sub(r'[~#%&*{}+/\\:<>?|\'"]', "-", room_name).strip(" .-")
         return (cleaned or "switch")[:50]
 
     async def create_channel(
@@ -2616,7 +2627,8 @@ class TeamsAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         if self._graph is None:
             raise RuntimeError("Teams adapter not started")
         if channel_type in ("group", "direct"):
@@ -2632,12 +2644,23 @@ class TeamsAdapter(PlatformAdapter):
                 "does not know which team to create the channel in. Choose one "
                 "in the messaging app's Microsoft Teams settings."
             )
-        membership_type = "private" if channel_type == "channel_private" else "standard"
+        is_private = channel_type == "channel_private"
+        if is_private and (
+            owner_external_id is None or not self.can_own_channel(owner_external_id)
+        ):
+            # Room creation resolves the owner before it gets here; this is the
+            # backstop for a caller that did not, so Microsoft's refusal is not
+            # the first anyone hears of it.
+            raise ValueError(
+                "A private Teams channel needs an owner, and no linked Teams "
+                "account was given to make its owner."
+            )
         channel = await self._graph.create_channel(
             team_id=team_id,
-            display_name=self._sanitize_channel_name(name),
+            display_name=self.channel_name_for(name),
             description=topic,
-            membership_type=membership_type,
+            membership_type="private" if is_private else "standard",
+            owner_aad_id=owner_external_id if is_private else None,
         )
         channel_id = str(channel.get("id", ""))
         if not channel_id:
@@ -2645,11 +2668,18 @@ class TeamsAdapter(PlatformAdapter):
 
         self._channel_type[channel_id] = channel_type
         await self._learn_channel_team(channel_id, team_id)
-        self._channel_names[channel_id] = str(channel.get("displayName") or "")
+        created_name = str(channel.get("displayName") or self.channel_name_for(name))
+        self._channel_names[channel_id] = created_name
         self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
         # Capture the new channel's messages right away.
         await self._ensure_channel_subscription(channel_id)
-        return channel_id
+        return CreatedChannel(id=channel_id, name=created_name)
+
+    def can_own_channel(self, external_user_id: str) -> bool:
+        """Only a directory (Entra) account can own a channel. Switch records a
+        Teams sender by its directory id where Teams gives one, and by its
+        channel account (`29:…`) otherwise, which Graph cannot make an owner."""
+        return bool(_ENTRA_OBJECT_ID.match(external_user_id))
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         known = self._channel_type.get(channel_id)
@@ -3118,7 +3148,14 @@ class TeamsAdapter(PlatformAdapter):
             if chat_type is not None:
                 self._channel_type[channel_id] = chat_type
 
-        team = (activity.get("channelData") or {}).get("team") or {}
+        channel_data = activity.get("channelData") or {}
+        team = channel_data.get("team") or {}
+        if (
+            team.get("id")
+            and team.get("name")
+            and channel_data.get("eventType") != "teamRenamed"
+        ):
+            self._team_names[str(team["id"])] = str(team["name"])
         # Graph channel subscriptions key on the team's AAD group GUID, which
         # Teams sends as ``aadGroupId`` — on some activities only. ``team.id``
         # is the non-GUID channel thread id and Graph rejects it ("TeamGroupId
@@ -3820,6 +3857,7 @@ class TeamsAdapter(PlatformAdapter):
     async def _dispatch_conversation_update(
         self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
     ) -> None:
+        await self._report_rename(activity, channel_id, chat_type)
         members_added = activity.get("membersAdded") or []
         if not members_added:
             # Deletions, renames and departures don't need the type; skip the read.
@@ -3861,6 +3899,54 @@ class TeamsAdapter(PlatformAdapter):
                         channel_name=channel_name,
                     )
                 )
+
+    async def _report_rename(
+        self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
+    ) -> None:
+        """Hand a renamed channel, team or group chat to the bridge.
+
+        A team's rename is reported as its General channel's, whose id is the
+        team's: that channel is the one a room named after the team belongs
+        to. It is reported only once the team's old name is known, since a
+        room that knows its General channel by another name was not named
+        after the team. A group chat's new name is its topic."""
+        channel_data = activity.get("channelData") or {}
+        event_type = channel_data.get("eventType")
+        if event_type == "channelRenamed":
+            channel = channel_data.get("channel") or {}
+            renamed_id = str(channel.get("id") or channel_id)
+            new_name = str(channel.get("name") or "")
+            old_name = self._channel_names.get(renamed_id, "")
+        elif event_type == "teamRenamed":
+            team = channel_data.get("team") or {}
+            renamed_id = str(team.get("id") or "")
+            new_name = str(team.get("name") or "")
+            old_name = self._team_names.get(renamed_id, "")
+            if renamed_id and new_name:
+                self._team_names[renamed_id] = new_name
+            if not old_name:
+                logger.warning(
+                    "Teams team %s was renamed to %r before Switch learned its "
+                    "old name, so a room named after the team keeps its name",
+                    renamed_id,
+                    new_name,
+                )
+                return
+        elif chat_type == "group" and activity.get("topicName"):
+            renamed_id = channel_id
+            new_name = str(activity.get("topicName") or "")
+            old_name = self._channel_names.get(renamed_id, "")
+        else:
+            return
+        if not renamed_id or not new_name:
+            logger.warning(
+                "Teams %s without a conversation or a new name, skipping",
+                event_type or "group chat rename",
+            )
+            return
+        self._channel_names[renamed_id] = new_name
+        if self._on_channel_named is not None:
+            await self._on_channel_named(renamed_id, old_name, new_name)
 
     @staticmethod
     def _channel_name(activity: dict[str, Any]) -> str | None:

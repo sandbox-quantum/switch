@@ -62,6 +62,30 @@ describe('getSecret', () => {
   });
 });
 
+describe('setSecret on Linux', () => {
+  function linuxStore(available: boolean, backend: string) {
+    const safeStorageApi = {
+      isEncryptionAvailable: () => available,
+      encryptString: () => Buffer.from('x'),
+      getSelectedStorageBackend: () => backend,
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return new EncryptedAppSecretsStore(fakeDb([], []) as any, safeStorageApi as any, 'linux');
+  }
+
+  it('refuses the unencrypted basic_text fallback and says how to get a keyring', async () => {
+    await expect(linuxStore(true, 'basic_text').setSecret('k', 'v')).rejects.toThrow(
+      /no system keyring was found.*gnome-keyring.*"login" keyring/
+    );
+  });
+
+  it('says how to get a keyring when encryption is unavailable', async () => {
+    await expect(linuxStore(false, 'unknown').setSecret('k', 'v')).rejects.toThrow(
+      /unavailable on this system\. Run a Secret Service/
+    );
+  });
+});
+
 describe('readRecoverableSecret', () => {
   beforeEach(() => warn.mockReset());
 

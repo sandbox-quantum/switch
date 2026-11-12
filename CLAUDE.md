@@ -44,7 +44,7 @@ has its own `console/CLAUDE.md` (→ `AGENTS.md`); read that before working in t
 
 ```bash
 # Dependencies
-uv sync                          # install/update Python dependencies
+uv sync --project core           # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
 just init-env                    # first-time setup — generate .env with random secrets

@@ -17,7 +17,14 @@ import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
-import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
+import {
+  actedInSwitch,
+  parkAfterMs,
+  READ_ONLY_SWITCH_TOOLS,
+  RESET_HOLD_MS,
+  runSharedHost,
+  sessionBusy,
+} from './shared-host';
 import { hostParked } from './shared-state';
 
 // Every step here writes the session journal and flushes it to disk, and
@@ -346,6 +353,18 @@ async function start(
       )
     ).toBe(true)
   );
+  // The host works out which attachments the session takes once its models are listed,
+  // after it reports ready; a room message sent before then is planned against the stub's.
+  if (opts.rooms)
+    await until(async () =>
+      expect(
+        (await journal()).some(
+          (event) =>
+            event.body.type === 'session.upsert' &&
+            event.body.session.capabilities.attachmentMimeTypes.includes('image/png')
+        )
+      ).toBe(true)
+    );
   // A request sent before the host listens for them would go unheard.
   await until(() => expect(parent.sent.some((m) => m.kind === 'ready')).toBe(true));
   return {
@@ -1504,6 +1523,130 @@ it('posts for a room turn that ended without the agent posting, and not for one 
   } finally {
     expect(await host.stop()).toBeNull();
   }
+});
+
+it('posts for a silent room turn that named the agent, not for a routed message or a follow-up', async () => {
+  const host = await start({ rooms: true });
+  const replies = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type === 'room-reply'
+    );
+  const turn = async (handoff: object) => {
+    const before = host.turns.length;
+    expect(await host.parent.ask({ type: 'room', handoff })).toMatchObject({ ok: true });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  const untagged = (sequence: number, fields: Record<string, unknown>) => {
+    const message = roomMessage(sequence, 'anyone?');
+    return {
+      ...message,
+      event: { ...message.event, payload: { ...message.event.payload, ...fields } },
+    };
+  };
+  try {
+    for (const [sequence, fields] of [
+      [1, { routed: true }],
+      [2, { follow_up: 'thread_follow_up' }],
+      [3, { follow_up: 'channel_follow_up' }],
+      [4, { follow_up: 'main_agent' }],
+    ] as const) {
+      const silent = await turn(untagged(sequence, fields));
+      host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
+    }
+
+    const addressed = await turn(roomMessage(5, 'hi'));
+    host.emit({ type: 'turn.completed', turnId: addressed, outcome: 'completed', usage: [] });
+    await until(() => expect(replies().length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(replies().map((message) => message.ask)).toEqual([
+      { type: 'room-reply', roomId: 'room', threadId: null, body: 'I finished without replying.' },
+    ]);
+    host.parent.port.emit('message', {
+      kind: 'answer',
+      id: replies()[0]!.id,
+      ok: true,
+      value: null,
+    });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('posts for a silent room turn that only read, not for one that acted through a Switch tool', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  const replies = () => asks().filter((message) => message.ask.type === 'room-reply');
+  const turn = async (sequence: number) => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'hi') })
+    ).toMatchObject({ ok: true });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  // The provider's Switch tool call, answered by the parent as Switch would.
+  const call = async (name: string, isError: boolean) => {
+    const before = asks().length;
+    const calling = host.channel.ask({ type: 'tool', name, arguments: {} });
+    await until(() => expect(asks()).toHaveLength(before + 1));
+    host.parent.port.emit('message', {
+      kind: 'answer',
+      id: asks().at(-1)!.id,
+      ok: true,
+      value: { content: [{ type: 'text', text: '{}' }], ...(isError ? { isError: true } : {}) },
+    });
+    await calling;
+  };
+  try {
+    const acted = await turn(1);
+    await call('read_context', false);
+    await call('update_room', false);
+    host.emit({ type: 'turn.completed', turnId: acted, outcome: 'completed', usage: [] });
+
+    const refused = await turn(2);
+    await call('archive_room', true);
+    host.emit({ type: 'turn.completed', turnId: refused, outcome: 'completed', usage: [] });
+    await until(() => expect(replies()).toHaveLength(1));
+
+    const read = await turn(3);
+    await call('read_context', false);
+    await call('list_participants', false);
+    host.emit({ type: 'turn.completed', turnId: read, outcome: 'completed', usage: [] });
+    await until(() => expect(replies()).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(replies().map((message) => message.ask)).toEqual([
+      { type: 'room-reply', roomId: 'room', threadId: null, body: 'I finished without replying.' },
+      { type: 'room-reply', roomId: 'room', threadId: null, body: 'I finished without replying.' },
+    ]);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('counts any Switch tool that succeeded as acting, except one that only reads', () => {
+  const ok = { content: [{ type: 'text', text: '{}' }] };
+  expect(actedInSwitch('post_message', ok)).toBe(true);
+  expect(actedInSwitch('update_room', ok)).toBe(true);
+  // A tool this host has never heard of acts: the list names only what reads.
+  expect(actedInSwitch('finalise_task', ok)).toBe(true);
+  expect(actedInSwitch('update_room', { ...ok, isError: true })).toBe(false);
+  expect(actedInSwitch('read_context', ok)).toBe(false);
+  expect(actedInSwitch('download_attachment', ok)).toBe(false);
+});
+
+it('names as read-only only tools in the Switch skill tool index', async () => {
+  const skill = await readFile(
+    new URL('../../../plugins/src/switch-skill/SKILL.md', import.meta.url),
+    'utf8'
+  );
+  const index = skill.slice(skill.indexOf('## Tool index'));
+  for (const name of READ_ONLY_SWITCH_TOOLS) expect(index).toContain(`\`${name}\``);
 });
 
 it('reports the turn a fault ended, and the fault, before it stops', async () => {

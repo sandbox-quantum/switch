@@ -35,7 +35,7 @@ import {
   MONO_SX,
   formatDateTime,
   sentenceCase,
-} from "../../theme/hootFormat";
+} from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
@@ -46,20 +46,20 @@ import { sessionPlace, sessionRunner } from "./sessionLabels";
 // Presence of an agent within a room — mirrors the room detail page so the two
 // views report status identically.
 const ROOM_STATUS_META: Record<string, { label: string; color: string }> = {
-  live: { label: "Live", color: "var(--hoot-success)" },
-  awaiting_manual_poll: { label: "Idle", color: "var(--hoot-warning)" },
-  no_session: { label: "No session", color: "var(--hoot-muted-foreground)" },
-  disconnected: { label: "Disconnected", color: "var(--hoot-destructive)" },
+  live: { label: "Live", color: "var(--sw-success)" },
+  awaiting_manual_poll: { label: "Idle", color: "var(--sw-warning)" },
+  no_session: { label: "No session", color: "var(--sw-muted-foreground)" },
+  disconnected: { label: "Disconnected", color: "var(--sw-destructive)" },
 };
 
 // State of a single session row.
 const SESSION_STATE_META: Record<string, { label: string; color: string }> = {
-  live: { label: "Live", color: "var(--hoot-success)" },
-  open: { label: "Open", color: "var(--hoot-warning)" },
-  stale: { label: "Stale", color: "var(--hoot-muted-foreground)" },
+  live: { label: "Live", color: "var(--sw-success)" },
+  open: { label: "Open", color: "var(--sw-warning)" },
+  stale: { label: "Stale", color: "var(--sw-muted-foreground)" },
 };
 
-const NEUTRAL_STATUS_COLOR = "var(--hoot-muted-foreground)";
+const NEUTRAL_STATUS_COLOR = "var(--sw-muted-foreground)";
 
 function StatusDot({ color, title }: { color: string; title?: string }) {
   return (
@@ -119,7 +119,7 @@ export default function AgentDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/agents")} size="small">
+        <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5">{agent.name}</Typography>

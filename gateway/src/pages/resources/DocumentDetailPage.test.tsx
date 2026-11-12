@@ -25,6 +25,7 @@ const doc: DocumentDetail = {
   created_by_agent_name: null,
   created_at: "2026-10-01T00:00:00Z",
   content: "Step one",
+  can_read: true,
   can_edit: false,
   can_manage: false,
   can_transfer: false,

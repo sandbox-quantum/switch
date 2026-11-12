@@ -24,6 +24,7 @@ import type {
   SessionStatus,
   TokenUsage,
   TurnOutcome,
+  UsageLimit,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
@@ -304,6 +305,15 @@ function turnOutcomeOf(status: CodexTurnNotification['turn']['status']): TurnOut
     default:
       return 'error';
   }
+}
+
+/**
+ * A failed turn Codex classifies as the account's usage limit. Codex gives
+ * the reset time only in the message's own words.
+ */
+export function codexUsageLimit(turn: CodexTurnNotification['turn']): UsageLimit | null {
+  if (turn.status !== 'failed') return null;
+  return turn.error?.codexErrorInfo === 'usageLimitExceeded' ? { resetsAt: null } : null;
 }
 
 /**
@@ -968,11 +978,13 @@ export class CodexAdapter implements ProviderAdapter {
       state.items.clear();
       state.deltaBuffers.clear();
       if (!turnId) return;
+      const usageLimit = codexUsageLimit(payload.turn);
       this.emit(state, {
         type: 'turn.completed',
         turnId,
         outcome,
         ...(message ? { message } : {}),
+        ...(usageLimit ? { usageLimit } : {}),
         usage: this.takeUsage(state),
         raw: { source: CODEX_SERVER_NOTIFICATIONS.turnCompleted, payload },
       });

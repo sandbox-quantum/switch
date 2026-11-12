@@ -91,7 +91,7 @@ artifacts:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.8.2
+    version: 0.8.3
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -251,9 +251,22 @@ contracts:
       authentication surface, which is deliberately frozen and unversioned so
       that a client can always authenticate far enough to be told what is
       wrong.
+    # Revision 2 is what switch-core 0.31.0 shipped while still declaring 1.
+    # An agent's definition carries `auto_mode`, which a server without it
+    # refuses (a strict body takes no field it does not know), and signing in
+    # to a service connects it with no `confirm` route, which a client from
+    # before relies on. switch-core accepts 2: it already dropped the
+    # `confirm` route that revision-1 clients need. Switch Console accepts 1,
+    # because every switch-core from 0.31.0 to the first one declaring 2
+    # speaks revision 2 while saying 1; a server older than 0.31.0 also says
+    # 1, and is the one case this cannot tell apart.
+    #
+    # A strict request body changing is the change most easily missed, so
+    # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until
+    # it is recorded against a raised `speaks`.
     artifacts:
-      switch-core: { speaks: 1, accepts: 1 }
-      switch-console: { speaks: 1, accepts: 1 }
+      switch-core: { speaks: 2, accepts: 2 }
+      switch-console: { speaks: 2, accepts: 1 }
 
   stack-compose:
     description: >-

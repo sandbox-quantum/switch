@@ -6,13 +6,25 @@ import json
 import math
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, get_args
 
 import anthropic
 import boto3
 import httpx
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    ConnectTimeoutError,
+    CredentialRetrievalError,
+    EndpointConnectionError,
+    NoCredentialsError,
+    PartialCredentialsError,
+    ProfileNotFound,
+    ReadTimeoutError,
+    SSOError,
+    TokenRetrievalError,
+)
 
 from switch_decision.config import Settings
 from switch_decision.models import DecideRequest
@@ -29,16 +41,95 @@ from switch_decision.prompt import (
     systemone_request,
 )
 
+# Why a model call failed, as the 502 body's `error_kind`. switch-core counts
+# failures by it and reads nothing else from the body, so the set is fixed.
+ErrorKind = Literal[
+    "model_server_unreachable",
+    "model_server_timeout",
+    "model_server_error",
+    "model_unavailable",
+    "credentials_missing",
+    "backend_refused",
+]
+ERROR_KINDS: tuple[str, ...] = get_args(ErrorKind)
+
 
 class ModelServerError(Exception):
     """The model server could not be reached or gave an answer we cannot use.
 
-    `log_text` is what the service logs: the same as the message, minus anything
-    the backend sent back (an error body could echo room content)."""
+    `kind` classifies the failure. `log_text` is what the service logs: the same
+    as the message, minus anything the backend sent back (an error body could
+    echo room content)."""
 
-    def __init__(self, message: str, log_text: str | None = None):
+    def __init__(self, message: str, *, kind: ErrorKind, log_text: str | None = None):
         super().__init__(message)
+        self.kind = kind
         self.log_text = log_text if log_text is not None else message
+
+
+def kind_of_status(status: int) -> ErrorKind:
+    """An HTTP error status from a model server or API, classified."""
+    if status in (401, 403, 429):
+        return "backend_refused"
+    if status in (404, 503, 529):
+        # Ollama answers 404 for a model it has not pulled, llama.cpp 503
+        # while its model is still loading, Anthropic 529 when overloaded.
+        return "model_unavailable"
+    if status == 504:
+        return "model_server_timeout"
+    return "model_server_error"
+
+
+def kind_of_httpx_error(exc: httpx.HTTPError) -> ErrorKind:
+    if isinstance(exc, httpx.ConnectTimeout | httpx.NetworkError):
+        return "model_server_unreachable"
+    if isinstance(exc, httpx.TimeoutException):
+        return "model_server_timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return kind_of_status(exc.response.status_code)
+    return "model_server_error"
+
+
+_AWS_CREDENTIAL_ERRORS = (
+    NoCredentialsError,
+    PartialCredentialsError,
+    CredentialRetrievalError,
+    ProfileNotFound,
+    TokenRetrievalError,
+    SSOError,
+)
+
+_BEDROCK_REFUSED = {
+    "AccessDeniedException",
+    "UnrecognizedClientException",
+    "ExpiredTokenException",
+    "InvalidSignatureException",
+    "ThrottlingException",
+    "ServiceQuotaExceededException",
+}
+_BEDROCK_UNAVAILABLE = {"ResourceNotFoundException", "ModelNotReadyException"}
+
+# What a Converse answer says when a guardrail or content filter stopped it.
+_BEDROCK_REFUSAL_STOPS = {"guardrail_intervened", "content_filtered"}
+
+
+def kind_of_bedrock_error(exc: BotoCoreError | ClientError) -> ErrorKind:
+    if isinstance(exc, ClientError):
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in _BEDROCK_REFUSED:
+            return "backend_refused"
+        if code in _BEDROCK_UNAVAILABLE:
+            return "model_unavailable"
+        if code == "ModelTimeoutException":
+            return "model_server_timeout"
+        return "model_server_error"
+    if isinstance(exc, _AWS_CREDENTIAL_ERRORS):
+        return "credentials_missing"
+    if isinstance(exc, ConnectTimeoutError | EndpointConnectionError):
+        return "model_server_unreachable"
+    if isinstance(exc, ReadTimeoutError):
+        return "model_server_timeout"
+    return "model_server_error"
 
 
 class InvalidChoiceError(ModelServerError):
@@ -48,7 +139,10 @@ class InvalidChoiceError(ModelServerError):
     its answer just can't be routed."""
 
     def __init__(self, choice: object, confidence: float = 0.0):
-        super().__init__(f"model chose {choice!r}, which is not one of the options")
+        super().__init__(
+            f"model chose {choice!r}, which is not one of the options",
+            kind="model_server_error",
+        )
         self.choice = str(choice)
         self.confidence = confidence
 
@@ -76,7 +170,8 @@ def read_systemone(body: object, options: list[str]) -> ModelAnswer:
         probabilities = answer.get("probabilities") or {}
     except (KeyError, TypeError) as exc:
         raise ModelServerError(
-            f"SystemOne response has no '{SPEAKER_QUESTION}' answer"
+            f"SystemOne response has no '{SPEAKER_QUESTION}' answer",
+            kind="model_server_error",
         ) from exc
     if choice not in options:
         raise InvalidChoiceError(
@@ -84,7 +179,10 @@ def read_systemone(body: object, options: list[str]) -> ModelAnswer:
         )
     confidence = probabilities.get(choice, answer.get("confidence"))
     if not isinstance(confidence, (int, float)):
-        raise ModelServerError(f"SystemOne response has no probability for {choice!r}")
+        raise ModelServerError(
+            f"SystemOne response has no probability for {choice!r}",
+            kind="model_server_error",
+        )
     top = sorted(probabilities.items(), key=lambda kv: kv[1], reverse=True)[:3]
     reason = (
         "probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in top) if top else ""
@@ -102,7 +200,9 @@ def read_ollama(body: object, options: list[str]) -> ModelAnswer:
             out.get("reason", ""),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise ModelServerError("Ollama output was not the expected JSON") from exc
+        raise ModelServerError(
+            "Ollama output was not the expected JSON", kind="model_server_error"
+        ) from exc
     if choice not in options:
         raise InvalidChoiceError(choice, _confidence_of(confidence))
     return ModelAnswer(choice=choice, confidence=confidence, reason=reason)
@@ -125,12 +225,16 @@ def read_bedrock(body: dict, options: list[str]) -> ModelAnswer:
         )
     except (KeyError, TypeError, ValueError, StopIteration) as exc:
         raise ModelServerError(
-            "Bedrock response did not call the pick tool with a decision"
+            "Bedrock response did not call the pick tool with a decision",
+            kind="model_server_error",
         ) from exc
     if choice not in options:
         raise InvalidChoiceError(choice, _confidence_of(confidence))
     if not 0.0 <= confidence <= 1.0:
-        raise ModelServerError(f"model gave confidence {confidence}, outside 0 to 1")
+        raise ModelServerError(
+            f"model gave confidence {confidence}, outside 0 to 1",
+            kind="model_server_error",
+        )
     return ModelAnswer(choice=choice, confidence=confidence, reason=reason)
 
 
@@ -198,8 +302,14 @@ async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
         )
         raise ModelServerError(
             f"{where} failed: {type(exc).__name__}: {exc}",
-            f"{where} failed: {type(exc).__name__} {code}".rstrip(),
+            kind=kind_of_bedrock_error(exc),
+            log_text=f"{where} failed: {type(exc).__name__} {code}".rstrip(),
         ) from exc
+    stop = body.get("stopReason")
+    if stop in _BEDROCK_REFUSAL_STOPS:
+        raise ModelServerError(
+            f"{where} declined to answer (stopReason={stop})", kind="backend_refused"
+        )
     return read_bedrock(body, options)
 
 
@@ -210,7 +320,8 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
         top = body["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ModelServerError(
-            "llama.cpp response has no top logprobs for the first token"
+            "llama.cpp response has no top logprobs for the first token",
+            kind="model_server_error",
         ) from exc
     mass: dict[str, float] = {}
     for t in top:
@@ -219,7 +330,10 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
             mass[letter] = mass.get(letter, 0.0) + math.exp(t["logprob"])
     total = sum(mass.values())
     if total <= 0:
-        raise ModelServerError("the model put no probability on any option letter")
+        raise ModelServerError(
+            "the model put no probability on any option letter",
+            kind="model_server_error",
+        )
     probs = {options[k]: v / total for k, v in mass.items()}
     choice = max(probs, key=probs.get)
     ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)[:3]
@@ -274,7 +388,10 @@ def read_anthropic(message: Any, options: list[str]) -> ModelAnswer:
     )
     if block is None:
         raise ModelServerError(
-            f"Claude did not call the pick tool (stop_reason={message.stop_reason})"
+            f"Claude did not call the pick tool (stop_reason={message.stop_reason})",
+            kind="backend_refused"
+            if message.stop_reason == "refusal"
+            else "model_server_error",
         )
     return read_bedrock(
         {
@@ -317,16 +434,31 @@ async def ask_anthropic(
     settings: Settings, req: DecideRequest, api_key: str | None = None
 ) -> ModelAnswer:
     options = [a.name for a in req.agents] + [NONE]
+    if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise ModelServerError(
+            "ANTHROPIC_API_KEY is not set", kind="credentials_missing"
+        )
     try:
         message = await anthropic_client(settings, api_key).messages.create(
             **anthropic_request(req, settings)
         )
+    except anthropic.CredentialsError as exc:
+        raise ModelServerError(
+            f"Anthropic credentials unavailable: {exc}", kind="credentials_missing"
+        ) from exc
+    except anthropic.APITimeoutError as exc:
+        raise ModelServerError(
+            f"Anthropic API timed out: {exc}", kind="model_server_timeout"
+        ) from exc
     except anthropic.APIConnectionError as exc:
-        raise ModelServerError(f"Anthropic API unreachable: {exc}") from exc
+        raise ModelServerError(
+            f"Anthropic API unreachable: {exc}", kind="model_server_unreachable"
+        ) from exc
     except anthropic.APIStatusError as exc:
         raise ModelServerError(
             f"Anthropic API returned {exc.status_code} for {settings.model}: {exc.message}",
-            f"Anthropic API returned {exc.status_code} for {settings.model}",
+            kind=kind_of_status(exc.status_code),
+            log_text=f"Anthropic API returned {exc.status_code} for {settings.model}",
         ) from exc
     return read_anthropic(message, options)
 
@@ -383,14 +515,22 @@ async def ask(
             )
         except httpx.HTTPError as exc:
             raise ModelServerError(
-                f"model server {url} unreachable: {type(exc).__name__}: {exc}"
+                f"model server {url} unreachable: {type(exc).__name__}: {exc}",
+                kind=kind_of_httpx_error(exc),
             ) from exc
         if r.status_code != 200:
             raise ModelServerError(
                 f"model server {url} returned {r.status_code}: {r.text[:300]}",
-                f"model server {url} returned {r.status_code}",
+                kind=kind_of_status(r.status_code),
+                log_text=f"model server {url} returned {r.status_code}",
             )
-        return read_letter_logprobs(r.json(), letters)
+        try:
+            body = r.json()
+        except ValueError as exc:
+            raise ModelServerError(
+                f"model server {url} returned non-JSON", kind="model_server_error"
+            ) from exc
+        return read_letter_logprobs(body, letters)
     options = [a.name for a in req.agents] + [NONE]
     headers: dict[str, str] = {}
     if settings.backend == "systemone":
@@ -413,17 +553,21 @@ async def ask(
         )
     except httpx.HTTPError as exc:
         raise ModelServerError(
-            f"model server {url} unreachable: {type(exc).__name__}: {exc}"
+            f"model server {url} unreachable: {type(exc).__name__}: {exc}",
+            kind=kind_of_httpx_error(exc),
         ) from exc
     if r.status_code != 200:
         raise ModelServerError(
             f"model server {url} returned {r.status_code}: {r.text[:300]}",
-            f"model server {url} returned {r.status_code}",
+            kind=kind_of_status(r.status_code),
+            log_text=f"model server {url} returned {r.status_code}",
         )
     try:
         body = r.json()
     except ValueError as exc:
-        raise ModelServerError(f"model server {url} returned non-JSON") from exc
+        raise ModelServerError(
+            f"model server {url} returned non-JSON", kind="model_server_error"
+        ) from exc
     return (
         read_systemone(body, options)
         if settings.backend == "systemone"
@@ -435,7 +579,9 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
     """Probe the model server; raise ModelServerError when it is down."""
     if settings.backend == "anthropic":
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise ModelServerError("ANTHROPIC_API_KEY is not set")
+            raise ModelServerError(
+                "ANTHROPIC_API_KEY is not set", kind="credentials_missing"
+            )
         return {"status": "api key set"}
     if settings.backend == "bedrock":
         try:
@@ -445,10 +591,13 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
                 ).get_credentials()
             )
         except BotoCoreError as exc:
-            raise ModelServerError(f"AWS credentials unavailable: {exc}") from exc
+            raise ModelServerError(
+                f"AWS credentials unavailable: {exc}", kind="credentials_missing"
+            ) from exc
         if creds is None:
             raise ModelServerError(
-                "AWS credentials unavailable: no profile or environment credentials found"
+                "AWS credentials unavailable: no profile or environment credentials found",
+                kind="credentials_missing",
             )
         return {"status": "credentials found", "region": settings.aws_region}
     if settings.backend == "llamacpp":
@@ -459,7 +608,10 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
             return r.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise ModelServerError(
-                f"model server {url} unavailable: {type(exc).__name__}: {exc}"
+                f"model server {url} unavailable: {type(exc).__name__}: {exc}",
+                kind=kind_of_httpx_error(exc)
+                if isinstance(exc, httpx.HTTPError)
+                else "model_server_error",
             ) from exc
     if settings.backend == "systemone":
         base = settings.systemone_url.rsplit("/v1/", 1)[0]
@@ -472,5 +624,8 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
         return r.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise ModelServerError(
-            f"model server {url} unavailable: {type(exc).__name__}: {exc}"
+            f"model server {url} unavailable: {type(exc).__name__}: {exc}",
+            kind=kind_of_httpx_error(exc)
+            if isinstance(exc, httpx.HTTPError)
+            else "model_server_error",
         ) from exc

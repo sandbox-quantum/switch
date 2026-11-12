@@ -40,6 +40,10 @@ export interface RoomSummary {
   // The viewer takes part in it: owns it, is in it (in Switch Console or
   // through a platform account they claimed), or owns an agent in it.
   viewer_is_member: boolean;
+  // Made in Switch Console as a chat: its people are its members, named by
+  // their Switch name, rather than accounts on a messaging app. Absent from
+  // servers that predate it.
+  is_console_chat?: boolean;
   // What the viewer may do, as the server decides it. `can_write` covers the
   // room's settings, roles, links and attaching resources;
   // `can_change_members` covers adding and removing its agents and people,
@@ -188,6 +192,11 @@ export interface BridgeDetail {
   // Why no existing channel can be linked by id on this connection, or null
   // when one can — the Switch Telegram app, whose chats come from connecting.
   channel_ids_refused?: string | null;
+  // Whether a new room here can have a private channel, and whether that needs
+  // the person asking to have linked their account there (Teams names them its
+  // owner). Absent on an older server.
+  private_channels_supported?: boolean;
+  private_channel_needs_linked_account?: boolean;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
@@ -1391,8 +1400,44 @@ export async function updateMemberRole(
   );
 }
 
-export async function removeMember(tenantId: string, userId: string): Promise<void> {
-  await jsonRequest(
+/** Who receives what a removed member owns in the workspace: the admin
+ * removing them when that admin is a member, otherwise its longest-standing
+ * other admin. */
+export interface RemovalHeir {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
+export interface MemberRemovalPreview {
+  /** Null when the workspace has no other admin: what they own stays theirs. */
+  handed_over_to: RemovalHeir | null;
+}
+
+export interface MemberRemovalResult {
+  ok: true;
+  /** Sign-ins Switch could not revoke at a vendor. */
+  warning: string | null;
+  handed_over_to: RemovalHeir | null;
+  /** How many of each kind passed to `handed_over_to`; kinds with none are absent. */
+  handed_over: Partial<Record<Exclude<OwnershipKind, "agent">, number>>;
+}
+
+export async function previewMemberRemoval(
+  tenantId: string,
+  userId: string,
+): Promise<MemberRemovalPreview> {
+  return jsonRequest<MemberRemovalPreview>(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/removal`,
+    "GET",
+  );
+}
+
+export async function removeMember(
+  tenantId: string,
+  userId: string,
+): Promise<MemberRemovalResult> {
+  return jsonRequest<MemberRemovalResult>(
     `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     "DELETE",
   );
@@ -1901,6 +1946,9 @@ export interface ReferenceDetail {
   // it, and handing it to someone else.
   can_edit: boolean;
   can_manage: boolean;
+  // Whether the viewer may open its page. A package's or a room's list names
+  // a private item to everyone who may read the package or room.
+  can_read: boolean;
 }
 
 export interface ReferenceCreateInput {
@@ -1948,6 +1996,8 @@ export interface DocumentSummary {
   can_manage: boolean;
   // Handing it to someone else: never for a document scoped to one room.
   can_transfer: boolean;
+  // As on `ReferenceDetail`.
+  can_read: boolean;
 }
 
 export interface DocumentDetail extends DocumentSummary {
