@@ -77,7 +77,8 @@ const createRoom: BrowserScenario = {
     const description = `Made in the gateway form by the Switch end-to-end harness (run ${names.runId}). Safe to delete.`;
     await ui.signIn();
     await ui.openFromRail('Rooms');
-    await ui.page.getByRole('button', { name: 'New room' }).click();
+    // An empty list offers the same button again in the table: either opens the form.
+    await ui.page.getByRole('button', { name: 'New room' }).first().click();
     await expect.poll(() => ui.path()).toBe('/rooms/new');
     await ui.page.getByRole('textbox', { name: /^Name/ }).fill(name);
     await ui.page.getByRole('textbox', { name: /^Description/ }).fill(description);
