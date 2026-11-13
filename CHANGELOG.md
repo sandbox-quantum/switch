@@ -241,6 +241,17 @@ version of their own to them without also giving them a release of their own.
   each connector's `category` and `description`.
 
 #### Changed
+- **Usage telemetry tells Switch Console chats apart.** The period events
+  add `console_account_active`, the active accounts that used Console chat,
+  and `console_only_account_active`, those that used nothing else, so Console
+  use can be told from platform use. The snapshot counts Console chats
+  (`room_console_chat_direct_count`, `_group_count`, `_active_7d`). The
+  message events and the room events (`room_created`, `room_became_active`,
+  `room_archived`, `room_deleted`) gain `console_chat`. New events report a
+  Console chat becoming a group (`console_chat_became_group`), people and
+  agents added to and removed from rooms in Console (`console_member_added`,
+  `console_member_removed`), and rooms taken off and put back on someone's
+  list (`console_room_hidden`, `console_room_shown`).
 - **The morning report's graph explains itself.** `daily_report.py` draws the
   graph of the day itself instead of taking a Datadog snapshot, with a title,
   the time span, labelled axes, a legend and a caption on how to read it, so
@@ -3390,6 +3401,12 @@ version of their own to them without also giving them a release of their own.
   event, so two events alike in every field and sent in the same millisecond,
   such as the rooms of one template run or the sessions of an agent deleted at
   once, are no longer counted as one.
+- **Usage data covers chats.** With sharing on, Switch Console reports a chat
+  created, a message sent, a person or agent added or removed, a control
+  command and an approval answered, each with whether it worked. A message
+  reports whether it had a file, was in a thread and named an agent or a
+  person; never the text, the chat, or who was named. `docs/TELEMETRY.md`
+  lists every field.
 - **A finished template run is counted on the server.** Once a run from a
   stored or official template has fully succeeded, whichever way it ran,
   Switch Console reports it, and so does switch-buddy's own setup, once. The

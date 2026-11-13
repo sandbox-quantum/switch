@@ -181,6 +181,8 @@ class TestTagging:
             turn_human_to_agent=0,
             turn_agent_to_human=0,
             turn_agent_to_agent=0,
+            console_account_active=0,
+            console_only_account_active=0,
             is_partial=False,
             tenant_failed_count=0,
         )
