@@ -13,11 +13,6 @@ export function isYours(entry: ConnectionCatalogEntry): boolean {
   return entry.status !== 'not_connected' && entry.status !== 'coming_soon';
 }
 
-/** The tab the page opens on: Yours once the person has a connection, Discover until then. */
-export function defaultConnectorsTab(entries: readonly ConnectionCatalogEntry[]): ConnectorsTab {
-  return entries.some(isYours) ? 'yours' : 'discover';
-}
-
 /**
  * The catalog cards a tab lists, narrowed by the search. Yours holds what the
  * person has connected; Discover holds the whole catalog, connected services
