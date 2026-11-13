@@ -65,6 +65,8 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -299,6 +301,30 @@ def _button_label(control: Control) -> str:
     if len(label) > _MAX_BUTTON_LABEL:
         label = label[: _MAX_BUTTON_LABEL - 1].rstrip() + "…"
     return f"{control.position}. {label}"
+
+
+def _prompt_keyboard(prompt: DirectPrompt) -> InlineKeyboardMarkup:
+    """A direct prompt's buttons: the numbers side by side, and the last
+    label, which declines, on a row of its own and red, so a thumb reaching
+    for a number cannot land on it."""
+    *numbers, decline = prompt.labels
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    text=label, callback_data=_callback_data(prompt.token, position)
+                )
+                for position, label in enumerate(numbers, start=1)
+            ],
+            [
+                InlineKeyboardButton(
+                    text=decline,
+                    callback_data=_callback_data(prompt.token, len(prompt.labels)),
+                    api_kwargs={"style": _DANGER_STYLE},
+                )
+            ],
+        ]
+    )
 
 
 # Switch's own in-room prefix, plus Telegram's native one.
@@ -1522,6 +1548,84 @@ class TelegramAdapter(PlatformAdapter):
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
         return _STAND_IN_ACCOUNTS.get(external_user_id)
+
+    def direct_prompt_unavailable(self) -> str | None:
+        if self._shared:
+            return (
+                "The Switch Telegram app can't take an answer in a direct "
+                "message, so use the code instead."
+            )
+        if self._bot is None:
+            return "Switch's Telegram bot isn't connected right now, so use the code instead."
+        return None
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message one person in their private chat with the bot, whose id is
+        their own.
+
+        Each button carries the prompt's token and its position in the payload
+        a card's buttons carry, so `_handle_callback_query` reads a press on it
+        as it reads one on a card.
+
+        Telegram lets a bot message only someone who has started a chat with it
+        and not blocked it. Not sent at all from the shared app: the webhook
+        route finds an update's organisation by its chat, and a person's chat
+        with the bot belongs to none, so a press there would reach no bridge.
+        """
+        if self._shared:
+            raise DirectMessageUnavailable(
+                "The Switch Telegram app can't take an answer in a direct "
+                "message, so use the code instead."
+            )
+        bot = self._require_bot()
+        try:
+            sent = await bot.send_message(
+                chat_id=int(external_user_id),
+                text=self.translate_outbound(prompt.text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=_prompt_keyboard(prompt),
+            )
+        except (Forbidden, BadRequest) as refused:
+            if isinstance(refused, BadRequest) and (
+                "chat not found" not in str(refused).lower()
+            ):
+                raise
+            raise DirectMessageUnavailable(
+                f"Telegram only lets @{self._bot_username} message people who "
+                "have started a chat with it and haven't blocked it, so use the "
+                "code instead. To be messaged next time, open a chat with "
+                f"@{self._bot_username} from that account first."
+            ) from refused
+        return self._ref(sent)
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The private chat with the bot. Telegram links a message only in a
+        group or channel, not in a private chat."""
+        if not self._bot_username:
+            return None
+        return f"https://t.me/{self._bot_username}"
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        try:
+            chat_id, message_id = self._parse_message_ref(message_ref)
+            await self._require_bot().edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=self.translate_outbound(text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=None,
+            )
+        except Exception as error:
+            logger.warning(
+                "Could not replace Telegram prompt %s: %s. It was answered: %s",
+                message_ref,
+                error,
+                text,
+            )
 
     async def admin_message(
         self,

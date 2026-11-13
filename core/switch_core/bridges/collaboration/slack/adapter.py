@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, ClassVar, Literal, NoReturn
@@ -48,7 +48,9 @@ from switch_core.bridges.collaboration.models import (
     ChannelNotUsable,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
     DirectoryUser,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -60,6 +62,7 @@ from switch_core.bridges.collaboration.models import (
     PrivateNoticeDelivery,
     RetireOutcome,
 )
+from switch_core.bridges.collaboration.session.renderers import position_action
 from switch_core.bridges.collaboration.session.renderers.slack import (
     STREAM_SLOTS,
     SlackMessage,
@@ -80,6 +83,7 @@ from switch_core.bridges.collaboration.slack.avatar import (
 )
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
+from switch_core.chat_account_links import ACCOUNT_COMMANDS
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -526,6 +530,23 @@ def _channel_creation_refused(
             f"{_retry_after_seconds(exc)} seconds."
         )
     return BridgeOperationError(f"{prefix}.")
+
+
+# Where Slack sends a slash command's answers, on its commercial and its
+# government cloud. Nothing else is posted to.
+_RESPONSE_URL_HOSTS = frozenset({"hooks.slack.com", "hooks.slack-gov.com"})
+
+
+def _prompt_button(prompt: DirectPrompt, position: int, label: str) -> dict[str, Any]:
+    button: dict[str, Any] = {
+        "type": "button",
+        "action_id": position_action(position),
+        "value": prompt.token,
+        "text": {"type": "plain_text", "text": label},
+    }
+    if position == len(prompt.labels):
+        button["style"] = "danger"
+    return button
 
 
 # The ids Slack gives an app's bot, under which an app's posts with no user are
@@ -1994,6 +2015,156 @@ class SlackAdapter(PlatformAdapter):
             user=user_id,
             text=self.translate_outbound(content),
             thread_ts=self._thread_ts_of(thread_root_id),
+        )
+
+    async def answer_command(self, command: InboundCommand, text: str) -> None:
+        """Answer an account command where only its sender sees it.
+
+        A slash command carries a `response_url` (`reply_ref`), which answers
+        it ephemerally in whatever conversation it was run, including one this
+        app is not in and a person's message to themselves. A command typed
+        with `!` has none, and goes the base's way: an ephemeral post, which
+        reaches its sender in a channel the app is in, the only place a typed
+        command reaches it from.
+        """
+        if command.reply_ref is not None and await self._answer_by_response_url(
+            command.reply_ref, text
+        ):
+            return
+        await super().answer_command(command, text)
+
+    async def _answer_by_response_url(self, url: str, text: str) -> bool:
+        """Post an ephemeral answer to a slash command's `response_url`, and
+        say whether Slack took it.
+
+        The URL comes from the slash command's verified payload, and is still
+        checked to be Slack's before anything is posted to it.
+        """
+        parts = urlsplit(url)
+        if parts.scheme != "https" or parts.hostname not in _RESPONSE_URL_HOSTS:
+            logger.error(
+                "A Slack slash command carried a response_url that is not "
+                "Slack's (%s), so it was not answered there.",
+                parts.hostname,
+            )
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(
+                    url,
+                    json={
+                        "response_type": "ephemeral",
+                        "text": self._render_outbound(text),
+                    },
+                )
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            logger.warning("Slack did not take a slash command's answer: %s", e)
+            return False
+        return True
+
+    def direct_prompt_unavailable(self) -> str | None:
+        if self._web_client is None:
+            return (
+                "Switch's Slack app isn't connected right now, so use the code instead."
+            )
+        return None
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message one person in this app's own direct conversation with them.
+
+        Needs the app's Messages tab, which the manifest turns on read-only
+        (`own_app_setup.py`): people can read what the app sends and press its
+        buttons, but cannot write to it. Each button's id names its position
+        and its value carries the prompt's token, the shape a card's position
+        buttons have elsewhere, so `_handle_interactive` passes a press on
+        untouched.
+        """
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            opened = await self._web_client.conversations_open(users=external_user_id)
+            channel = str((opened.get("channel") or {}).get("id", ""))
+            if not channel:
+                raise DirectMessageUnavailable(
+                    "Slack didn't open a conversation with this account, so use "
+                    "the code instead."
+                )
+            body = self._render_outbound(prompt.text)
+            posted = await self._web_client.chat_postMessage(
+                channel=channel,
+                text=body,
+                blocks=[
+                    {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+                    {
+                        "type": "actions",
+                        "elements": [
+                            _prompt_button(prompt, position, label)
+                            for position, label in enumerate(prompt.labels, start=1)
+                        ],
+                    },
+                ],
+            )
+        except SlackApiError as e:
+            raise DirectMessageUnavailable(
+                f"Slack wouldn't let Switch message this account "
+                f"({e.response.get('error', 'unknown error')}), so use the code "
+                "instead. If the Switch app's Messages tab is off, an admin can "
+                "turn it on by re-applying the app manifest."
+            ) from e
+        ts = str(posted.get("ts", ""))
+        return f"{channel}:{ts}"
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """Slack's `app_redirect`, which opens the app's conversation with them
+        in the desktop app, the browser or on mobile. The team is the one the
+        bot authenticated in, which on an Enterprise Grid org is the workspace
+        and not the org."""
+        channel, _, _ = message_ref.partition(":")
+        if not self._team_id:
+            return f"https://slack.com/app_redirect?channel={channel}"
+        return f"https://slack.com/app_redirect?channel={channel}&team={self._team_id}"
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        if not self._web_client:
+            logger.warning(
+                "Cannot replace Slack prompt %s: client not connected. It was "
+                "answered: %s",
+                message_ref,
+                text,
+            )
+            return
+        channel, _, ts = message_ref.partition(":")
+        body = self._render_outbound(text)
+        try:
+            await self._web_client.chat_update(
+                channel=channel,
+                ts=ts,
+                text=body,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": body}}],
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not replace Slack prompt %s: %s. It was answered: %s",
+                message_ref,
+                e,
+                text,
+            )
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # A slash command reaches the app from any conversation, including a
+        # person's message to themselves, and is answered only to them. The
+        # typed form is for a workspace whose app predates the command.
+        return (
+            f"Type `/link-account {code}` from that account anywhere in Slack: "
+            "a message to yourself works, and only you see the reply. If Slack "
+            f"doesn't know the command, post `!link-account {code}` in a "
+            "channel Switch is in."
         )
 
     def adapt_icon_url(self, icon_url: str) -> str:
@@ -3958,6 +4129,25 @@ class SlackAdapter(PlatformAdapter):
                 e,
             )
             channel_type = "channel_public"
+
+        if command in ACCOUNT_COMMANDS:
+            # Answered to the sender alone through `response_url`, wherever it
+            # was run. A visible "Running" post would show a link code to the
+            # channel, and fails outright where the app is not a member.
+            if self._on_command:
+                await self._on_command(
+                    InboundCommand(
+                        channel_id=channel_id,
+                        channel_type=channel_type,
+                        sender_id=user_id,
+                        sender_name=user.name,
+                        command=command,
+                        args=args,
+                        channel_name=channel_name,
+                        reply_ref=str(payload.get("response_url", "")) or None,
+                    )
+                )
+            return
 
         # Post the visible "Running …" message as the app and use it as the
         # thread root for the command's result. If it fails to post, fall back

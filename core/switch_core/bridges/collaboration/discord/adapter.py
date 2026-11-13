@@ -65,7 +65,9 @@ from switch_core.bridges.collaboration.models import (
     ChannelNotUsable,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
     DirectoryUser,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -95,6 +97,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.chat_account_links import ACCOUNT_COMMANDS
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -210,9 +213,46 @@ _INTERRUPT_PREFIX = "swstop"
 _ACTIVITY_LABEL = "View activity"
 _REFRESH_LABEL = "Refresh"
 
+# A link prompt's buttons (CHOO-4121). The prompt is a direct message, and a
+# press in one carries no server, so each button names the server whose bridge
+# sent it as well as the prompt and the position: the shared connection routes
+# a press by server, and has nothing else to route this one by.
+_PROMPT_PREFIX = "swlnk"
+
 
 def _custom_id(token: str, position: int) -> str:
     return f"{_CUSTOM_ID_PREFIX}:{token}:{position}"
+
+
+def _prompt_id(guild_id: int, token: str, position: int) -> str:
+    return f"{_PROMPT_PREFIX}:{guild_id}:{token}:{position}"
+
+
+def _parse_prompt_id(custom_id: str) -> tuple[int, str, int] | None:
+    """The server, prompt and button a press on a link prompt names, or None
+    if it is not one.
+
+    Read as strictly as `_parse_custom_id`, and trusted no further: the server
+    only decides which bridge is asked, and the token is resolved against the
+    stored request there, from the account Discord says pressed it.
+    """
+    parts = custom_id.split(":")
+    if len(parts) != 4 or parts[0] != _PROMPT_PREFIX:
+        return None
+    guild, token, digits = parts[1], parts[2], parts[3]
+    if not token or not all(
+        part.isascii() and part.isdecimal() for part in (guild, digits)
+    ):
+        return None
+    position = int(digits)
+    return (int(guild), token, position) if position > 0 else None
+
+
+def prompt_guild(custom_id: str) -> int | None:
+    """The server whose bridge sent the link prompt a press is on, or None if
+    it is not a press on one."""
+    prompt = _parse_prompt_id(custom_id)
+    return None if prompt is None else prompt[0]
 
 
 def _interrupt_id(turn_id: str) -> str:
@@ -314,12 +354,14 @@ def _card_refusals() -> Iterator[None]:
 def _press_action(custom_id: str) -> tuple[str, str] | None:
     """The Switch action a press carries and what it names, or None if not ours.
 
-    Three buttons arrive here and they name different things — a request
-    card's option names the card, a stop names the turn, an agent card's
-    button names itself — but they leave by the same door,
-    because what happens next is the same for all: acknowledge inside
-    Discord's three seconds, then hand the press to the shared inbound path and
-    tell the presser alone whatever comes back.
+    Four buttons arrive here and they name different things — a request
+    card's option names the card, a link prompt's names the prompt, a stop
+    names the turn, an agent card's button names itself — but they leave by
+    the same door, because what happens next is the same for all:
+    acknowledge inside Discord's three seconds, then hand the press to the
+    shared inbound path and tell the presser alone whatever comes back. A
+    prompt's button reads back as a request card option's does, its position
+    and its token, so the shared path tells the two apart by the token alone.
     """
     card_button = parse_card_custom_id(custom_id)
     if card_button is not None:
@@ -327,6 +369,10 @@ def _press_action(custom_id: str) -> tuple[str, str] | None:
     turn_id = _parse_interrupt_id(custom_id)
     if turn_id is not None:
         return INTERRUPT_ACTION, turn_id
+    prompt = _parse_prompt_id(custom_id)
+    if prompt is not None:
+        _guild, token, position = prompt
+        return position_action(position), token
     press = _parse_custom_id(custom_id)
     if press is None:
         return None
@@ -731,6 +777,9 @@ class DiscordAdapter(PlatformAdapter):
         # so anything wider would risk turning a passing "@moderators" into a
         # real ping of somebody's real role.
         self._agent_role_ids: dict[str, int] = {}
+        # Account commands run as slash commands, acknowledged privately and
+        # waiting on their answer (`answer_command`), by interaction id.
+        self._held_commands: dict[str, discord.Interaction] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1325,6 +1374,118 @@ class DiscordAdapter(PlatformAdapter):
             f"Run {slash} from that account in a server channel Switch is in, "
             f"or post `!link-account {code}` there."
         )
+
+    async def answer_command(self, command: InboundCommand, text: str) -> None:
+        """Answer an account command where only its sender sees it.
+
+        A slash command was acknowledged privately and held under its
+        `reply_ref` (`_run_account_command`), and is answered in a follow-up to
+        it. A command typed with `!` has none, and nothing but an interaction
+        gives a bot a private reply in a channel, so it is answered in the
+        channel, as is a slash command whose follow-up Discord refuses.
+        """
+        if command.reply_ref is not None:
+            interaction = self._held_commands.pop(command.reply_ref, None)
+            if interaction is None:
+                logger.warning(
+                    "The Discord slash command /%s is no longer waiting on its "
+                    "answer, so it is answered in the channel instead.",
+                    command.command,
+                )
+            else:
+                try:
+                    await interaction.followup.send(
+                        self.translate_outbound(text),
+                        ephemeral=True,
+                        allowed_mentions=NO_MASS_MENTIONS,
+                    )
+                    return
+                except discord.HTTPException as e:
+                    logger.warning(
+                        "Discord would not carry the answer to /%s (%s), so it "
+                        "is answered in the channel instead.",
+                        command.command,
+                        e,
+                    )
+        await super().answer_command(command, text)
+
+    def direct_prompt_unavailable(self) -> str | None:
+        try:
+            self._require_client()
+        except RuntimeError:
+            return "Switch's Discord bot isn't connected right now, so use the code instead."
+        return None
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message one person from the bot, in its own direct conversation
+        with them.
+
+        Discord lets a bot open one with anyone who shares a server with it
+        and accepts direct messages from that server's members. Each button
+        names this bridge's server as well as the prompt (`_prompt_id`). The
+        view is stopped before it is sent, for the reason `_controls` gives: a
+        press is read off its id rather than off a view held in memory, which
+        is what lets a prompt outlive a restart.
+        """
+        client = self._require_client()
+        view = discord.ui.View(timeout=None)
+        for position, label in enumerate(prompt.labels, start=1):
+            view.add_item(
+                discord.ui.Button(
+                    label=label,
+                    custom_id=_prompt_id(self._guild_id, prompt.token, position),
+                    style=discord.ButtonStyle.danger
+                    if position == len(prompt.labels)
+                    else discord.ButtonStyle.secondary,
+                )
+            )
+        view.stop()
+        try:
+            user = await client.fetch_user(int(external_user_id))
+            channel = await user.create_dm()
+            message = await channel.send(
+                self.translate_outbound(prompt.text),
+                view=view,
+                suppress_embeds=True,
+                allowed_mentions=NO_MASS_MENTIONS,
+            )
+        except (ValueError, discord.NotFound) as e:
+            raise DirectMessageUnavailable(
+                "Discord couldn't find this account, so use the code instead."
+            ) from e
+        except discord.Forbidden as e:
+            raise DirectMessageUnavailable(
+                "Discord won't let Switch message this account. It may not "
+                "accept direct messages from server members, or may no longer "
+                "share a server with Switch, so use the code instead."
+            ) from e
+        return f"{channel.id}:{message.id}"
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The message itself: Discord links a direct message under `@me`."""
+        channel_id, _, message_id = message_ref.partition(":")
+        return f"https://discord.com/channels/@me/{channel_id}/{message_id}"
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        channel_id, message_id = self._parse_message_ref(message_ref)
+        try:
+            channel = self._require_client().get_partial_messageable(
+                int(channel_id), type=discord.ChannelType.private
+            )
+            await channel.get_partial_message(int(message_id)).edit(
+                content=self.translate_outbound(text),
+                view=None,
+                allowed_mentions=NO_MASS_MENTIONS,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not replace Discord prompt %s: %s. It was answered: %s",
+                message_ref,
+                e,
+                text,
+            )
 
     async def admin_message(
         self,
@@ -3317,6 +3478,10 @@ class DiscordAdapter(PlatformAdapter):
             return
         data: dict[str, Any] = dict(interaction.data or {})
         custom_id = str(data.get("custom_id") or "")
+        # A link prompt is a direct message, which carries no server, so its
+        # buttons say whose it is. Another bridge on the same bot sent it.
+        if prompt_guild(custom_id) not in (None, self._guild_id):
+            return
         if custom_id.split(":", 1)[0] == _ACTIVITY_PREFIX:
             await self._handle_activity(interaction, custom_id)
             return
@@ -3781,6 +3946,10 @@ class DiscordAdapter(PlatformAdapter):
             await self._reject_slash(interaction, shown, str(e))
             return
 
+        if command.name in ACCOUNT_COMMANDS:
+            await self._run_account_command(interaction, command.name, args, shown)
+            return
+
         try:
             await interaction.response.send_message(
                 f"⚙️ Running `{shown}` — result will appear in this thread."
@@ -3790,14 +3959,65 @@ class DiscordAdapter(PlatformAdapter):
             return
 
         try:
-            await self._dispatch_slash_command(interaction, command.name, args)
+            await self._dispatch_slash_command(
+                interaction, command.name, args, reply_ref=None
+            )
         except Exception as e:
             logger.exception("Failed to dispatch Discord slash command %s", shown)
             await self._report_slash_failure(interaction, shown, e)
 
-    async def _dispatch_slash_command(
-        self, interaction: discord.Interaction, command_name: str, args: str
+    async def _run_account_command(
+        self,
+        interaction: discord.Interaction,
+        command_name: str,
+        args: str,
+        shown: str,
     ) -> None:
+        """Run an account command so that only its sender sees it, answered
+        by the bridge itself (`answer_command`).
+
+        No "Running" notice: it would show the channel a link code. The ack is
+        private instead, and the interaction is held under its id for as long
+        as the dispatch runs, which is when the bridge answers. Never longer:
+        Discord takes an answer to an interaction for fifteen minutes, so one
+        still held after its dispatch is one nothing can use.
+        """
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.HTTPException:
+            logger.exception(
+                "Failed to acknowledge Discord slash command /%s", command_name
+            )
+            return
+
+        reply_ref = str(interaction.id)
+        self._held_commands[reply_ref] = interaction
+        try:
+            await self._dispatch_slash_command(
+                interaction, command_name, args, reply_ref=reply_ref
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to dispatch Discord slash command /%s", command_name
+            )
+            await self._report_slash_failure(interaction, shown, e)
+        finally:
+            self._held_commands.pop(reply_ref, None)
+
+    async def _dispatch_slash_command(
+        self,
+        interaction: discord.Interaction,
+        command_name: str,
+        args: str,
+        *,
+        reply_ref: str | None,
+    ) -> None:
+        """Hand a slash command to the bridge as the command a typed one is.
+
+        `reply_ref` is set for a command acknowledged privately, which has no
+        message of its own for its result to thread under; every other is
+        threaded under the "Running" notice it was acknowledged with.
+        """
         if self._on_command is None:
             raise RuntimeError("Discord adapter is not started")
         channel = interaction.channel
@@ -3817,7 +4037,10 @@ class DiscordAdapter(PlatformAdapter):
             root_id = None
             channel_name = getattr(channel, "name", None)
 
-        original = await interaction.original_response()
+        message_ref: str | None = None
+        if reply_ref is None:
+            original = await interaction.original_response()
+            message_ref = f"{original.channel.id}:{original.id}"
         user = interaction.user
         username = str(user.name)
         self._user_names[user.id] = username
@@ -3831,9 +4054,10 @@ class DiscordAdapter(PlatformAdapter):
                 sender_name=username,
                 command=command_name,
                 args=args,
-                message_ref=f"{original.channel.id}:{original.id}",
+                message_ref=message_ref,
                 root_id=root_id,
                 channel_name=channel_name,
+                reply_ref=reply_ref,
             )
         )
 

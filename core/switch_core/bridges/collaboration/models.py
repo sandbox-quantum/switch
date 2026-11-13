@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict
@@ -214,6 +215,35 @@ class InboundCommand(BaseModel):
     root_id: str | None = None
     agent_name: str | None = None
     channel_name: str | None = None
+    # The adapter's own handle for answering this one command where only its
+    # sender sees the answer, wherever it was run (Slack's `response_url`, a
+    # pending Discord interaction). None when the platform gives the command
+    # no private reply; `PlatformAdapter.answer_command` is what reads it.
+    reply_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class DirectPrompt:
+    """A direct message to one person with a row of buttons (CHOO-4121).
+
+    `text` is Switch Markdown, rendered by the adapter like any other body.
+    Every button carries `token`, and a press names which button by its
+    position in `labels`, from one: the same `(token, position)` pair the
+    platforms' card buttons carry, so a press comes back through the path a
+    card's does, as `position_action(position)` with the token as its value.
+    """
+
+    text: str
+    token: str
+    labels: tuple[str, ...]
+
+
+class DirectMessageUnavailable(Exception):
+    """The platform cannot message this person directly.
+
+    The message says why in words a Switch user can act on, because it is shown
+    to them in Switch Console beside the code that works instead.
+    """
 
 
 class InboundInteraction(BaseModel):

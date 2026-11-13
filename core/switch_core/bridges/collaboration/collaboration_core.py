@@ -17,10 +17,11 @@ from typing import TYPE_CHECKING, TypeVar
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.account_links import is_prompt_token
 from switch_core.agent_display_name import ZERO_WIDTH_SPACE, defuse_label_markup
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
+from switch_core.bridges.agent.commands import stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
@@ -31,6 +32,7 @@ from switch_core.bridges.collaboration.adapter import (
     SupportsSharedConnection,
     agent_identity,
 )
+from switch_core.bridges.collaboration.link_prompts import answer_prompt
 from switch_core.bridges.collaboration.models import (
     ChannelInUse,
     ChannelType,
@@ -44,6 +46,14 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
+from switch_core.chat_account_links import (
+    ACCOUNT_COMMANDS,
+    CODE_REFUSED,
+    LINK_USAGE,
+    NOT_LINKED,
+    confirm_with_code,
+    unlink_account,
+)
 from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
@@ -322,6 +332,7 @@ class CollaborationCore:
         self._adapter = adapter
         self._room_store = room_store
         self._external_user_store = external_user_store
+        self._user_store = UserStore()
         self._bridge_message_map_store = bridge_message_map_store
         self._agent_store = agent_store
         self._client_store = client_store
@@ -574,10 +585,11 @@ class CollaborationCore:
         # re-run on attach.
         if isinstance(self._adapter, SupportsSharedConnection):
             self._adapter.set_on_attached(self._provision_identities_on_attach)
-        if self._approval_answers is not None:
-            self._adapter.set_interaction_handler(
-                self._traced("interaction", self._handle_inbound_interaction)
-            )
+        # Always, not only where approval cards are drawn: a link prompt's
+        # buttons (CHOO-4121) come back this way on every platform with any.
+        self._adapter.set_interaction_handler(
+            self._traced("interaction", self._handle_inbound_interaction)
+        )
         if self._activity_publisher is not None:
             self._adapter.set_activity_resolver(
                 self._activity_publisher.activity_shown_at
@@ -1580,13 +1592,78 @@ class CollaborationCore:
                 exc_info=True,
             )
 
-    async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
-        room_ids = self._channel_to_room.get(cmd.channel_id)
-        if room_ids is None and cmd.command == "link-account":
-            # Linking an account is about the person, not the channel: answer
-            # it here so a channel that isn't a Switch room doesn't become one.
-            await self._link_account_outside_room(cmd)
+    async def _handle_account_command(self, cmd: InboundCommand) -> None:
+        """A chat account confirming, listing or dropping its own links,
+        answered here rather than in a room (CHOO-4121).
+
+        None of it is about a room, so no room is made or needed for the
+        conversation it was typed in. The account is the one the platform says
+        sent the command, and only it is touched.
+
+        A slash command, a button or a direct conversation reaches this server
+        alone. A command typed in a channel may reach the apps of other Switch
+        servers in the same workspace as well, so there only a server with
+        something to say about the account answers.
+        """
+        only_here = cmd.reply_ref is not None or cmd.channel_type in (
+            "direct",
+            "lobby",
+        )
+        reply: str | None
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            account = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, cmd.sender_id
+            )
+            if cmd.command == "link-account":
+                code = cmd.args.strip()
+                if not code:
+                    reply = LINK_USAGE
+                elif account is None:
+                    # A link is only ever waiting for an account Switch has a
+                    # record of, so a code from one it has none of matches
+                    # nothing.
+                    reply = CODE_REFUSED if only_here else None
+                else:
+                    reply = await confirm_with_code(
+                        session,
+                        external_user_store=self._external_user_store,
+                        user_store=self._user_store,
+                        account=account,
+                        code=code,
+                        only_here=only_here,
+                    )
+            elif account is None:
+                reply = NOT_LINKED if only_here else None
+            else:
+                reply = await unlink_account(
+                    session,
+                    external_user_store=self._external_user_store,
+                    user_store=self._user_store,
+                    account=account,
+                    wanted=cmd.args,
+                    only_here=only_here,
+                )
+        if reply is None:
+            logger.info(
+                "Left %s from %s in channel %s unanswered: nothing on this server "
+                "is about that account, and another Switch server in the "
+                "workspace may have it",
+                cmd.command,
+                cmd.sender_name,
+                cmd.channel_id,
+            )
             return
+        # After the session has closed: a rejected code may have locked the
+        # request it was checked against.
+        await self._adapter.answer_command(cmd, reply)
+
+    async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
+        if cmd.command in ACCOUNT_COMMANDS:
+            await self._handle_account_command(cmd)
+            return
+        room_ids = self._channel_to_room.get(cmd.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(cmd.channel_id, asyncio.Lock())
             async with lock:
@@ -1680,21 +1757,6 @@ class CollaborationCore:
                 )
             finally:
                 self._pending_message_maps.pop(event_id, None)
-
-    async def _link_account_outside_room(self, cmd: InboundCommand) -> None:
-        account = await self.ensure_external_user(
-            external_user_id=cmd.sender_id, external_username=cmd.sender_name
-        )
-        reply = await link_account_reply(
-            self._session_factory,
-            self._external_user_store,
-            UserStore(),
-            account,
-            cmd.args,
-        )
-        await self._adapter.admin_message(
-            cmd.channel_id, reply, cmd.root_id or cmd.message_ref
-        )
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -2120,6 +2182,16 @@ class CollaborationCore:
         """Someone operated a control on a message this bridge posted."""
         if interaction.action_id == INTERRUPT_ACTION:
             await self._handle_stop_press(interaction)
+            return
+        if is_prompt_token(interaction.value):
+            await answer_prompt(
+                interaction,
+                adapter=self._adapter,
+                session_factory=self._session_factory,
+                tenant_id=self._bridge_tenant_id,
+                external_user_store=self._external_user_store,
+                user_store=self._user_store,
+            )
             return
         if interaction.action_id.startswith(UI_ACTION_PREFIX):
             await self._handle_card_press(interaction)

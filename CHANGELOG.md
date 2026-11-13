@@ -689,6 +689,25 @@ version of their own to them without also giving them a release of their own.
   flag to its route for each kind of caller. A flag says whether the caller
   may, not whether there is anything left to do: an ended install or a revoked
   machine says that by its own status.
+- **Link a chat account by tapping a number.** When someone links a chat
+  account in Switch Console, Switch's bot sends that account a direct message
+  with three numbers and a **Not me** button. Tapping the number Switch shows
+  confirms the link, the same proof as posting the code. A wrong number or
+  **Not me** cancels the request, and **Not me** on a request to confirm a link
+  made before links needed confirming removes that link too. Slack, Mattermost, Discord and Telegram send
+  the message. On Telegram, only a bot an organisation runs itself sends it,
+  and only to someone who has started a chat with that bot. On Mattermost with
+  several replicas, only the replica holding the bridge can send it. Teams,
+  and any message that can't be sent, fall back to the code, which still works
+  everywhere. An account gets at most three such messages an hour.
+  The claim and new-code routes send the message when asked with
+  `wants_prompt`, and say on `LinkCode.prompt` whether it went out and, if not,
+  why. When it went out, `LinkCode.prompt.link` opens it: Slack's
+  `app_redirect` to the app's conversation, the message itself on Discord, the
+  bot's chat on Telegram, and the post's permalink on Mattermost when the
+  bridge has a `public_url`. A new code retires the previous message's buttons. Slack needs the
+  app's Messages tab, which the manifest now turns on, read only: an existing
+  app keeps using the code until its manifest is re-applied.
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator
@@ -972,6 +991,24 @@ version of their own to them without also giving them a release of their own.
   template whose name the admin already uses, in any workspace, stay as they
   were, and a member who owns agents still can't be removed
   until those are transferred or deleted.
+- **`link-account` and `unlink-account` work from anywhere, without a room.**
+  The bridge that hears them answers them itself. They used to create a room
+  for whatever conversation they were typed in, which on Slack meant a stray
+  room, holding every agent when typed in a direct message, and an answer that
+  couldn't be posted. On Slack the answer now goes only to the person who ran
+  the command, in any conversation, and the slash command no longer posts a
+  "Running" message showing the code to the channel. Console's Slack
+  instructions now lead with `/link-account CODE`. When the apps of several
+  Switch servers share a channel, only the server the code was issued on
+  answers a code typed there: one with no link waiting for the account, or no
+  link to drop, says nothing instead of contradicting it. A slash command or a
+  direct message to the app is still always answered.
+- **The owner-only refusal speaks to both readers.** Someone whose chat account
+  isn't linked, addressing an agent that takes instructions only from its
+  owner, is told that the owner can let them in, as well as how to link the
+  account if they are the owner. When the owner already has a linked account
+  on that platform, the sender is almost certainly someone else, and the reply
+  leaves out linking entirely.
 - **One role runs a workspace: owner merges into admin.** Every workspace
   `owner` becomes an `admin`, and every admin now manages every member, other
   admins included, as well as everything an owner could. A workspace always
@@ -1365,6 +1402,10 @@ version of their own to them without also giving them a release of their own.
   to be off when a page answered "not found"; they are now read from the
   server's flags, and if those cannot be read the dashboard says so rather
   than hiding pages.
+- **`@Switch link-account CODE` on Teams** got the "you tagged me" reply
+  instead of linking the account, though it's what the link instructions say
+  to send. A command name straight after an @mention of the Switch app now
+  runs the command, without the `!`, as it already did from the `/` picker.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the
@@ -3336,6 +3377,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Confirm a linked chat account with a tap.** When the server can message
+  the account, the link screen shows a number to tap in that message, with an
+  **Open in …** button that opens the message in the chat app, the code below
+  it as the fallback, and "Send again" sends a fresh message and code. When it
+  can't, the screen says why and shows the code as before. A server from
+  before this shows only the code.
 - **Every usage event carries a session and an id of its own.**
   `flint.session_id` is when the current run of things someone did in the app
   began, in milliseconds; it ends after 30 minutes with nothing done, and is
