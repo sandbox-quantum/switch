@@ -21,7 +21,7 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { ProviderConversationUnavailableError, SteerNotSentError } from '../adapter';
+import { ProviderConversationUnavailableError, SteerNotSentError, sessionInput } from '../adapter';
 import type {
   ConversationHistoryTurn,
   ProviderAdapter,
@@ -178,6 +178,10 @@ export class HostedSession {
   ) {
     // Every host from this one on runs `message.retry`; one built before says nothing, meaning no.
     config.session.capabilities.retry = true;
+    // What a message sent mid-turn does follows the provider as it is now, not
+    // the config a session saved when it was first started: a session saved
+    // before its provider could steer would otherwise queue every one.
+    config.session.capabilities.input = sessionInput(adapter.capabilities);
     const snapshot: Snapshot = {
       contractVersion: 1,
       throughSequence: 0,

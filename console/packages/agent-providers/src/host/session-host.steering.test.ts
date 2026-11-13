@@ -200,6 +200,33 @@ describe('mid-turn steering', () => {
     expect(host.snapshot().turns).toHaveLength(1);
   });
 
+  it('advertises steering from the provider, not from a config saved before it could', async () => {
+    // A session first started before its provider could steer saved
+    // `input: 'queue'` in its config, which its host reuses on every restart.
+    const saved = setup({ steering: true }).config;
+    const { host } = await start(
+      { steering: true },
+      {
+        session: {
+          ...saved.session,
+          capabilities: { ...saved.session.capabilities, input: 'queue' },
+        },
+      }
+    );
+    expect(host.snapshot().session.capabilities.input).toBe('steer');
+
+    const cannot = await start(
+      { steering: false },
+      {
+        session: {
+          ...saved.session,
+          capabilities: { ...saved.session.capabilities, input: 'steer' },
+        },
+      }
+    );
+    expect(cannot.host.snapshot().session.capabilities.input).toBe('queue');
+  });
+
   it('runs a steered message as the next turn when no turn is running', async () => {
     const { host, sent } = await start({ steering: true });
 
