@@ -138,6 +138,147 @@ function message(commandId: string): Command {
     },
   };
 }
+
+function cancel(turnId: string, commandId = `cancel-${turnId}`): Command {
+  return { ...message(commandId), body: { type: 'turn.cancel', turnId } };
+}
+
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
+  'cancels only the selected queued message on %s without calling the provider',
+  async (provider) => {
+    const { host, adapter, emit } = await start(provider);
+    await host.command(message('first'));
+    await host.command(message('withdraw'));
+    await host.command(message('keep'));
+    const command = cancel('withdraw');
+    expect((await host.command(command)).status).toBe('applied');
+    expect((await host.command(command)).status).toBe('applied');
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'withdraw')?.status).toBe(
+      'cancelled'
+    );
+    expect(adapter.interruptTurn).not.toHaveBeenCalled();
+    emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(adapter.sendTurn).mock.calls.map(([turn]) => turn.turnId)).toEqual([
+      'first',
+      'keep',
+    ]);
+  }
+);
+
+it('refuses cancellation by another sender or from another room', async () => {
+  const { host, adapter } = await start('claude');
+  await host.command(message('first'));
+  await host.command(message('withdraw'));
+  const stranger = cancel('withdraw', 'stranger');
+  stranger.origin.actorId = 'someone-else';
+  const elsewhere = cancel('withdraw', 'elsewhere');
+  elsewhere.origin.roomId = 'another-room';
+  for (const command of [stranger, elsewhere]) {
+    const status = await host.command(command);
+    expect(status.status).toBe('rejected');
+    expect(status.message).toContain('FORBIDDEN');
+  }
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'withdraw')?.status).toBe('queued');
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(1);
+});
+
+it('refuses active and unknown turns, and never substitutes the current turn', async () => {
+  const { host, adapter } = await start('claude');
+  await host.command(message('active'));
+  const active = await host.command(cancel('active'));
+  expect(active.status).toBe('rejected');
+  expect(active.message).toContain('!interrupt');
+  const unknown = await host.command(cancel('missing'));
+  expect(unknown.status).toBe('rejected');
+  expect(unknown.message).toContain('TURN_NOT_QUEUED');
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+});
+
+it('preserves cancellation after a restart, including its idempotent receipt', async () => {
+  const { root, host } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('withdraw'));
+  const command = cancel('withdraw');
+  await host.command(command);
+  await host.shutdown();
+  const recovered = setup('claude');
+  const next = await startHost(root, recovered.config, recovered.adapter);
+  hosts.push(next);
+  expect(next.snapshot().turns.find((turn) => turn.turnId === 'withdraw')?.status).toBe(
+    'cancelled'
+  );
+  expect((await next.command(command)).status).toBe('applied');
+  expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it('cannot cancel a turn already claimed for attachment staging', async () => {
+  const { config: base, adapter, emit } = setup('claude');
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-cancel-race-'));
+  roots.push(root);
+  let release: () => void = () => {};
+  const staged = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const stageAttachments = vi.fn(async () => {
+    await staged;
+    return [];
+  });
+  const config = { ...base, stageAttachments };
+  const host = await startHost(root, config, adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.command(message('first'));
+  const queued = message('staging');
+  if (queued.body.type !== 'message.send') throw new Error('Expected message');
+  queued.body.attachments = [
+    { attachmentId: 'file', name: 'a.txt', mimeType: 'text/plain', bytes: 1 },
+  ];
+  await host.command(queued);
+  emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+  await vi.waitFor(() => expect(config.stageAttachments).toHaveBeenCalled());
+  try {
+    const status = await host.command(cancel('staging'));
+    expect(status.status).toBe('rejected');
+    expect(status.message).toContain('TURN_ALREADY_STARTED');
+  } finally {
+    release();
+  }
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+});
+
+it('recovers a durable cancellation even if its status publication was lost', async () => {
+  const { root, host } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('withdraw'));
+  await host.command(cancel('withdraw'));
+  await host.shutdown();
+  const path = join(root, 'events.jsonl');
+  const records = (await readFile(path, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const cancelled = records.findIndex(
+    (event) => event.body.type === 'turn.upsert' && event.body.status === 'cancelled'
+  );
+  expect(cancelled).toBeGreaterThan(0);
+  // Simulate a crash after the inbox cancellation was fsynced, before the
+  // corresponding event (or anything after it) reached the event journal.
+  await writeFile(
+    path,
+    records
+      .slice(0, cancelled)
+      .map((event) => JSON.stringify(event))
+      .join('\n') + '\n'
+  );
+  const recovered = setup('claude');
+  const next = await startHost(root, recovered.config, recovered.adapter);
+  hosts.push(next);
+  expect(next.snapshot().turns.find((turn) => turn.turnId === 'withdraw')?.status).toBe(
+    'cancelled'
+  );
+  expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+});
 async function start(provider: Session['provider']) {
   const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
   roots.push(root);

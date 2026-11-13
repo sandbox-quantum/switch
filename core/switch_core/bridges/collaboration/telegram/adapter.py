@@ -1832,6 +1832,7 @@ class TelegramAdapter(PlatformAdapter):
                 mention=mention,
                 error_summary=content.error_summary,
                 tool_detail=False,
+                cancel_command=content.cancel_command,
             )
             fold = self._activity_fold(content, limit - len(tail) - len(body))
             return Drawn(text=f"{prefix}{body}{tail}{fold}", answerable=False)

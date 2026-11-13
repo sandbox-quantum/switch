@@ -355,6 +355,29 @@ class AgentSessionActivityStore:
         )
         return list(result.scalars())
 
+    async def queued_turn_ids(
+        self, session: AsyncSession, agent_id: str, room_id: str, prefix: str
+    ) -> list[str]:
+        """At most two distinct queued matches, enough to reject ambiguity.
+
+        Only turn rows in this agent's room count; another room or agent
+        cannot resolve a cancellation target. Escape SQL wildcard characters.
+        The host still owns the claim/cancel race and sender authorization.
+        """
+        result = await session.execute(
+            select(AgentSessionActivityItem.turn_id)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status == "queued",
+                AgentSessionActivityItem.turn_id.startswith(prefix, autoescape=True),
+            )
+            .distinct()
+            .limit(2)
+        )
+        return list(result.scalars())
+
     async def turn_for_message(
         self, session: AsyncSession, agent_id: str, room_id: str, message_id: str
     ) -> AgentSessionActivityItem | None:

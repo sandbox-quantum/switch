@@ -524,8 +524,7 @@ export async function runSharedHost(
           null
         );
     };
-    // Retry new optional fields independently: a server may predate either
-    // usage or child progress. Preserve the tool row and its terminal status.
+    // Retry optional fields and cancellation independently, preserving the journal.
     const sendCompatible = async (item: Report): Promise<void> => {
       let report = item;
       for (;;) {
@@ -545,6 +544,11 @@ export async function runSharedHost(
               `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
             );
             report = { kind: 'activity', row };
+          } else if (report.row.kind === 'turn' && report.row.status === 'cancelled') {
+            console.warn(
+              `Switch does not accept cancelled turns; reporting ${report.row.turn_id} as interrupted.`
+            );
+            report = { kind: 'activity', row: { ...report.row, status: 'interrupted' } };
           } else if (report.row.subagent) {
             const { subagent: _subagent, ...row } = report.row;
             console.warn(
@@ -835,6 +839,30 @@ export async function runSharedHost(
       const status = host!
         .snapshot()
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
+      if (
+        command.body.type === 'turn.cancel' &&
+        command.origin.roomId &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        status
+      ) {
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body:
+              status.status === 'applied'
+                ? `Cancelled queued message ${command.body.turnId}. It was not sent to the agent.`
+                : `Could not cancel the queued message: ${status.message?.replace(/^Error: /, '') ?? 'the session refused it.'}`,
+          })
+          .catch((error: unknown) => {
+            console.warn(
+              `Could not report queued-message cancellation to its room: ${String(error)}`
+            );
+          });
+      }
       if (owed && status?.status === 'applied') await sendFollowup(owed);
       // Switch already told the room the control is under way; a refusal is answered there too.
       if (

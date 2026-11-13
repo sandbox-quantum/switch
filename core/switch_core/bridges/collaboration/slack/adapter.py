@@ -10,6 +10,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from html import escape as escape_html
 from typing import Any, ClassVar, Literal, NoReturn
 from urllib.parse import urlsplit
 
@@ -1310,7 +1311,10 @@ class SlackAdapter(PlatformAdapter):
             channel_id=channel_id,
             ts=ts,
             opened_at=None,
-            blocks=dict(_STRANDED_BLOCKS),
+            blocks={
+                **_STRANDED_BLOCKS,
+                f"switch-cancel:{content.turn.turn_id}": {},
+            },
         )
         self._register_stream(message_ref, stream)
         try:
@@ -1740,6 +1744,37 @@ class SlackAdapter(PlatformAdapter):
             interrupt_turn_id=content.interrupt_turn_id,
         )
         blocks = drawn.blocks
+        # A stream retains omitted blocks, so overwrite the hint when the
+        # message leaves the queue rather than leaving a stale cancel command.
+        cancel_block_id = f"switch-cancel:{content.turn.turn_id}"
+        if content.turn.status == "queued" and content.cancel_command:
+            blocks = [
+                *blocks,
+                {
+                    "type": "context",
+                    "block_id": cancel_block_id,
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"Cancel: `{escape_html(content.cancel_command, quote=False)}`",
+                        }
+                    ],
+                },
+            ]
+        elif cancel_block_id in stream.blocks:
+            blocks = [
+                *blocks,
+                {
+                    "type": "context",
+                    "block_id": cancel_block_id,
+                    "elements": [
+                        {
+                            "type": "plain_text",
+                            "text": "This message is no longer queued.",
+                        }
+                    ],
+                },
+            ]
         spent = drawn.spent_control
         if spent is not None and spent["block_id"] in stream.blocks:
             # A stream keeps a block it is no longer sent — measured — so the
@@ -1875,6 +1910,19 @@ class SlackAdapter(PlatformAdapter):
                     status_only=content.status_only,
                 )
             )
+            if content.turn.status == "queued" and content.cancel_command:
+                hint = f"Cancel: `{escape_html(content.cancel_command, quote=False)}`"
+                message = replace(
+                    message,
+                    text=f"{message.text}\n{hint}",
+                    blocks=[
+                        *(message.blocks or []),
+                        {
+                            "type": "context",
+                            "elements": [{"type": "mrkdwn", "text": hint}],
+                        },
+                    ],
+                )
             message = with_mention(
                 message, notify_external_id=content.notify_external_id
             )

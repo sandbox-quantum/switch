@@ -16,6 +16,7 @@ import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import type * as processFence from './process-fence';
 import { Redactions } from './redaction';
+import { roomCommandId } from './room-prompt';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
 import {
@@ -101,6 +102,10 @@ function fakeParent() {
     connected: true,
     send: (message: unknown) => {
       const sentMessage = message as Sent;
+      if (sentMessage.kind === 'ask' && sentMessage.ask?.type === 'room-reply')
+        queueMicrotask(() =>
+          port.emit('message', { kind: 'answer', id: sentMessage.id, ok: true, value: null })
+        );
       if (sentMessage.kind === 'ask' && sentMessage.ask?.type === 'room-instructions') {
         const { value } = roomInstructions;
         queueMicrotask(() =>
@@ -424,6 +429,88 @@ const roomMessage = (sequence: number, body: string, attachments: unknown[] = []
     },
     missed: { count: 2, reason: null },
   },
+});
+
+it.each([false, true])('cancels queued messages (older Core=%s)', async (olderCore) => {
+  const host = await start({ rooms: true });
+  host.switchCore.state.refusesCancelled = olderCore;
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'first') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'withdraw this') });
+    const turnId = roomCommandId('agent', 'room', 'message-2');
+    await poll(async () => {
+      const events = (await readFile(join(host.root, 'events.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(
+        events.some(
+          (event) =>
+            event.body.type === 'turn.upsert' &&
+            event.body.turnId === turnId &&
+            event.body.status === 'queued'
+        )
+      ).toBe(true);
+    });
+    const command: Command = {
+      ...relayed('current', 'cancel-room-message', { type: 'turn.cancel', turnId }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: 'cancel-thread',
+        messageId: 'cancel-message',
+      },
+    };
+    const response = await host.parent.ask({ type: 'command', command, requesterName: null });
+    expect(response).toMatchObject({ ok: true, value: { status: 'applied' } });
+    const replies = () =>
+      host.parent.sent.filter((sent) => sent.kind === 'ask' && sent.ask?.type === 'room-reply');
+    await until(() => expect(replies()).toHaveLength(1));
+    expect(replies()[0]!.ask).toMatchObject({
+      type: 'room-reply',
+      roomId: 'room',
+      body: `Cancelled queued message ${turnId}. It was not sent to the agent.`,
+    });
+    await until(() =>
+      expect(
+        host.switchCore.calls.some((call) => {
+          const row = call.body as { turn_id?: string; status?: string } | null;
+          return (
+            call.path.endsWith('/activity') &&
+            row?.turn_id === turnId &&
+            row.status === (olderCore ? 'interrupted' : 'cancelled')
+          );
+        })
+      ).toBe(true)
+    );
+    const journal = await readFile(join(host.root, 'events.jsonl'), 'utf8');
+    expect(
+      journal
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+    ).toContainEqual(
+      expect.objectContaining({
+        body: expect.objectContaining({ type: 'turn.upsert', turnId, status: 'cancelled' }),
+      })
+    );
+    await host.parent.ask({ type: 'command', command, requesterName: null });
+    expect(replies()).toHaveLength(1);
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: [],
+    });
+    await host.parent.ask({ type: 'room', handoff: roomMessage(3, 'keep this') });
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(host.turns[1]!.turnId).toBe(roomCommandId('agent', 'room', 'message-3'));
+    expect(host.turns.some((turn) => turn.turnId === turnId)).toBe(false);
+  } finally {
+    await host.stop();
+  }
 });
 
 it.each([false, true])('reports child activity (older Core=%s)', async (olderCore) => {

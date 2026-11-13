@@ -65,6 +65,29 @@ def test_validates_the_agreed_examples() -> None:
         parse_server_event(update)
 
 
+def test_cancel_command_and_terminal_cancelled_state() -> None:
+    command = parse_command(
+        {
+            **EXAMPLES["platformAnswer"],
+            "body": {"type": "turn.cancel", "turnId": "queued-turn"},
+        }
+    )
+    assert command.body.type == "turn.cancel"
+    assert command.body.turn_id == "queued-turn"
+    event = parse_host_event(
+        {
+            **EXAMPLES["hostRequest"],
+            "body": {
+                "type": "turn.upsert",
+                "turnId": "queued-turn",
+                "status": "cancelled",
+                "commandId": "queued-turn",
+            },
+        }
+    )
+    assert event.body.status == "cancelled"
+
+
 def test_rejects_raw_data_reasoning_items_unsafe_counters_and_oversized_events() -> (
     None
 ):

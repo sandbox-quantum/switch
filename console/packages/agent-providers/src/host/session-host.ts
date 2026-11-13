@@ -41,6 +41,7 @@ import { ToolDetailBuffer } from './tool-detail-buffer';
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
   z.object({ type: z.literal('dispatched'), commandId: z.string() }),
+  z.object({ type: z.literal('cancelled'), commandId: z.string() }),
   z.object({
     type: z.literal('finished'),
     commandId: z.string(),
@@ -124,6 +125,7 @@ export class HostedSession {
   private readonly commands = new Map<string, Command>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
+  private readonly cancelled = new Set<string>();
   private readonly roomReplies = new Set<string>();
   private historyImported = false;
   private readonly postedTurns = new Set<string>();
@@ -201,6 +203,10 @@ export class HostedSession {
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
       if (record.type === 'dispatched') this.dispatched.add(record.commandId);
+      if (record.type === 'cancelled') {
+        this.cancelled.add(record.commandId);
+        this.finished.add(record.commandId);
+      }
       if (record.type === 'finished') {
         this.finished.add(record.commandId);
         if (record.usage) this.usage.set(record.commandId, record.usage);
@@ -279,7 +285,10 @@ export class HostedSession {
             });
         for (const turn of snapshot.turns)
           if (turn.status === 'running' || turn.status === 'queued')
-            await host.publish({ ...turn, status: 'interrupted' });
+            await host.publish({
+              ...turn,
+              status: host.cancelled.has(turn.turnId) ? 'cancelled' : 'interrupted',
+            });
         for (const command of host.commands.values()) {
           const status = host
             .snapshot()
@@ -960,6 +969,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -1154,6 +1164,41 @@ export class HostedSession {
         } finally {
           this.resetting = false;
         }
+      } else if (body.type === 'turn.cancel') {
+        // runNext claims its turn synchronously before its first await. Remove
+        // a queued command the same way, after acceptance is durable, so a
+        // provider completion racing the journal write cannot cancel active work.
+        const index = this.queue.findIndex((queued) => queued.commandId === body.turnId);
+        if (index < 0) {
+          if (this.activeTurn === body.turnId || this.dispatched.has(body.turnId))
+            throw new Error(
+              'TURN_ALREADY_STARTED: this message has already started. Use !interrupt to stop active work.'
+            );
+          throw new Error(
+            'TURN_NOT_QUEUED: this message is not queued or has already been cancelled.'
+          );
+        }
+        const queued = this.queue[index]!;
+        if (queued.origin.actorId !== command.origin.actorId)
+          throw new Error('FORBIDDEN: only the sender can cancel this queued message.');
+        if (queued.origin.roomId !== command.origin.roomId)
+          throw new Error('FORBIDDEN: cancel the message in the room where it was sent.');
+        this.queue.splice(index, 1);
+        try {
+          await this.inbox.append({ type: 'cancelled', commandId: body.turnId });
+        } catch (error) {
+          // A failed durable cancellation must not leave a runnable queue.
+          await this.fail(error);
+          throw error;
+        }
+        this.cancelled.add(body.turnId);
+        this.finished.add(body.turnId);
+        await this.publish({
+          type: 'turn.upsert',
+          turnId: body.turnId,
+          commandId: body.turnId,
+          status: 'cancelled',
+        });
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });

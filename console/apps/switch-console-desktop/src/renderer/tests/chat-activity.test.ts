@@ -32,6 +32,13 @@ vi.mock('@renderer/utils/logger', () => ({ log: { warn } }));
 
 let clock = 0;
 
+it('keeps cancelled turns terminal rather than showing their unfinished tools as running', () => {
+  const turns = groupTurns([row('cancelled-turn', 'turn', { status: 'cancelled' })], []);
+  expect(turns[0]?.status).toBe('cancelled');
+  expect(isThinking(turns[0]!)).toBe(false);
+  expect(toolState({ status: 'in-progress' }, 'cancelled')).toBe('failed');
+});
+
 it('keeps child rows readable by the older Console activity schema', () => {
   const oldSchema = chatActivityItemSchema.omit({ subagent: true });
   const child = row('t1', 'child', { kind: 'tool-activity', subagent: true });

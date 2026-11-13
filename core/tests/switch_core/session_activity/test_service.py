@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.db.models import AgentSessionActivityItem, ApprovalRequest, TenantUsage
+from switch_core.db.stores.session_activity_store import AgentSessionActivityStore
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -224,6 +225,67 @@ async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):
         await service.report_item(
             AGENT, SESSION, **_turn("turn-1", 1, "running", [_spend("big", 1)])
         )
+
+
+async def test_a_queued_message_can_be_reported_as_cancelled(service):
+    assert await service.report_item(
+        AGENT, SESSION, **_turn("cancelled-turn", 1, "queued")
+    )
+    assert await service.report_item(
+        AGENT, SESSION, **_turn("cancelled-turn", 2, "cancelled")
+    )
+    assert not await service.report_item(
+        AGENT, SESSION, **_turn("cancelled-turn", 2, "cancelled")
+    )
+
+
+async def test_queued_turn_prefix_lookup_is_scoped_and_detects_ambiguity(
+    service, session_factory
+):
+    async with session_factory() as db, db.begin():
+        room = await make_room(db, member=AGENT)
+        other_room = await make_room(db, member=AGENT)
+        await make_agent(db, "other-agent")
+        await make_room(db, member="other-agent")
+
+    for turn, status, room_id in [
+        ("abcdef12-one", "queued", room),
+        ("abcdef12-running", "running", room),
+        ("abcdef12-ended", "completed", room),
+        ("abcdef12-other-room", "queued", other_room),
+        ("wildcard-one", "queued", room),
+    ]:
+        await service.report_item(
+            AGENT, SESSION, **{**_turn(turn, 1, status), "room_id": room_id}
+        )
+    async with session_factory() as db:
+        store = AgentSessionActivityStore()
+        assert await store.queued_turn_ids(db, AGENT, room, "abcdef12") == [
+            "abcdef12-one"
+        ]
+        assert not await store.queued_turn_ids(db, "other-agent", room, "abcdef12")
+        assert not await store.queued_turn_ids(db, AGENT, room, "missing1")
+        assert not await store.queued_turn_ids(db, AGENT, room, "wildcard_")
+        assert not await store.queued_turn_ids(db, AGENT, room, "wildcard%")
+
+    # A reconnect can report the same stable turn ID in another session.
+    # It remains one target, not two ambiguous messages.
+    await service.report_item(
+        AGENT,
+        "another-session",
+        **{**_turn("abcdef12-one", 1, "queued"), "room_id": room},
+    )
+    async with session_factory() as db:
+        assert await store.queued_turn_ids(db, AGENT, room, "abcdef12") == [
+            "abcdef12-one"
+        ]
+
+    await service.report_item(
+        AGENT, SESSION, **{**_turn("abcdef12-two", 1, "queued"), "room_id": room}
+    )
+    async with session_factory() as db:
+        matches = await store.queued_turn_ids(db, AGENT, room, "abcdef12")
+        assert set(matches) == {"abcdef12-one", "abcdef12-two"}
 
 
 async def test_a_turns_steps_are_read_in_the_order_first_reported(service):

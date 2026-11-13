@@ -24,6 +24,7 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     outcomes,
     unavailable: false,
     refusesUsage: false,
+    refusesCancelled: false,
     refusesSubagent: false,
     startUnknown: false,
     startRefused: false,
@@ -51,6 +52,8 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     }
     if (path.endsWith('/activity')) {
       const body = calls.at(-1)!.body as Record<string, unknown>;
+      if (state.refusesCancelled && body.kind === 'turn' && body.status === 'cancelled')
+        return Response.json({ detail: [{ type: 'literal_error' }] }, { status: 422 });
       if (state.refusesSubagent && 'subagent' in body)
         return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
       if (state.refusesUsage && 'usage' in body)

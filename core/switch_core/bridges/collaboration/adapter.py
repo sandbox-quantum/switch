@@ -183,6 +183,7 @@ class TurnActivity:
     # yet redrawn still names A after B has started, so a press on it is refused
     # for naming an ended turn rather than silently stopping B.
     interrupt_turn_id: str | None = None
+    cancel_command: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1523,6 +1524,7 @@ class PlatformAdapter(ABC):
                 content.turn,
                 escape=escape,
                 limit=self.rich_fallback_limit(),
+                cancel_command=content.cancel_command,
             )
         return request_summary(
             content.request,

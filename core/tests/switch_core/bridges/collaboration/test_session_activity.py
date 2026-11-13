@@ -634,6 +634,46 @@ def _slack_adapter() -> SlackAdapter:
     )
 
 
+def test_queued_slack_activity_carries_the_exact_cancel_command() -> None:
+    command = "!cancel @helper queued-turn"
+    queued = TurnActivity([], _turn("queued"), cancel_command=command)
+    drawn = _slack_adapter()._render_rich(queued)
+    assert command in drawn.text
+    assert command in json.dumps(drawn.blocks)
+    cancelled = _slack_adapter()._render_rich(TurnActivity([], _turn("cancelled")))
+    assert "cancelled" in cancelled.text
+    assert "!cancel" not in cancelled.text
+
+
+def test_queued_plain_activity_preserves_a_copyable_command() -> None:
+    from switch_core.bridges.collaboration.session.renderers import Markup
+    from switch_core.bridges.collaboration.session.renderers.neutral import turn_status
+
+    command = "!cancel @helper_name queued-turn"
+    drawn = turn_status(
+        [],
+        _turn("queued"),
+        escape=lambda s: s.replace("_", "\\_"),
+        limit=2000,
+        markup=Markup(),
+        tool_detail=True,
+        cancel_command=command,
+    )
+    assert f"`{command}`" in drawn
+    assert "helper\\_name" not in drawn
+    cancelled = turn_status(
+        [],
+        _turn("cancelled"),
+        escape=lambda s: s,
+        limit=2000,
+        markup=Markup(),
+        tool_detail=True,
+        cancel_command=command,
+    )
+    assert "cancelled" in cancelled
+    assert "!cancel" not in cancelled
+
+
 async def test_a_request_card_with_no_turn_draws_exactly_as_it_always_has() -> None:
     request = await _request()
     card = RequestCard(request, REFERENCE)

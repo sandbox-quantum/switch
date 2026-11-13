@@ -2069,6 +2069,7 @@ class MattermostAdapter(PlatformAdapter):
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
+                    cancel_command=content.cancel_command,
                 )
                 + tail,
                 answerable=False,

@@ -31,6 +31,7 @@ the turn, and falls back visibly to an ordinary post everywhere else.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -78,6 +79,61 @@ def _turn(status: str = "running") -> TurnUpsert:
     return TurnUpsert.model_validate(
         {"type": "turn.upsert", "turnId": TURN, "status": status, "commandId": None}
     )
+
+
+async def test_queued_stream_replaces_its_cancel_hint_when_the_turn_ends() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    command = f"!cancel @helper {TURN}"
+    ref = await adapter.post_rich(
+        CHANNEL,
+        "helper",
+        TurnActivity([], _turn("queued"), cancel_command=command),
+        THREAD,
+    )
+    assert command in json.dumps(_drawn(client))
+    await adapter.update_rich(
+        CHANNEL, "helper", ref, TurnActivity([], _turn("cancelled")), THREAD
+    )
+    drawn = json.dumps(_drawn(client))
+    assert command not in drawn
+    assert "no longer queued" in drawn
+    assert "cancelled" in drawn
+
+
+@pytest.mark.parametrize(
+    "status", ["queued", "running", "completed", "cancelled", "error"]
+)
+async def test_cancel_hint_is_replaced_after_the_bridge_moves_to_another_pod(status):
+    client = FakeWebClient()
+    original_owner = _adapter(client)
+    command = f"!cancel @helper {TURN}"
+    ref = await original_owner.post_rich(
+        CHANNEL,
+        "helper",
+        TurnActivity([], _turn("queued"), cancel_command=command),
+        THREAD,
+    )
+    assert command in json.dumps(_drawn(client))
+
+    new_owner = _adapter(client)
+    assert ref not in new_owner._streams
+    client.update_errors = ["streaming_state_conflict"]
+    await new_owner.update_rich(
+        CHANNEL,
+        "helper",
+        ref,
+        TurnActivity(
+            [], _turn(status), cancel_command=command if status == "queued" else None
+        ),
+        THREAD,
+    )
+    hint = _drawn(client)[f"switch-cancel:{TURN}"]
+    if status == "queued":
+        assert command in json.dumps(hint)
+    else:
+        assert command not in json.dumps(hint)
+        assert "no longer queued" in json.dumps(hint)
 
 
 def _tool(
@@ -1265,6 +1321,7 @@ async def test_a_stranded_stream_resends_every_section_it_cannot_account_for() -
     assert _appended_ids(client)[-1] == [
         "switch-steps-top",
         "switch-interrupt",
+        f"switch-cancel:{TURN}",
         "switch-steps-middle",
     ]
 
@@ -1321,7 +1378,12 @@ async def test_a_stream_opened_before_the_handoff_is_repaired_and_not_doubled(
         THREAD,
     )
 
-    assert _appended_ids(client)[-1] == held
+    assert [
+        block_id
+        for block_id in _appended_ids(client)[-1]
+        if block_id != f"switch-cancel:{TURN}"
+    ] == held
+    assert "no longer queued" in json.dumps(_drawn(client)[f"switch-cancel:{TURN}"])
     live = [
         chunk["blocks"][0]
         for chunk in client.appended[-1]["chunks"]

@@ -856,21 +856,26 @@ async def test_a_turn_that_failed_says_so(service, publisher, platform, bridged)
 async def test_a_queued_turns_stop_control_follows_the_running_turn(
     service, publisher, platform, bridged
 ):
+    queued_id = "12345678-queued-turn"
     await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
-    await _turn(service, bridged.room_id, "queued", 1, turn_id="turn-2")
+    await _turn(service, bridged.room_id, "queued", 1, turn_id=queued_id)
     await platform.wait_until(lambda: len(_turns(platform)) >= 2)
 
     def queued_names():
         return [
             d.content.interrupt_turn_id
             for d in _turns(platform)
-            if d.content.turn.turn_id == "turn-2"
+            if d.content.turn.turn_id == queued_id
         ]
 
     assert queued_names()[-1] == "turn-1"
+    queued = [
+        d.content for d in _turns(platform) if d.content.turn.turn_id == queued_id
+    ][-1]
+    assert queued.cancel_command == f"!cancel @{AGENT} 12345678"
     await _turn(service, bridged.room_id, "completed", 2, turn_id="turn-1")
-    await _turn(service, bridged.room_id, "running", 2, turn_id="turn-2")
-    await platform.wait_until(lambda: queued_names()[-1] == "turn-2")
+    await _turn(service, bridged.room_id, "running", 2, turn_id=queued_id)
+    await platform.wait_until(lambda: queued_names()[-1] == queued_id)
 
 
 async def test_a_press_on_a_turns_message_finds_its_turn(
