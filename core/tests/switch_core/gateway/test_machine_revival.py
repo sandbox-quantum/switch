@@ -5,7 +5,7 @@ they already have. Against Postgres, with real agent management."""
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, select
@@ -27,19 +27,23 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_claims,
     workspace_on,
 )
+from switch_core.gateway import cloud_controllers
 from switch_core.gateway.cloud_controllers import (
     revoke_machine_controller,
     set_cloud_enrollment,
 )
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.test_cloud_controller_machines import (
+    _connected,
     _enroll,
     _hosted_app,
     _prepare,
+    _update,
     _workspace,
 )
 from tests.switch_core.hosted_machine_helpers import add_tenant
 from tests.switch_core.management.harness import Harness, add_member, build_harness
+from tests.telemetry_records import RecordingSink, recording_telemetry
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +56,14 @@ def _no_enrollment_left_installed() -> Iterator[None]:
 @pytest.fixture
 def harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
     return build_harness(session_factory)
+
+
+@pytest.fixture
+def reported(monkeypatch: pytest.MonkeyPatch) -> RecordingSink:
+    """What a controller's status reports send."""
+    service, sink = recording_telemetry()
+    monkeypatch.setattr(cloud_controllers, "current_telemetry", lambda: service)
+    return sink
 
 
 async def _claim(
@@ -193,6 +205,43 @@ async def test_a_revived_machine_is_claimed_as_new(harness: Harness) -> None:
         await session.commit()
     assert claimed.machine.id == machine_id
     assert claimed.change == "new"
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_a_revived_box_is_ready_as_new_and_timed_from_its_revival(
+    harness: Harness, reported: RecordingSink
+) -> None:
+    """A revived row is a new box: its first ready counts as `new`, with its
+    provisioning time from the revival, not the row's whole life."""
+    factory = harness.session_factory
+    owner = await add_member(factory, "ada")
+    machine_id, _controller_id = await _enrolled_machine(harness, owner)
+    long_ago = datetime.now(UTC) - timedelta(days=30)
+    await _update(factory, machine_id, created_at=long_ago, first_ready_at=long_ago)
+    await _cleaned_up(factory, machine_id)
+
+    revived = await _claim(factory, owner)
+    assert revived.id == machine_id
+    assert revived.first_ready_at is None
+
+    async with _hosted_app(factory, owner) as hosted:
+        [entry] = (await _prepare(hosted, machine_id))["controllers"]
+    await _update(
+        factory,
+        machine_id,
+        state="provisioning",
+        running_observed_at=datetime.now(UTC),
+    )
+    async with harness.client() as client:
+        enrolled = await _enroll(client, entry["enrollment_code"])
+        await _connected(client, harness, owner, enrolled)
+
+    [ready] = reported.events("cloud_machine_ready")
+    assert ready["new_machine"] is True
+    assert 0 <= ready["provisioning_seconds"] < 3600
+    async with factory() as session:
+        row = await session.get(CloudMachine, machine_id)
+        assert row is not None and row.first_ready_at is not None
 
 
 async def test_without_v0_a_new_row_is_made_as_before(harness: Harness) -> None:

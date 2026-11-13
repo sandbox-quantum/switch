@@ -156,7 +156,7 @@ def _expires_at(request: ServerAuditEvent) -> datetime:
     return request.occurred_at + TTL
 
 
-async def _revived_at(session: AsyncSession, machine_id: str) -> datetime | None:
+async def revived_at(session: AsyncSession, machine_id: str) -> datetime | None:
     """When the machine's row was last revived after a clean-up, if ever."""
     found: datetime | None = await session.scalar(
         select(func.max(ServerAuditEvent.occurred_at)).where(
@@ -294,7 +294,7 @@ async def request_box_if_needed(
             ):
                 await session.commit()
                 return None
-            revived = await _revived_at(session, machine.id)
+            revived = await revived_at(session, machine.id)
             if revived is None and ever_hosted(workspaces):
                 # Run before, by hand or by an earlier provision, and never cleaned
                 # up and revived: it has its box.

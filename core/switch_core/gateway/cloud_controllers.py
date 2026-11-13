@@ -50,6 +50,7 @@ from switch_core.observability.hosted import (
     reports_memory,
 )
 from switch_core.telemetry import emit_after_commit
+from switch_core.visibility.box_provision import revived_at
 
 # How recent the machine's last status report must be for its silence to count
 # as idle rather than as a machine that stopped reporting.
@@ -324,6 +325,22 @@ def _restarted(before: Any, started: str | None) -> bool:
     return previous is not None and started is not None and started != previous
 
 
+async def _provisioning_started(
+    session: AsyncSession, machine: CloudMachine
+) -> datetime:
+    """When the machine now becoming ready for the first time was asked for:
+    its row's creation, or for a box revived after a clean-up (same row, new
+    box), its latest revival."""
+    if machine.backend != "box":
+        return machine.created_at
+    revived = await revived_at(session, machine.id)
+    return (
+        revived
+        if revived is not None and revived > machine.created_at
+        else machine.created_at
+    )
+
+
 async def record_controller_status(
     session: AsyncSession,
     controller_id: str,
@@ -394,31 +411,27 @@ async def record_controller_status(
         # (a retry after a failed start included). Only the first is timed,
         # since nothing records when a later start began.
         new_machine = machine.first_ready_at is None
+        provisioning_seconds = None
         if new_machine:
             machine.first_ready_at = now
+            # Clamped: the start is the database's clock, so a fast first
+            # report can read a hair negative.
+            asked_for = await _provisioning_started(session, machine)
+            provisioning_seconds = max((now - asked_for).total_seconds(), 0.0)
         emit_after_commit(
             session,
             current_telemetry(),
             "cloud_machine_ready",
             {
                 "new_machine": new_machine,
-                "provisioning_seconds": (
-                    max((now - machine.created_at).total_seconds(), 0.0)
-                    if new_machine
-                    else None
-                ),
+                "provisioning_seconds": provisioning_seconds,
             },
         )
         record_machine_event(
             session, "ready", "new" if new_machine else "restart", machine.backend
         )
-        if new_machine:
-            # Clamped like the telemetry above: `created_at` is the
-            # database's clock, so a fast first report can read a hair negative.
-            record_provisioned(
-                max((now - machine.created_at).total_seconds(), 0.0),
-                machine.backend,
-            )
+        if provisioning_seconds is not None:
+            record_provisioned(provisioning_seconds, machine.backend)
 
 
 async def wake_controller_machine(

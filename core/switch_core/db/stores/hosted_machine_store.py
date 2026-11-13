@@ -447,6 +447,7 @@ class CloudMachineStore:
         machine.data_volume_id = None
         machine.heartbeat = None
         machine.heartbeat_at = None
+        machine.first_ready_at = None
         machine.error = None
         machine.error_code = None
         machine.active_at = now

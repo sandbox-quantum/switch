@@ -1363,6 +1363,28 @@ async def test_an_idle_machine_going_quiet_is_counted_either_way(
     assert stopped == [reason]
 
 
+@pytest.mark.parametrize(
+    ("agents", "reason"), [(1, "idle"), (0, "retained")], ids=["stopped", "released"]
+)
+async def test_an_idle_box_going_quiet_is_counted_as_a_box(
+    controller_app, machine_metrics, hosted_v2_on, agents, reason
+):
+    """A hosted agents v2 box stopped or released when idle counts under
+    `backend:box`, whichever way it goes quiet."""
+    app = controller_app
+    await _idle_ready(app, minutes=30, agents=agents)
+    await update_machine(app.factory, app.machine_id, backend="box")
+    await list_machines(app.client)
+    stopped = [
+        dict(point.attributes)
+        for payload in machine_metrics.collect()
+        if payload.name == "switch.hosted.machine_events"
+        for point in payload.numbers
+        if dict(point.attributes)["event"] == "stopped"
+    ]
+    assert stopped == [{"event": "stopped", "reason": reason, "backend": "box"}]
+
+
 async def test_a_machine_asleep_with_agents_stays_asleep(controller_app):
     app = controller_app
     await enrolled(app, agents=1)

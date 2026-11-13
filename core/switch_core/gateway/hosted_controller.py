@@ -284,7 +284,7 @@ async def _sweep(
         ):
             # Idle with no agents left: released with its disk kept rather
             # than stopped. Still the machine going quiet, so it's counted.
-            record_machine_event(session, "stopped", "retained")
+            record_machine_event(session, "stopped", "retained", machine.backend)
         else:
             store.stop(machine, "idle", now)
             emit_after_commit(
