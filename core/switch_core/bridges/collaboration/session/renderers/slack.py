@@ -56,6 +56,7 @@ from . import (
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
+    STEERED_MARKER,
     RequestReference,
     example_value,
     surface_label,
@@ -1186,7 +1187,7 @@ def _activity_lines(items: list[Item]) -> list[str]:
                 if item.text
                 else "(attachment)"
             )
-            line = f"{title}: {excerpt}"
+            line = f"{STEERED_MARKER}: {excerpt}"
         else:
             line = f"{_ACTIVITY[item.status]} {title}"
             if item.text:
@@ -1689,7 +1690,7 @@ def _plan_task(item: Item) -> dict[str, Any]:
         excerpt = " ".join(item.text.split()) or "(attachment)"
         return {
             "task_id": _task_id(item.item_id),
-            "title": _truncate(f"{item.title}: {excerpt}", _MAX_PLAN_TASK_TITLE),
+            "title": _truncate(f"{STEERED_MARKER}: {excerpt}", _MAX_PLAN_TASK_TITLE),
             "icon": {"type": "icon", "name": _SAID_ICON},
             "status": "complete",
         }

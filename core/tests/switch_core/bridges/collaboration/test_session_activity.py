@@ -988,36 +988,31 @@ async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -
 
 
 async def test_activity_shows_how_messages_were_delivered() -> None:
-    steered = _item(kind="user-message", title="Steered into the running turn")
-    queued = _item(kind="user-message", title="Queued behind the running turn")
+    steered = _item(kind="user-message", delivery="steered", text="Use file A")
+    queued = _item(kind="user-message", delivery="queued", text="Run tests")
     assert "1 message steered into this turn." in turn_state(
         [steered], _turn("running"), tool_detail=True
     )
-    assert "Message queued behind the previous turn." in turn_state(
-        [queued], _turn("completed"), tool_detail=True
+    assert turn_state([queued], _turn("queued"), tool_detail=True) == (
+        "Queued behind the running turn. Starts when it ends."
+    )
+    # Once it starts, the turn is just running.
+    assert "Queued" not in turn_state([queued], _turn("running"), tool_detail=True)
+    # A message that started a turn straight away says nothing of delivery.
+    plain = _item(kind="user-message", text="Original prompt")
+    assert turn_state([plain], _turn("queued"), tool_detail=True) == (
+        "Queued. Waiting for the agent to start…"
     )
     assert "steered into this turn" in render_activity_text([steered], _turn())
 
 
-def test_activity_cards_identify_each_delivered_message() -> None:
+def test_activity_cards_identify_each_steered_message() -> None:
     items = [
         _item(
-            itemId="first",
-            kind="user-message",
-            title="Steered into the running turn",
-            text="Use file A",
+            itemId="first", kind="user-message", delivery="steered", text="Use file A"
         ),
         _item(
-            itemId="second",
-            kind="user-message",
-            title="Steered into the running turn",
-            text="Use file B",
-        ),
-        _item(
-            itemId="third",
-            kind="user-message",
-            title="Queued behind the running turn",
-            text="Run tests",
+            itemId="second", kind="user-message", delivery="steered", text="Use file B"
         ),
         _item(itemId="original", kind="user-message", title="", text="Original prompt"),
     ]
@@ -1026,19 +1021,14 @@ def test_activity_cards_identify_each_delivered_message() -> None:
         render_activity_plan(items, _turn()),
     ):
         cards = json.dumps(drawn.blocks)
-        assert "Steered into the running turn: Use file A" in cards
-        assert "Steered into the running turn: Use file B" in cards
-        assert "Queued behind the running turn: Run tests" in cards
+        assert "Steered into this turn: Use file A" in cards
+        assert "Steered into this turn: Use file B" in cards
         assert "Original prompt" not in cards
     text = render_activity_text(items, _turn())
-    assert "Steered into the running turn: Use file A" in text
-    assert "Queued behind the running turn: Run tests" in text
+    assert "Steered into this turn: Use file A" in text
     assert "Original prompt" not in text
     stream = json.dumps(render_activity_stream(items, _turn()).blocks)
-    assert "Steered into the running turn: Use file A" in stream
-    assert "Queued behind the running turn: Run tests" in stream
+    assert "Steered into this turn: Use file A" in stream
 
-    mention = _item(
-        kind="user-message", title="Steered into the running turn", text="<!here>"
-    )
+    mention = _item(kind="user-message", delivery="steered", text="<!here>")
     assert "&lt;!here&gt;" in render_activity_text([mention], _turn())

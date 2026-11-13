@@ -33,6 +33,9 @@ class TurnView:
     # The turn's own row: where it was asked, and when it started and ended.
     row: AgentSessionActivityItem
     started_at: datetime
+    # The Switch messages people steered into this turn while it ran, in the
+    # order they arrived: each carries the work marker until the turn ends.
+    steered_messages: list[str]
 
     @property
     def ended(self) -> bool:
@@ -73,6 +76,7 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             text=step.text,
             attachments=[],
             origin=None,
+            delivery=step.delivery,  # type: ignore[arg-type]
         )
         for step in steps
     ]
@@ -87,6 +91,13 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
         items=items,
         row=row,
         started_at=started_at,
+        steered_messages=[
+            step.message_id
+            for step in steps
+            if step.kind == "user-message"
+            and step.delivery == "steered"
+            and step.message_id is not None
+        ],
     )
 
 
@@ -118,11 +129,7 @@ def status_state(
         f"{item.item_id}:{item.revision}"
         for item in view.items
         if item.kind == "tool-activity"
-        or (
-            item.kind == "user-message"
-            and item.title
-            in {"Steered into the running turn", "Queued behind the running turn"}
-        )
+        or (item.kind == "user-message" and item.delivery is not None)
     )
     closed = ":closed" if closed_by_platform else ""
     return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"

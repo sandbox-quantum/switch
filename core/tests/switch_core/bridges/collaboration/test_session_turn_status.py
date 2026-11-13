@@ -9,8 +9,14 @@ not report tool activity it must not report it here by the side door.
 
 from __future__ import annotations
 
-from switch_core.bridges.collaboration.session.renderers import MARKDOWN
+import html
+
+import pytest
+
+from switch_core.bridges.collaboration.session.renderers import MARKDOWN, Markup
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_status
+from switch_core.bridges.collaboration.teams.adapter import _TEAMS_MARKUP
+from switch_core.bridges.collaboration.telegram.adapter import TELEGRAM_HTML
 from switch_core.sessions.contract import Item
 
 from .session_fixtures import _item, _turn
@@ -35,30 +41,42 @@ def _status(items: list[Item], turn_state: str, *, tool_detail: bool) -> list[st
     ).splitlines()
 
 
-def test_status_identifies_each_delivered_message() -> None:
+def test_status_identifies_each_steered_message() -> None:
     items = [
-        _item(
-            kind="user-message",
-            title="Steered into the running turn",
-            text="Use the other file",
-        ),
-        _item(
-            kind="user-message",
-            title="Steered into the running turn",
-            text="Stop and check",
-        ),
-        _item(
-            kind="user-message",
-            title="Queued behind the running turn",
-            text="Run tests",
-        ),
+        _item(kind="user-message", delivery="steered", text="Use the other file"),
+        _item(kind="user-message", delivery="steered", text="Stop and check"),
         _item(kind="user-message", title="", text="Original prompt"),
     ]
     text = "\n".join(_status(items, "running", tool_detail=False))
-    assert "Steered into the running turn: Use the other file" in text
-    assert "Steered into the running turn: Stop and check" in text
-    assert "Queued behind the running turn: Run tests" in text
+    assert "Steered into this turn: Use the other file" in text
+    assert "Steered into this turn: Stop and check" in text
+    assert "2 messages steered into this turn." in text
     assert "Original prompt" not in text
+
+
+@pytest.mark.parametrize(
+    ("markup", "escape"),
+    [
+        (MARKDOWN, _identity),  # Mattermost, Discord
+        (_TEAMS_MARKUP, _identity),
+        (TELEGRAM_HTML, html.escape),
+    ],
+    ids=["markdown", "teams", "telegram"],
+)
+def test_every_platform_says_a_message_was_steered(
+    markup: Markup, escape: object
+) -> None:
+    items = [_item(kind="user-message", delivery="steered", text="Use the other file")]
+    text = turn_status(
+        items,
+        _turn("running"),
+        escape=escape,  # type: ignore[arg-type]
+        limit=10_000,
+        markup=markup,
+        tool_detail=True,
+    )
+    assert "1 message steered into this turn." in text
+    assert "Steered into this turn: Use the other file" in text
 
 
 # ── A turn that has ended is not still running ────────────────────────────────

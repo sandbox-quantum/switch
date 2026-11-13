@@ -86,6 +86,8 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
  * records an older host could not read.
  */
 const HISTORY_SETTLED = new Set(['HISTORY_IMPORTED', 'HISTORY_UNAVAILABLE']);
+/** The title of a message sent into a running turn with an outcome nobody knows. */
+const UNKNOWN_DELIVERY = 'Sent to the running turn; the agent may not have received it';
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
@@ -1313,10 +1315,11 @@ export class HostedSession {
         revision: 1,
         kind: 'user-message',
         status: 'completed',
-        title: wasQueued ? 'Queued behind the running turn' : '',
+        title: '',
         text: command.body.text,
         attachments: command.body.attachments,
         origin: command.origin,
+        ...(wasQueued ? { delivery: 'queued' as const } : {}),
       },
     });
     this.queue.push(command);
@@ -1356,7 +1359,7 @@ export class HostedSession {
       });
     } catch (error) {
       if (!(error instanceof SteerNotSentError)) {
-        await this.publishSteered(command, expectedTurnId, 'Delivery outcome unknown');
+        await this.publishSteered(command, expectedTurnId, UNKNOWN_DELIVERY);
         throw error;
       }
       await this.inbox.append({ type: 'dispatched', commandId: command.commandId, notSent: true });
@@ -1370,7 +1373,7 @@ export class HostedSession {
       return false;
     }
     if (result.steeredInto !== expectedTurnId) {
-      await this.publishSteered(command, expectedTurnId, 'Delivery outcome unknown');
+      await this.publishSteered(command, expectedTurnId, UNKNOWN_DELIVERY);
       throw new Error(
         `The provider did not take the message into turn ${expectedTurnId}${result.steeredInto ? ` but into ${result.steeredInto}` : ''}; it is not resent.`
       );
@@ -1382,12 +1385,20 @@ export class HostedSession {
     // The turn now answers this message too: one asked of the agent makes
     // a turn that was only offered to it owe the room a reply.
     if (!this.unaskedTurns.delete(command.commandId)) this.unaskedTurns.delete(expectedTurnId);
-    await this.publishSteered(command, expectedTurnId, 'Steered into the running turn');
+    await this.publishSteered(command, expectedTurnId, null);
     return true;
   }
 
-  /** Shows a message sent into a running turn, inside that turn. */
-  private async publishSteered(command: Command, turnId: string, title: string): Promise<void> {
+  /**
+   * Shows a message sent into a running turn, inside that turn: steered, or,
+   * with `uncertain`, sent with an outcome nobody knows (no delivery is
+   * claimed for it).
+   */
+  private async publishSteered(
+    command: Command,
+    turnId: string,
+    uncertain: string | null
+  ): Promise<void> {
     if (command.body.type !== 'message.send') return;
     await this.publish({
       type: 'item.upsert',
@@ -1396,11 +1407,12 @@ export class HostedSession {
         turnId,
         revision: 1,
         kind: 'user-message',
-        status: 'completed',
-        title,
+        status: uncertain === null ? 'completed' : 'failed',
+        title: uncertain ?? '',
         text: command.body.text,
         attachments: command.body.attachments,
         origin: command.origin,
+        ...(uncertain === null ? { delivery: 'steered' as const } : {}),
       },
     });
   }

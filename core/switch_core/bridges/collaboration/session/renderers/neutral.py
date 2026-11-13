@@ -56,10 +56,12 @@ from switch_core.sessions.contract import (
 from . import (
     CLOSED,
     NO_OPTIONS,
+    STEERED_MARKER,
     Drawn,
     Markup,
     RequestReference,
     example_value,
+    is_steered,
     surface_label,
     turn_state,
     unanswerable,
@@ -408,10 +410,7 @@ def in_activity_log(item: Item) -> bool:
     """
     if item.kind == "tool-activity":
         return True
-    if item.kind == "user-message" and item.title in {
-        "Steered into the running turn",
-        "Queued behind the running turn",
-    }:
+    if is_steered(item):
         return True
     return item.kind == "assistant-message" and bool(item.text)
 
@@ -425,7 +424,7 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     """
     if item.kind == "user-message":
         text = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
-        return f"{item.title}: {text or '(attachment)'}"
+        return f"{STEERED_MARKER}: {text or '(attachment)'}"
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"

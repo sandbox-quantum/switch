@@ -177,8 +177,8 @@ it('reports each user message at its own origin, falling back to the turn origin
   const steered = { ...origin, threadId: 'sw_asked', messageId: 'sw_correction' };
   const reported = rows(
     [
-      item({ kind: 'user-message', title: 'Steered into the running turn', origin: steered }),
-      item({ kind: 'user-message', title: 'Queued behind the running turn', origin: null }),
+      item({ kind: 'user-message', delivery: 'steered', origin: steered }),
+      item({ kind: 'user-message', delivery: 'queued', origin: null }),
       item({ kind: 'tool-activity', origin: steered }),
     ].flatMap((body, index) => lines.reports(event(index + 1, body), originOf, noUsage))
   );
@@ -189,6 +189,13 @@ it('reports each user message at its own origin, falling back to the turn origin
   });
   expect(reported[1]).toMatchObject(placed);
   expect(reported[2]).toMatchObject(placed);
+  expect(reported.map((row) => row.delivery)).toEqual(['steered', 'queued', undefined]);
+});
+
+it('says nothing of delivery for a message that started its own turn', async () => {
+  const lines = await reporter();
+  const [row] = rows(lines.reports(event(1, item({ kind: 'user-message' })), originOf, noUsage));
+  expect(row).not.toHaveProperty('delivery');
 });
 
 it('truncates long titles and texts', async () => {

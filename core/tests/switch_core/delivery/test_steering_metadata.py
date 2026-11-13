@@ -170,7 +170,8 @@ def test_steered_item_triggers_activity_card_redraw() -> None:
     turn = SimpleNamespace(status="running")
     item = SimpleNamespace(
         kind="user-message",
-        title="Steered into the running turn",
+        delivery="steered",
+        title="",
         item_id="steer",
         revision=1,
     )

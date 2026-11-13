@@ -134,14 +134,16 @@ export function turnWarnings(turn: TurnActivity): ChatActivityItem[] {
   return turn.items.filter((item) => item.kind === 'notice' && item.status === 'warning');
 }
 
-/** Messages delivered during another turn, each with the outcome the host reported. */
+/** Messages a person sent into this turn while it ran (steered), in the order they arrived. */
 export function turnDeliveries(turn: TurnActivity): ChatActivityItem[] {
-  return turn.items.filter(
-    (item) =>
-      item.kind === 'user-message' &&
-      (item.title === 'Steered into the running turn' ||
-        item.title === 'Queued behind the running turn')
-  );
+  return turn.items.filter((item) => item.kind === 'user-message' && item.delivery === 'steered');
+}
+
+/** What a turn says while it has not started: behind another turn, or about to start. */
+export function queuedLabel(turn: TurnActivity): string {
+  return turn.items.some((item) => item.kind === 'user-message' && item.delivery === 'queued')
+    ? 'Queued behind the running turn…'
+    : 'Queued…';
 }
 
 /** Whether a turn has anything to show in its work log. */
@@ -234,8 +236,8 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
         <WorkLogRow
           key={item.itemId}
           icon={<ToolKindIcon kind="switch" />}
-          label={`${item.title}${item.text ? `: ${item.text}` : ''}`}
-          title={item.text || item.title}
+          label={`Steered into this turn${item.text ? `: ${item.text}` : ''}`}
+          title={item.text}
           tone="passive"
         />
       ))}
@@ -251,7 +253,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
       {thinking && (
         <WorkLogRow
           icon={<ThinkingIcon />}
-          label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
+          label={turn.status === 'queued' ? queuedLabel(turn) : 'Thinking…'}
           active
         />
       )}

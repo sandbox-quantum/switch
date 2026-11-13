@@ -9,6 +9,7 @@ import {
   type ConversationHistoryTurn,
   ProviderConversationUnavailableError,
   type ProviderAdapter,
+  SteerNotSentError,
   type TurnAttachment,
 } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
@@ -134,6 +135,8 @@ type Harness = {
   adapter: ProviderAdapter;
   emit: (event: Record<string, unknown>) => void;
   turns: { turnId: string; text: string; attachments: TurnAttachment[] }[];
+  /** Messages the provider took into a running turn. */
+  steered: { turnId: string; text: string; into: string }[];
   switchCore: ReturnType<typeof stubSwitchFetch>;
   media: Map<string, Uint8Array>;
   parent: ReturnType<typeof fakeParent>;
@@ -180,6 +183,8 @@ async function start(
     developerMessages?: string[];
     /** The session continues a conversation started outside Switch, which had these turns. */
     continuing?: ConversationHistoryTurn[];
+    /** The provider takes a message into its running turn, as Claude Code does. */
+    steering?: boolean;
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -195,21 +200,25 @@ async function start(
   }
   const stop = new AbortController();
   const turns: Harness['turns'] = [];
+  const steered: Harness['steered'] = [];
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
   let live = false;
-  const emit = (event: Record<string, unknown>) =>
-    listener({
+  let openTurn: string | null = null;
+  const emit = (event: Record<string, unknown>) => {
+    if (event.type === 'turn.completed' && event.turnId === openTurn) openTurn = null;
+    return listener({
       ...event,
       sessionId: 'session',
       provider: 'claude',
       eventId: randomUUID(),
       createdAt: new Date().toISOString(),
     } as ProviderRuntimeEvent);
+  };
   const adapter: ProviderAdapter = {
     provider: 'claude',
     capabilities: {
       resume: true,
-      steering: false,
+      steering: opts.steering ?? false,
       approvals: true,
       userInput: true,
       modelSwitchInSession: false,
@@ -225,8 +234,15 @@ async function start(
       emit({ type: 'session.state.changed', status: 'ready' });
       return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
     }),
-    sendTurn: vi.fn(async ({ turnId, text, attachments }) => {
+    sendTurn: vi.fn(async ({ turnId, text, attachments, expectedTurnId }) => {
+      if (opts.steering && expectedTurnId !== undefined) {
+        if (expectedTurnId !== openTurn)
+          throw new SteerNotSentError('The authorized turn is no longer running.');
+        steered.push({ turnId, text, into: expectedTurnId });
+        return { turnId, steeredInto: expectedTurnId };
+      }
       turns.push({ turnId, text, attachments: attachments ?? [] });
+      openTurn = turnId;
       emit({ type: 'turn.started', turnId });
       if (opts.ask === 'questions')
         emit({
@@ -318,6 +334,7 @@ async function start(
   const session = structuredClone(SESSION);
   if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
   if (opts.resettable) session.capabilities.reset = true;
+  if (opts.steering) session.capabilities.input = 'steer';
   const channel = connectParent(parent.port);
   const running = runSharedHost(
     {
@@ -381,6 +398,7 @@ async function start(
     adapter,
     emit,
     turns,
+    steered,
     switchCore,
     media,
     parent,
@@ -425,6 +443,125 @@ const roomMessage = (sequence: number, body: string, attachments: unknown[] = []
     missed: { count: 2, reason: null },
   },
 });
+
+/** A room message as Switch sends it once it tells the host who may steer. */
+const steeringMessage = (
+  sequence: number,
+  body: string,
+  payload: Record<string, unknown> = {}
+): ReturnType<typeof roomMessage> => {
+  const message = roomMessage(sequence, body);
+  return {
+    ...message,
+    event: {
+      ...message.event,
+      channel_type: 'channel_public',
+      payload: {
+        ...message.event.payload,
+        sender_person: 'mo',
+        sender_owns_agent: false,
+        mid_turn_delivery: 'steer',
+        ...payload,
+      },
+    },
+  } as ReturnType<typeof roomMessage>;
+};
+
+it.each([false, true])(
+  'steers a correction in the running turn’s thread into it (older Core=%s)',
+  async (olderCore) => {
+    const host = await start({ rooms: true, steering: true });
+    host.switchCore.state.refusesDelivery = olderCore;
+    const activity = () =>
+      host.switchCore.calls
+        .filter((c) => c.path.endsWith('/activity'))
+        .map((c) => c.body as Record<string, unknown>);
+    try {
+      await host.parent.ask({ type: 'room', handoff: steeringMessage(1, 'Update the README') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      const asked = host.turns[0]!.turnId;
+
+      // Mo replies in the thread of his own message while the turn runs.
+      await host.parent.ask({
+        type: 'room',
+        handoff: steeringMessage(2, 'No, use docs/README.md', { thread_id: 'message-1' }),
+      });
+      await until(() => expect(host.steered).toHaveLength(1));
+      expect(host.steered[0]).toMatchObject({ into: asked });
+      expect(host.steered[0]!.text).toContain('No, use docs/README.md');
+      expect(host.turns).toHaveLength(1);
+
+      // A colleague's reply in the same thread waits for the turn.
+      await host.parent.ask({
+        type: 'room',
+        handoff: steeringMessage(3, 'Also bump the version', {
+          sender: '@ana:test',
+          sender_person: 'ana',
+          thread_id: 'message-1',
+        }),
+      });
+      await until(() =>
+        expect(
+          activity().some((row) => row.message_id === 'message-3' && row.kind === 'user-message')
+        ).toBe(true)
+      );
+      expect(host.steered).toHaveLength(1);
+      expect(host.turns).toHaveLength(1);
+
+      await until(() =>
+        expect(activity().some((row) => row.message_id === 'message-2')).toBe(true)
+      );
+      const correction = activity().filter((row) => row.message_id === 'message-2');
+      const queued = activity().filter((row) => row.message_id === 'message-3');
+      if (olderCore) {
+        // Refused with the label, then taken without it.
+        expect(correction.at(-1)).not.toHaveProperty('delivery');
+        expect(correction.at(-1)).toMatchObject({ turn_id: asked, kind: 'user-message' });
+      } else {
+        expect(correction.at(-1)).toMatchObject({
+          turn_id: asked,
+          kind: 'user-message',
+          delivery: 'steered',
+        });
+        expect(queued.find((row) => row.kind === 'user-message')).toMatchObject({
+          delivery: 'queued',
+        });
+      }
+
+      host.emit({ type: 'turn.completed', turnId: asked, outcome: 'completed', usage: [] });
+      await until(() => expect(host.turns).toHaveLength(2));
+      expect(host.turns[1]!.text).toContain('Also bump the version');
+    } finally {
+      await host.stop();
+    }
+  },
+  20000
+);
+
+it('queues a message whose sender Switch did not identify as a person', async () => {
+  const host = await start({ rooms: true, steering: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: steeringMessage(1, 'Update the README') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({
+      type: 'room',
+      handoff: steeringMessage(2, 'Scheduled check-in', {
+        thread_id: 'message-1',
+        sender_person: null,
+      }),
+    });
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: [],
+    });
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(host.steered).toEqual([]);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
 
 it.each([false, true])('reports child activity (older Core=%s)', async (olderCore) => {
   const host = await start({ rooms: true });

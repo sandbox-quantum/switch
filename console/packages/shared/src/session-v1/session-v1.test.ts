@@ -57,6 +57,26 @@ function transport() {
 }
 
 describe('session-v1 wire contract', () => {
+  it('reads how a message sent mid-turn was delivered', () => {
+    const upsert = (delivery?: string) =>
+      serverEventSchema.safeParse(
+        event(5, {
+          type: 'item.upsert',
+          item: {
+            ...item(1, 'In blue, please'),
+            itemId: 'user-steer',
+            kind: 'user-message',
+            status: 'completed',
+            ...(delivery === undefined ? {} : { delivery }),
+          } as Item,
+        })
+      );
+    expect(upsert('steered').success).toBe(true);
+    expect(upsert('queued').success).toBe(true);
+    expect(upsert().success).toBe(true);
+    expect(upsert('interrupted').success).toBe(false);
+  });
+
   it('accepts server approval expiry offsets in snapshots and events', () => {
     const expiresAt = '2026-09-11T15:30:00.123456+00:00';
     const snapshot = initial();

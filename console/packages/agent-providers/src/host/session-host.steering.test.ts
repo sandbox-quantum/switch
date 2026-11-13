@@ -190,7 +190,8 @@ describe('mid-turn steering', () => {
     expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['first']);
     const item = host.snapshot().items.find((entry) => entry.itemId === 'user-correction');
     expect(item?.turnId).toBe('first');
-    expect(item?.title).toBe('Steered into the running turn');
+    expect(item?.delivery).toBe('steered');
+    expect(item?.title).toBe('');
 
     complete('first');
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
@@ -225,6 +226,7 @@ describe('mid-turn steering', () => {
     const item = host.snapshot().items.find((entry) => entry.itemId === 'user-only');
     expect(item?.turnId).toBe('only');
     expect(item?.title).toBe('');
+    expect(item?.delivery).toBeUndefined();
   });
 
   it('queues the message when the provider refuses the steer', async () => {
@@ -262,7 +264,8 @@ describe('mid-turn steering', () => {
     // Still shown, in the turn it was meant for, rather than vanishing.
     const item = host.snapshot().items.find((entry) => entry.itemId === 'user-correction');
     expect(item?.turnId).toBe('first');
-    expect(item?.title).toBe('Delivery outcome unknown');
+    expect(item?.title).toBe('Sent to the running turn; the agent may not have received it');
+    expect(item?.delivery).toBeUndefined();
     expect(host.snapshot().session.status).not.toBe('error');
     complete('first');
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
@@ -279,7 +282,8 @@ describe('mid-turn steering', () => {
     expect(result.status).toBe('unknown');
     const item = host.snapshot().items.find((entry) => entry.itemId === 'user-correction');
     expect(item?.turnId).toBe('first');
-    expect(item?.title).toBe('Delivery outcome unknown');
+    expect(item?.title).toBe('Sent to the running turn; the agent may not have received it');
+    expect(item?.delivery).toBeUndefined();
     complete('first');
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
     expect(sent).toEqual(['first', 'correction']);

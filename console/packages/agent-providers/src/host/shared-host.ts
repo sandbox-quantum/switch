@@ -546,6 +546,12 @@ export async function runSharedHost(
               `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
             );
             report = { kind: 'activity', row };
+          } else if (report.row.delivery) {
+            const { delivery, ...row } = report.row;
+            console.warn(
+              `Switch refused how message ${row.item_id} was delivered, so platforms do not say it was ${delivery}: ${error.message}`
+            );
+            report = { kind: 'activity', row };
           } else if (report.row.subagent) {
             const { subagent: _subagent, ...row } = report.row;
             console.warn(

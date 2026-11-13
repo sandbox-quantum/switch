@@ -117,24 +117,40 @@ it('shows a single call with no group line', async () => {
   expect(el.textContent).toContain('ls');
 });
 
-it('shows the delivery outcome for each mid-turn message, including after completion', async () => {
+it('shows each message steered into the turn, including after it completed', async () => {
   const el = await render([
     item('turn', 'completed'),
     { ...item('initial', 'completed'), kind: 'user-message', text: 'Initial request' },
     {
-      ...item('steered', 'completed', 'Steered into the running turn'),
+      ...item('steered1', 'completed'),
       kind: 'user-message',
       text: 'Use the other file',
+      delivery: 'steered',
     },
     {
-      ...item('queued', 'completed', 'Queued behind the running turn'),
+      ...item('steered2', 'completed'),
       kind: 'user-message',
-      text: 'Run the tests next',
+      text: 'And skip the tests',
+      delivery: 'steered',
     },
   ]);
   expect(rows(el)).toEqual([
-    'Queued behind the running turn: Run the tests next',
-    'Steered into the running turn: Use the other file',
+    'Steered into this turn: Use the other file',
+    'Steered into this turn: And skip the tests',
   ]);
   expect(el.textContent).not.toContain('Initial request');
+});
+
+it('says a queued turn waits behind the running one when its message arrived mid-turn', async () => {
+  const el = await render([
+    item('turn', 'queued'),
+    {
+      ...item('queued', 'completed'),
+      kind: 'user-message',
+      text: 'Run the tests next',
+      delivery: 'queued',
+    },
+  ]);
+  expect(el.textContent).toContain('Queued behind the running turn…');
+  expect(el.textContent).not.toContain('Steered');
 });
