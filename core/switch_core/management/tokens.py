@@ -32,7 +32,7 @@ ACCESS_TOKEN_AUDIENCE = "switch-controller"
 ACCESS_TOKEN_ALGORITHM = "HS256"
 ACCESS_TOKEN_LIFETIME = timedelta(hours=1)
 ENROLLMENT_CODE_LIFETIME = timedelta(minutes=10)
-# A Switch cloud machine's code is handed over before the machine boots, and
+# A Switch Cloud machine's code is handed over before the machine boots, and
 # used once it has mounted its disk and installed its controller.
 MACHINE_ENROLLMENT_CODE_LIFETIME = timedelta(minutes=30)
 

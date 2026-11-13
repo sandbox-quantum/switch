@@ -25,6 +25,7 @@ describe('a room command', () => {
       attachments: [],
       preface: null,
       firstOfConversation,
+      canSteer: false,
     });
   const text = (message: unknown, first = false) => {
     const body = command(message, first).body;
@@ -182,5 +183,30 @@ describe('a room command', () => {
     expect(said).toContain('without tagging anyone, and Switch picked you to answer');
     expect(said).toContain(ROUTED_NOTE);
     expect(said).not.toContain(FALLBACK_NOTE);
+  });
+
+  it('asks to steer when the provider can and the agent is set to steer, whoever sent it', () => {
+    const delivery = (payload: Record<string, unknown>, canSteer: boolean) =>
+      roomCommand({
+        agentId: 'agent',
+        sessionId: 'session',
+        epoch: 'epoch',
+        roomId: '!room:example.test',
+        message: roomMessageSchema.parse({ ...event, payload: { ...event.payload, ...payload } }),
+        surface: 'switch-web',
+        attachments: [],
+        preface: null,
+        firstOfConversation: false,
+        canSteer,
+      }).body;
+    // Any sender, any thread or the top level: only the setting and the provider decide.
+    expect(delivery({ mid_turn_delivery: 'steer' }, true)).toMatchObject({ delivery: 'steer' });
+    expect(
+      delivery({ mid_turn_delivery: 'steer', sender: '@ana:test', thread_id: 'other' }, true)
+    ).toMatchObject({ delivery: 'steer' });
+    expect(delivery({ mid_turn_delivery: 'queue' }, true)).toMatchObject({ delivery: 'queue' });
+    expect(delivery({ mid_turn_delivery: 'steer' }, false)).toMatchObject({ delivery: 'queue' });
+    // A server from before steering says nothing, which reads as queue.
+    expect(delivery({}, true)).toMatchObject({ delivery: 'queue' });
   });
 });

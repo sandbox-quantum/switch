@@ -37,6 +37,15 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
 )
 from switch_core.gateway.hosted_machines import controller_settings
+from switch_core.logging_context import STRUCTURED_FIELDS
+from switch_core.observability.hosted import (
+    after_commit,
+    reconciler_heard,
+    record_cloud_error,
+    record_controller_errors,
+    record_credential_refusal,
+    record_machine_event,
+)
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.telemetry import emit_after_commit
 from switch_core.tenant_context import no_tenant, tenant_scope
@@ -64,6 +73,10 @@ async def controller_session(
     if not secrets.compare_digest(
         supplied, "Bearer " + settings.token.get_secret_value()
     ):
+        # Counted by reason and route only, never the credential.
+        record_credential_refusal(
+            "missing" if not supplied else "wrong", "hosted_controller"
+        )
         raise HTTPException(401, "Invalid cloud controller credential.")
     with no_tenant():
         async with factory() as session:
@@ -153,19 +166,27 @@ async def _sweep(
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine was not scheduled within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
-        _report_failure(session, "not_scheduled")
+        _report_failure(session, machine, "not_scheduled")
     elif _connect_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine started but did not connect to Switch within 10 minutes. Retry it in Switch Console, or ask your administrator to check the machine's startup logs."
         machine.updated_at = now
-        _report_failure(session, "never_connected")
+        # A machine that has reported before ran once and didn't come back: a
+        # failed wake or restart. One that never has is a first launch, even
+        # retried (a retry moves the revision on too).
+        _report_failure(
+            session,
+            machine,
+            "never_connected",
+            finer="wake_failed" if machine.heartbeat_at is not None else None,
+        )
     elif _start_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
-        _report_failure(session, "never_started")
+        _report_failure(session, machine, "never_started")
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
@@ -183,14 +204,23 @@ async def _sweep(
         and machine.desired_state == "running"
         and controller_machine_idle(machine, timedelta(minutes=idle_minutes), now)
     ):
-        if not await store.release_if_empty(
+        if await store.release_if_empty(
             machine, workspaces, retention_days=retention_days, now=now
         ):
+            # Idle with no agents left: released with its disk kept rather
+            # than stopped. Still the machine going quiet, so it's counted.
+            record_machine_event(session, "stopped", "retained")
+        else:
             store.stop(machine, "idle", now)
             emit_after_commit(
                 session, current_telemetry(), "cloud_machine_idle_stopped", {}
             )
+            record_machine_event(session, "stopped", "idle")
 
+
+# The finer words the hosted metric and log line use beside product
+# telemetry's reasons.
+MachineFailure = Literal["wake_failed", "stop_failed"]
 
 FailureReason = Literal[
     "not_scheduled",
@@ -208,9 +238,47 @@ def _observed_failure(error_code: str | None) -> FailureReason:
     return "needs_attention" if error_code == "machine_needs_attention" else "reported"
 
 
-def _report_failure(session: AsyncSession, reason: FailureReason) -> None:
+# Every desired state that means the machine should be going down.
+STOPPING_STATES = frozenset({"stopped", "retained", "deleted"})
+
+
+def _stop_failure(machine: CloudMachine) -> MachineFailure | None:
+    """`stop_failed` for an error observed while the machine is wanted
+    stopped, retained (stopped, disk kept) or deleted."""
+    return "stop_failed" if machine.desired_state in STOPPING_STATES else None
+
+
+def _report_failure(
+    session: AsyncSession,
+    machine: CloudMachine,
+    reason: FailureReason,
+    *,
+    finer: MachineFailure | None = None,
+) -> None:
+    """A machine has failed: product telemetry with `reason`, and the hosted
+    metric and log line with `finer` where the operator can tell more
+    (`wake_failed`, `stop_failed`) than product telemetry's fixed set says."""
     emit_after_commit(
         session, current_telemetry(), "cloud_machine_failed", {"reason": reason}
+    )
+    word = finer or reason
+    record_machine_event(session, "failed", word)
+    # One line with a fixed event name, the reason and the machine id only
+    # Under `switch.event`, not `event.name`, which some pipelines treat as
+    # a product event.
+    logger.warning(
+        "Cloud machine %s failed: %s",
+        machine.id,
+        word,
+        extra={
+            STRUCTURED_FIELDS: {
+                "switch": {
+                    "event": "hosted.machine_failed",
+                    "reason": word,
+                    "machine": machine.id,
+                }
+            }
+        },
     )
 
 
@@ -220,6 +288,7 @@ async def machines(
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict:
+    reconciler_heard()
     store = CloudMachineStore()
     now = datetime.now(UTC)
     candidates = list(
@@ -324,7 +393,7 @@ async def prepare(
         }
     if not controllers:
         if machine.state != "error":
-            _report_failure(session, "owner_left")
+            _report_failure(session, machine, "owner_left")
         machine.state = "error"
         machine.error = "The cloud machine's owner is no longer a member of any workspace it serves."
         machine.updated_at = now
@@ -342,6 +411,21 @@ async def prepare(
     }
     await session.commit()
     return result
+
+
+class CloudErrorCount(BaseModel):
+    """How many cloud calls of one kind the reconciler saw fail since it last
+    reported, as fixed words only: which call, and what kind of error. Never
+    the provider's own code or message."""
+
+    model_config = ConfigDict(extra="forbid")
+    call: Literal["launch", "start", "stop", "terminate", "volume", "describe", "other"]
+    kind: Literal["capacity", "throttled", "permission", "other"]
+    count: int = Field(ge=1, le=1_000_000)
+
+
+# What a reconciler error can be about, for its count by kind.
+ReconcilerErrorKind = Literal["cloud", "core_api", "state", "other"]
 
 
 class Observation(BaseModel):
@@ -362,6 +446,13 @@ class Observation(BaseModel):
     data_volume_id: str | None = Field(default=None, max_length=256)
     instance_id: str | None = Field(default=None, max_length=256)
     instance_type: str | None = Field(default=None, max_length=256)
+    # The reconciler's errors, as strict types (fixed words, capped counts, no
+    # free text): its failed cloud calls by call and kind, and its own errors
+    # by kind, since it last reported. Counted, never stored.
+    cloud_errors: list[CloudErrorCount] | None = Field(default=None, max_length=28)
+    reconciler_errors: (
+        dict[ReconcilerErrorKind, Annotated[int, Field(ge=0, le=1_000_000)]] | None
+    ) = None
 
 
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
@@ -377,7 +468,22 @@ async def observe(
     body: Observation,
     session: Annotated[AsyncSession, Depends(controller_session)],
 ) -> dict:
+    reconciler_heard()
     machine = await _locked_machine(session, machine_id)
+    # Counted once this answer's transaction commits. Every answer from here
+    # is a 200 and commits, so the reconciler forgets only what was counted;
+    # a batch counts twice only if Core's answer is lost after the commit.
+    cloud_errors = [(e.call, e.kind, e.count) for e in body.cloud_errors or []]
+    reconciler_errors = dict(body.reconciler_errors or {})
+    if cloud_errors or reconciler_errors:
+
+        def count() -> None:
+            for call, kind, number in cloud_errors:
+                record_cloud_error(call, kind, number)
+            if reconciler_errors:
+                record_controller_errors(reconciler_errors)
+
+        after_commit(session, count)
     now = datetime.now(UTC)
     if body.revision != machine.revision:
         if body.revision > machine.revision:
@@ -391,16 +497,23 @@ async def observe(
             body.state == "error" or body.error is not None
         ) and machine.state not in STALE_ERROR_IGNORED_STATES:
             if machine.state != "error":
-                _report_failure(session, _observed_failure(body.error_code))
+                _report_failure(
+                    session,
+                    machine,
+                    _observed_failure(body.error_code),
+                    finer=_stop_failure(machine),
+                )
             machine.state = "error"
             machine.error = body.error or OBSERVED_ERROR
             machine.error_code = body.error_code
             machine.updated_at = now
-            await session.commit()
+        # Commits even with nothing changed, so the error counts above count.
+        await session.commit()
         return machine_item(machine)
     if machine.state == "deleted" or (
         machine.state == "error" and body.state not in ERROR_REPLACING_STATES
     ):
+        await session.commit()
         return machine_item(machine)
     for field in ("data_volume_id", "instance_id", "instance_type"):
         if (value := getattr(body, field)) is not None:
@@ -416,7 +529,12 @@ async def observe(
             machine.state = "provisioning"
     elif body.state == "error":
         if machine.state != "error":
-            _report_failure(session, _observed_failure(body.error_code))
+            _report_failure(
+                session,
+                machine,
+                _observed_failure(body.error_code),
+                finer=_stop_failure(machine),
+            )
         machine.state = "error"
         machine.error = body.error or OBSERVED_ERROR
         machine.error_code = body.error_code

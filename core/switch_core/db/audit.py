@@ -29,6 +29,7 @@ from switch_core.db.models import (
 class AuditAction(StrEnum):
     TENANT_CREATED = "tenant.created"
     TENANT_DELETED = "tenant.deleted"
+    TENANT_RENAMED = "tenant.renamed"
     TENANT_ARCHIVED = "tenant.archived"
     TENANT_RESTORED = "tenant.restored"
     INVITATION_CREATED = "invitation.created"
@@ -80,15 +81,22 @@ class AuditAction(StrEnum):
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
     WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
     OWNERSHIP_TRANSFERRED = "ownership.transferred"
+    ROOM_ADMIN_ADDED = "room_admin.added"
+    ROOM_ADMIN_REMOVED = "room_admin.removed"
     RETENTION_POLICY_SET = "retention_policy.set"
     RETENTION_POLICY_CLEARED = "retention_policy.cleared"
     PERSON_ERASURE_REQUESTED = "person_erasure.requested"
     PERSON_ERASURE_COMPLETED = "person_erasure.completed"
+    # A workspace admin made a Public room on a private channel Private, from
+    # the clean-up of rooms made before rooms followed their channel
+    # (`private_channel_rooms.py`).
+    ROOM_MADE_PRIVATE = "room.made_private"
 
 
 class OrganizationAuditAction(StrEnum):
     ORGANIZATION_CREATED = "organization.created"
     WORKSPACE_CREATED = "organization.workspace_created"
+    WORKSPACE_RENAMED = "organization.workspace_renamed"
     WORKSPACE_ARCHIVED = "organization.workspace_archived"
     WORKSPACE_RESTORED = "organization.workspace_restored"
     MEMBER_ADDED_TO_WORKSPACE = "organization.member_added_to_workspace"

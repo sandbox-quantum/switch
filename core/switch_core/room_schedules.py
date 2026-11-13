@@ -13,8 +13,8 @@ stopping cannot post it twice. The claim is committed before the post, so a
 process that stops between the two leaves that run unsent rather than risk
 sending it a second time.
 
-Each run asks again whether its author may still manage the room, the gate
-that let them set it. One whose author may not is paused and the room told,
+Each run asks again whether its author may still change the room's settings
+(its owner, a room admin or a workspace admin), the gate that let them set it. One whose author may not is paused and the room told,
 so a schedule never goes on speaking for someone who has lost the room.
 
 A run missed while no process was running is sent once, late, and says so;
@@ -36,12 +36,13 @@ from cronsim import CronSim, CronSimError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import room_admins, room_policy
 from switch_core.archived_workspace import is_archived
-from switch_core.authz import Principal, can
+from switch_core.authz import Principal
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import RoomSchedule
+from switch_core.db.models import Room, RoomSchedule, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_schedule_store import RoomScheduleStore
@@ -49,6 +50,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.ownership import Fence, OwnedKind, Ownership
+from switch_core.room_policy import RoomCaller
 from switch_core.tenant_context import no_tenant
 
 logger = logging.getLogger(__name__)
@@ -238,6 +240,20 @@ class RoomScheduler:
                 except Exception:
                     logger.exception("Firing room schedules failed")
 
+    async def _may_manage(self, db: AsyncSession, room: Room, creator: User) -> bool:
+        """Whether a schedule's author may still change the room's settings
+        (`room_policy`'s `configure`): its owner, a room admin, or an admin."""
+        where = await room_admins.standing(db, self._rooms, room.id, creator.id)
+        return room_policy.allows(
+            RoomCaller(
+                Principal(creator.id, await self._users.administers(db, creator)),
+                in_room=where.in_room,
+                room_admin=where.room_admin,
+            ),
+            room,
+            "configure",
+        )
+
     async def _database_now(self) -> datetime:
         """The database's clock, which every pod shares, so whichever pod owns
         the loop sends a run at the same moment; a pod's own clock can drift."""
@@ -298,11 +314,7 @@ class RoomScheduler:
             may_speak = (
                 room is not None
                 and creator is not None
-                and can(
-                    Principal(creator.id, await self._users.administers(db, creator)),
-                    "delete",
-                    room,
-                )
+                and await self._may_manage(db, room, creator)
             )
             present = set(await self._rooms.get_agent_ids(db, schedule.room_id))
             # One an agent set speaks as that agent, while it is still here.

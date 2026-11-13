@@ -50,6 +50,7 @@ from switch_core.chats.views import (
     chat_messages,
     chat_summaries,
 )
+from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import (
     AgentSessionActivityItem,
     Room,
@@ -225,6 +226,8 @@ class ActivityItemView(CamelModel):
     room_id: str | None
     thread_id: str | None
     message_id: str | None
+    # On a user message sent while another turn ran: "steered" or "queued".
+    delivery: str | None
     occurred_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -246,6 +249,7 @@ class ActivityItemView(CamelModel):
             room_id=row.room_id,
             thread_id=row.thread_id,
             message_id=row.message_id,
+            delivery=row.delivery,
             occurred_at=row.occurred_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -589,7 +593,10 @@ async def get_media(
     return Response(
         content=blob.data,
         media_type=blob.content_type or "application/octet-stream",
-        headers={"Cache-Control": "private, no-store"},
+        headers={
+            "Cache-Control": "private, no-store",
+            **untrusted_file_headers(blob.filename, blob.content_type, "attachment"),
+        },
     )
 
 

@@ -25,7 +25,7 @@ Expand only: a release from before this revision never reads the new table,
 and nothing it reads is changed.
 
 Revision ID: b7d24e9c1f53
-Revises: 861ff8767cf4
+Revises: d7a3c1e9f205
 Create Date: 2026-11-12 12:00:00.000000
 
 """
@@ -36,7 +36,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b7d24e9c1f53"
-down_revision: str | None = "861ff8767cf4"
+down_revision: str | None = "d7a3c1e9f205"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

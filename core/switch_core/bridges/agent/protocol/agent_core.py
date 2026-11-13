@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 
+from switch_core import room_admins, room_policy
 from switch_core.addressing import (
     AddressingPolicy,
     can_address,
@@ -26,6 +27,7 @@ from switch_core.agent_display_name import (
     agent_label_with_identifier,
     normalise_display_name,
 )
+from switch_core.agent_exposure import others_can_address
 from switch_core.agent_icon import (
     drop_third_party_avatar,
     generated_icon_url,
@@ -36,10 +38,7 @@ from switch_core.agent_icon import (
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import (
-    Action,
     Principal,
-    can,
-    require,
     require_group_filing,
     require_manage,
 )
@@ -58,6 +57,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.message_events import removed_by
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -140,13 +140,23 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
+from switch_core.room_invites import (
+    require_agent_may_add_to_new_room,
+    require_agent_may_invite,
+    with_subagents,
+)
+from switch_core.room_policy import RoomAction, RoomCaller, RoomPermissionError
 from switch_core.room_schedules import (
     TEXT_LIMIT,
     ScheduleError,
     addressed_first_run,
     first_run,
 )
-from switch_core.room_service import require_membership_changeable_from_outside
+from switch_core.room_service import (
+    RemovalMiss,
+    names_the_owner,
+    require_membership_changeable_from_outside,
+)
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -2840,6 +2850,22 @@ class AgentCore:
         if sender_kind is None and _PLATFORM_MARKER in (message.content or {}):
             sender_kind = "platform"
         if message.event_type == MEMBERSHIP_EVENT_TYPE:
+            content = message.content or {}
+            if content.get("membership") == "leave":
+                remover = removed_by(content)
+                return {
+                    "id": message.transport_event_id,
+                    "kind": "room_leave",
+                    "sender": message.sender_id,
+                    "sender_name": name,
+                    "body": (
+                        f"{name} was removed from the room by {remover}"
+                        if remover
+                        else f"{name} left the room"
+                    ),
+                    "timestamp": _epoch_ms(message.sent_at),
+                    "attachments": [],
+                }
             return {
                 "id": message.transport_event_id,
                 "kind": "room_join",
@@ -2910,7 +2936,8 @@ class AgentCore:
         "timestamp", "attachments"}, plus "sender_kind" ("platform" for a
         message the Switch app posted) and "on_behalf_of" (the person a
         platform message spoke for) when they apply. `kind` is "message" for
-        something someone said and "room_join" for an arrival. Top-level entries are roots with
+        something someone said, "room_join" for an arrival and "room_leave"
+        for a departure. Top-level entries are roots with
         an empty replies list; replies are ordered oldest-first within a
         thread. A root that falls outside the fetched window but has a reply
         inside it is fetched alongside; if no record of it exists it is
@@ -3203,8 +3230,7 @@ class AgentCore:
         reference_ids: list[str] | None = None,
         package_ids: list[str] | None = None,
         linked_rooms: list[dict[str, str]] | None = None,
-        read_visibility: str = "public",
-        write_visibility: str = "public",
+        read_visibility: str | None = None,
         group_name: str | None = None,
         roles: list[dict[str, Any]] | None = None,
         include_subagents_for: list[str] | None = None,
@@ -3244,6 +3270,20 @@ class AgentCore:
                 require_group_filing(owner_is_admin)
             group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
+            # The invite rule, as for any agent put into a room: judged as the
+            # owner, who owns the new room (`room_invites`).
+            await require_agent_may_add_to_new_room(
+                session,
+                self.external_user_store,
+                targets=await with_subagents(
+                    session,
+                    self.agent_store,
+                    await self.agent_store.get_by_names(session, agent_names),
+                    include_subagents_for,
+                ),
+                caller=agent,
+                group_id=group_id,
+            )
         if include_owner:
             if not internal_only or bridge_id is not None:
                 raise ValueError(
@@ -3300,7 +3340,6 @@ class AgentCore:
                 owner_id=agent.owner_id,
                 group_id=group_id,
                 read_visibility=read_visibility,
-                write_visibility=write_visibility,
                 reference_ids=reference_ids,
                 package_ids=package_ids,
                 linked_rooms=(
@@ -3390,22 +3429,41 @@ class AgentCore:
         agent_name: str,
         include_subagents: bool = False,
     ) -> None:
-        """Invite an agent to a room. Requires room membership (or owner/admin).
+        """Invite an agent to a room, by the invite rule every path shares
+        (`room_invites`): judged as the caller's owner, who must be in the
+        room and allowed to address the agent — or the agent itself must be.
+        Never in a direct or group conversation.
 
         When ``include_subagents`` is set, the invited agent's subagents
         (child agents) are added alongside it.
         """
         include_for: list[str] | None = None
         async with self.session_factory() as session:
-            require_membership_changeable_from_outside(
-                await self._require_room_roster_change(session, agent_id, room_id)
+            caller, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            room = await self.room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            require_membership_changeable_from_outside(room)
+            target = await self.agent_store.get_by_name(session, agent_name)
+            if target is None:
+                raise ValueError(f"Failed to invite agent: unknown agent {agent_name}")
+            await require_agent_may_invite(
+                session,
+                self.room_store,
+                self.external_user_store,
+                room=room,
+                targets=await with_subagents(
+                    session,
+                    self.agent_store,
+                    [target],
+                    [target.id] if include_subagents else None,
+                ),
+                caller=caller,
+                owner_is_admin=owner_is_admin,
             )
             if include_subagents:
-                target = await self.agent_store.get_by_name(session, agent_name)
-                if target is None:
-                    raise ValueError(
-                        f"Failed to invite agent: unknown agent {agent_name}"
-                    )
                 include_for = [target.id]
         try:
             await self.room_service.add_agents_to_room(
@@ -3439,15 +3497,48 @@ class AgentCore:
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
 
+    async def remove_users_from_room(
+        self, agent_id: str, room_id: str, user_names: list[str]
+    ) -> list[RemovalMiss]:
+        """Take people out of a bridged room by name, on the calling agent's
+        behalf: the room policy's "remove_member", so the owner or a workspace
+        admin, judged as the agent's owner. Never in a direct or group
+        conversation. The departure names the calling agent as who removed
+        them. Returns who did not go as asked (`RoomService.remove_users_from_room`).
+        """
+        async with self.session_factory() as session:
+            caller = await self.agent_store.get(session, agent_id)
+            if caller is None:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            row = await self.room_store.get(session, room_id)
+            names_owner = row is not None and await names_the_owner(
+                session, row, user_names
+            )
+            room = await self._require_room_action(
+                session,
+                agent_id,
+                room_id,
+                "remove_owner" if names_owner else "remove_member",
+            )
+            require_membership_changeable_from_outside(room)
+        try:
+            return await self.room_service.remove_users_from_room(
+                room_id, user_names, removed_by=caller.name
+            )
+        except ValueError as e:
+            raise ValueError(f"Failed to remove users: {str(e)}") from e
+
     async def remove_agent_from_room(
         self, agent_id: str, room_id: str, agent_name: str
     ) -> None:
         """Remove an agent from a room on the calling agent's behalf.
 
-        Allowed when the caller may address the target in that room, or when
-        the caller can manage agents and the target belongs to the caller's
-        owner. Membership of the room is not required: an owner's assistant
-        tidies rooms it was never in. Never in a direct or group conversation
+        The room policy decides (`room_policy`): allowed when the caller's
+        owner is the room's owner or a workspace admin, or owns the target and
+        the target takes requests from the caller (or the caller can manage
+        agents).
+        Membership of the room is not required: an owner's assistant tidies
+        rooms it was never in. Never in a direct or group conversation
         (`require_membership_changeable_from_outside`).
         """
         async with self.session_factory() as session:
@@ -3465,25 +3556,11 @@ class AgentCore:
                 raise ValueError(
                     f"Failed to remove agent: {agent_name} is not in this room"
                 )
-            manages_target = (
-                caller.can_manage_agents
-                and caller.owner_id is not None
-                and caller.owner_id == target.owner_id
+            await self._require_action_on_agent(
+                session, agent_id, room, "remove_member", target
             )
-            if not manages_target and not await self._can_address(
-                session,
-                target,
-                room_id=room_id,
-                group_id=room.group_id,
-                sender_agent_id=agent_id,
-            ):
-                raise PermissionError(
-                    f"Not permitted to remove {agent_name}: you may not address "
-                    "it, and it is not an agent of your owner's that you manage "
-                    "(that needs 'can manage agents')."
-                )
         await self.room_service.remove_agents_from_room(
-            room_id, [target.id], removed_by_kind="agent"
+            room_id, [target.id], removed_by_kind="agent", removed_by=caller.name
         )
 
     def run_service(self) -> RunService:
@@ -3563,22 +3640,142 @@ class AgentCore:
         return agent, agent.owner_id, owner_is_admin
 
     async def _require_room_action(
-        self, session: AsyncSession, agent_id: str, room_id: str, action: Action
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        room_id: str,
+        action: RoomAction,
+        *,
+        owns_target: bool = False,
     ) -> Room:
-        """Authorize a room mutation on the calling agent's behalf.
+        """Authorize a room action on the calling agent's behalf, by the room
+        policy (`room_policy`).
 
-        The agent acts as its owner; the room is loaded and checked via
-        ``authz.require``. Raises ValueError if the room is missing and
-        PermissionError if the owner lacks the right.
+        The agent acts as its owner. Its owner is in the room when they take
+        part in it (`RoomStore.involves`, which counts an agent of theirs in
+        it); an agent nobody owns is in the rooms it is itself in. An agent
+        that takes requests from people other than its owner gets the "in the
+        room" tier at most (`others_can_address`): otherwise anyone who may
+        address it could change the room with its owner's rights.
+        `owns_target` is whether the owner owns the thing acted on. Raises
+        ValueError if the room is missing and `RoomPermissionError`, with the
+        reason, if the owner may not.
         """
-        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+        agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
             session, agent_id
         )
         room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        require(Principal(owner_id, owner_is_admin), action, room)
+        principal = Principal(owner_id, owner_is_admin)
+        owner_rights = not await others_can_address(session, agent)
+        outside = RoomCaller(principal, in_room=False, owner_rights=owner_rights)
+        if room_policy.allows(outside, room, action, owns_target=owns_target):
+            return room
+        in_room = await self._acts_in_room(session, agent_id, owner_id, room_id)
+        # An agent of a room admin acts as a room admin, as it acts as its owner.
+        room_admin = in_room and await room_admins.is_room_admin(
+            session, self.room_store, room_id, owner_id
+        )
+        room_policy.require(
+            RoomCaller(
+                principal,
+                in_room=in_room,
+                owner_rights=owner_rights,
+                room_admin=room_admin,
+            ),
+            room,
+            action,
+            owns_target=owns_target,
+        )
         return room
+
+    async def _owner_writes_room(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> bool:
+        """Whether the calling agent's owner may change the room's settings
+        (`room_policy`'s "configure", the owner tier), as a yes or no: the rule
+        room roles follow."""
+        agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        room = await self.room_store.get(session, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        return room_policy.allows(
+            RoomCaller(
+                Principal(owner_id, owner_is_admin),
+                in_room=False,
+                owner_rights=not await others_can_address(session, agent),
+            ),
+            room,
+            "configure",
+        )
+
+    async def _acts_in_room(
+        self, session: AsyncSession, agent_id: str, owner_id: str | None, room_id: str
+    ) -> bool:
+        """Whether an agent acting for `owner_id` is in the room, for the room
+        policy: the owner takes part in it, or, for an agent nobody owns, the
+        agent itself is in it."""
+        if owner_id is not None:
+            return bool(
+                await self.room_store.involved_room_ids(session, owner_id, [room_id])
+            )
+        return agent_id in await self.room_store.get_agent_ids(session, room_id)
+
+    async def _require_action_on_agent(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        room: Room,
+        action: RoomAction,
+        target: Agent | None,
+    ) -> None:
+        """Authorize an agent acting on another agent in `room` (removing or
+        aliasing it), by the room policy.
+
+        The room's owner tier may, as for anything in the room. Owning the
+        target counts only when the target takes requests from the calling
+        agent (its addressing policy admits it) or the caller can manage
+        agents: an owner who said "only me" did not let their other agents
+        act for them on this one.
+        """
+        caller = await self.agent_store.get(session, agent_id)
+        same_owner = (
+            caller is not None
+            and target is not None
+            and caller.owner_id is not None
+            and caller.owner_id == target.owner_id
+        )
+        admitted = same_owner and (
+            caller is not None
+            and target is not None
+            and (
+                target.id == caller.id
+                or caller.can_manage_agents
+                or await self._can_address(
+                    session,
+                    target,
+                    room_id=room.id,
+                    group_id=room.group_id,
+                    sender_agent_id=agent_id,
+                )
+            )
+        )
+        try:
+            await self._require_room_action(
+                session, agent_id, room.id, action, owns_target=bool(admitted)
+            )
+        except RoomPermissionError:
+            if same_owner and not admitted and target is not None:
+                raise RoomPermissionError(
+                    f"{target.name} belongs to your owner, but it doesn't take "
+                    "requests from you and you don't have 'can manage agents', "
+                    "so you can't change it in this room. Ask your owner, or "
+                    "the room's owner."
+                ) from None
+            raise
 
     async def _require_room_roster_change(
         self, session: AsyncSession, agent_id: str, room_id: str
@@ -3614,9 +3811,9 @@ class AgentCore:
         instructions: str,
         exclusive: bool,
     ) -> None:
-        """Define a new role in a room. Requires write access to the room."""
+        """Define a new role in a room: a room setting, so the owner tier."""
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, room_id, "write")
+            await self._require_room_action(session, agent_id, room_id, "configure")
             await self.room_role_store.define_role(
                 session, room_id, name, instructions, exclusive
             )
@@ -3639,7 +3836,7 @@ class AgentCore:
         already received.
         """
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, room_id, "write")
+            await self._require_room_action(session, agent_id, room_id, "configure")
             await self.room_role_store.edit_role(
                 session, room_id, name, instructions, exclusive
             )
@@ -3648,7 +3845,7 @@ class AgentCore:
     async def delete_room_role(self, agent_id: str, room_id: str, name: str) -> None:
         """Delete a role (and any lease on it). Requires write access."""
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, room_id, "write")
+            await self._require_room_action(session, agent_id, room_id, "configure")
             await self.room_role_store.delete_role(session, room_id, name)
             emit_after_commit(session, self.telemetry, "room_role_deleted", {})
             await session.commit()
@@ -3993,9 +4190,8 @@ class AgentCore:
     ) -> None:
         """Attach an existing Reference to a room on the agent's behalf.
 
-        This is the ``attach = read(reference) AND write(room)`` composition:
-        the agent's owner must be able to read the reference *and* write the
-        room.
+        The agent's owner must be able to read the reference and be in the
+        room (`room_policy`).
         """
         async with self.session_factory() as session:
             _agent, owner_id, is_admin = await self._resolve_acting_identity(
@@ -4005,7 +4201,7 @@ class AgentCore:
                 raise ValueError(
                     f"Agent {agent_id} has no owner_id and cannot attach references"
                 )
-            await self._require_room_action(session, agent_id, room_id, "write")
+            await self._require_room_action(session, agent_id, room_id, "attach")
             await self.resource_service.attach_reference_to_room(
                 session,
                 room_id,
@@ -4079,7 +4275,9 @@ class AgentCore:
         target, whose name and description the link shows.
         """
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, source_room_id, "write")
+            await self._require_room_action(
+                session, agent_id, source_room_id, "configure"
+            )
             await self._require_room_action(session, agent_id, target_room_id, "read")
             result = await self.resource_service.attach_linked_room(
                 session,
@@ -4104,7 +4302,9 @@ class AgentCore:
         Requires write access to the source room.
         """
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, source_room_id, "write")
+            await self._require_room_action(
+                session, agent_id, source_room_id, "configure"
+            )
             removed = await self.resource_service.detach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -4252,10 +4452,23 @@ class AgentCore:
         room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        if not can(Principal(owner_id, owner_is_admin), "delete", room):
+        # A room setting (`room_policy`), so the room admin tier, and not for
+        # an agent others may address: a schedule carries its owner's authority.
+        where = await room_admins.standing(session, self.room_store, room_id, owner_id)
+        if not room_policy.allows(
+            RoomCaller(
+                Principal(owner_id, owner_is_admin),
+                in_room=where.in_room,
+                owner_rights=not await others_can_address(session, agent),
+                room_admin=where.room_admin,
+            ),
+            room,
+            "configure",
+        ):
             raise PermissionError(
                 "Changing a room's schedules takes the right to manage the room "
-                "(its owner or a workspace admin), and your owner does not have it here."
+                "(its owner, a room admin or a workspace admin), and your owner "
+                "does not have it here."
             )
         if agent_id not in set(await self.room_store.get_agent_ids(session, room_id)):
             raise PermissionError(
@@ -4805,10 +5018,12 @@ class AgentCore:
 
         Only fields passed as non-None are changed. Returns the full,
         updated room detail. Requires the agent to be a member of the room
-        (to read the detail back) and to have write access to it.
+        (to read the detail back), and its owner to be the room's owner or a
+        workspace admin; an alias for an agent of the owner's needs only the
+        agent to be in the room.
 
         `join_event_listeners` is a partial map of agent name → whether that
-        agent receives `room_join` events in this room; only named agents are
+        agent receives `room_join` and `room_leave` events in this room; only named agents are
         changed, and each must already be a member.
         Passing ``bridge_id`` moves the room onto that collaboration bridge:
         a fresh external channel is provisioned there and the room's current
@@ -4825,7 +5040,36 @@ class AgentCore:
         """
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, room_id, "write")
+            # Changing a room is its owner's or an admin's. The one exception is
+            # a call that changes nothing but aliases, judged alias by alias
+            # below; anything else, including a parameter added later, needs
+            # the owner tier, so a new field fails closed.
+            aliases_only = aliases is not None and all(
+                value is None
+                for value in (
+                    name,
+                    description,
+                    instructions,
+                    admin_mode,
+                    join_event_listeners,
+                    bridge_id,
+                    channel_type,
+                    external_channel_id,
+                )
+            )
+            if not aliases_only:
+                await self._require_room_action(session, agent_id, room_id, "configure")
+            # An alias for an agent of the owner's that takes requests from
+            # the caller is the caller's to set, whoever owns the room.
+            if aliases:
+                alias_room = await self.room_store.get(session, room_id)
+                if alias_room is None:
+                    raise ValueError(f"Room not found: {room_id}")
+                for agent_name in aliases:
+                    target = await self.agent_store.get_by_name(session, agent_name)
+                    await self._require_action_on_agent(
+                        session, agent_id, alias_room, "set_alias", target
+                    )
             await self.room_store.update_fields(
                 session,
                 room_id,
@@ -4880,12 +5124,12 @@ class AgentCore:
 
         Metadata-only and reversible: the room, members, and bridge
         channel are untouched; the room just leaves (or rejoins) the default
-        active lists. Requires the agent to be a member of the room and to
-        have write access to it.
+        active lists. Requires the agent to be a member of the room, and its
+        owner to be the room's owner or a workspace admin.
         """
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, room_id, "write")
+            await self._require_room_action(session, agent_id, room_id, "archive")
         # Through RoomService rather than straight at the store: archiving is
         # reported, and writing the row here instead would make an agent's
         # archive the one kind nothing observes while the snapshot's archived
@@ -5022,6 +5266,9 @@ class AgentCore:
                 session,
                 room_id=room_id,
                 agent_id=agent_id,
+                owner_writes_room=await self._owner_writes_room(
+                    session, agent_id, room_id
+                ),
                 document_id=document_id,
                 name=name,
                 description=description,
@@ -5056,6 +5303,9 @@ class AgentCore:
                 session,
                 room_id=room_id,
                 agent_id=agent_id,
+                owner_writes_room=await self._owner_writes_room(
+                    session, agent_id, room_id
+                ),
                 document_id=document_id,
             )
             await session.commit()

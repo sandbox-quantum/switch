@@ -5,7 +5,15 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+from switch_core.delivery.addressing import (
+    ADDRESSING_DENIED_MESSAGE,
+    ADDRESSING_UNCLAIMED_MESSAGE,
+    AddressingDecision,
+)
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -13,6 +21,32 @@ _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
 
 class _Room(SimpleNamespace):
     pass
+
+
+class _Resolver:
+    """Answers `permitted` with a fixed decision and records who asked."""
+
+    def __init__(self, decision: AddressingDecision) -> None:
+        self.decision = decision
+        self.asked: list[tuple[str, str]] = []
+
+    async def permitted(self, _session, *, agent, room_id, sender):  # type: ignore[no-untyped-def]
+        self.asked.append((agent.name, sender))
+        return self.decision
+
+
+def _use_resolver(
+    monkeypatch: pytest.MonkeyPatch, decision: AddressingDecision
+) -> _Resolver:
+    resolver = _Resolver(decision)
+    monkeypatch.setattr(commands, "_command_resolver", lambda _host: resolver)
+    return resolver
+
+
+@pytest.fixture(autouse=True)
+def _poster_may_address(monkeypatch: pytest.MonkeyPatch) -> _Resolver:
+    """Unless a test says otherwise, the poster may address every agent."""
+    return _use_resolver(monkeypatch, AddressingDecision(allowed=True, refusal=""))
 
 
 def _build_client(
@@ -57,7 +91,9 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="@poster:x"
+    )
 
 
 def _agent(
@@ -104,6 +140,77 @@ class TestInviteCommand:
         await _cmd_invite(client, _Room(room_id="!m:x"), _event(""), False)
         assert added == []
         assert "Usage" in posted[0]
+
+
+class TestInviteCommandAddressing:
+    """The shared invite rule: the poster is in the room, so the agent's own
+    "who can address me" setting decides."""
+
+    async def test_asks_whether_the_poster_may_address_the_agent(
+        self, _poster_may_address: _Resolver
+    ) -> None:
+        client, _posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert _poster_may_address.asked == [("claude-code.alice", "@poster:x")]
+        assert added == [("room-1", ["claude-code.alice"])]
+
+    async def test_refuses_an_agent_the_poster_may_not_address(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _use_resolver(
+            monkeypatch,
+            AddressingDecision(allowed=False, refusal=ADDRESSING_DENIED_MESSAGE),
+        )
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert posted == [
+            "You can't invite claude-code.alice: it doesn't take requests from "
+            "you, so you can't bring it into a room either. Ask its owner to "
+            "invite it, or to let you address it."
+        ]
+        assert _MENTION.search(posted[0]) is None
+
+    async def test_tells_an_unlinked_poster_to_link_their_account(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _use_resolver(
+            monkeypatch,
+            AddressingDecision(allowed=False, refusal=ADDRESSING_UNCLAIMED_MESSAGE),
+        )
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert "doesn't take requests from you" in posted[0]
+        assert "link it in Switch Console" in posted[0]
+
+    async def test_an_agent_already_in_the_room_is_reported_before_asking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        resolver = _use_resolver(
+            monkeypatch,
+            AddressingDecision(allowed=False, refusal=ADDRESSING_DENIED_MESSAGE),
+        )
+        client, posted, _added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=["a1"]
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert resolver.asked == []
+        assert "already in this room" in posted[0]
 
 
 class TestInviteCommandDisplayNames:

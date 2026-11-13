@@ -5,24 +5,18 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import (
-    Principal,
-    can,
-    can_delete_room_document,
-    can_manage,
-    can_unlink_from_room,
-)
+from switch_core import room_admins, room_policy
+from switch_core.authz import Principal, can, can_manage, owns
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Document, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
-    ensure_may_unlink,
+    ensure_room_action,
     get_current_user,
     get_tenant_is_admin,
     require_room_access,
-    takes_part_in_room,
 )
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -42,6 +36,7 @@ from switch_core.gateway.schemas import (
     RoomDocumentDetail,
     RoomDocumentSummary,
 )
+from switch_core.room_policy import RoomAction, RoomCaller
 
 router = APIRouter()
 
@@ -133,15 +128,23 @@ def _room_can_read(reader: Principal, doc: Document) -> bool:
 
 
 def _can_remove(
-    principal: Principal, room: Room, doc: Document, *, takes_part: bool
+    principal: Principal, room: Room, doc: Document, *, where: room_admins.Standing
 ) -> bool:
     """Whether `principal` may remove `doc` from `room`: delete it if it is
     room-scoped, unlink it if it is attached."""
-    if doc.room_id is not None:
-        return can_delete_room_document(
-            principal, room_owner_id=room.owner_id, document_owner_id=doc.owner_id
-        )
-    return can_unlink_from_room(principal, takes_part=takes_part)
+    return room_policy.allows(
+        RoomCaller(principal, in_room=where.in_room, room_admin=where.room_admin),
+        room,
+        _removal(doc),
+        owns_target=owns(principal, doc.owner_id),
+    )
+
+
+def _removal(doc: Document) -> RoomAction:
+    """A room's own document is deleted; an attached one is unlinked. An
+    agent's document is recorded under the agent's owner, so that person
+    counts as its creator."""
+    return "delete_document" if doc.room_id is not None else "unlink"
 
 
 async def _enrich_summaries(
@@ -411,7 +414,7 @@ async def list_rooms_for_document(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
-        await resource_service.get_document_for_user(
+        resource = await resource_service.get_document_for_user(
             session, document_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
@@ -422,7 +425,11 @@ async def list_rooms_for_document(
         session, document_id, reader_id=user.id, reader_is_admin=is_admin
     )
     return await resource_rooms(
-        session, room_store, rooms, Principal(user.id, is_admin)
+        session,
+        room_store,
+        rooms,
+        Principal(user.id, is_admin),
+        resource_owner_id=resource.owner_id,
     )
 
 
@@ -440,7 +447,7 @@ async def list_room_documents(
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
-    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
+    where = await room_admins.standing(session, room_store, room.id, user.id)
     principal = Principal(user.id, is_admin)
     docs = await resource_service.list_room_documents(session, room_id)
     summaries = await _enrich_summaries(
@@ -449,7 +456,7 @@ async def list_room_documents(
     return [
         RoomDocumentSummary(
             **{**summary.model_dump(), "can_read": _room_can_read(principal, doc)},
-            can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
+            can_remove=_can_remove(principal, room, doc, where=where),
         )
         for summary, doc in zip(summaries, docs, strict=True)
     ]
@@ -467,7 +474,7 @@ async def attach_document_to_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "attach", is_admin)
     try:
         await resource_service.attach_document_to_room(
             session,
@@ -504,30 +511,31 @@ async def detach_document_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    """For globally-owned docs: unlink from the room, which those taking part
-    in it and admins may do. For room-scoped docs: hard-delete them entirely
-    (since they live only in this room), which their creator, the room's owner
-    and admins may do."""
+    """For globally-owned docs: unlink from the room, which its owner and
+    admins may do, and the document's owner if they are in the room. For
+    room-scoped docs: hard-delete them entirely (since they live only in this
+    room), which their creator, the room's owner and admins may do."""
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
     principal = Principal(user.id, is_admin)
-    doc = await resource_service.get_room_scoped_document_or_none(
+    scoped = await resource_service.get_room_scoped_document_or_none(
         session, room_id, document_id
     )
-    if doc is not None:
-        if not can_delete_room_document(
-            principal, room_owner_id=room.owner_id, document_owner_id=doc.owner_id
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Only the document's creator, the room's owner and admins can delete it",
-            )
+    doc = scoped or await session.get(Document, document_id)
+    await ensure_room_action(
+        session,
+        room_store,
+        room,
+        principal,
+        "delete_document" if scoped is not None else "unlink",
+        owns_target=doc is not None and owns(principal, doc.owner_id),
+    )
+    if scoped is not None:
         await resource_service.delete_room_document_by_user(
             session, room_id=room_id, document_id=document_id
         )
     else:
-        await ensure_may_unlink(session, room_store, room, principal)
         await resource_service.detach_document_from_room(session, room_id, document_id)
     await session.commit()
 
@@ -560,8 +568,8 @@ async def get_room_document(
     detail = await _enrich_detail(
         session, doc, resource_service, user_store, agent_store, principal
     )
-    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
+    where = await room_admins.standing(session, room_store, room.id, user.id)
     return RoomDocumentDetail(
         **{**detail.model_dump(), "can_read": _room_can_read(principal, doc)},
-        can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
+        can_remove=_can_remove(principal, room, doc, where=where),
     )

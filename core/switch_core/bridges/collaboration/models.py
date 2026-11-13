@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict
@@ -214,6 +215,35 @@ class InboundCommand(BaseModel):
     root_id: str | None = None
     agent_name: str | None = None
     channel_name: str | None = None
+    # The adapter's own handle for answering this one command where only its
+    # sender sees the answer, wherever it was run (Slack's `response_url`, a
+    # pending Discord interaction). None when the platform gives the command
+    # no private reply; `PlatformAdapter.answer_command` is what reads it.
+    reply_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class DirectPrompt:
+    """A direct message to one person with a row of buttons (CHOO-4121).
+
+    `text` is Switch Markdown, rendered by the adapter like any other body.
+    Every button carries `token`, and a press names which button by its
+    position in `labels`, from one: the same `(token, position)` pair the
+    platforms' card buttons carry, so a press comes back through the path a
+    card's does, as `position_action(position)` with the token as its value.
+    """
+
+    text: str
+    token: str
+    labels: tuple[str, ...]
+
+
+class DirectMessageUnavailable(Exception):
+    """The platform cannot message this person directly.
+
+    The message says why in words a Switch user can act on, because it is shown
+    to them in Switch Console beside the code that works instead.
+    """
 
 
 class InboundInteraction(BaseModel):
@@ -247,6 +277,8 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # The platform account that added the agent, where the platform says.
+    added_by_external_user_id: str | None = None
 
 
 class InboundUserJoin(BaseModel):
@@ -255,6 +287,38 @@ class InboundUserJoin(BaseModel):
     external_user_id: str
     external_username: str
     channel_name: str | None = None
+    # Written to the room's history without waking any agent: someone who
+    # came to see the channel without being added to it (joining a Discord
+    # server makes its public channels visible), not someone added to it.
+    quiet: bool = False
+
+
+class InboundUserLeave(BaseModel):
+    """A person left a bridged channel, or was taken out of it.
+
+    `removed_by_name` is what the platform calls whoever removed them, where
+    the platform says and it was not the person themselves; None when they
+    left on their own or the platform did not say.
+    """
+
+    channel_id: str
+    external_user_id: str
+    external_username: str | None = None
+    removed_by_name: str | None = None
+
+
+class ChannelMembers(BaseModel):
+    """Who a platform says is in a channel, for lining a room up with it.
+
+    `complete` is False when the listing stopped short (a page failed, a
+    limit was hit): then it is good for adding people and never for removing
+    them, since someone missing from it may simply not have been reached.
+    `members` maps each person's platform id to their name; bots, the app
+    itself and Switch's agents are left out by the adapter.
+    """
+
+    members: dict[str, str]
+    complete: bool
 
 
 class InboundAppJoin(BaseModel):
@@ -265,6 +329,10 @@ class InboundAppJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     channel_name: str | None = None
+    # The platform account that added the app, where the platform says (Slack's
+    # inviter, the Teams user who added it). Its linked Switch user owns the
+    # room the channel becomes.
+    added_by_external_user_id: str | None = None
 
 
 class BridgeInstallLink(BaseModel):

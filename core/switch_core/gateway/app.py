@@ -70,6 +70,11 @@ from switch_core.gateway.organization_services import (
     router as organization_services_router,
 )
 from switch_core.gateway.organizations import router as organizations_router
+from switch_core.gateway.origin_check import (
+    OriginCheckMiddleware,
+    allowed_origins,
+    log_origin_setup,
+)
 from switch_core.gateway.ownership import router as ownership_router
 from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.providers import router as providers_router
@@ -196,7 +201,9 @@ def create_gateway_app(
     # sent to WorkOS (`workos_sign_in.py`).
     app.state.workos_sign_in = None
     app.state.service_flows = ServiceFlows(
-        config.gateway_public_url, app.state.sign_in_flows
+        config.gateway_public_url,
+        config.service_sign_in_redirect,
+        app.state.sign_in_flows,
     )
     if config.service_connections_enabled:
         app.include_router(service_connections_router, tags=["service-connections"])
@@ -226,6 +233,11 @@ def create_gateway_app(
     )
     if config.gateway_oidc_enabled:
         register_oidc_client(config)
+    # One Origin check for every cookie-authenticated change, and
+    # `X-Frame-Options: DENY` on every answer.
+    origins = allowed_origins(config)
+    log_origin_setup(config, origins)
+    app.add_middleware(OriginCheckMiddleware, allowed=origins)
 
     app.add_exception_handler(RequestValidationError, validation_error_response)
     app.add_exception_handler(SessionError, session_error_response)

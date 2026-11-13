@@ -568,6 +568,7 @@ class TestTheSnapshotSchedule:
                     channel_type="none",
                     agent_count=1,
                     created_by_kind="agent",
+                    console_chat=False,
                 )
             ]
 

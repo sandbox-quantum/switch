@@ -100,6 +100,7 @@ export function withConsoleGroupChats(
       // shortcut: a chat summary names no owner, so a chat-only row offers no delete; read it from the room detail if one is wanted.
       ownerId: null,
       viewerIsMember: true,
+      viewerIsRoomAdmin: false,
       isConsoleChat: true,
       archived: false,
       createdAt: chat.lastMessage?.sentAt ?? '',

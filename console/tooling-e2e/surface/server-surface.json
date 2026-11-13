@@ -52,6 +52,7 @@
     "release_role",
     "remove_agent_from_room",
     "remove_agent_service",
+    "remove_users_from_room",
     "request_agent_deletion",
     "run_template",
     "save_template",
@@ -239,6 +240,11 @@
     },
     {
       "route": "DELETE /gateway/rooms/{room_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}",
       "auth": "session",
       "flags": []
     },
@@ -836,12 +842,22 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/agent-candidates",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/template-schema",
       "auth": "session",
       "flags": []
     },
     {
       "route": "GET /gateway/rooms/{room_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/admins",
       "auth": "session",
       "flags": []
     },
@@ -1008,6 +1024,16 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/{tenant_id}/private-channel-rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/private-channel-rooms/count",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/tenants/{tenant_id}/retention",
       "auth": "session",
       "flags": []
@@ -1120,6 +1146,11 @@
     },
     {
       "route": "PATCH /gateway/templates/{template_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/tenants/{tenant_id}",
       "auth": "session",
       "flags": []
     },
@@ -1534,6 +1565,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/rooms/{room_id}/users/remove",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/service-connections/{service}/flows",
       "auth": "session",
       "flags": [
@@ -1542,6 +1578,13 @@
     },
     {
       "route": "POST /gateway/service-connections/{service}/flows/{flow_id}/complete",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "POST /gateway/service-connections/{service}/flows/{flow_id}/fail",
       "auth": "session",
       "flags": [
         "service_connections"
@@ -1598,6 +1641,16 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/tenants/{tenant_id}/switch",
       "auth": "session",
       "flags": []
@@ -1634,6 +1687,11 @@
     },
     {
       "route": "PUT /gateway/agents/{agent_id}/icon",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/mid-turn-delivery",
       "auth": "session",
       "flags": []
     },
@@ -1717,6 +1775,11 @@
       "flags": []
     },
     {
+      "route": "PUT /gateway/rooms/{room_id}/admins/{target_user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/rooms/{room_id}/auto-route",
       "auth": "session",
       "flags": []
@@ -1748,6 +1811,13 @@
     },
     {
       "route": "PUT /gateway/service-connections/{service}/key",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "PUT /gateway/service-connections/{service}/paste",
       "auth": "session",
       "flags": [
         "service_connections"

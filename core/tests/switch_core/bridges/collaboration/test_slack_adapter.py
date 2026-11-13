@@ -1302,7 +1302,12 @@ def test_bot_join_fires_on_app_joined() -> None:
 
     _run(
         adapter._handle_member_joined_channel(
-            {"type": "member_joined_channel", "user": "UBOT", "channel": "C123"}
+            {
+                "type": "member_joined_channel",
+                "user": "UBOT",
+                "channel": "C123",
+                "inviter": "UALICE",
+            }
         )
     )
 
@@ -1310,6 +1315,8 @@ def test_bot_join_fires_on_app_joined() -> None:
     assert joins[0].channel_id == "C123"
     assert joins[0].channel_type == "channel_public"
     assert joins[0].channel_name == "general"
+    # Who invited it, so their linked Switch user can own the room.
+    assert joins[0].added_by_external_user_id == "UALICE"
 
 
 def test_user_join_does_not_fire_on_app_joined() -> None:

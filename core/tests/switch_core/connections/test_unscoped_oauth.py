@@ -61,6 +61,7 @@ async def test_authorization_scope_is_omitted_only_for_explicit_unscoped_access(
             state="example-state",
             code_challenge="example-challenge",
             scopes=scopes,
+            choices={},
         )
         query = parse_qs(urlsplit(url).query, keep_blank_values=True)
         assert query["code_challenge_method"] == ["S256"]
@@ -74,7 +75,7 @@ async def test_unscoped_sign_in_records_explicit_consent_without_invented_scopes
     stored = Mock(spec=StoredFlow)
     repository = Mock(spec=SignInFlows)
     repository.start = AsyncMock(return_value=stored)
-    flows = ServiceFlows(None, repository)
+    flows = ServiceFlows(None, {}, repository)
     await flows.start(
         definition=_definition(),
         tenant_id="example-tenant",
@@ -83,6 +84,7 @@ async def test_unscoped_sign_in_records_explicit_consent_without_invented_scopes
         port=43123,
         completion_secret="example-completion",
         owner_label="Example owner",
+        choices={},
     )
     details = repository.start.call_args.kwargs["details"]
     assert details["unscoped"] is True
@@ -113,8 +115,9 @@ def test_consent_does_not_mistake_empty_scopes_for_read_only(
         stored,
         SignIn(ConnectionSecret({}), granted, "example-client"),
         Identity("example-account", "Example"),
+        {},
     )
-    flows = ServiceFlows(None, Mock(spec=SignInFlows))
+    flows = ServiceFlows(None, {}, Mock(spec=SignInFlows))
     if expected is None:
         with pytest.raises(FlowError):
             flows.consent(exchange)

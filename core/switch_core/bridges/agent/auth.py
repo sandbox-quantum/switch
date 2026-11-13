@@ -34,6 +34,7 @@ from switch_core.db.tenant_lookup import (
 )
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.hosted import record_credential_refusal, route_kind
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
@@ -612,6 +613,9 @@ def _controller_refusal(code: str, message: str, status_code: int) -> ASGIApp:
     )
 
     async def refuse(scope: Scope, receive: Receive, send: Send) -> None:
+        if status_code == 401:
+            # A refused credential, counted by its code and kind of route only.
+            record_credential_refusal(code, route_kind(scope.get("path", "")))
         if scope["type"] != "websocket":
             await response(scope, receive, send)
             return

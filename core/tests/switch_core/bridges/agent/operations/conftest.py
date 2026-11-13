@@ -38,6 +38,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.room_policy import visibility_for_channel
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import RoomYamlService
 
@@ -78,8 +79,9 @@ class FakeRoomService:
                 kickoff_hash=config.kickoff_hash,
                 template_name=config.template_name,
                 owner_id=config.owner_id,
-                read_visibility=config.read_visibility,
-                write_visibility=config.write_visibility,
+                read_visibility=config.read_visibility
+                or visibility_for_channel(config.channel_type or "channel_public"),
+                write_visibility="private",
                 group_id=config.group_id,
             )
             session.add(room)

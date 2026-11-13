@@ -1,7 +1,65 @@
 slug: linear
 name: Linear
 category: Project management
-description: Read and update Linear issues and projects.
-enabled: false
+description: Read and update Linear issues and projects, as you.
+enabled: true
+publisher: Linear
+links:
+  documentation: https://linear.app/docs/mcp
+  support: https://linear.app/contact/support
+  privacy: https://linear.app/privacy
+adapter: oauth
 auth:
   type: oauth
+  # Linear's refresh tokens rotate: each refresh returns a new one. Measured:
+  # the old refresh token still works for a short time after the rotation.
+  refresh: rotating
+  oauth:
+    # Linear's MCP server offers OAuth 2.1 with dynamic client registration,
+    # so Core registers its own client and nothing is set up on the server.
+    registration: dynamic
+    # Back through Core where the server has a public address, else straight
+    # to Switch Console. The loopback ports are fixed in case Linear matches a
+    # registered loopback redirect's port exactly.
+    redirect: [core, loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Asked on every connect. Measured: Linear shows no consent screen when
+    # the browser's Linear login approved this client before, so a reconnect
+    # signs in as that login, in the workspace it picked then.
+    prompt: consent
+    # A revocation ends one sign-in only, also for the same user and client
+    # (measured), so a reconnect does not end the new sign-in.
+    revocation_discovered: true
+  # An MCP token works only with Linear's MCP server: Linear's GraphQL API
+  # answers it 401 (measured). The server's whoami tool is not read-only,
+  # and a `read` sign-in does not list it. get_user is read-only and is
+  # listed with `read` and with `read write`. Linear documents "me" as a value of its query argument
+  # ("User ID, name, email, or \"me\""). get_user "me" returned one user, the
+  # signed-in one, also next to a member named "me" (measured). The same
+  # login has a different user id in each Linear workspace, so the id alone
+  # names the account.
+  identity:
+    mcp_tool: get_user
+    arguments: { query: me }
+    account_id: id
+    label: email
+# Linear's access tokens live 86100 s, the first one and each refreshed one
+# (measured expires_in). An agent's copy may outlive its grant by up to that
+# long, though agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 86100 }
+mcp:
+  servers:
+    # The one Streamable HTTP endpoint: the scope, not the separate
+    # /mcp/readonly URL, decides what a sign-in can do.
+    - { name: linear, url: "https://mcp.linear.app/mcp" }
+access:
+  # Switch asks for the write level on every connect, and a grant is on or
+  # off, so a connection can read and write. The read level is what Linear
+  # enforces for `read` alone: such a token lists only the read-only tools
+  # (measured). Not asked for: `admin` (workspace settings, teams, members),
+  # which an agent has no reason to change.
+  read:
+    scopes: [read]
+  write:
+    scopes: [read, write]
+tools: { mode: pass_through }

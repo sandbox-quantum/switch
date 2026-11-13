@@ -21,11 +21,12 @@ import type {
   Snapshot,
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import { ProviderConversationUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, SteerNotSentError, sessionInput } from '../adapter';
 import type {
   ConversationHistoryTurn,
   ProviderAdapter,
   ProviderSessionStartInput,
+  ProviderTurnStartResult,
   TurnAttachment,
 } from '../adapter';
 import type { TokenUsage, TurnOutcome, UsageLimit, UserInputAnswers } from '../events';
@@ -40,7 +41,13 @@ import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
-  z.object({ type: z.literal('dispatched'), commandId: z.string() }),
+  z.object({
+    type: z.literal('dispatched'),
+    commandId: z.string(),
+    // Withdrawn: the provider confirmed it never took this steered message, so
+    // it was queued instead. A host that predates it reads a plain dispatch.
+    notSent: z.literal(true).optional(),
+  }),
   z.object({
     type: z.literal('finished'),
     commandId: z.string(),
@@ -72,6 +79,8 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
  * records an older host could not read.
  */
 const HISTORY_SETTLED = new Set(['HISTORY_IMPORTED', 'HISTORY_UNAVAILABLE']);
+/** The title of a message sent into a running turn with an outcome nobody knows. */
+const UNKNOWN_DELIVERY = 'Sent to the running turn; the agent may not have received it';
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
@@ -169,6 +178,10 @@ export class HostedSession {
   ) {
     // Every host from this one on runs `message.retry`; one built before says nothing, meaning no.
     config.session.capabilities.retry = true;
+    // What a message sent mid-turn does follows the provider as it is now, not
+    // the config a session saved when it was first started: a session saved
+    // before its provider could steer would otherwise queue every one.
+    config.session.capabilities.input = sessionInput(adapter.capabilities);
     const snapshot: Snapshot = {
       contractVersion: 1,
       throughSequence: 0,
@@ -200,7 +213,10 @@ export class HostedSession {
     }
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
-      if (record.type === 'dispatched') this.dispatched.add(record.commandId);
+      if (record.type === 'dispatched') {
+        if (record.notSent) this.dispatched.delete(record.commandId);
+        else this.dispatched.add(record.commandId);
+      }
       if (record.type === 'finished') {
         this.finished.add(record.commandId);
         if (record.usage) this.usage.set(record.commandId, record.usage);
@@ -917,7 +933,13 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    // Run as a turn of its own: steered into whatever turn runs now, it would
+    // join work it was never meant for.
+    return {
+      ...command,
+      origin: original.origin,
+      body: { ...original.body, delivery: 'queue' },
+    };
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -942,8 +964,14 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      // A steered message is one the provider takes into its running turn;
+      // a provider that cannot take one is sent queued messages only, and a
+      // steer asked of it is refused rather than silently queued, so the
+      // sender learns its session record is wrong.
+      if (body.delivery === 'steer' && !this.adapter.capabilities.steering)
+        throw new Error(
+          'UNSUPPORTED_CAPABILITY: the selected provider cannot steer a running turn.'
+        );
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -1018,32 +1046,23 @@ export class HostedSession {
     });
     try {
       if (body.type === 'message.send') {
-        const turnId = command.commandId;
-        this.projector.bindTurn(turnId, {
+        this.projector.bindTurn(command.commandId, {
           commandId: command.commandId,
           origin: command.origin,
         });
-        await this.publish({
-          type: 'turn.upsert',
-          turnId,
-          commandId: command.commandId,
-          status: 'queued',
-        });
-        await this.publish({
-          type: 'item.upsert',
-          item: {
-            itemId: `user-${command.commandId}`,
-            turnId,
-            revision: 1,
-            kind: 'user-message',
-            status: 'completed',
-            title: '',
-            text: body.text,
-            attachments: body.attachments,
-            origin: command.origin,
-          },
-        });
-        this.queue.push(command);
+        // A steered message the provider took needs no turn of its own. One
+        // it refused is queued like any other, so a message is never lost
+        // to a steering failure.
+        // Into the turn running now, once the provider has it: a message
+        // asked to steer while nothing runs, or before the running turn has
+        // reached the provider, waits as a turn of its own.
+        const running = this.activeTurn;
+        const taken =
+          body.delivery === 'steer' &&
+          running !== null &&
+          this.dispatched.has(running) &&
+          (await this.steerMessage(command, running));
+        if (!taken) await this.queueMessage(command);
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1233,6 +1252,127 @@ export class HostedSession {
     const status = this.snapshot().commandStatuses.find((value) => value.commandId === commandId);
     if (!status) throw new Error('NOT_FOUND: command not found.');
     return status;
+  }
+
+  /** Publishes a message as a turn of its own, queued to run after any turn in flight. */
+  private async queueMessage(command: Command): Promise<void> {
+    if (command.body.type !== 'message.send') return;
+    const turnId = command.commandId;
+    const wasQueued = this.activeTurn !== null || this.queue.length > 0;
+    await this.publish({
+      type: 'turn.upsert',
+      turnId,
+      commandId: command.commandId,
+      status: 'queued',
+    });
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId,
+        revision: 1,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: command.body.text,
+        attachments: command.body.attachments,
+        origin: command.origin,
+        ...(wasQueued ? { delivery: 'queued' as const } : {}),
+      },
+    });
+    this.queue.push(command);
+  }
+
+  /**
+   * Hands a message to the provider while a turn is running, so it reaches
+   * that turn instead of waiting for it to finish. Only the turn named by
+   * `expectedTurnId`, the one running when the message was taken, may take
+   * it: the adapter refuses any other with `SteerNotSentError`.
+   *
+   * Returns true when the message joined the turn, and false when it was
+   * provably not sent, so the caller queues it as a turn of its own. Any other
+   * failure leaves the outcome unknown: the message is shown, recorded as
+   * dispatched and never resent.
+   */
+  private async steerMessage(command: Command, expectedTurnId: string): Promise<boolean> {
+    if (command.body.type !== 'message.send') return false;
+    const body = command.body;
+    const attachments = body.attachments.length
+      ? await this.config.stageAttachments!(body.attachments)
+      : [];
+    if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+    if (expectedTurnId !== this.activeTurn) return false;
+    await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+    this.dispatched.add(command.commandId);
+    let result: ProviderTurnStartResult;
+    try {
+      if (expectedTurnId !== this.activeTurn)
+        throw new SteerNotSentError('The turn ended before the message was sent.');
+      result = await this.adapter.sendTurn({
+        sessionId: this.config.session.sessionId,
+        turnId: command.commandId,
+        expectedTurnId,
+        text: body.text,
+        attachments,
+      });
+    } catch (error) {
+      if (!(error instanceof SteerNotSentError)) {
+        await this.publishSteered(command, expectedTurnId, UNKNOWN_DELIVERY);
+        throw error;
+      }
+      await this.inbox.append({ type: 'dispatched', commandId: command.commandId, notSent: true });
+      this.dispatched.delete(command.commandId);
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'STEERING_FALLBACK',
+        message: `The message could not be taken into the running turn (${error.message}), so it was queued to run after it.`,
+      });
+      return false;
+    }
+    if (result.steeredInto !== expectedTurnId) {
+      await this.publishSteered(command, expectedTurnId, UNKNOWN_DELIVERY);
+      throw new Error(
+        `The provider did not take the message into turn ${expectedTurnId}${result.steeredInto ? ` but into ${result.steeredInto}` : ''}; it is not resent.`
+      );
+    }
+    // The message belongs to the running turn now, and its completion is
+    // that turn's: this command is finished here, and is never resent.
+    await this.inbox.append({ type: 'finished', commandId: command.commandId });
+    this.finished.add(command.commandId);
+    // The turn now answers this message too: one asked of the agent makes
+    // a turn that was only offered to it owe the room a reply.
+    if (!this.unaskedTurns.delete(command.commandId)) this.unaskedTurns.delete(expectedTurnId);
+    await this.publishSteered(command, expectedTurnId, null);
+    return true;
+  }
+
+  /**
+   * Shows a message sent into a running turn, inside that turn: steered, or,
+   * with `uncertain`, sent with an outcome nobody knows (no delivery is
+   * claimed for it).
+   */
+  private async publishSteered(
+    command: Command,
+    turnId: string,
+    uncertain: string | null
+  ): Promise<void> {
+    if (command.body.type !== 'message.send') return;
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId,
+        revision: 1,
+        kind: 'user-message',
+        status: uncertain === null ? 'completed' : 'failed',
+        title: uncertain ?? '',
+        text: command.body.text,
+        attachments: command.body.attachments,
+        origin: command.origin,
+        ...(uncertain === null ? { delivery: 'steered' as const } : {}),
+      },
+    });
   }
 
   private async runNext(): Promise<void> {

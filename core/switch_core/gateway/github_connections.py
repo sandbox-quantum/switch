@@ -27,6 +27,7 @@ from switch_core.connections.sign_in_flows import (
     SignInFlows,
     StoredFlow,
     digest,
+    vendor_refusal,
 )
 from switch_core.db.models import (
     ServiceConnection,
@@ -38,6 +39,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session
 from switch_core.gateway.service_connections import service_refusal
+from switch_core.loopback import secure_cookie
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
@@ -56,10 +58,17 @@ APP_CHANGED = "The GitHub App changed during your sign-in. Start it again."
 
 
 def service(request: Request) -> GitHubConnections:
-    """The server's own GitHub App."""
+    """The server's own GitHub App, or a refusal giving the broker's reason
+    GitHub can't be used through it here, such as its App not being set up."""
     value = request.app.state.github_connections
     if value is None:
-        raise HTTPException(503, "GitHub connectors are not turned on here.")
+        reason = get_service_broker(request).server_availability("github")
+        if reason is None:
+            logger.error(
+                "The broker can grant GitHub, but this process has no GitHub App."
+            )
+            reason = "GitHub is not set up here."
+        raise HTTPException(503, reason)
     return cast(GitHubConnections, value)
 
 
@@ -177,7 +186,7 @@ async def start(
         )
     except FlowUsedError:
         raise HTTPException(
-            503, "This authorization has already been used. Connect again."
+            409, "This authorization has already been used. Connect again."
         ) from None
     except FlowsBusyError:
         raise HTTPException(
@@ -244,7 +253,7 @@ async def authorize(
         "switch_github_" + state,
         nonce,
         max_age=600,
-        secure=True,
+        secure=secure_cookie(github.origin),
         httponly=True,
         samesite="lax",
         path="/gateway/provider-connections/github/callback",
@@ -258,7 +267,9 @@ async def callback(
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
     """Back from GitHub: the browser takes the code on to Switch Console, on
-    the computer it left from. Once per flow."""
+    the computer it left from. Once per flow. Back with GitHub's `error`
+    instead, the flow fails with what GitHub said, and the page says it too:
+    GitHub reports an App whose callback URL does not match this way."""
     state = request.query_params.get("state", "")
     code = request.query_params.get("code", "")
     try:
@@ -270,13 +281,18 @@ async def callback(
         ):
             raise GitHubError("Authorization could not be verified.")
         if not code:
+            refusal = vendor_refusal(
+                "GitHub",
+                request.query_params.get("error", ""),
+                request.query_params.get("error_description"),
+            )
             await flows.advance(
                 flow,
                 expect=("authorizing",),
                 to="failed",
-                changes={"error": "GitHub authorization was cancelled."},
+                changes={"error": refusal},
             )
-            raise GitHubError("GitHub authorization was cancelled.")
+            return page(f"{refusal} Return to Switch Console.", 400)
         if (
             await flows.advance(
                 flow, expect=("authorizing",), to="delivered", changes={}
@@ -293,7 +309,7 @@ async def callback(
         response.delete_cookie(
             "switch_github_" + state,
             path="/gateway/provider-connections/github/callback",
-            secure=True,
+            secure=secure_cookie(flow.redirect_uri),
             httponly=True,
             samesite="lax",
         )
@@ -350,19 +366,36 @@ async def complete(
         {"key": f"github-link:{require_tenant_id()}"},
     )
     account_id = str(credentials["user_id"])
-    taken = await session.scalar(
-        select(ServiceConnection.user_id).where(
+    secret = ConnectionSecret(credentials)
+    holder = await session.scalar(
+        select(ServiceConnection).where(
             ServiceConnection.tenant_id == require_tenant_id(),
             ServiceConnection.service == "github",
             ServiceConnection.user_id != user.id,
             ServiceConnection.account_id == account_id,
         )
     )
-    if taken is not None:
+    if holder is not None:
         linked = (
             "This GitHub account is already linked to another Switch user in "
-            "this workspace. Remove that link first."
+            "this Switch workspace. Remove that link first."
         )
+        try:
+            note = await broker.discard_sign_in(
+                session,
+                service="github",
+                kept=holder,
+                secret=secret,
+                oauth_client_id=github.client_id,
+                account_id=account_id,
+                choices={},
+            )
+        except Exception:
+            # The refusal must still reach the person and end the flow.
+            logger.exception("github unkept sign-in discard failed")
+            note = "Switch could not check the sign-in GitHub just issued."
+        if note is not None:
+            linked = f"{linked} {note}"
         await _settled(flows, checking, "failed", error=linked)
         return JSONResponse(
             status_code=409,
@@ -381,8 +414,10 @@ async def complete(
             granted_scopes=[],
             account_id=account_id,
             external_identity=credentials["login"],
-            secret=ConnectionSecret(credentials),
+            secret=secret,
             oauth_client_id=github.client_id,
+            method="oauth",
+            choices={},
         )
     except ServiceError as error:
         await _settled(flows, checking, "failed", error=error.message)

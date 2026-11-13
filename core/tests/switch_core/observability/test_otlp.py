@@ -24,6 +24,7 @@ from switch_core.observability.otlp import (
     OtlpSendError,
     build_logs_payload,
     build_metrics_payload,
+    flint_env,
     otlp_attributes,
 )
 
@@ -70,7 +71,7 @@ def test_attributes_are_ordered_by_key():
 
 def test_resource_carries_the_deployment_id_the_relay_guards_on():
     attributes = RESOURCE.attributes()
-    assert attributes["flint.client_id"] == RESOURCE.deployment_id
+    assert attributes["switch_trust.client_id"] == RESOURCE.deployment_id
     assert attributes["service.name"] == "switch-core"
     assert attributes["deployment.environment"] == "pilot"
 
@@ -272,6 +273,34 @@ def test_histogram_counts_are_strings_and_bounds_are_numbers():
     # Doubles stay numbers; only the 64-bit integers become strings.
     assert point["explicitBounds"] == [5.0, 10.0]
     assert point["sum"] == 12.5
+    # Without min and max, Datadog's `max:` of the distribution is empty.
+    assert "min" not in point and "max" not in point
+
+
+def test_a_histograms_extremes_are_sent_as_min_and_max():
+    histogram = MetricPayload(
+        name="switch.hosted.box_memory_used",
+        unit="%",
+        description="Memory used.",
+        kind="histogram",
+        numbers=(),
+        histograms=[
+            HistogramPoint(
+                attributes={"backend": "vm"},
+                count=2,
+                total=110.0,
+                bucket_counts=[0, 2],
+                bounds=[50.0],
+                minimum=20.0,
+                maximum=90.0,
+            )
+        ],
+    )
+    payload = build_metrics_payload([histogram], RESOURCE, START_NANOS, END_NANOS)
+    point = payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["histogram"][
+        "dataPoints"
+    ][0]
+    assert (point["min"], point["max"]) == (20.0, 90.0)
 
 
 def test_unknown_metric_kind_is_refused():
@@ -457,3 +486,82 @@ def test_the_decision_services_copy_of_the_log_payload_matches_this_one():
     ]
 
     assert build_logs_payload(records, resource) == fixture["payload"]
+
+
+def _resource_keys(payload: dict, signal: str) -> dict[str, object]:
+    resource = payload[f"resource{signal}"][0]["resource"]["attributes"]
+    return {item["key"]: item["value"] for item in resource}
+
+
+def _with_flint_env(flint_env: str | None) -> OtlpResource:
+    return OtlpResource(
+        service_name="switch-core-v1test",
+        service_version=None,
+        environment="hosted-v1-test",
+        deployment_id="0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10",
+        commit_sha=None,
+        repository_url=None,
+        instance_id=None,
+        pod_name="switch-core-v1test-0",
+        flint_env=flint_env,
+    )
+
+
+def _log_record() -> LogRecord:
+    return LogRecord(
+        body="hello",
+        severity_text="INFO",
+        severity_number=9,
+        time_nanos=END_NANOS,
+        attributes={},
+    )
+
+
+def test_metrics_and_logs_carry_flint_env_on_the_resource():
+    """A collector in front of Datadog may rewrite `env` and drop
+    `deployment.environment`, but keeps
+    the allow-listed resource attribute `flint_env` as a tag, so it says which
+    deployment metrics and logs came from. Points are left as they were, and
+    the resource's own `environment` field plays no part in it."""
+    resource = _with_flint_env("hosted-v1-test")
+    metrics = build_metrics_payload([_sum_metric()], resource, START_NANOS, END_NANOS)
+    logs = build_logs_payload([_log_record()], resource)
+    for payload, signal in ((metrics, "Metrics"), (logs, "Logs")):
+        assert _resource_keys(payload, signal)["flint_env"] == {
+            "stringValue": "hosted-v1-test"
+        }
+    point = metrics["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["sum"][
+        "dataPoints"
+    ][0]
+    assert "flint_env" not in {a["key"] for a in point["attributes"]}
+
+
+def test_without_a_flint_env_the_resource_has_none():
+    resource = _with_flint_env(None)
+    metrics = build_metrics_payload([_sum_metric()], resource, START_NANOS, END_NANOS)
+    logs = build_logs_payload([_log_record()], resource)
+    assert "flint_env" not in _resource_keys(metrics, "Metrics")
+    assert "flint_env" not in _resource_keys(logs, "Logs")
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ("hosted-v1-test", "hosted-v1-test"),
+        ("pilot", "pilot"),
+        ("a" * 32, "a" * 32),
+        (None, None),
+        ("", None),
+        ("Prod", None),
+        ("pilot env", None),
+        ("a" * 33, None),
+        ("-pilot", None),
+        ("pilot_1", None),
+        ("CANARY/x", None),
+        ("café", None),
+    ],
+)
+def test_flint_env_is_environment_only_when_it_is_a_short_plain_name(
+    environment: str | None, expected: str | None
+):
+    assert flint_env(environment) == expected
