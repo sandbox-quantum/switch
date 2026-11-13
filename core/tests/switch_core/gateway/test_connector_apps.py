@@ -835,8 +835,9 @@ class TestImportAndRemove:
         [google] = [c for c in listed.json()["connections"] if c["slug"] == GOOGLE]
         assert google["server_setup_needed"] is True
         assert google["unavailable_code"] == "app_not_set_up"
-        assert google["unavailable_reason"].startswith(
-            "Google Workspace is not set up here."
+        assert google["unavailable_reason"] == (
+            "Google Workspace's connector app isn't set up on this server yet. "
+            "Whoever runs Switch can set it up."
         )
         assert [event.action for event in await _audit(session_factory)] == [
             "connector_app.saved",
