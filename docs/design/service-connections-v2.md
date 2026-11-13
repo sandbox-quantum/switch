@@ -1153,6 +1153,37 @@ Built from sign-ins against sentry.io with a test organization:
 To connect: Settings, Connections in Switch Console, then Sentry. Nothing
 needs configuring on the server. To roll back, add `sentry` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+## Box
+
+Built from sign-ins against a free Box developer account, with Integration
+Credentials of its own:
+
+- Box offers no dynamic registration, so a Box admin enables the Box MCP server
+  in the Admin Console and adds Integration Credentials; each server's operator
+  saves them (`registration: static`, `BOX_CLIENT_CONFIG_PATH`, Helm
+  `switchCore.boxClientSecret`); see [`box-setup.md`](../old/box-setup.md).
+- Sign-ins come back to Switch Console (`redirect: [loopback]`), on the five
+  fixed ports Atlassian uses, so a server needs no public address.
+- `mcp.box.com` names `api.box.com` as its authorization server, whose metadata
+  gives the endpoints, PKCE S256 and revocation. The token also works with
+  `GET /2.0/users/me`, which gives the account: `id`, and `login` as its label.
+- Box documents an hour, but access tokens lived 3695 to 4267 s across sign-ins
+  and refreshes. At 3600 the broker would withhold a fresh token for its first
+  minutes, so `max_lifetime` is 4500. A refresh returns a new refresh token
+  (`refresh: rotating`).
+- Disconnecting revokes at the advertised endpoint. That ends the access and
+  refresh tokens of that sign-in and leaves the account's other sign-ins working,
+  so `revocation_ends_grant` does not apply.
+- Two levels, and Box enforces them. A `root_readonly` sign-in reads, and its
+  writes are refused. Write is `root_readwrite`, and connecting asks for it, as
+  for every service. Box's server has no tool that deletes a file or folder. Not
+  asked for: `ai.readwrite`, whose tools spend the enterprise's AI units, and
+  `docgen.readwrite`, which needs an Enterprise Advanced licence. The server
+  still lists the Box AI tools, and refuses them.
+
+To connect: Settings, Connections in Switch Console, then Box. To roll back, add
+`box` to `DISABLED_SERVICES`, set the entry's `enabled: false`, or remove its
+credentials.
 
 ## Not yet
 

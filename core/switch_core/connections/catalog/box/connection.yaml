@@ -1,7 +1,66 @@
 slug: box
 name: Box
 category: File storage
-description: Read and manage files stored in Box.
-enabled: false
+description: Search, read and add to the files and folders you can reach in Box, as you.
+enabled: true
+publisher: Box
+links:
+  documentation: https://developer.box.com/guides/box-mcp/
+  support: https://support.box.com/
+  privacy: https://www.box.com/legal/privacypolicy
+adapter: oauth
 auth:
   type: oauth
+  # Each refresh returns a new refresh token, which replaces the old one.
+  refresh: rotating
+  oauth:
+    # Box offers no dynamic registration. A Box admin enables the Box MCP server
+    # under Integrations in the Box Admin Console and adds Integration
+    # Credentials there, which give the client id and secret; each server's
+    # operator saves them under Connector apps, or names them in
+    # BOX_CLIENT_CONFIG_PATH. Their Access Scopes must include root_readwrite,
+    # and their redirect URIs the five loopback ones. A free Box developer
+    # account has an Admin Console and can do this.
+    registration: static
+    client_settings: BOX
+    # Sign-ins come back to Switch Console, so a server without a public
+    # address can connect Box too. The ports are fixed, as the integration
+    # registers each redirect URI: Atlassian's.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # The endpoints, PKCE S256 and the revocation endpoint are discovered:
+    # mcp.box.com names api.box.com as its authorization server. Measured:
+    # revoking ends the access and refresh tokens of that sign-in, and leaves
+    # the account's other sign-ins working, so revocation_ends_grant does not
+    # apply.
+    revocation_discovered: true
+    # A code exchange with a made-up code tells a wrong secret (invalid_client)
+    # from a right one (invalid_grant), but shows nothing of the rest.
+    unchecked: >-
+      Switch can't check the redirect URIs, the integration's Access Scopes, or
+      that the Box MCP server is enabled for everyone who connects. Connect once
+      to confirm.
+  identity:
+    url: https://api.box.com/2.0/users/me
+    account_id: id
+    label: login
+# Box documents an hour, but its access tokens lived 3695 to 4267 s across
+# sign-ins and refreshes when measured. At 3600 the broker would withhold a
+# fresh token for its first minutes, so the cap leaves room above what was seen.
+token: { kind: pass_through, max_lifetime: 4500 }
+mcp:
+  servers:
+    - { name: box, url: "https://mcp.box.com" }
+access:
+  # Box checks every call against these scopes and the person's own folder and
+  # file permissions. A root_readonly sign-in reads, and its writes are refused
+  # ("Access denied", measured). Connecting asks for the write level, as for
+  # every service. Box's MCP server has no tool that deletes a file or folder.
+  # Not asked for: ai.readwrite, whose Box AI tools spend the enterprise's AI
+  # units, and docgen.readwrite, which needs an Enterprise Advanced licence. The
+  # server still lists the Box AI tools, and refuses them.
+  read:
+    scopes: [root_readonly]
+  write:
+    scopes: [root_readwrite]
+tools: { mode: pass_through }

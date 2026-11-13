@@ -57,6 +57,7 @@ export interface SecretField {
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
 const GITLAB = 'gitlab';
+const BOX = 'box';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -340,10 +341,38 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === BOX)
+    return [
+      {
+        text: 'In the Box Admin Console, under Integrations, search for Box MCP and enable it. Use a Box account your organization owns: whoever owns the credentials can delete them, and that disconnects everyone.',
+        copy: [],
+        link: { label: 'Open the Admin Console', href: 'https://app.box.com/master' },
+        items: [],
+      },
+      {
+        text: 'Hover over the Box MCP integration and choose Configure. Under Additional Configuration, choose Add Integration Credentials, name them, and open the new entry.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep('Under Redirect URI, add each of these:', redirectUris(app)),
+      {
+        text: 'Under Access Scopes, tick root_readwrite. Leave the AI and Doc Gen scopes unticked.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Save, and copy the Client ID and the Client Secret.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === AIRTABLE)
     return [
       {
-        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that stops every connection.",
+        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that disconnects everyone.",
         copy: [],
         link: { label: 'Open Builder Hub', href: 'https://airtable.com/create/oauth' },
         items: [],
@@ -459,6 +488,7 @@ const HELM_VALUES: Record<string, string> = {
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
   [GITLAB]: 'switchCore.gitlabClientSecret',
+  [BOX]: 'switchCore.boxClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
