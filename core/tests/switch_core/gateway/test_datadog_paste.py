@@ -80,6 +80,7 @@ class TestList:
                     "https://docs.datadoghq.com/account_management/"
                     "personal-access-tokens/"
                 ),
+                "create_url": None,
                 "expires": "vendor",
                 "access_note": "Reaches what your token allows.",
             }
