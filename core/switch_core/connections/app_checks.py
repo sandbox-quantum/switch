@@ -5,8 +5,12 @@ request it must refuse, and reads which refusal it chose.
 
 - **GitHub App**: `GET /app` with a JWT the private key signs, issued by the
   client id, proves the key and the client id are one App's, and answers its
-  slug; a code exchange with a made-up code then tells a wrong client secret
-  (`incorrect_client_credentials`) from a right one (`bad_verification_code`).
+  slug and its permissions, which Switch keeps. Held against the catalog's
+  access levels, an App short of what the read level asks for fails the
+  check; one short only of what the write level asks for passes, and lets
+  agents read only (`GitHubApp.lacks_write`). A code exchange with a made-up
+  code then tells a wrong client secret (`incorrect_client_credentials`)
+  from a right one (`bad_verification_code`).
 - **OAuth client**: a code exchange at the token endpoint with a made-up
   code and PKCE verifier, the secret sent as a sign-in sends it, to a
   redirect URI the client registers: Core's own callback, or Switch
@@ -18,8 +22,9 @@ request it must refuse, and reads which refusal it chose.
   Airtable says nothing of whether the integration is published) is the
   entry's `unchecked`, said with the result.
 
-What a check cannot prove (an App's permissions, a Google app's user type,
-which APIs are switched on) is left to the vendor's own pages.
+What a check cannot prove (whether each installation of a GitHub App has
+accepted its current permissions, a Google app's user type, which APIs are
+switched on) is left to the vendor's own pages.
 """
 
 from __future__ import annotations
@@ -30,6 +35,12 @@ from typing import Any, Literal
 import httpx
 
 from switch_core.connections.adapters import ServiceAdapterError
+from switch_core.connections.adapters.github import (
+    level_permissions,
+    permission_name,
+    permission_rank,
+    permissions_short,
+)
 from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
     OAuthClientCredentials,
@@ -37,7 +48,11 @@ from switch_core.connections.adapters.oauth import (
     client_fields,
 )
 from switch_core.connections.app_credentials import AppSpec, AppValues
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import (
+    AccessLevel,
+    ConnectionDefinition,
+    OAuthClient,
+)
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 
 GITHUB_APP_URL = "https://api.github.com/app"
@@ -48,6 +63,10 @@ PLACEHOLDER_CODE = "switch-connector-app-check"
 PLACEHOLDER_VERIFIER = "switch-connector-app-check-" + "0" * 32
 
 Field = Literal["client_id", "client_secret", "private_key"]
+
+# The two levels the catalog asks of a GitHub App permission, as the App's
+# settings page words them.
+GITHUB_LEVEL_WORDS = {"read": "Read-only", "write": "Read and write"}
 
 
 class VendorUnreachableError(Exception):
@@ -68,8 +87,9 @@ class Check:
 @dataclass(frozen=True)
 class CheckResult:
     checks: list[Check]
-    # What the vendor said about the app that Switch keeps: a GitHub App's slug.
-    settings: dict[str, str]
+    # What the vendor said about the app that Switch keeps: a GitHub App's
+    # slug, and its permissions as `GET /app` answered them.
+    settings: dict[str, Any]
 
     @property
     def ok(self) -> bool:
@@ -101,7 +121,107 @@ def _body(response: httpx.Response) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
-async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckResult:
+def github_permissions_needed(
+    definition: ConnectionDefinition,
+) -> dict[str, AccessLevel]:
+    """The most each App permission is asked for across the catalog's access
+    levels: what the App must have for every grant to mint a token."""
+    needed: dict[str, AccessLevel] = {}
+    for access in ("read", "write"):
+        for name, wanted in level_permissions(definition, access).items():
+            held = needed.get(name)
+            if held is None or permission_rank(wanted) > permission_rank(held):
+                needed[name] = wanted
+    return needed
+
+
+def github_permissions(answer: dict[str, Any]) -> dict[str, str]:
+    """The App's permissions as `GET /app` answered them, each a level."""
+    granted = answer.get("permissions")
+    if not isinstance(granted, dict):
+        return {}
+    return {
+        name: level
+        for name, level in granted.items()
+        if isinstance(name, str) and isinstance(level, str)
+    }
+
+
+def _held(level: object) -> str:
+    if level is None:
+        return "no access"
+    return GITHUB_LEVEL_WORDS.get(str(level), str(level))
+
+
+def _shortfall(
+    short: list[str], wanted: dict[str, AccessLevel], has: dict[str, str]
+) -> str:
+    """Each permission `short` names: what it needs, and what the App has."""
+    return "; ".join(
+        f"{permission_name(name)} needs {GITHUB_LEVEL_WORDS[wanted[name]]}, and it "
+        f"has {_held(has.get(name))}"
+        for name in short
+    )
+
+
+def _how_to_change(lead: str) -> str:
+    return (
+        f"{lead} in the App's settings, under Permissions & events; every "
+        "account that installed the App is then asked to accept the change."
+    )
+
+
+def _permissions_check(definition: ConnectionDefinition, has: dict[str, str]) -> Check:
+    """Whether the App `GET /app` answered can serve the catalog's grants:
+    short of what the read level asks for, none, and the check fails; short
+    only of what the write level asks for, read grants alone, and it passes
+    saying so."""
+    read = level_permissions(definition, "read")
+    write = level_permissions(definition, "write")
+    short_read = permissions_short(read, has)
+    short_write = permissions_short(write, has)
+    if short_read:
+        also = (
+            f" For agents to write as well: {_shortfall(short_write, write, has)}."
+            if short_write
+            else ""
+        )
+        return Check(
+            "permissions",
+            False,
+            "The App lacks repository permissions agents need to read: "
+            f"{_shortfall(short_read, read, has)}.{also} "
+            + _how_to_change("Change them"),
+            None,
+            None,
+        )
+    if short_write:
+        return Check(
+            "permissions",
+            True,
+            "The App has the repository permissions agents need to read, but not "
+            f"to write: {_shortfall(short_write, write, has)}. Agents can only "
+            "read through it, and a write grant is refused. "
+            + _how_to_change("To let them write, change them"),
+            None,
+            None,
+        )
+    listed = ", ".join(
+        f"{permission_name(name)} ({GITHUB_LEVEL_WORDS[wanted]})"
+        for name, wanted in github_permissions_needed(definition).items()
+    )
+    return Check(
+        "permissions",
+        True,
+        f"The App has the repository permissions agents are granted: {listed}.",
+        None,
+        None,
+    )
+
+
+async def check_github_app(
+    http: httpx.AsyncClient, definition: ConnectionDefinition, values: AppValues
+) -> CheckResult:
     try:
         signer = GitHubInstallationCredentials(
             values.client_id, values.secrets["private_key"].encode()
@@ -156,6 +276,7 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
             ],
             settings={},
         )
+    permissions = github_permissions(answer)
     checks = [
         Check(
             "private_key",
@@ -163,7 +284,8 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
             f"GitHub accepts this private key for the App {slug}.",
             None,
             None,
-        )
+        ),
+        _permissions_check(definition, permissions),
     ]
     exchanged = await _send(
         http,
@@ -208,7 +330,15 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
                 None,
             )
         )
-    return CheckResult(checks, settings={"slug": slug})
+    return CheckResult(checks, settings={"slug": slug, "permissions": permissions})
+
+
+def _checked_only_at(oauth: OAuthClient, choices: dict[str, str]) -> str | None:
+    """Where a check that passed asked, for an entry with choices."""
+    if not choices:
+        return None
+    asked = ", ".join(f"{field.label} {choices[field.name]}" for field in oauth.choices)
+    return f"Checked at {asked} only: confirm the client works at the others."
 
 
 async def check_oauth_client(
@@ -218,13 +348,18 @@ async def check_oauth_client(
     redirect_uri: str,
 ) -> CheckResult:
     name = definition.name
+    oauth = definition.auth.oauth
+    assert oauth is not None
     client = OAuthClientCredentials(
         values.client_id, values.secrets["client_secret"], authentication=None
     )
+    # Asked at the first of each choice's list: the vendor at every one would
+    # be a request per site.
+    choices = oauth.first_choices()
     try:
         endpoints = await OAuthAdapter(
             definition, StaticClient(client), http
-        ).endpoints()
+        ).endpoints(choices)
     except ServiceAdapterError as refused:
         raise VendorUnreachableError(str(refused)) from None
     identifying, headers = client_fields(endpoints, client)
@@ -246,8 +381,6 @@ async def check_oauth_client(
     )
     error = _body(response).get("error")
     if error == "invalid_grant":
-        oauth = definition.auth.oauth
-        assert oauth is not None
         return CheckResult(
             [
                 Check(
@@ -255,7 +388,12 @@ async def check_oauth_client(
                     True,
                     f"{name} accepts this client ID and secret.",
                     None,
-                    oauth.unchecked,
+                    " ".join(
+                        note
+                        for note in (oauth.unchecked, _checked_only_at(oauth, choices))
+                        if note is not None
+                    )
+                    or None,
                 )
             ],
             settings={},
@@ -312,5 +450,5 @@ async def check_app(
 ) -> CheckResult:
     """Ask the vendor about `values`. Raises `VendorUnreachableError`."""
     if spec.kind == "github_app":
-        return await check_github_app(http, values)
+        return await check_github_app(http, definition, values)
     return await check_oauth_client(http, definition, values, redirect_uri)

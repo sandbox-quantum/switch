@@ -1,11 +1,14 @@
-/** How an agent's presence in a room reads, and the colour of its dot. */
+/**
+ * How an agent's presence in a room reads, and the colour of its dot. An agent
+ * that is here has no label: its green dot says so.
+ */
 export function roomAgentPresence(status: string | undefined): {
-  label: string;
+  label: string | null;
   tone: 'live' | 'idle' | 'off';
 } {
   switch (status) {
     case 'live':
-      return { label: 'Here now', tone: 'live' };
+      return { label: null, tone: 'live' };
     case 'awaiting_manual_poll':
       return { label: 'Idle', tone: 'idle' };
     case 'disconnected':

@@ -94,7 +94,7 @@ export default function RoomAutoRouteSection({
       />
       {!canWrite && (
         <Typography variant="caption" color="text.secondary">
-          Turning auto-route on or off needs write access to this room.
+          Only the room's owner or a workspace admin can turn auto-route on or off.
         </Typography>
       )}
       <TextField

@@ -151,6 +151,9 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
       {createOpen && tab === "templates" && (
         <CreateTemplateDialog
           open
+          title="Upload template"
+          submitLabel="Upload"
+          initial={null}
           onClose={() => setCreateOpen(false)}
           onCreated={handleTemplateCreated}
         />

@@ -255,14 +255,14 @@ class TestTheOrganizationsSay:
         await self._own(session_factory, True)
         await self._organization(session_factory, enabled=False, locked=True)
         assert await self._switch(session_factory, organizations=True) == ServiceSwitch(
-            enabled=False, locked=True
+            enabled=False, decided_by="organization_locked"
         )
 
     async def test_the_workspaces_own_wins_over_unlocked(self, session_factory) -> None:
         await self._own(session_factory, False)
         await self._organization(session_factory, enabled=True, locked=False)
         assert await self._switch(session_factory, organizations=True) == ServiceSwitch(
-            enabled=False, locked=False
+            enabled=False, decided_by="workspace"
         )
 
     async def test_unlocked_wins_over_the_workspaces_default(
@@ -270,7 +270,7 @@ class TestTheOrganizationsSay:
     ) -> None:
         await self._organization(session_factory, enabled=True, locked=False)
         assert await self._switch(session_factory, organizations=True) == ServiceSwitch(
-            enabled=True, locked=False
+            enabled=True, decided_by="organization_default"
         )
 
     async def test_without_organizations_their_settings_are_not_read(
@@ -279,4 +279,4 @@ class TestTheOrganizationsSay:
         await self._organization(session_factory, enabled=True, locked=True)
         assert await self._switch(
             session_factory, organizations=False
-        ) == ServiceSwitch(enabled=False, locked=False)
+        ) == ServiceSwitch(enabled=False, decided_by="workspace_default")

@@ -88,7 +88,7 @@ def placement_refusal(
     waking: bool,
 ) -> tuple[str, str] | None:
     """The reason code and message refusing this placement, or None to allow
-    it. A `waking` controller is a Switch cloud machine that is starting: it is
+    it. A `waking` controller is a Switch Cloud machine that is starting: it is
     judged by its last status report, since it is offline until it is up."""
     state = controller_state(controller, leases)
     if state == "revoked":

@@ -4,4 +4,4 @@ category: Deployment
 description: Inspect Vercel projects and deployments.
 enabled: false
 auth:
-  type: api_key
+  type: oauth

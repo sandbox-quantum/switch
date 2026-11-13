@@ -5,10 +5,12 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.aliases import AliasError
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.room_policy import RoomPermissionError
 
 
 class _FakeSession:
@@ -20,6 +22,9 @@ class _FakeSession:
 
     async def commit(self) -> None:
         return None
+
+    async def get(self, model: Any, key: str) -> Any:
+        return None  # The owner's user row: not an admin.
 
 
 def _session_factory() -> _FakeSession:
@@ -39,6 +44,11 @@ class _FakeRoomStore:
 
     async def get(self, session: Any, room_id: str) -> Any:
         return self._rooms.get(room_id)
+
+    async def involved_room_ids(
+        self, session: Any, user_id: str, room_ids: list[str]
+    ) -> set[str]:
+        return set()
 
     async def get_agent_ids(self, session: Any, room_id: str) -> list[str]:
         return list(self._agent_ids)
@@ -125,8 +135,9 @@ def _build_service(
     agents: dict[str, Any],
     aliases: dict[str, str] | None = None,
     role_names: list[str] | None = None,
+    room_owner_id: str | None = "u-alice",
 ) -> AgentCore:
-    room = _room()
+    room = _room(owner_id=room_owner_id)
     svc = object.__new__(AgentCore)
     # Presence unions the heartbeat rows with the live connections
     # (CHOO-1857); an empty registry means "rows only".
@@ -155,8 +166,20 @@ async def _noop_get_by_bridge(session: Any, bridge_id: str) -> list[Any]:
 
 
 _AGENTS = {
-    "a1": SimpleNamespace(id="a1", name="claude-code.alice", owner_id=None),
-    "a2": SimpleNamespace(id="a2", name="moderator", owner_id=None),
+    "a1": SimpleNamespace(
+        id="a1",
+        name="claude-code.alice",
+        owner_id="u-alice",
+        can_manage_agents=False,
+        addressing_policy=owner_and_owner_agents_policy().model_dump(),
+    ),
+    "a2": SimpleNamespace(
+        id="a2",
+        name="moderator",
+        owner_id="u-bob",
+        can_manage_agents=False,
+        addressing_policy=owner_and_owner_agents_policy().model_dump(),
+    ),
 }
 
 
@@ -175,6 +198,24 @@ class TestGetRoomDetailAliases:
 
 
 class TestUpdateRoomAliases:
+    async def test_aliases_an_agent_of_the_owners_in_a_room_they_do_not_own(
+        self,
+    ) -> None:
+        svc = _build_service(
+            agent_ids=["a1", "a2"], agents=_AGENTS, room_owner_id="u-carol"
+        )
+        detail = await svc.update_room(
+            "a1", "room-1", aliases={"claude-code.alice": "boss"}
+        )
+        assert detail.aliases == {"claude-code.alice": "boss"}
+
+    async def test_refuses_aliasing_someone_elses_agent(self) -> None:
+        svc = _build_service(
+            agent_ids=["a1", "a2"], agents=_AGENTS, room_owner_id="u-carol"
+        )
+        with pytest.raises(RoomPermissionError, match="agent's own owner"):
+            await svc.update_room("a1", "room-1", aliases={"moderator": "mod"})
+
     async def test_set_alias_via_update_room(self) -> None:
         svc = _build_service(agent_ids=["a1", "a2"], agents=_AGENTS)
         detail = await svc.update_room(

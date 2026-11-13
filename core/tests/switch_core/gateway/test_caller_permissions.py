@@ -1,9 +1,10 @@
 """What the server tells the Gateway the caller may do.
 
 The Gateway offers a room's, an agent's and a resource's controls from flags the
-server works out with `switch_core.authz`, so the rules live in one place. These
-pin the flags against those rules: owner, workspace admin, and a member who
-only has what the resource's visibility gives everyone.
+server works out with `switch_core.authz` and, for rooms, `switch_core.room_policy`,
+so the rules live in one place. These pin the flags against those rules: owner,
+workspace admin, someone in the room, and a member who only has what the
+resource's visibility gives everyone.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
@@ -21,7 +23,14 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     agent_facing_summary,
     list_agent_summaries,
 )
-from switch_core.db.models import Document, Package, Reference, ReferenceType, User
+from switch_core.db.models import (
+    Document,
+    Package,
+    Reference,
+    ReferenceType,
+    User,
+    room_agents,
+)
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -64,13 +73,23 @@ def _detail_protocol() -> SimpleNamespace:
 
 
 class TestRoomPermissions:
+    # (can_write, can_manage, can_attach, can_invite_agents, can_add_people,
+    # can_remove_members, can_unlink): the room policy's owner tier changes and removes, anyone in
+    # the room adds, and a bystander only reads, whatever the room's write
+    # visibility says.
+    OWNER_TIER = (True, True, True, True, True, True, True)
+    IN_ROOM = (False, False, True, True, True, False, False)
+    BYSTANDER = (False, False, False, False, False, False, False)
+
     @pytest.mark.parametrize(
-        ("caller", "write_visibility", "can_write", "can_manage"),
+        ("caller", "write_visibility", "expected"),
         [
-            ("owner", "private", True, True),
-            ("admin", "private", True, True),
-            ("member", "public", True, False),
-            ("member", "private", False, False),
+            ("owner", "private", OWNER_TIER),
+            ("admin", "private", OWNER_TIER),
+            ("in_room", "private", IN_ROOM),
+            ("in_room", "public", IN_ROOM),
+            ("bystander", "public", BYSTANDER),
+            ("bystander", "private", BYSTANDER),
         ],
     )
     async def test_the_room_detail_says_what_the_caller_may_do(
@@ -78,8 +97,7 @@ class TestRoomPermissions:
         session_factory: async_sessionmaker[AsyncSession],
         caller: str,
         write_visibility: str,
-        can_write: bool,
-        can_manage: bool,
+        expected: tuple[bool, ...],
     ) -> None:
         async with session_factory() as session:
             owner = await add_user(session, name="owner")
@@ -91,6 +109,11 @@ class TestRoomPermissions:
                 read_visibility="public",
                 write_visibility=write_visibility,
             )
+            if caller == "in_room":
+                theirs = await add_agent(session, name="theirs", owner_id=member.id)
+                await session.execute(
+                    insert(room_agents).values(room_id=room.id, agent_id=theirs.id)
+                )
             user = owner if caller == "owner" else member
 
             detail = await get_room(
@@ -105,7 +128,15 @@ class TestRoomPermissions:
                 caller == "admin",
             )
 
-            assert (detail.can_write, detail.can_manage) == (can_write, can_manage)
+            assert (
+                detail.can_write,
+                detail.can_manage,
+                detail.can_attach,
+                detail.can_invite_agents,
+                detail.can_add_people,
+                detail.can_remove_members,
+                detail.can_unlink,
+            ) == expected
 
 
 class TestAgentPermissions:
@@ -120,7 +151,7 @@ class TestAgentPermissions:
 
             async def manageable(user: User, admin: bool) -> dict[str, bool]:
                 summaries = await list_agents(
-                    session, AgentStore(), UserStore(), user, admin
+                    session, AgentStore(), UserStore(), _detail_protocol(), user, admin
                 )
                 return {s.name: s.can_manage for s in summaries}
 
@@ -181,7 +212,7 @@ class TestAgentPermissions:
             self._deleted_meanwhile(monkeypatch, gone.id)
 
             summaries = await list_agents(
-                session, AgentStore(), UserStore(), owner, False
+                session, AgentStore(), UserStore(), _detail_protocol(), owner, False
             )
 
             assert [s.name for s in summaries] == ["stays"]
@@ -256,7 +287,7 @@ class TestAgentPermissions:
             await session.flush()
 
             summaries = await list_agents(
-                session, AgentStore(), UserStore(), owner, False
+                session, AgentStore(), UserStore(), _detail_protocol(), owner, False
             )
 
             assert {s.name: (s.can_manage, s.can_rename) for s in summaries} == {
@@ -283,7 +314,7 @@ class TestAgentPermissions:
 
             async def editable(user: User, admin: bool) -> dict[str, bool]:
                 summaries = await list_agents(
-                    session, AgentStore(), UserStore(), user, admin
+                    session, AgentStore(), UserStore(), _detail_protocol(), user, admin
                 )
                 return {s.name: s.can_edit_options for s in summaries}
 
@@ -308,7 +339,7 @@ class TestAgentPermissions:
 
             async def transfer(user: User) -> dict[str, tuple[bool, str | None]]:
                 summaries = await list_agents(
-                    session, AgentStore(), UserStore(), user, False
+                    session, AgentStore(), UserStore(), _detail_protocol(), user, False
                 )
                 return {
                     s.name: (s.can_transfer, s.transfer_blocked_reason)
@@ -336,7 +367,12 @@ class TestAgentPermissions:
 
             async def reason(user: User, is_admin: bool) -> str:
                 [summary] = await list_agents(
-                    session, AgentStore(), UserStore(), user, is_admin
+                    session,
+                    AgentStore(),
+                    UserStore(),
+                    _detail_protocol(),
+                    user,
+                    is_admin,
                 )
                 assert summary.can_transfer is False
                 return summary.transfer_blocked_reason or ""

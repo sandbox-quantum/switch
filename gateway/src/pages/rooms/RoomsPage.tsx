@@ -18,7 +18,6 @@ import {
 import type { GridRowId } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { AccessChip } from "../../components/AccessControls";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
@@ -37,6 +36,7 @@ import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope"
 import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 import { buildGroupIndex, effectiveColor } from "./groupTree";
+import { RoomAccessChip } from "./RoomAccessChip";
 import {
   bridgeOptions,
   connectedUserOptions,
@@ -264,7 +264,7 @@ export default function RoomsPage() {
         field: "read_visibility",
         headerName: "Access",
         width: 108,
-        renderCell: ({ row }) => <AccessChip pair={row} />,
+        renderCell: ({ row }) => <RoomAccessChip room={row} />,
       },
       {
         field: "channel_type",

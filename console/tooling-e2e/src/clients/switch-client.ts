@@ -474,13 +474,17 @@ export class SwitchClient {
     return other;
   }
 
-  /** `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator. */
+  /**
+   * `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator.
+   * The account signs in with `password` for as long as it lasts, so it goes to the run's issued secrets.
+   */
   async createUser(params: {
     name: string;
     email: string;
     password: string;
     role: "user" | "admin";
   }): Promise<{ id: string }> {
+    this.issued.record(params.password);
     return this.gateway<{ id: string }>("POST", "/users", params);
   }
 
@@ -592,6 +596,51 @@ export class SwitchClient {
       "/organizations/current/workspaces",
       { name },
     );
+  }
+
+  /**
+   * `POST /gateway/tenants/{tenant_id}/invitations` — a single-use invitation
+   * link to the bound workspace, granting `role`; its admins only. The token
+   * is a bearer credential, so it goes to the run's issued secrets.
+   */
+  async createInvitation(tenantId: string, role: "admin" | "member"): Promise<string> {
+    const { token } = await this.gateway<{ token: string }>(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/invitations`,
+      { role },
+    );
+    this.issued.record(token);
+    return token;
+  }
+
+  /**
+   * `POST /gateway/invitations/accept` — join the invitation's workspace. The
+   * server re-mints the session into it, so from here on this client acts
+   * there, and signing in again selects it.
+   */
+  async acceptInvitation(token: string): Promise<void> {
+    await this.rebinding("POST", "/gateway/invitations/accept", { token });
+  }
+
+  /**
+   * `POST /gateway/tenants/{tenant_id}/switch` — select a workspace this
+   * account may enter. As with accepting an invitation, this client acts
+   * there from here on, and signing in again selects it.
+   */
+  async switchTenant(tenantId: string): Promise<void> {
+    await this.rebinding("POST", `/gateway/tenants/${encodeURIComponent(tenantId)}/switch`);
+  }
+
+  /** A request the server answers by re-minting the session; the new cookie replaces this client's. */
+  private async rebinding(method: string, path: string, body?: unknown): Promise<void> {
+    const { response } = await this.rawRequest(method, path, {
+      cookie: await this.gatewayLogin(),
+      body,
+    });
+    const cookie = sessionCookieFrom(response);
+    if (!cookie) throw new Error(`${method} ${path} returned no switch_auth cookie.`);
+    this.issued.record(cookie.slice("switch_auth=".length));
+    this.gatewayCookie = cookie;
   }
 
   /** `POST /gateway/agents/register` — an agent owned by the signed-in user, in their current workspace. */
@@ -785,6 +834,61 @@ export class SwitchClient {
 
   async deletePackage(packageId: string): Promise<void> {
     await this.gateway("DELETE", `/packages/${packageId}`);
+  }
+
+  /** `POST /gateway/references` — a private GitHub reference owned by the signed-in user. */
+  async createReference(params: {
+    name: string;
+    description: string;
+    url: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/references", {
+      type: "github",
+      name: params.name,
+      description: params.description,
+      instructions: "",
+      value: { urls: [params.url] },
+    });
+  }
+
+  async deleteReference(referenceId: string): Promise<void> {
+    await this.gateway("DELETE", `/references/${referenceId}`);
+  }
+
+  /** `POST /gateway/documents` — a private document in the library, owned by the signed-in user. */
+  async createDocument(params: {
+    name: string;
+    description: string;
+    content: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/documents", {
+      name: params.name,
+      description: params.description,
+      instructions: "",
+      content: params.content,
+    });
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    await this.gateway("DELETE", `/documents/${documentId}`);
+  }
+
+  /** `POST /gateway/rooms/{room_id}/documents/{document_id}` — attach a library document to a room. */
+  async attachDocumentToRoom(roomId: string, documentId: string): Promise<void> {
+    await this.gateway("POST", `/rooms/${roomId}/documents/${documentId}`);
+  }
+
+  /** `POST /gateway/templates` — a room template, owned by the signed-in user. */
+  async createTemplate(params: {
+    name: string;
+    description: string;
+    content: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/templates", params);
+  }
+
+  async deleteTemplate(templateId: string): Promise<void> {
+    await this.gateway("DELETE", `/templates/${templateId}`);
   }
 
   /** `GET /gateway/rooms/{id}/packages` — the packages attached to a room. */
@@ -1312,6 +1416,12 @@ export class SwitchClient {
   /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
   async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
     return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
+  }
+
+  /** `GET /gateway/auth/session` — the signed-in account's own id. */
+  async userId(): Promise<string> {
+    const state = await this.gateway<{ user: { id: string } }>("GET", "/auth/session");
+    return state.user.id;
   }
 
   /** `GET /gateway/auth/session` — the workspace this admin session is bound to. */

@@ -16,6 +16,7 @@ const CONTEXT: TelemetryContext = {
   flintEnv: 'prod',
   internal: 'false',
   timeMs: 1_700_000_000_000,
+  sessionId: 1_699_999_000_000,
 };
 
 const CONFIG: TelemetryConfig = {
@@ -51,6 +52,8 @@ function rawLogAttributes(payload: Record<string, unknown>): Record<string, unkn
   return Object.fromEntries(attributes.map((a) => [a.key, a.value]));
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 const SESSION_STARTED = {
   agent_type: 'codex',
   location: 'local',
@@ -65,13 +68,21 @@ const SESSION_STARTED = {
 describe('the record that gets built', () => {
   it('carries the client id the relay requires, as a resource attribute', () => {
     // Without it the relay drops the whole payload — and still answers 200.
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
+      CONTEXT
+    );
 
     expect(resourceAttributes(payload)['flint.client_id']).toBe(CONTEXT.clientId);
   });
 
   it('says which app and version it is, for both destinations', () => {
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
+      CONTEXT
+    );
 
     expect(resourceAttributes(payload)).toEqual({
       'service.name': 'switch-console',
@@ -94,7 +105,11 @@ describe('the record that gets built', () => {
     // The attribute alone gets a record past the relay's "is it named?" filter
     // and then dropped by an exporter that only reads the field — silently, and
     // with a 200 at every step. Both, or nothing arrives and nothing says so.
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
+      CONTEXT
+    );
 
     expect(logRecord(payload).eventName).toBe('switch_console.app_launched');
   });
@@ -102,7 +117,7 @@ describe('the record that gets built', () => {
   it('carries the catalogued properties, plus which build sent it', () => {
     const payload = buildOtlpPayload(
       'session_ended',
-      { agent_type: 'codex', location: 'remote', outcome: 'failed' },
+      { agent_type: 'codex', location: 'remote', outcome: 'normal' },
       CONTEXT
     );
 
@@ -110,9 +125,49 @@ describe('the record that gets built', () => {
       'event.name': 'switch_console.session_ended',
       agent_type: 'codex',
       location: 'remote',
-      outcome: 'failed',
+      outcome: 'normal',
       build: 'stable',
+      'flint.insert_id': expect.stringMatching(UUID),
     });
+  });
+
+  it('carries the session as a number, for the relay to hand Amplitude as one', () => {
+    const payload = buildOtlpPayload(
+      'session_ended',
+      { agent_type: 'codex', location: 'remote', outcome: 'normal' },
+      CONTEXT
+    );
+    const background = buildOtlpPayload(
+      'session_reopened',
+      { agent_type: 'codex', location: 'remote', outcome: 'success' },
+      { ...CONTEXT, sessionId: -1 }
+    );
+
+    expect(rawLogAttributes(payload)['flint.session_id']).toEqual({
+      doubleValue: 1_699_999_000_000,
+    });
+    expect(rawLogAttributes(background)['flint.session_id']).toEqual({ doubleValue: -1 });
+  });
+
+  it('gives every record an id of its own, so two alike in the same millisecond stay two', () => {
+    // The relay's de-duplication key is a hash of the record's attributes and
+    // its millisecond. Without this, the rooms one template run made, or the
+    // sessions of an agent deleted at once, would arrive as one event.
+    const build = () =>
+      logAttributes(
+        buildOtlpPayload(
+          'session_ended',
+          { agent_type: 'codex', location: 'remote', outcome: 'normal' },
+          CONTEXT
+        )
+      )['flint.insert_id'];
+
+    const first = build();
+    const second = build();
+
+    expect(first).toMatch(UUID);
+    expect(second).toMatch(UUID);
+    expect(first).not.toBe(second);
   });
 
   it('drops a property the catalogue does not name', () => {
@@ -122,7 +177,7 @@ describe('the record that gets built', () => {
     const smuggled = {
       agent_type: 'codex',
       location: 'remote',
-      outcome: 'failed',
+      outcome: 'normal',
       working_dir: '/Users/someone/secret-project',
     } as never;
 
@@ -133,19 +188,30 @@ describe('the record that gets built', () => {
   });
 
   it('sends an event as its name, its build and its own properties, and nothing else', () => {
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'new' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'new', from_version: 'none', update_trigger: 'none' },
+      CONTEXT
+    );
 
     expect(logAttributes(payload)).toEqual({
       'event.name': 'switch_console.app_launched',
       build: 'stable',
       install_kind: 'new',
+      from_version: 'none',
+      update_trigger: 'none',
+      'flint.insert_id': expect.stringMatching(UUID),
     });
   });
 
   it('carries a body, so the event is not a blank line in the log sink', () => {
     // The relay forwards the same record to Datadog, which reads the body as
     // the message. It repeats the name rather than adding anything new.
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
+      CONTEXT
+    );
 
     expect(logRecord(payload).body).toEqual({ stringValue: 'switch_console.app_launched' });
   });
@@ -174,7 +240,7 @@ describe('the record that gets built', () => {
     (internal) => {
       const payload = buildOtlpPayload(
         'app_launched',
-        { install_kind: 'same' },
+        { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
         { ...CONTEXT, internal }
       );
 
@@ -190,7 +256,7 @@ describe('the record that gets built', () => {
       // requires on the resource.
       const payload = buildOtlpPayload(
         'app_launched',
-        { install_kind: 'same' },
+        { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
         { ...CONTEXT, flintEnv }
       );
 
@@ -242,7 +308,11 @@ describe('the record that gets built', () => {
   );
 
   it('stamps the time in nanoseconds, which is what OTLP counts in', () => {
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
+      CONTEXT
+    );
 
     const record = logRecord(payload);
     expect(record.timeUnixNano).toBe('1700000000000000000');

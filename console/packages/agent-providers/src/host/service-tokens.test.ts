@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Redactions } from './redaction';
-import type { IssuedServiceToken, ServiceGrant, ServiceRefusal } from './service-access';
+import {
+  type IssuedServiceToken,
+  issueServiceToken,
+  type ServiceGrant,
+  type ServiceRefusal,
+} from './service-access';
 import {
   AgentServiceTokens,
   GRANT_CHECK_MS,
@@ -329,6 +334,52 @@ describe('AgentServiceTokens', () => {
       expect(await t.service.answer('github', null)).toMatchObject({ token: 'synthetic-one' });
       expect(warn.mock.calls[0]?.[0]).toContain('offline');
       expect(t.issue).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds a pasted credential within the hour, and drops it once its grant moves', async () => {
+      vi.useFakeTimers({ now: Date.parse('2026-11-02T12:00:00Z'), toFake: ['Date'] });
+      try {
+        let revision = 1;
+        const pasted = '{"public":{"site":"eu.example.test"},"secret":{"pat":"synthetic-pat"}}';
+        const fetchImpl = vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                token: pasted,
+                expires_at: null,
+                expires_in: null,
+                use_until: new Date(Date.now() + HOUR).toISOString(),
+                resources: {},
+                grant_revision: revision,
+              }),
+              { status: 200 }
+            )
+        ) as unknown as typeof fetch;
+        const redactions = new Redactions();
+        const service = new AgentServiceTokens({
+          endpoint: ENDPOINT,
+          redactions,
+          now: () => Date.now(),
+          issue: (endpoint, name) => issueServiceToken(endpoint, name, fetchImpl),
+          readGrants: async () => [grant('example', revision)],
+        });
+        const later = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+        expect(await service.answer('example', null)).toMatchObject({ token: pasted });
+        expect(redactions.text('synthetic-pat')).toBe('[REDACTED]');
+        later(HOUR - REFRESH_BEFORE_MS - 1000);
+        await service.answer('example', null);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        later(2000);
+        await service.answer('example', null);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+        revision = 2;
+        later(GRANT_CHECK_MS);
+        await service.answer('example', null);
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('never reads the grants for a token from a Switch that names no revision', async () => {

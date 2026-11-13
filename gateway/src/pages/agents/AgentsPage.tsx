@@ -24,7 +24,7 @@ import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
-import { type AgentSummary, deleteAgent } from "../../data/api";
+import { type AgentSummary, type DeleteAgentResult, deleteAgent } from "../../data/api";
 import { useAgents } from "../../data/hooks";
 import { EM_DASH, formatDate, sentenceCase } from "../../theme/format";
 import RegisterAgentDialog from "./RegisterAgentDialog";
@@ -130,13 +130,19 @@ export default function AgentsPage() {
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    const result = await deleteAgent(deleteTarget.id);
-    if (result === null) {
+    let result: DeleteAgentResult;
+    try {
+      result = await deleteAgent(deleteTarget.id);
+    } catch (err) {
       setDeleteNotice({
         severity: "error",
-        text: `Could not delete agent "${deleteTarget.name}".`,
+        text: `Could not delete agent "${deleteTarget.name}": ${err instanceof Error ? err.message : String(err)}`,
       });
-    } else if (result.bridge_cleanup_failures.length > 0) {
+      setDeleteTarget(null);
+      setDeleting(false);
+      return;
+    }
+    if (result.bridge_cleanup_failures.length > 0) {
       setDeleteNotice({
         severity: "warning",
         text:

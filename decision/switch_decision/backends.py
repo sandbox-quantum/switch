@@ -32,12 +32,12 @@ from switch_decision.prompt import (
     NONE,
     PICK_TOOL,
     SPEAKER_QUESTION,
-    SYSTEM,
     build_messages,
     build_state,
     letter_messages,
     output_schema,
     pick_tool,
+    system_prompt,
     systemone_request,
 )
 
@@ -160,6 +160,19 @@ class ModelAnswer:
     choice: str
     confidence: float
     reason: str
+    # The highest probability among the other options, for a backend that
+    # scores every option (SystemOne, llama.cpp letters). None for one that
+    # reports a single self-rated confidence (Haiku, Ollama).
+    runner_up: float | None = None
+
+
+def _runner_up(probabilities: dict[str, float], choice: str) -> float:
+    others = [
+        float(v)
+        for k, v in probabilities.items()
+        if k != choice and isinstance(v, (int, float))
+    ]
+    return max(others, default=0.0)
 
 
 def read_systemone(body: object, options: list[str]) -> ModelAnswer:
@@ -187,7 +200,12 @@ def read_systemone(body: object, options: list[str]) -> ModelAnswer:
     reason = (
         "probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in top) if top else ""
     )
-    return ModelAnswer(choice=choice, confidence=float(confidence), reason=reason)
+    return ModelAnswer(
+        choice=choice,
+        confidence=float(confidence),
+        reason=reason,
+        runner_up=_runner_up(probabilities, choice) if probabilities else None,
+    )
 
 
 def read_ollama(body: object, options: list[str]) -> ModelAnswer:
@@ -246,7 +264,7 @@ def bedrock_request(req: DecideRequest, settings: Settings) -> dict:
     names = [a.name for a in req.agents]
     body: dict[str, Any] = {
         "modelId": settings.model,
-        "system": [{"text": SYSTEM}],
+        "system": [{"text": system_prompt(req, settings.history_limit)}],
         "messages": [
             {
                 "role": "user",
@@ -341,6 +359,7 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
         choice=choice,
         confidence=probs[choice],
         reason="probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in ranked),
+        runner_up=_runner_up(probs, choice),
     )
 
 
@@ -363,7 +382,7 @@ def anthropic_request(req: DecideRequest, settings: Settings) -> dict:
     return {
         "model": settings.model,
         "max_tokens": 256,
-        "system": SYSTEM,
+        "system": system_prompt(req, settings.history_limit),
         "messages": [
             {"role": "user", "content": build_state(req, settings.history_limit)}
         ],

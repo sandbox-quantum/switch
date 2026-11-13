@@ -141,6 +141,7 @@ class TestResolution:
             # built-in, so it must not block deleting the shadowed row.
             await service.create_reference(
                 session,
+                created_by_kind="user",
                 owner_id=users["bob"],
                 is_admin=False,
                 read_visibility="private",
@@ -419,6 +420,7 @@ class TestPrivateTypeStillReachesAgents:
             room = await _make_room(session, "shared")
             ref = await service.create_reference(
                 session,
+                created_by_kind="user",
                 owner_id=users["alice"],
                 is_admin=False,
                 read_visibility="private",
@@ -658,6 +660,7 @@ class TestUpdateAndDeleteReferenceType:
             )
             await service.create_reference(
                 session,
+                created_by_kind="user",
                 owner_id=users["alice"],
                 is_admin=False,
                 read_visibility="private",
@@ -700,6 +703,7 @@ class TestCreateReferenceResolvesItsType:
             with pytest.raises(ValueError, match="Unknown reference type"):
                 await service.create_reference(
                     session,
+                    created_by_kind="user",
                     owner_id=users["alice"],
                     is_admin=False,
                     read_visibility="private",
@@ -734,6 +738,7 @@ class TestCreateReferenceResolvesItsType:
             with pytest.raises(ValueError, match="Unknown reference type"):
                 await service.create_reference(
                     session,
+                    created_by_kind="user",
                     owner_id=users["bob"],
                     is_admin=False,
                     read_visibility="private",

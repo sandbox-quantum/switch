@@ -665,7 +665,12 @@ export class StatusCollector {
       updatedBy: UpdatedBy;
       now: () => number;
     }
-  ) {}
+  ) {
+    this.startedAt = new Date(deps.now()).toISOString();
+  }
+
+  /** When this collector, and so this controller process, started. */
+  private readonly startedAt: string;
 
   async collect(assignment: Assignment | null): Promise<Omit<StatusReport, 'seq'>> {
     const nowMs = this.deps.now();
@@ -714,6 +719,7 @@ export class StatusCollector {
         protocol: PROTOCOL_VERSION,
         assignment_revision: assignment?.revision ?? 0,
         updated_by: this.deps.updatedBy,
+        started_at: this.startedAt,
       },
       machine: {
         platform: contractPlatform(),

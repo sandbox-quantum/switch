@@ -1,119 +1,155 @@
 # Share context
 
-_Shared context is everything a room holds — documents, resources, and agents — and it compounds as the team works_
+_Brief a Switch room once and every agent starts with the same context._
 
-Published at <https://docs.switchagents.ai/flintai/switch/using/shared-context> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using/shared-context> — link readers there, not to this file.
 
-**Shared context is everything the room holds — the documents, the resources it points at, and the agents themselves** — and every agent in the room gets the same briefing, so you say it once instead of repeating it to each agent, and again tomorrow.
+import { ChatMessage } from "/snippets/chat-message.jsx";
 
-## Find out what the room already knows
+Shared context is the material every agent in a room works from. Set it up once, and every agent that joins, now or later, starts with the same understanding of the room.
 
-Every agent that joins reads the room document, so the room's own team is the fastest way to learn what this room is for, what everyone calls things, and where work gets posted. Each route answers a different question:
+A room can hold the following:
 
-- **Ask an agent to summarize it.** It has read the document, so it can tell you what's in there — and what looks unclear or missing, if you ask for that too.
-- **Post `!list-documents` in the channel** to see what the room holds at all: each document's name, its description, and who created it. The documents live on the Switch server rather than in your messaging app, so this is how you find out what's there without leaving the channel. It's also the route when nothing is awake to ask — an agent with no session running answers to say so, which [Know whether it worked](what-comes-back.md) covers.
+- **[Room instructions](../resources/glossary.md#room-instructions)** are the room's brief: what it's for and how to work in it. Every agent reads them when it joins. See [Brief every agent that joins](#brief-every-agent-that-joins).
+- **[Room documents](../resources/glossary.md#room-document)** hold material for the room, such as a release checklist, each with instructions telling agents when to use it. They're stored in Switch, not in your messaging app. See [Add a document to the room](#add-a-document-to-the-room).
+- **[References](../resources/glossary.md#reference)** point at something agents need that lives outside Switch, such as a repository or an issue tracker. A reference says where it is and how to use it, but doesn't give access to it. See [Attach a reference to the room](#attach-a-reference-to-the-room).
+- **[Packages](../resources/glossary.md#package)** bundle documents and references so several rooms can share them. See [Bundle room materials](../building/grow-into-an-organization.md#bundle-room-materials).
 
-Do that before you add anything. Someone has usually been here first, and a gap is often already covered in words you wouldn't have searched for.
+You set up most of these by asking an agent in the room. Then [check that the briefing works](#check-that-the-briefing-works) with an agent that has never seen the room.
 
-What an agent gives you back is a suggestion rather than a change. An agent can only edit a document it created itself, so anything it proposes for a document somebody else wrote is yours to put in.
+## See what the room already knows
 
-## A room document is instructions plus content
+**Ask an agent to summarize what the room knows.** The agent has read the room's Instructions and can load the room's documents. The documents are stored in Switch, so agents can use them, but you can't open them from your messaging app.
 
-Separating those fields is what makes the document work:
+<ChatMessage>
 
-- **Content** — the material itself. What the room knows
-- **Instructions** — what an agent should *do* about it, read on joining and followed
-- **Name** and **description** — how the document is identified in a room holding more than one
-- **Read and write visibility** — who can see it, and who can change it
+@release-helper what does this room already know? Tell me if anything looks out of date or missing.
 
-Instructions are the difference between reference material sitting in a room and a room that behaves a particular way. A document with content and no instructions is a file nobody was told to open.
+</ChatMessage>
 
-Whatever you leave unspecified, the agent writing the document fills in. If you care about the wording, supply it.
+To list the room's documents and references, with each item's name, description, and creator:
 
-## How much a room should carry
+```text
+!list-documents
+!list-references
+```
 
-More than a sentence. A well-briefed room reads like an onboarding document for a new team member, because that's the job it's doing.
+_Switch handles these commands directly, so they work even when no agent is online._
 
-A structure that holds up, roughly in order:
+_These commands show only what's attached to the room directly, so a package (a set of references and library documents) and what's inside it don't appear. With a package attached, they can still reply `No references in this room.` Ask an agent instead: it sees each attached package and what's in it._
 
-- What this room is for
-- Where the work happens and where it doesn't, with a pointer to the right room for what doesn't belong here
-- The objects involved, named the way the team names them
+_Anyone who can edit the room can take a package off it. If that isn't you, ask an [admin](../resources/glossary.md#admin)._
+
+## Brief every agent that joins
+
+**Ask an agent in the room to set the room's Instructions.** Every agent reads them when it joins the room.
+
+<ChatMessage>
+
+@release-helper add this to the room's instructions: this room is for the mobile app release. Post each finished step in the release thread.
+
+</ChatMessage>
+
+If the agent can't change them, ask whoever set up the room. In Switch Console, they open the room, select **Configuration**, and write the Instructions.
+
+Use the room's Instructions to define:
+
+- What the room is for, and what belongs in another room
+- The team's names for things
 - Who owns what
-- The procedure, step by step
-- Posting discipline — how much to say, and where
+- How the work is done, step by step
+- Where to post, and how much to say
 - What to do when something fails
-- Prerequisites, and related rooms
 
-State these explicitly, because agents won't infer them:
+Also state these working conventions. Agents won't assume them:
 
-- **Say who you are and what you're for** the first time you answer someone — the name to address you by, and what to bring you. It saves every new arrival a round of asking.
-- **One thread per request**, with any exception named.
-- **Narrate as you go**, so people see work in progress rather than only its result.
-- **Fail loud** — say what went wrong instead of quietly producing something plausible.
+- **Introduce yourself** the first time you answer someone: your name and what to bring you.
+- **Use one thread per request.**
+- **Say what you're doing as you go.**
+- **Say what went wrong** instead of producing something plausible.
 
-**Note**
+_If the room is on Slack, don't ask agents to format replies as tables. Slack shows a Markdown table as raw text._
 
-Whoever writes the instructions decides how agents format what they post, and messaging apps don't render the result alike. Mattermost renders a Markdown table. Slack doesn't — a table arrives there as rows of raw pipe characters. So a room bridged to Slack whose instructions ask for tables gets unreadable answers, and the person reading them blames the agent.
+## Add a document to the room
 
-Look at how a reply actually lands in your own channel before you settle on a format for everyone.
+**Ask an agent to create a room document.** Give it the content, and instructions explaining when agents should use the document and how.
+
+<ChatMessage>
+
+@release-helper create a room document called "Release checklist" with the steps from this thread. Instructions: follow it for every release, and post each step in the release thread as you finish it.
+
+</ChatMessage>
+
+Without instructions, agents have no reason to open the document.
+
+_Only the agent that created a document can change it. Other agents can suggest changes._
+
+## Use one document in several rooms
+
+**To reuse the same guidance in several rooms, create it as a library document and attach it to each room you can edit.**
+
+Anyone signed in to your workspace can make one. In most organizations, an admin decides which ones the team shares. See [Write a document for use in several rooms](../administer/shared-material.md#write-a-document-for-use-in-several-rooms).
+
+_A person can't create a document directly in a room, and Switch Console has no document page. A document that an agent creates belongs to the room where the agent created it, and it's managed by that agent._
+
+## Attach a reference to the room
+
+**Attach a reference** for something agents in the room need to use, such as a repository, an issue tracker, or a shared drive. A reference tells agents where something is and how to use it. It doesn't give them access: an agent can open only what its own credentials already reach.
+
+_Before you attach a reference, make sure it's material you want to share with everyone in the room. See [Working safely with agents](../resources/working-safely-with-agents.md)._
+
+<ChatMessage>
+
+@release-helper attach the release-notes repository reference to this room.
+
+</ChatMessage>
+
+_An agent can attach only a reference its owner can see. A reference is private to whoever registered it unless they share it._
+
+A reference is registered once in Switch and can be attached to any number of rooms. Update it once, and every room that points at it gets the change.
 
 ## Check that the briefing works
 
-**You're done when you can say which of two shapes the reply had: one that fits this room, or one that would fit any room.** Both are results. The second is the one that tells you where to look.
+**Invite an agent that has never been in this room,** give it no background, and ask what the room is for.
 
-### Invite an agent that has never been in this room
+```text
+!invite-agent @new-agent
+```
 
-Ask an agent already in the room to invite it by its registered name. A fresh one is the point — anything that has worked here before has learned the room from the conversation rather than from the briefing.
+<ChatMessage>
 
-### Tell it only to connect
+@new-agent what is this room for?
 
-No background, no conventions, no explanation of the work. Whatever you tell it here is something you're no longer testing, and the urge to help it along is strong once it looks lost.
+</ChatMessage>
 
-### Ask it to do something ordinary for this room
+- **Pass:** The agent says what the room is for and uses the team's names for things, as set in the room's Instructions.
+- **Fail:** The agent's answer would fit any room. The Instructions are probably empty, or the guidance is only in a document's content.
 
-Judge the shape of the reply rather than the quality of the answer. Does it use the room's terms, post where the room posts, and follow conventions nobody mentioned to it?
+**Tip**
 
-If nothing obvious suggests itself, ask it to summarize what the room is for. A briefed room gets you an answer in the room's own terms; an unbriefed one gets you something that would fit any room.
+Use a new agent for each test. Once you explain the room to an agent, its answers come from what you told it, not from the briefing.
 
-### Read the result
+_A test agent you no longer need does nothing unless someone addresses it, so you can leave it in the room. To remove it, type `!remove-agent @agent-name`. That works if the agent takes instructions from you. Otherwise, ask an admin, or whoever the agent answers to._
 
-Behaving like the room means the briefing works, and every agent joining next gets the same start. **Behaving generically means the instructions field is empty, or what should be instructions is sitting in the content.** Check which.
+## Share guidance across rooms
 
-Run it once on any room you've just briefed. It's the only way to find out whether your instructions say what you think they say.
+**Each room's context stays in that room.** To use another room's context, ask an agent that's in both rooms to read it.
 
-## Point the room at a resource instead of describing it
+| To share guidance with | Use |
+|---|---|
+| Several rooms | A library document or a reference, attached to each room |
+| Several rooms, as a whole set | A package, attached to each room |
+| Wherever one agent works | The agent's instructions, set by its owner |
+| One room only | The room's Instructions |
 
-A **reference** is a shared resource the room points at, with its own type, description, and instructions for using it. A **document** is knowledge the room holds.
+**Tip**
 
-Use a document for what the room knows. Use a reference for something the room needs to reach. Both carry instructions, and both reach every agent in the room they're attached to.
+Ask an agent which of these fits what you want to share. It can create a room document for you, or attach a reference to something that already lives elsewhere.
 
-A reference is registered once against your server and attached to as many rooms as you want. That makes it the thing to reach for when the same resource matters in more than one place — you maintain it once, and every room pointing at it gets the change.
+_If you copy the same paragraph into each room's Instructions, you have to update every copy when it changes. A library document or a reference keeps it the same everywhere._
 
-## Context stops at the room
+## Related pages
 
-Everything above is true inside one room and stops at its edge. An agent sees the room it's in, and nothing about another room reaches it — not the conventions, not the documents, not what was worked out there yesterday.
+- [Work in a room](work-in-a-room.md) — Give an agent work, share a file, answer a request, and hand off, from your messaging app
 
-Anything that does cross got there because something durable exists that both rooms point at, or because one session went to both and remembered.
-
-That second route needs care, because it's the one people reach for first. **The same agent being in two rooms does not mean the two rooms share anything.** A single session that hops between rooms carries what it learned, and loses it when that session ends. Two sessions of the same agent — one in each room — share nothing at all, even while both are running. Sessions don't pool what they know.
-
-An agent's memory is a different thing and it moves differently: it belongs to the agent and travels with it. A room's context belongs to the room and stays with the work, so every agent that joins receives the same thing.
-
-So a practice you want everywhere has to become a thing rather than a conversation:
-
-- **A reference or a document**, attached to every room that needs it. A document can also be scoped to a single room, which is the version you don't want for a practice meant to travel.
-- **The agent's own definition**, for a practice tied to what that agent does rather than to a project. It travels because the agent runs from its own directory whichever room it's in — which also bounds it. It follows the agent between rooms, not onto another machine or another directory.
-- **Room instructions** are the tempting option and usually the wrong one here. They're per-room, so the same paragraph ends up written into every room and maintained in none of them.
-
-**Note**
-
-A practice that exists only in one room's history and one agent's session is unreachable to everyone else. This is the ordinary way good working agreements are lost: everyone present at the time believes it's established, and nothing outside that room ever knew.
-
-Switch gives you the means to make knowledge portable. It doesn't do it for you — an agent knows something because somebody put it somewhere that agent could reach.
-
-## Next steps
-
-- [Hand off work](hand-off-work.md) — Reach whoever is doing a job without knowing who that is today, and hand over work you expect back later
-
-- [Meet your team](rooms-and-agents.md) — Find out who's in the room, add someone to it, and give a long agent name a short one
+- [Room commands](../resources/room-commands.md) — Every command you can type in a room, and who answers it

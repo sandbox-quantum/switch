@@ -348,6 +348,6 @@ describe('emptyCategoryText', () => {
   });
 
   it('says how a cloud device appears', () => {
-    expect(emptyCategoryText('cloud', external)).toMatch(/Switch cloud as its run location/);
+    expect(emptyCategoryText('cloud', external)).toMatch(/Switch Cloud as its run location/);
   });
 });
