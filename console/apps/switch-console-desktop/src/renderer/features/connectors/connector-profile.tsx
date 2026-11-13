@@ -10,6 +10,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ConnectorAgentsSection } from './connector-agents-section';
+import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
   type ConnectorViewer,
   FIX_LABEL,
@@ -39,15 +40,17 @@ const ACTION_LABEL = {
  * One connector, in place of the catalog: who the person is connected as and
  * what they allowed, which of their agents use it, and the way to connect,
  * reconnect or disconnect. When the workspace has it off, a member is told
- * who can switch it on and an admin is offered the switch; when its app is
- * not set up, the server's operator is offered to set it up. Opened right
- * after connecting, the Add agent search under the agents starts open.
+ * who can switch it on and an admin is offered the switch where it could
+ * work; when its app is not set up, the server's operator is offered to set
+ * it up. Opened right after connecting, the Add agent search under the
+ * agents starts open.
  */
 export function ConnectorProfile({
   serverId,
   workspaceId,
   connection,
   viewer,
+  gatewayV2,
   justConnected,
   onBack,
 }: {
@@ -55,6 +58,8 @@ export function ConnectorProfile({
   workspaceId: string;
   connection: ConnectionCatalogEntry;
   viewer: ConnectorViewer;
+  /** The server's `gateway_v2` flag, which decides where the gateway sets apps up. */
+  gatewayV2: boolean;
   /** Set when the profile opens because the service was just connected, with the warning Switch gave. */
   justConnected: { warning: string | null } | null;
   onBack: () => void;
@@ -128,7 +133,7 @@ export function ConnectorProfile({
             {state.fix === 'set_up' && (
               <Button
                 onClick={() =>
-                  navigate('admin', { serverId, section: 'apps', app: connection.slug })
+                  openConnectorAppSetUp(serverId, connection.slug, gatewayV2, navigate)
                 }
               >
                 {FIX_LABEL.set_up}
@@ -136,11 +141,9 @@ export function ConnectorProfile({
             )}
             {action && (
               <Button
-                variant={action === 'replace' ? 'outline' : 'default'}
+                variant={connection.status === 'connected' ? 'outline' : 'default'}
                 disabled={!connection.connectable}
-                onClick={() =>
-                  connect(connection, action === 'replace' ? 'replace' : 'connect', afterConnected)
-                }
+                onClick={() => connect(connection, action, afterConnected)}
               >
                 {ACTION_LABEL[action]}
               </Button>

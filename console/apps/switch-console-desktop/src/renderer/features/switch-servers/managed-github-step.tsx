@@ -1,5 +1,6 @@
 import { CircleCheck, ExternalLink, GitBranch, GitPullRequest, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { SIGN_IN_HINT_AFTER_MS } from '@renderer/features/connectors/connect-flow';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
@@ -18,6 +19,9 @@ const SSO_HIDDEN =
   'An organization’s single sign-on hides its installation of the app from this GitHub connection. Disconnect and connect GitHub again, and authorize the organization when GitHub asks.';
 const NO_NEW_ACCESS =
   'No new repository access appeared. If you installed the app on an organization, an owner may still need to approve it, or its single sign-on may hide it from this connection: disconnect and connect GitHub again, authorizing the organization when GitHub asks.';
+
+const SIGN_IN_HINT =
+  'If GitHub showed an error, cancel, and ask the person who set up the GitHub App for Switch to check its Callback URL.';
 
 /** Whether an organization's single sign-on hides installations from this connection. */
 function ssoHidden(connection: GitHubConnection | null): boolean {
@@ -54,6 +58,10 @@ export function ManagedGitHubStep({
   const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [watching, setWatching] = useState<{ baseline: string; expiresAt: number } | null>(null);
+  // The sign-in's last status, and the sign-in whose browser has been away
+  // long enough for the hint.
+  const [flowStatus, setFlowStatus] = useState<string | null>(null);
+  const [slowFlowId, setSlowFlowId] = useState<string | null>(null);
   useCloseGuard(busy || flowId !== null);
   const load = useCallback(async () => {
     setBusy(true);
@@ -69,6 +77,13 @@ export function ManagedGitHubStep({
   useEffect(() => {
     void load();
   }, [load]);
+  // Its own effect, so that a new render of the page does not restart it.
+  useEffect(() => {
+    if (!flowId) return;
+    setFlowStatus(null);
+    const slow = setTimeout(() => setSlowFlowId(flowId), SIGN_IN_HINT_AFTER_MS);
+    return () => clearTimeout(slow);
+  }, [flowId]);
   // The sign-in is over once the server has kept the connection, or failed it.
   useEffect(() => {
     if (!flowId) return;
@@ -78,6 +93,7 @@ export function ManagedGitHubStep({
       try {
         const result = await rpc.switchServers.getGitHubFlow(serverId, flowId);
         if (!alive) return;
+        setFlowStatus(result.status);
         if (result.status === 'failed')
           setError(result.error ?? 'GitHub authorization failed. Cancel and try again.');
         else if (result.status === 'connected') {
@@ -162,9 +178,14 @@ export function ManagedGitHubStep({
       </DialogHeader>
       <DialogContentArea className="space-y-5 pt-0">
         {flowId ? (
-          <p className="flex items-center gap-2 text-sm">
-            <Spinner /> Complete authorization in your browser, then return here.
-          </p>
+          <>
+            <p className="flex items-center gap-2 text-sm">
+              <Spinner /> Complete authorization in your browser, then return here.
+            </p>
+            {slowFlowId === flowId && (flowStatus === null || flowStatus === 'pending') && (
+              <p className="text-sm text-foreground-muted">{SIGN_IN_HINT}</p>
+            )}
+          </>
         ) : connected ? (
           <>
             <p className="flex items-center gap-2 text-sm">

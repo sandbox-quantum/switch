@@ -119,7 +119,11 @@ def build_adapter(
         # With the App alone, GitHub can be connected but not granted.
         if github_app is None:
             return None
-        return GitHubAdapter(github_app.connections, github_app.signer)
+        return GitHubAdapter(
+            github_app.connections,
+            github_app.signer,
+            read_only=github_app.read_only,
+        )
     if definition.adapter == "oauth":
         oauth = definition.auth.oauth
         assert oauth is not None

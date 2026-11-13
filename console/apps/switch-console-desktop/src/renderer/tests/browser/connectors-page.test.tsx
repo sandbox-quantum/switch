@@ -23,18 +23,20 @@ const workspaces = vi.hoisted(() => ({
 }));
 const switchServers = vi.hoisted(() => ({
   openGitHubInstallation: vi.fn(),
+  openGatewayPage: vi.fn(),
 }));
 const modalHost = vi.hoisted(() => ({
   show: (_id: string, _args: unknown): void => {
     throw new Error('No modal host is mounted.');
   },
 }));
+const gatewayLayout = vi.hoisted(() => ({ v2: false }));
 const featureFlags = vi.hoisted(() => ({
   get: vi.fn(async () => ({
     success: true,
     data: {
       serverId: 'server',
-      flags: { service_connections: true },
+      flags: { service_connections: true, gateway_v2: gatewayLayout.v2 },
       fetchedAt: 1,
       error: null,
     },
@@ -62,13 +64,25 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   operatesServer: () => admin.operator,
 }));
 
-const server = vi.hoisted(() => ({ managed: false }));
+const server = vi.hoisted(() => ({ managed: false, servesGateway: false, listed: true }));
+
+vi.mock('@renderer/features/switch-servers/server-gateway', () => ({
+  servesWebGateway: () => server.servesGateway,
+}));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     get servers() {
+      if (!server.listed) return [];
       return [
-        { id: 'server', name: 'Dev Server', managed: server.managed, managementKind: 'local' },
+        {
+          id: 'server',
+          name: 'Dev Server',
+          url: 'https://switch.example.com',
+          dashboardUrl: null,
+          managed: server.managed,
+          managementKind: 'local',
+        },
       ];
     },
     isConnected: () => true,
@@ -165,6 +179,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     agent_access_note: null,
@@ -173,6 +188,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     external_identity: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -197,8 +213,11 @@ beforeEach(() => {
   admin.administers = false;
   admin.operator = false;
   server.managed = false;
+  server.servesGateway = false;
+  server.listed = true;
+  gatewayLayout.v2 = false;
   for (const mock of Object.values(workspaces)) mock.mockReset();
-  switchServers.openGitHubInstallation.mockReset();
+  for (const mock of Object.values(switchServers)) mock.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
 });
 
@@ -236,24 +255,27 @@ function grid(page: HTMLElement): HTMLElement | null {
   );
 }
 
-it("shows the workspace's catalog, what the person has on Yours and everything on Discover", async () => {
+it("shows the workspace's catalog, everything on Discover and what the person has on Yours", async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
 
   await vi.waitFor(() => expect(grid(page)).not.toBeNull());
   expect(workspaces.getServiceConnections).toHaveBeenCalledWith('workspace');
-  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
-  expect(button(/^Example/, grid(page)!)).toBeUndefined();
-  expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
-
-  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Discover"]')!.click());
-  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeDefined());
+  expect(page.querySelector('button[aria-label="Discover"]')?.getAttribute('aria-pressed')).toBe(
+    'true'
+  );
+  expect(button(/^Example/, grid(page)!)).toBeDefined();
   expect(page.querySelector('button[aria-label="Connect Example"]')).not.toBeNull();
   expect(button(/^Linear/, grid(page)!)?.disabled).toBe(true);
   expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeUndefined());
+  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
+  expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
 });
 
-it('opens on Discover when nothing is connected yet, and stays on the tab the person picks', async () => {
+it('stays on the tab the person picks', async () => {
   const unconnected = CATALOG.map((item) =>
     item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item
   );
@@ -315,8 +337,66 @@ it("offers the server's operator to set up an app that is not set up, on the car
 
   navigation.navigate('connectors', { connector: 'example' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
-  expect(button(/^Set up$/, page)).toBeDefined();
   expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  await act(async () => button(/^Set up$/, page)!.click());
+  expect(navigation.view()).toBe('admin');
+  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+});
+
+it('sends Set up to Admin apps for a server Console does not list', async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  server.listed = false;
+  const page = await discover([NOT_SET_UP]);
+
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).not.toHaveBeenCalled();
+  expect(navigation.view()).toBe('admin');
+  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+});
+
+it("opens the gateway's connector apps to set an app up on a server with a web gateway", async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  gatewayLayout.v2 = true;
+  const page = await discover([NOT_SET_UP]);
+  const connectorApps = {
+    serverId: 'server',
+    url: 'https://switch.example.com/platform/connectors',
+  };
+
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith(connectorApps);
+  expect(navigation.view()).toBe('connectors');
+
+  navigation.navigate('connectors', { connector: 'example' });
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  await act(async () => button(/^Set up$/, page)!.click());
+  expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
+  expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
+  expect(navigation.view()).toBe('connectors');
+});
+
+it('opens connector apps at the path a gateway in the current layout serves', async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  const page = await discover([NOT_SET_UP]);
+  const connectorApps = { serverId: 'server', url: 'https://switch.example.com/connectors' };
+
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith(connectorApps);
+
+  navigation.navigate('connectors', { connector: 'example' });
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  await act(async () => button(/^Set up$/, page)!.click());
+  expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
+  expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
 });
 
 it('tells anyone else who sets the app up, with no button to press', async () => {
@@ -392,6 +472,21 @@ it('tells a member to ask a workspace admin about a service the workspace has of
   expect(button(/^Example/, grid(page)!)!.textContent).toContain(
     'Ask a workspace admin to turn it on.'
   );
+  expect(page.querySelector('button[aria-label="Turn on Example"]')).toBeNull();
+});
+
+it('offers an admin no Turn on for a service the organization locked off', async () => {
+  admin.administers = true;
+  const page = await discover([
+    entry({
+      slug: 'example',
+      name: 'Example',
+      workspace_enabled: false,
+      organization_locked: true,
+    }),
+  ]);
+
+  expect(button(/^Example/, grid(page)!)!.textContent).toContain('Set by your organization.');
   expect(page.querySelector('button[aria-label="Turn on Example"]')).toBeNull();
 });
 
@@ -600,6 +695,22 @@ it("shows GitHub's repositories on its profile, and adds an agent with them", as
     access: 'read',
     resources: { installation_id: 7, repository_ids: [2] },
   });
+});
+
+it('says only that the person has no agents when there are none to add', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await render();
+
+  await vi.waitFor(() => expect(button(/^Atlassian/, grid(page)!)).toBeDefined());
+  await act(async () => button(/^Atlassian/, grid(page)!)!.click());
+  await vi.waitFor(() => expect(button(/^Add agent$/, page)).toBeDefined());
+  await act(async () => button(/^Add agent$/, page)!.click());
+
+  await vi.waitFor(() =>
+    expect(page.querySelector('input[aria-label="Search agents to add"]')).not.toBeNull()
+  );
+  expect(page.textContent).toContain('You have no agents in this workspace yet.');
+  expect(page.textContent).not.toContain('Every one of your agents');
 });
 
 it('shows a connection the workspace has switched off as off, not as connected', async () => {

@@ -246,8 +246,8 @@ async def test_an_app_not_set_up_here_says_who_sets_it_up(
 ) -> None:
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
     reason = (
-        "{} is not set up here. Whoever runs Switch can set it up in "
-        "Switch Console, under Admin → Connector apps."
+        "{}'s connector app isn't set up on this server yet. "
+        "Whoever runs Switch can set it up."
     )
     assert await availability(broker, "example") == reason.format("Example")
     assert await availability(broker, "github") == reason.format("GitHub")
@@ -284,25 +284,40 @@ async def test_a_service_signing_in_only_through_the_server_needs_its_public_url
     assert example is not None and example.code == "app_not_set_up"
 
 
-async def test_github_cannot_work_on_a_server_without_an_https_address(
+async def test_github_cannot_work_on_a_server_at_another_computers_http_address(
     tmp_path: Path, session_factory
 ) -> None:
     catalog = _catalog(tmp_path, STATIC)
-    broker = _broker(catalog, session_factory, {}, "http://127.0.0.1:8000")
+    broker = _broker(catalog, session_factory, {}, "http://switch.example.com")
     github = (await standing(broker, "github")).unavailable
     assert github is not None
     assert github.code == "needs_https"
     assert github.reason == (
-        "GitHub can't be used here: it needs Switch to have an https address."
+        "GitHub can't be used here: it needs Switch to have an https address, "
+        "or an http one on your own computer (localhost or 127.0.0.1)."
     )
     assert (await standing(broker, "github")).server_setup_needed is False
     # Google and the like take an http address back, so their app still can be.
     example = (await standing(broker, "example")).unavailable
     assert example is not None and example.code == "app_not_set_up"
 
-    https = _broker(catalog, session_factory, {}, "https://switch.example.com")
-    github = (await standing(https, "github")).unavailable
+
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        "https://switch.example.com",
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://[::1]:8000",
+    ],
+)
+async def test_github_can_be_set_up_on_https_or_on_this_computer(
+    tmp_path: Path, session_factory, public_url: str
+) -> None:
+    broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, public_url)
+    github = (await standing(broker, "github")).unavailable
     assert github is not None and github.code == "app_not_set_up"
+    assert (await standing(broker, "github")).server_setup_needed is True
 
 
 async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(

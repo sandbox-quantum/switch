@@ -16,7 +16,7 @@ export function useConnectService(serverId: string, workspaceId: string) {
   return useCallback(
     (
       connection: ConnectionCatalogEntry,
-      startAt: 'connect' | 'replace',
+      startAt: 'connect' | 'reconnect' | 'replace',
       afterConnected: (warning: string | null) => void
     ) =>
       showConnect({

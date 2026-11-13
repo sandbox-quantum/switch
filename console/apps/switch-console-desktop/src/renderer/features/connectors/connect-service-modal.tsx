@@ -13,7 +13,8 @@ import { offersAddAgent } from './grant-agents';
  * connected, so the page, with its Add agent search open, is what they see
  * next. GitHub's stays open once connected, showing the repositories reached,
  * until Done; the page behind is already current. `startAt: 'replace'` opens
- * on the form that replaces a connected key, which keeps every agent's access.
+ * on the form that replaces a connected key, which keeps every agent's access;
+ * `'reconnect'` opens on a new sign-in, even while one is connected.
  */
 export function ConnectServiceModal({
   serverId,
@@ -26,7 +27,7 @@ export function ConnectServiceModal({
   serverId: string;
   workspaceId: string;
   connection: ConnectionCatalogEntry;
-  startAt: 'connect' | 'replace';
+  startAt: 'connect' | 'reconnect' | 'replace';
   /** Runs as soon as the service is connected, with the warning Switch gave. */
   onConnected: (warning: string | null) => void;
 } & BaseModalProps) {
@@ -71,6 +72,7 @@ export function ConnectServiceModal({
     <ServiceConnectStep
       calls={calls}
       connection={connection}
+      reconnecting={startAt === 'reconnect'}
       onBack={onClose}
       onConnected={connected}
     />

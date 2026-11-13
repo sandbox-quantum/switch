@@ -479,6 +479,7 @@ class TestTheProfileChanging:
                 {SERVICE: connection},
                 [],
                 {},
+                set(),
             )
         [google] = [entry for entry in services if entry["slug"] == SERVICE]
         assert google["connection"] == "needs_reauthorization"
@@ -692,8 +693,8 @@ class TestAvailability:
             (
                 False,
                 {},
-                "Google Workspace is not set up here. Whoever runs Switch can set "
-                "it up in Switch Console, under Admin → Connector apps.",
+                "Google Workspace's connector app isn't set up on this server "
+                "yet. Whoever runs Switch can set it up.",
                 "app_not_set_up",
             ),
             (
