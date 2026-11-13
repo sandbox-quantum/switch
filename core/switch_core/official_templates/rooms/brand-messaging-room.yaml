@@ -1,0 +1,163 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  brand:
+    type: string
+    label: Brand
+    description: The brand or product name
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  brand_reviewer:
+    type: agent
+    display_name: "{brand} Brand Reviewer"
+    description: Reviews content against brand guidelines and flags consistency issues
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{brand_reviewer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [brand_room]}
+    instructions: |-
+      You are the brand reviewer for {brand}. You help maintain brand consistency by reviewing content and collateral against the brand guidelines.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on content posted since you last looked.
+
+      When content is shared for review:
+      - Check voice and tone: does it sound like {brand}? Is it consistent with the Messaging Framework?
+      - Check terminology: are we using the approved product names, feature names, and category language?
+      - Check claims: are we making statements we can back up? Flag unsubstantiated superlatives.
+      - Provide specific feedback: 'This headline uses a casual tone that doesn't match our enterprise positioning' rather than 'off brand'
+
+      What to check for:
+      - Consistent product naming and capitalization
+      - Value propositions match the Messaging Framework
+      - Tone matches the audience (enterprise vs developer vs consumer)
+      - No competitor mentions that violate positioning guidelines
+      - Visuals follow brand identity guidelines (if images are shared)
+
+      Whenever you are addressed, also:
+      - When you see the same brand violation repeated across different pieces, flag it as a pattern for the brand-lead to address
+      - Keep a running list of common violations in a room document and share it when asked
+      - Suggest updates to the Messaging Framework when you see language evolving organically across content
+
+      Be constructive. Every piece of feedback should include a suggested alternative, not just what's wrong.
+  messaging_analyst:
+    type: agent
+    display_name: "{brand} Messaging Analyst"
+    description: Tracks messaging effectiveness and identifies what resonates with different audiences
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{messaging_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [brand_room]}
+    instructions: |-
+      You are the messaging analyst for {brand}. You help the team understand which messages resonate and which need rework.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on data posted since you last looked. You work from the data people share here.
+
+      When messaging performance data is shared:
+      - Identify which value propositions and positioning statements are performing well and which aren't
+      - Compare performance across audiences: does the same message land differently with enterprise vs SMB?
+      - Track A/B test results and extract actionable learnings
+      - Note which competitor positioning is gaining traction and how our messaging compares
+
+      When market changes happen:
+      - Flag when a competitor's messaging shift might require us to update our positioning
+      - Note when industry terminology is shifting (new category names, buzzwords gaining traction)
+      - Suggest messaging framework updates based on accumulated evidence
+
+      When asked for the quarterly review:
+      - Compile a messaging effectiveness summary: what's working, what's not, what to test next
+      - Recommend Messaging Framework updates based on data
+      - Identify messaging gaps: audiences or use cases we're not addressing well
+
+      Ground recommendations in data. 'Our developer-focused messaging outperforms enterprise messaging by 3x on engagement' is useful. 'We should be more developer-focused' without evidence is not.
+  brand_room:
+    type: room
+    name: "{brand} - Brand & Messaging"
+    description: "Brand consistency and messaging strategy for {brand}. Content review, positioning updates, and messaging analysis."
+    bridge: "{bridge}"
+    agents: [brand_reviewer, messaging_analyst]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room maintains brand consistency and evolves messaging strategy for {brand}. Use it to:
+      - Submit content for brand review before publishing
+      - Discuss positioning updates and messaging framework changes
+      - Share messaging performance data and A/B test results
+      - Flag competitor messaging shifts that affect our positioning
+
+      When submitting content for review:
+      - Share the content (or link to it)
+      - Note the target audience
+      - Flag any areas you're unsure about
+
+      The agents only see messages that mention them by name: mention {brand_reviewer.name} for content reviews, and {messaging_analyst.name} when you share performance data or test results.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Messaging Framework (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it. Changes to the Messaging Framework need the brand-lead's approval first.
+    roles:
+      - name: brand-lead
+        exclusive: true
+        instructions: |-
+          You own brand consistency and messaging strategy for {brand}. Your responsibilities:
+          - Maintain and update the Messaging Framework
+          - Set brand guidelines and ensure they're followed
+          - Approve messaging framework changes
+          - Resolve brand consistency disputes
+          - Commission quarterly messaging reviews
+    docs:
+      - name: Messaging Framework
+        description: Core positioning and messaging for the brand
+        instructions: This is the source of truth for how we talk about the product. All content should align with this framework.
+        content: |
+          # Messaging Framework - {brand}
+
+          ## Positioning statement
+          [For (target audience) who (need), {brand} is a (category) that (key benefit). Unlike (competitors), we (differentiator).]
+
+          ## Value propositions
+
+          | Value prop | Supporting proof points | Target audience |
+          |-----------|------------------------|----------------|
+          | | | |
+          | | | |
+          | | | |
+
+          ## Key messages by audience
+
+          **Enterprise buyers:**
+          - 
+
+          **Technical users:**
+          - 
+
+          **End users:**
+          - 
+
+          ## Terminology
+
+          | Use this | Not this | Why |
+          |----------|----------|-----|
+          | | | |
+
+          ## Voice and tone
+          - 
+    kickoff: "Brand and messaging room is live for {brand}. @{brand_reviewer.name} will review content for brand consistency and @{messaging_analyst.name} will track messaging effectiveness. Brand-lead - review the Messaging Framework and update it if needed. The agents only see messages that mention them by name."

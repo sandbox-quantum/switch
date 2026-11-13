@@ -11,6 +11,7 @@ import {
 import {
   addBridgeTeam,
   addRoomAgents,
+  fetchRoomAgentCandidates,
   addRoomUsers,
   createRoomRole,
   deleteRoomRole,
@@ -62,6 +63,7 @@ import {
   fetchTemplateSchema,
   GatewayError,
   ownsOwnerAddressedAgent,
+  recordTemplateRun,
   releaseBridgeIdentity,
   removeBridgeTeam,
   removeRoomAgent,
@@ -77,6 +79,7 @@ import {
   getConnectionCatalog,
   getGitHubConnection,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectGitHub,
   disconnectService,
   setRoomAutoRoute,
@@ -142,6 +145,7 @@ import type {
   TelemetryBridgePlatform,
   TelemetryIdentityClaimOutcome,
   TelemetryOutcome,
+  TelemetryRoomAgentsAddFailure,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
   TelemetryRoomCreateSource,
@@ -154,6 +158,7 @@ import {
 } from '@main/core/telemetry/narrow';
 import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
+import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
   LibraryDeleteResult,
   LibraryDocument,
@@ -173,6 +178,7 @@ import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
@@ -289,6 +295,20 @@ function roomCreateErrorReason(error: unknown): TelemetryRoomCreateFailure {
   if (error.status === 403) return 'forbidden';
   if (error.status === 404) return 'not_found';
   if (error.status === 409) return 'conflict';
+  if (error.status !== undefined && error.status >= 500) return 'server_error';
+  return 'error';
+}
+
+/** Adding agents to a room that threw, by the error's own type or the server's answer. */
+function roomAgentsAddFailureReason(error: unknown): TelemetryRoomAgentsAddFailure {
+  if (error instanceof HostUnreachableError) return 'unreachable';
+  if (!(error instanceof GatewayError)) return 'error';
+  if (error.kind === 'unauthorized') return 'unauthenticated';
+  if (error.kind === 'network') return 'network';
+  if (error.status === 403) return 'forbidden';
+  if (error.status === 404) return 'not_found';
+  if (error.status === 409) return 'conflict';
+  if (error.status === 400 || error.status === 422) return 'invalid';
   if (error.status !== undefined && error.status >= 500) return 'server_error';
   return 'error';
 }
@@ -933,6 +953,34 @@ export const workspacesController = createRPCController({
       fetchTemplateDetail(server, params.templateId)
     ),
 
+  /**
+   * Count a stored or official template's run, once the whole run has
+   * succeeded. Never fails: the run is done either way, so a server that does
+   * not count runs, or one that cannot be reached, is logged and the run goes
+   * uncounted.
+   */
+  recordTemplateRun: async (params: { workspaceId: string; templateId: string }): Promise<void> => {
+    try {
+      const counted = await withWorkspaceSession(params.workspaceId, (server) =>
+        recordTemplateRun(server, params.templateId)
+      );
+      if (!counted) {
+        log.warn('A template run was not counted: the server does not count it', {
+          event: 'template_run_count',
+          errorCode: 'not_counted',
+          templateId: params.templateId,
+        });
+      }
+    } catch (error) {
+      log.warn('A template run was not counted', {
+        event: 'template_run_count',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        templateId: params.templateId,
+        error: String(error),
+      });
+    }
+  },
+
   deleteTemplate: (params: { workspaceId: string; templateId: string }): Promise<void> =>
     withWorkspaceSession(params.workspaceId, (server) => deleteTemplate(server, params.templateId)),
 
@@ -999,7 +1047,6 @@ export const workspacesController = createRPCController({
         description: params.description,
         instructions: params.instructions,
         readVisibility: params.readVisibility,
-        writeVisibility: params.writeVisibility,
       })
     ),
 
@@ -1337,11 +1384,24 @@ export const workspacesController = createRPCController({
     ),
 
   /**
+   * The agents the signed-in person may bring into `roomId`, or into a new
+   * room when it is null; null from a server that cannot say.
+   */
+  roomAgentCandidates: (params: {
+    workspaceId: string;
+    roomId: string | null;
+  }): Promise<string[] | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomAgentCandidates(server, params.roomId)
+    ),
+
+  /**
    * Add agents to a room. Failures propagate as-is: the caller shows the
    * gateway's own words (e.g. an agent whose server-side client is not running,
-   * which the gateway rejects) rather than a generic message.
+   * which the gateway rejects) rather than a generic message. Reported either
+   * way, with the reason a failure can be told by.
    */
-  addRoomAgents: (params: {
+  addRoomAgents: async (params: {
     workspaceId: string;
     roomId: string;
     agentIds: string[];
@@ -1352,14 +1412,24 @@ export const workspacesController = createRPCController({
      * adding one agent.
      */
     direction: TelemetryRoomAgentsDirection;
-  }): Promise<void> =>
-    withReachableWorkspaceSession(params.workspaceId, async (server) => {
-      await addRoomAgents(server, params.roomId, params.agentIds);
+  }): Promise<void> => {
+    const report = (failure_reason: TelemetryRoomAgentsAddFailure) =>
       trackEvent('room_agents_added', {
         agent_count: params.agentIds.length,
         direction: roomAgentsDirectionOf(params.direction),
+        outcome: failure_reason === 'none' ? 'success' : 'failure',
+        failure_reason,
       });
-    }),
+    try {
+      await withReachableWorkspaceSession(params.workspaceId, (server) =>
+        addRoomAgents(server, params.roomId, params.agentIds)
+      );
+    } catch (error) {
+      report(roomAgentsAddFailureReason(error));
+      throw error;
+    }
+    report('none');
+  },
 
   /** Remove one agent from a room. Membership only — the agent is not deleted. */
   removeRoomAgent: (params: {
@@ -1586,12 +1656,19 @@ export const workspacesController = createRPCController({
 
   /**
    * Start signing in to `service` for this workspace: the browser opens at the
-   * vendor, and this Console's listener takes the result back. Resolves to the
-   * flow's id.
+   * vendor, and this Console's listener takes the result back. `choices` are
+   * what the person picked first (a vendor's site). Resolves to the flow's id,
+   * and the server's callback where the browser returns through it.
    */
-  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+  startServiceConnection: (params: {
+    workspaceId: string;
+    service: string;
+    choices: Record<string, string>;
+  }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, params.service, params.choices, (url) =>
+        appService.openExternal(url)
+      )
     ),
 
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
@@ -1612,6 +1689,19 @@ export const workspacesController = createRPCController({
   }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
       connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /**
+   * Connect `service` with a token or keys pasted in place of its sign-in, at
+   * what was picked for its choices (a site); Switch checks them at the service.
+   */
+  connectServiceWithPaste: (params: { workspaceId: string; service: string } & ServicePaste) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithPaste(server, params.service, {
+        method: params.method,
+        fields: params.fields,
+        choices: params.choices,
+      })
     ),
 
   /** Disconnect `service` in this workspace: its grants go with it. */

@@ -49,8 +49,11 @@ from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
 )
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.session_activity.listener import Change
+from switch_core.transport.observer import ParticipantMessage
 from tests.switch_core.gateway.conftest import _Harness, _Process
+from tests.telemetry_records import recording_telemetry
 
 
 def _code(response: httpx.Response) -> str:
@@ -517,6 +520,50 @@ async def test_a_send_that_failed_before_commit_posts_once_on_retry(
     assert len(groups) == 1
 
 
+async def test_an_observer_that_raises_does_not_fail_the_send(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post is committed before the observer hears of it, so a failure
+    there must not answer the send with an error: the retry would be told
+    nothing was sent. Counted instead."""
+
+    class _Broken:
+        def observe(self, message: ParticipantMessage) -> None:
+            raise RuntimeError("observer bug")
+
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    registry = MetricsRegistry()
+    install(registry)
+    monkeypatch.setattr(chats.service, "_message_observer", _Broken())
+    try:
+        sent = await chats.send(chats.alice, room_id, "s1", "still sent")
+        failures = next(
+            p
+            for p in registry.collect()
+            if p.name == "switch.messages.observer_failures"
+        )
+    finally:
+        uninstall()
+
+    assert sent.status_code == 200, sent.text
+    assert [m.body for m in await chats.message_rows(room_id)] == ["still sent"]
+    assert failures.numbers[0].value == 1.0
+
+
+async def test_a_chat_is_reported_as_a_console_chat_when_made(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    telemetry, sink = recording_telemetry()
+    monkeypatch.setattr(chats.room_service, "_telemetry", telemetry)
+    agent = await chats.agent("helper", owner=chats.alice)
+
+    await chats.new_chat(chats.alice, agent, "c1")
+
+    [created] = sink.events("room_created")
+    assert created["console_chat"] is True
+
+
 async def test_one_request_id_from_two_users_is_two_sends(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await chats.new_chat(chats.alice, agent, "c1")
@@ -653,6 +700,61 @@ async def test_uploads_are_idempotent_and_media_is_scoped_to_the_room(
         f"/chats/{room_id}/media", params={"uri": uri}, headers=chats.as_user(chats.bob)
     )
     assert stranger.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type", "data", "disposition"),
+    [
+        (
+            "report.html",
+            "text/html",
+            b"<html><script>alert(document.cookie)</script></html>",
+            "attachment",
+        ),
+        (
+            "logo.svg",
+            "image/svg+xml",
+            b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+            "attachment",
+        ),
+        ("shot.png", "image/png", b"\x89PNG\r\n\x1a\n", "inline"),
+    ],
+)
+async def test_chat_files_are_served_so_they_cannot_run_as_switch_web(
+    chats: _Harness, name: str, content_type: str, data: bytes, disposition: str
+) -> None:
+    """A file in a chat is on Switch's own origin. HTML and SVG are downloads,
+    never rendered inline; only safe images show inline. Every file gets
+    `nosniff` and a CSP with no script or origin. The bytes and declared type
+    are unchanged, because Console reads both."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    staged = await chats.client.post(
+        f"/chats/{room_id}/attachments",
+        data={"uploadId": "u1"},
+        files={"file": (name, data, content_type)},
+        headers=chats.as_user(chats.alice),
+    )
+    assert staged.status_code == 200, staged.text
+    uri = staged.json()["uri"]
+    assert (
+        await chats.send(chats.alice, room_id, "s1", "", uploadIds=["u1"])
+    ).status_code == 200
+
+    media = await chats.client.get(
+        f"/chats/{room_id}/media",
+        params={"uri": uri},
+        headers=chats.as_user(chats.alice),
+    )
+    assert media.status_code == 200
+    assert media.content == data
+    assert media.headers["content-type"].startswith(content_type)
+    assert media.headers["content-disposition"].startswith(
+        f'{disposition}; filename="{name}";'
+    )
+    assert media.headers["x-content-type-options"] == "nosniff"
+    assert media.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert media.headers["cache-control"] == "private, no-store"
 
 
 async def test_a_member_removed_after_a_failed_send_cannot_retry_it(
@@ -1586,14 +1688,20 @@ async def test_owner_membership_is_granted_once(chats: _Harness) -> None:
             .select_from(ClientRoom)
             .where(ClientRoom.client_id == client.id)
         )
-        arrivals = await session.scalar(
-            select(func.count())
-            .select_from(Message)
-            .where(
-                Message.room_id == room_id,
-                Message.sender_client_id == client.id,
-                Message.event_type == "m.room.member",
+        membership_rows = (
+            await session.scalars(
+                select(Message.content).where(
+                    Message.room_id == room_id,
+                    Message.sender_client_id == client.id,
+                    Message.event_type == "m.room.member",
+                )
             )
+        ).all()
+        # Departures are membership rows too; only arrivals are counted here.
+        arrivals = sum(
+            1
+            for content in membership_rows
+            if (content or {}).get("membership") != "leave"
         )
     # One arrival from starting the chat, one from the owner rejoin.
     assert (memberships, arrivals, await _grants(chats)) == (1, 2, 1)

@@ -124,6 +124,10 @@ spec:
             - name: AIRTABLE_CLIENT_CONFIG_PATH
               value: /etc/switch-airtable/client.json
             {{- end }}
+            {{- if .Values.switchCore.gitlabClientSecret }}
+            - name: GITLAB_CLIENT_CONFIG_PATH
+              value: /etc/switch-gitlab/client.json
+            {{- end }}
             {{- if .Values.switchCore.googleWorkspaceClientSecret }}
             - name: GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH
               value: /etc/switch-google-workspace/client.json
@@ -167,7 +171,7 @@ spec:
             failureThreshold: 60
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
+          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.gitlabClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
           volumeMounts:
             {{- if .Values.switchCore.hostedControllerSecret }}
             - name: hosted-controller
@@ -184,6 +188,11 @@ spec:
               mountPath: /etc/switch-airtable
               readOnly: true
             {{- end }}
+            {{- if .Values.switchCore.gitlabClientSecret }}
+            - name: gitlab-client
+              mountPath: /etc/switch-gitlab
+              readOnly: true
+            {{- end }}
             {{- if .Values.switchCore.googleWorkspaceClientSecret }}
             - name: google-workspace-client
               mountPath: /etc/switch-google-workspace
@@ -198,7 +207,7 @@ spec:
               readOnly: true
             {{- end }}
           {{- end }}
-      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
+      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.gitlabClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
       volumes:
         {{- if .Values.switchCore.hostedControllerSecret }}
         - name: hosted-controller
@@ -216,6 +225,12 @@ spec:
         - name: airtable-client
           secret:
             secretName: {{ .Values.switchCore.airtableClientSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.switchCore.gitlabClientSecret }}
+        - name: gitlab-client
+          secret:
+            secretName: {{ .Values.switchCore.gitlabClientSecret | quote }}
             defaultMode: 0400
         {{- end }}
         {{- if .Values.switchCore.googleWorkspaceClientSecret }}

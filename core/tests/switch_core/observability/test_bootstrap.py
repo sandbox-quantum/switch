@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
@@ -319,6 +320,57 @@ async def test_metrics_reach_the_collector(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_metrics_and_logs_carry_the_environment_as_flint_env(monkeypatch):
+    """Metrics and logs carry the deployment's `ENVIRONMENT` as `flint_env`,
+    the same on both. `TELEMETRY_ENVIRONMENT` (product telemetry's) plays no
+    part."""
+    posted: list[dict] = []
+
+    async def fake_post(self, signal: str, payload: dict) -> None:
+        posted.append({"signal": signal, "payload": payload})
+
+    monkeypatch.setattr(
+        "switch_core.observability.bootstrap.LOG_EXPORT_INTERVAL_SECONDS", 0.05
+    )
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="0.05",
+            OTLP_LOGS_ENABLED="true",
+            ENVIRONMENT="hosted-v1-test",
+            TELEMETRY_ENVIRONMENT="dev",
+        ),
+        version="9.9.9",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        optional_checks=[],
+        probes=_probes(),
+    )
+    try:
+        monkeypatch.setattr("switch_core.observability.otlp.OtlpClient.post", fake_post)
+        logging.getLogger("switch_core.flint_env_test").warning("a line to ship")
+        await asyncio.sleep(0.3)
+    finally:
+        await observability.aclose()
+
+    environments = {}
+    for post in posted:
+        signal = post["signal"]
+        key = "resourceMetrics" if signal == "metrics" else "resourceLogs"
+        attributes = {
+            entry["key"]: entry["value"]
+            for entry in post["payload"][key][0]["resource"]["attributes"]
+        }
+        environments[signal] = attributes.get("flint_env")
+    assert environments == {
+        "metrics": {"stringValue": "hosted-v1-test"},
+        "logs": {"stringValue": "hosted-v1-test"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_closing_stops_the_loops_and_uninstalls(monkeypatch):
     observability = start_observability(
         config=_config(
@@ -372,6 +424,64 @@ async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch
         names = {task.get_name() for task in observability._tasks}
         assert "db-server-sampler" in names
         assert built, "the sampler never built its engine"
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_hosted_sampler_starts_with_hosted_agents(monkeypatch):
+    """With hosted agents on and OTLP configured, the cloud machines' sampler
+    starts, beside the database sampler."""
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+            FEATURE_FLAGS_ENABLED="hosted_agents",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(),
+        optional_checks=[],
+        db_server_engine=lambda: create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        ),
+    )
+    try:
+        names = {task.get_name() for task in observability._tasks}
+        assert "db-server-sampler" in names
+        assert "hosted-sampler" in names
+        # The reconciler watch counts from boot.
+        from switch_core.observability.hosted import reconciler_watch
+
+        assert list(reconciler_watch().readings())
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_without_hosted_agents_no_hosted_sampler_starts(monkeypatch):
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(),
+        optional_checks=[],
+        db_server_engine=lambda: create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        ),
+    )
+    try:
+        names = {task.get_name() for task in observability._tasks}
+        assert "hosted-sampler" not in names
     finally:
         await observability.aclose()
 

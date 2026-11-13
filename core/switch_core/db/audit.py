@@ -67,6 +67,8 @@ class AuditAction(StrEnum):
     MESSAGING_INSTALL_DISCONNECTED = "messaging_install.disconnected"
     SERVICE_CONNECTED = "service.connected"
     SERVICE_DISCONNECTED = "service.disconnected"
+    # A workspace admin ended someone else's connection to a service.
+    SERVICE_CONNECTION_REVOKED = "service.connection_revoked"
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
     AGENT_DELETION_REQUESTED = "agent.deletion_requested"

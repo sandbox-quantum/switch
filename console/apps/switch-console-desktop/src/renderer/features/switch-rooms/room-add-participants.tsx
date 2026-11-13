@@ -17,6 +17,10 @@ import {
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import {
+  invitableAgents,
+  useRoomAgentCandidates,
+} from '@renderer/lib/stores/use-room-agent-candidates';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -428,6 +432,8 @@ export const AddAgentPanel = observer(function AddAgentPanel({
 }) {
   const members = new Set(room.agentIds);
   const remoteAgents = useWorkspaceAgents(workspaceId);
+  // Only the agents the server would let this person invite are listed.
+  const candidates = useRoomAgentCandidates(workspaceId, room.id);
   const serverId = workspacesStore.serverIdFor(workspaceId);
   const viewerId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
   return (
@@ -438,13 +444,19 @@ export const AddAgentPanel = observer(function AddAgentPanel({
       allInText={
         (remoteAgents.data ?? []).length === 0
           ? 'There are no agents on this server yet.'
-          : 'Every agent on this server is already in this room.'
+          : candidates.data
+            ? 'No other agents you can invite. You can bring in your own agents and agents that anyone may address.'
+            : 'Every agent on this server is already in this room.'
       }
-      loading={remoteAgents.isPending}
+      loading={remoteAgents.isPending || candidates.isPending}
       loadError={
-        remoteAgents.isError ? failureText(remoteAgents.error, 'Could not list the agents.') : null
+        remoteAgents.isError
+          ? failureText(remoteAgents.error, 'Could not list the agents.')
+          : candidates.isError
+            ? failureText(candidates.error, 'Could not work out which agents you can invite.')
+            : null
       }
-      candidates={(remoteAgents.data ?? [])
+      candidates={invitableAgents(remoteAgents.data ?? [], candidates.data)
         .filter((agent) => !members.has(agent.id))
         .map((agent) => ({
           id: agent.id,
