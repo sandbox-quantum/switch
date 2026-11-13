@@ -6,13 +6,13 @@ import {
   splitApiKeys,
 } from '@renderer/features/settings/pages/api-keys';
 import {
-  gatewaySettingsPath,
   resolveSettingsTab,
   type SettingsAudience,
   settingsSections,
   shownSettingsTab,
 } from '@renderer/features/settings/settings-tabs';
 import { parseConsoleLink } from '@shared/core/deeplinks/console-links';
+import { settingsPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import { type SwitchApiKey } from '@shared/core/switch-servers/switch-servers';
 
 const everyone: SettingsAudience = {
@@ -68,10 +68,10 @@ describe('Settings sections', () => {
   });
 
   it('opens the settings of the gateway layout the server has on', () => {
-    expect(gatewaySettingsPath('workspace-settings', false)).toBe('workspace');
-    expect(gatewaySettingsPath('organization-settings', false)).toBe('organization');
-    expect(gatewaySettingsPath('workspace-settings', true)).toBe('settings');
-    expect(gatewaySettingsPath('organization-settings', true)).toBe('settings/org');
+    expect(settingsPagePath('workspace-settings', false)).toBe('workspace');
+    expect(settingsPagePath('organization-settings', false)).toBe('organization');
+    expect(settingsPagePath('workspace-settings', true)).toBe('settings');
+    expect(settingsPagePath('organization-settings', true)).toBe('settings/org');
   });
 
   it('offers your devices and managed agents only with agent management', () => {

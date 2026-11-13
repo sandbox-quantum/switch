@@ -21,7 +21,8 @@ vi.hoisted(() => {
 const state = vi.hoisted(() => ({
   adminPages: null as 'served' | 'restart' | 'unavailable' | null,
   native: true,
-  newLayout: false as boolean | 'unreadable',
+  newLayout: false as boolean | 'unreadable' | 'unanswered',
+  warn: vi.fn(),
   orgAdmin: false,
   openPage: vi.fn(),
   start: vi.fn(),
@@ -78,12 +79,22 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   },
 }));
 vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useAnyServerFeatureFlag: () => false }));
+vi.mock('@renderer/utils/logger', () => ({ log: { warn: state.warn } }));
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
     featureFlags: {
       current: async () => {
         if (state.newLayout === 'unreadable') throw new Error('No handler registered');
-        return { success: true, data: { flags: { gateway_v2: state.newLayout } } };
+        if (state.newLayout === 'unanswered') {
+          return {
+            success: true,
+            data: { flags: { gateway_v2: false }, fetchedAt: null, error: 'fetch failed' },
+          };
+        }
+        return {
+          success: true,
+          data: { flags: { gateway_v2: state.newLayout }, fetchedAt: 1, error: null },
+        };
       },
     },
   },
@@ -124,6 +135,7 @@ beforeEach(() => {
   state.adminPages = null;
   state.native = true;
   state.newLayout = false;
+  state.warn.mockReset();
   state.orgAdmin = false;
   state.openPage.mockReset();
   state.start.mockReset();
@@ -223,14 +235,36 @@ it("opens the organization's settings in whichever layout the server has on", as
   );
 });
 
-it("opens today's settings where the server's flags cannot be read", async () => {
+it("opens today's settings where the server's flags cannot be read, and logs it", async () => {
   state.adminPages = 'served';
-  state.newLayout = 'unreadable';
+  for (const unread of ['unreadable', 'unanswered'] as const) {
+    state.newLayout = unread;
+    state.openPage.mockReset();
+    state.warn.mockReset();
+    await render();
+
+    await act(async () => link()?.click());
+    expect(state.openPage).toHaveBeenCalledWith(
+      'local',
+      'http://localhost:41001/workspace?workspace=t'
+    );
+    expect(state.warn).toHaveBeenCalledTimes(1);
+    expect(state.warn.mock.calls[0]![1]).toMatchObject({
+      serverId: 'local',
+      cause: unread === 'unreadable' ? expect.any(Error) : 'fetch failed',
+    });
+    await act(async () => root?.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+  }
+});
+
+it('logs nothing when the flags are read', async () => {
+  state.adminPages = 'served';
   await render();
 
   await act(async () => link()?.click());
-  expect(state.openPage).toHaveBeenCalledWith(
-    'local',
-    'http://localhost:41001/workspace?workspace=t'
-  );
+  expect(state.openPage).toHaveBeenCalled();
+  expect(state.warn).not.toHaveBeenCalled();
 });

@@ -2,6 +2,7 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { agentPagePath, roomPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import {
   dashboardPageUrl,
   type RemoteAgentRoom,
@@ -157,7 +158,7 @@ export class SwitchRoomsStore {
    */
   gatewayRoomUrl(roomId: string): string | null {
     const workspaceId = this.roomWorkspaceById.get(roomId);
-    return workspaceId ? workspaceGatewayUrl(workspaceId, `rooms/${roomId}`) : null;
+    return workspaceId ? workspaceGatewayUrl(workspaceId, roomPagePath(roomId)) : null;
   }
 
   /**
@@ -166,7 +167,7 @@ export class SwitchRoomsStore {
    * workspace isn't known or its server serves no web gateway.
    */
   gatewayAgentUrl(workspaceId: string, switchAgentId: string): string | null {
-    return workspaceGatewayUrl(workspaceId, `agents/${switchAgentId}`);
+    return workspaceGatewayUrl(workspaceId, agentPagePath(switchAgentId));
   }
 
   /**

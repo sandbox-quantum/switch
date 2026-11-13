@@ -102,22 +102,6 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
 }
 
 /**
- * Where a workspace's or an organization's settings live in the gateway. In
- * the gateway's new layout (`gateway_v2`) both are under `/settings`, which
- * opens on the page you last had open there, or else General. Today's layout,
- * and every server from before the new one, has them at `/workspace` and
- * `/organization`. The new layout redirects those too, but `/workspace` lands
- * on its Users page.
- */
-export function gatewaySettingsPath(
-  link: 'workspace-settings' | 'organization-settings',
-  newLayout: boolean
-): string {
-  if (link === 'workspace-settings') return newLayout ? 'settings' : 'workspace';
-  return newLayout ? 'settings/org' : 'organization';
-}
-
-/**
  * The tab to show: the one asked for while the sidebar offers it, else
  * Preferences, so a tab that went away (a server signed out of, agent
  * management turned off) never leaves an empty pane.

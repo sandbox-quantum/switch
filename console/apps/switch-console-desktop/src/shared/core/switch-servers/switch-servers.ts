@@ -9,6 +9,8 @@
  * in the encrypted secrets store, never in plain settings.
  */
 
+import { WORKSPACE_PARAM } from './dashboard-pages';
+
 /**
  * Origin (protocol + host + port, lowercased) of a URL, or null if unparseable.
  * Agents are matched to servers by origin rather than full URL: an agent's
@@ -74,7 +76,7 @@ export function dashboardPageUrl(
   tenantId: string | null
 ): string {
   const page = `${dashboardOrigin(server).replace(/\/+$/, '')}/${path}`;
-  return tenantId === null ? page : `${page}?workspace=${encodeURIComponent(tenantId)}`;
+  return tenantId === null ? page : `${page}?${WORKSPACE_PARAM}=${encodeURIComponent(tenantId)}`;
 }
 
 /** A registered Switch server. Non-secret connection metadata only. */
