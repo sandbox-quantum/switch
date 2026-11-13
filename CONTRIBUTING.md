@@ -9,6 +9,9 @@ opening an issue.
 
 ## Development setup
 
+Start with the [contributor quickstart](docs/contributing/quickstart.md) for
+the walkthrough from a clone to an agent reply and your first change.
+
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
 [uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
 (`brew install just`).
@@ -23,13 +26,13 @@ just gateway-dev         # run the gateway frontend (separate terminal)
 ```
 
 `just up` starts the **supporting services** in Docker — PostgreSQL and
-Mattermost. You run **switch-core** and the **gateway** yourself so you get
-hot-reload while developing: `just run` (switch-core on `:8000`) and
-`just gateway-dev` (the frontend), each in its own terminal. Stop the stack with
-`just down`, or `just reset` to also wipe the volumes.
+Mattermost. Run `just run` (switch-core on `:8000`) and `just gateway-dev`
+(the frontend) in separate terminals. Core applies migrations on boot; restart
+it after Python changes. The gateway hot-reloads. Stop supporting services
+with `just down`, which preserves volumes.
 
 If you only want to see Switch running rather than develop against it, the
-standalone stack in the [README](README.md#getting-started) is a shorter path.
+standalone stack in the [README](README.md#get-started-in-two-steps) is a shorter path.
 
 See [`docs/old/LOCAL_DEVELOPMENT.md`](docs/old/LOCAL_DEVELOPMENT.md) for the
 fuller account of this setup — what each port serves, and how to point
