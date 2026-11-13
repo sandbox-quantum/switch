@@ -1,8 +1,10 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import { answerFormElicitations, FORM_ELICITATION_CAPABILITIES } from '../acp/elicitation';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
 import type { AcpSessionModes } from '../acp/protocol';
-import type { RuntimeMode } from '../adapter';
+import type { McpServerSpec, RuntimeMode } from '../adapter';
 import { readiness, SIGNED_OUT_ERROR } from '../readiness';
 import {
   AGY_LOGIN,
@@ -58,6 +60,71 @@ async function agySignedIn(
   }
 }
 
+function filterStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    (pair): pair is [string, string] => typeof pair[1] === 'string'
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * Load user-configured MCP servers from `~/.gemini/antigravity-cli/settings.json`
+ * so `agy acp` sessions receive them alongside Switch's own MCP servers.
+ */
+export async function readAntigravityUserMcpServers(
+  env: Record<string, string>
+): Promise<Record<string, McpServerSpec>> {
+  const home = env.HOME || env.USERPROFILE;
+  if (!home) return {};
+  const settingsPath = join(home, '.gemini', 'antigravity-cli', 'settings.json');
+  let raw: string;
+  try {
+    raw = await readFile(settingsPath, 'utf8');
+  } catch {
+    return {};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || !('mcpServers' in parsed)) return {};
+  const mcpServers = (parsed as { mcpServers?: unknown }).mcpServers;
+  if (!mcpServers || typeof mcpServers !== 'object') return {};
+
+  const result: Record<string, McpServerSpec> = {};
+  for (const [name, entry] of Object.entries(mcpServers as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const cfg = entry as Record<string, unknown>;
+    if (cfg.disabled === true) continue;
+
+    if (typeof cfg.command === 'string' && cfg.command.length > 0) {
+      const args = Array.isArray(cfg.args)
+        ? cfg.args.filter((arg): arg is string => typeof arg === 'string')
+        : [];
+      const serverEnv = filterStringRecord(cfg.env);
+      result[name] = {
+        transport: 'stdio',
+        command: cfg.command,
+        args,
+        ...(serverEnv ? { env: serverEnv } : {}),
+      };
+    } else if (typeof cfg.url === 'string' && cfg.url.length > 0) {
+      const headers = filterStringRecord(cfg.headers);
+      result[name] = {
+        transport: 'http',
+        url: cfg.url,
+        ...(headers ? { headers } : {}),
+      };
+    }
+  }
+  return result;
+}
+
 /**
  * Antigravity over ACP: Google's `agy acp`, or a legacy `antigravity-acp`
  * install. agy asks its questions as form elicitations; the legacy runtime
@@ -67,6 +134,7 @@ export const antigravityAcp: AcpProviderHooks = {
   provider: 'antigravity',
   label: 'Antigravity',
   defaultBinary: 'agy',
+  userMcpServers: readAntigravityUserMcpServers,
   capabilities: {
     modelSwitchInSession: true,
     steering: false,
