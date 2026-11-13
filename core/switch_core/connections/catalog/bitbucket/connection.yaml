@@ -1,7 +1,50 @@
 slug: bitbucket
 name: Bitbucket
 category: Source control
-description: Work with Bitbucket repositories and pull requests.
-enabled: false
+description: Read repositories and review or update pull requests in Bitbucket Cloud, as you.
+enabled: true
+publisher: Atlassian
+links:
+  documentation: https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server/
+  support: https://support.atlassian.com
+  privacy: https://www.atlassian.com/legal/privacy-policy
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    # The shared Atlassian authorization server matches loopback ports exactly.
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Atlassian's existing connection uses an eight-hour access-token ceiling.
+# Bitbucket consent, expiry and refresh still require a live acceptance run.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: bitbucket, url: "https://mcp.atlassian.com/v2/mcp" }
+access:
+  # The workspace must be linked to an Atlassian organization and selected
+  # during consent. No Jira, Confluence or Teamwork Graph scopes are requested.
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - write:bitbucket:agent-interface
+tools: { mode: pass_through }

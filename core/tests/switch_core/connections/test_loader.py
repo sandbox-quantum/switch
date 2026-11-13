@@ -15,7 +15,6 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
-    "bitbucket",
     "microsoft-365",
     "new-relic",
     "linear",
@@ -31,6 +30,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "google-workspace",
         "gitlab",
@@ -40,6 +40,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "github",
         "gitlab",
@@ -51,6 +52,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["bitbucket"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
@@ -232,6 +234,48 @@ def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
     # Sentry grants the same scopes whatever is chosen at consent.
     assert definition.access is not None and definition.access.write is not None
     assert definition.access.read.scopes == definition.access.write.scopes
+
+
+def test_bitbucket_uses_its_own_server_and_only_bitbucket_product_scopes():
+    definition = CATALOG["bitbucket"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("bitbucket", "https://mcp.atlassian.com/v2/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    identity = ["read:me", "read:account", "email", "offline_access"]
+    assert definition.access.read.scopes == [
+        *identity,
+        "read:bitbucket:agent-interface",
+    ]
+    assert definition.access.write.scopes == [
+        *identity,
+        "read:bitbucket:agent-interface",
+        "write:bitbucket:agent-interface",
+    ]
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("https://api.atlassian.com/me", "account_id", "email")
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
