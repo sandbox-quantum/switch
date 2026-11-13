@@ -1106,6 +1106,28 @@ async def _two_pass_through(
     return broker, vendors, owner
 
 
+async def _reconnect_example(pt: PassThrough, session_factory) -> str | None:
+    """Ada signs in to `example` again, to the same account."""
+    async with session_factory() as session:
+        return await pt.broker.connect(
+            session,
+            user_id=pt.world.owner.id,
+            service="example",
+            consent="write",
+            granted_scopes=["read:items", "write:items"],
+            account_id="acct-1",
+            external_identity="ada@example.test",
+            secret=ConnectionSecret(
+                {
+                    "access_token": "owner_access_new",
+                    "expires_at": time.time() + 50 * 60,
+                    "refresh_token": "owner_refresh_new",
+                }
+            ),
+            oauth_client_id=None,
+        )
+
+
 class TestPassThrough:
     async def test_the_grant_names_the_vendors_mcp_servers_and_skill(
         self, session_factory, tmp_path
@@ -1522,6 +1544,62 @@ class TestPassThrough:
         assert warning is not None
         assert "Other access already given to agents cannot be taken back" in warning
         assert "Example" not in warning
+
+    async def test_a_reconnect_names_the_tokens_its_revocation_did_not_end(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        warning = await _reconnect_example(pt, session_factory)
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is not None
+        assert "Example access already given to agents cannot be taken back" in warning
+
+    async def test_a_reconnect_that_ends_the_tokens_does_not_say_they_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        warning = await _reconnect_example(pt, session_factory)
+        # Revoking the old sign-in ended the token the agent holds.
+        assert [secret.access_token for secret in pt.vendor.connections_revoked] == [
+            "owner_access_0"
+        ]
+        assert warning is None
+
+    async def test_a_reconnect_that_sent_no_token_still_says_the_tokens_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            # A kept secret with no token: the old sign-in has nothing to revoke.
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == pt.world.owner.id)
+                .values(encrypted_secret=TEST_KEYRING.encrypt(json.dumps({})))
+            )
+            await session.commit()
+        warning = await _reconnect_example(pt, session_factory)
+        assert warning is not None
+        assert "Example access already given to agents cannot be taken back" in warning
+
+    async def test_a_reconnect_whose_revocation_fails_still_says_the_tokens_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        pt.vendor.revoke_connection_error = RuntimeError("vendor down")
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        warning = await _reconnect_example(pt, session_factory)
+        assert warning is not None
+        assert "Example could not revoke the old sign-in" in warning
+        assert "Example access already given to agents cannot be taken back" in warning
 
     async def test_removing_the_grant_still_says_the_tokens_live_on(
         self, session_factory, tmp_path
