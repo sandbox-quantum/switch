@@ -35,6 +35,7 @@ export function linkedIdentity(overrides: Partial<LinkedIdentity> = {}): LinkedI
     external_username: "ada",
     verified: true,
     linked_at: "2026-01-14T09:00:00Z",
+    awaiting_confirmation: false,
     ...overrides,
   };
 }

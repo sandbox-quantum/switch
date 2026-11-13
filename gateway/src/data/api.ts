@@ -1093,6 +1093,10 @@ export interface LinkedIdentity {
   verified: boolean;
   /** When the link started counting. */
   linked_at: string;
+  /** For an older link: whether a request to confirm it is waiting for the
+   *  account. It ending while the link stays means the confirmation was
+   *  cancelled (a wrong number tapped, say), not the link. */
+  awaiting_confirmation: boolean;
 }
 
 /** An account waiting to confirm a link to the signed-in person. It counts

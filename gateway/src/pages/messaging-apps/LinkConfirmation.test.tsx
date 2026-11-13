@@ -35,6 +35,7 @@ const app = bridgeDetail({ bridge_id: "b1", display_name: "Acme Slack", bridge_t
 function show(props: Partial<Parameters<typeof LinkConfirmation>[0]> = {}) {
   const handlers = {
     onBusy: vi.fn(),
+    onAnnounce: vi.fn(),
     onConfirmed: vi.fn(),
     onCancelled: vi.fn(),
     onStartAgain: vi.fn(),
@@ -100,13 +101,18 @@ describe("LinkConfirmation", () => {
 
   it("does not take an older link's absence from the pending list as a cancel", async () => {
     vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
-    vi.mocked(api.fetchMyIdentities).mockResolvedValue([linkedIdentity({ id: "acct-1", verified: false })]);
-    show({ target: older, initialCode: code() });
+    vi.mocked(api.fetchMyIdentities).mockResolvedValue([
+      linkedIdentity({ id: "acct-1", verified: false, awaiting_confirmation: true }),
+    ]);
+    const { onAnnounce } = show({ target: older, initialCode: code() });
 
-    // Both lists read since the screen opened, and still no "cancelled".
-    await waitFor(() => expect(api.fetchMyPendingIdentities).toHaveBeenCalledTimes(2));
+    // Both lists read since the screen opened (it now waits on the code),
+    // and still nothing called cancelled.
+    await waitFor(() =>
+      expect(onAnnounce).toHaveBeenLastCalledWith("Waiting for the code to be posted from @ada."),
+    );
     await act(async () => {});
-    expect(screen.queryByText(/was cancelled/, SHOWN)).toBeNull();
+    expect(screen.queryByText(/was cancelled|was removed/, SHOWN)).toBeNull();
     expect(screen.getByTestId("link-code")).toBeTruthy();
   });
 
@@ -146,16 +152,45 @@ describe("LinkConfirmation", () => {
     expect(screen.queryByRole("button", { name: "Get a new code" })).toBeNull();
   });
 
-  it("keeps one live region a screen reader hears change", async () => {
-    show({ initialCode: code() });
-    const live = screen.getAllByRole("status").find((el) => el.getAttribute("aria-live") === "polite")!;
+  it("tells the dialog's live region what a screen reader should hear", async () => {
+    const { onAnnounce } = show({ initialCode: code() });
 
-    expect(live.textContent).toBe("Waiting for the code to be posted from @ada.");
+    expect(onAnnounce).toHaveBeenLastCalledWith("Waiting for the code to be posted from @ada.");
     vi.mocked(api.fetchMyIdentities).mockResolvedValue([linkedIdentity({ id: "acct-1" })]);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Get a new code" })));
 
-    await waitFor(() => expect(live.textContent).toBe("Linked to @ada."));
-    expect(live.isConnected).toBe(true);
+    await waitFor(() => expect(onAnnounce).toHaveBeenLastCalledWith("Linked to @ada."));
+  });
+
+  it("puts focus on what the screen now says after a new code", async () => {
+    show({ initialCode: code() });
+    vi.mocked(api.issueLinkCode).mockResolvedValue(code({ code: "WXYZ-2345" }));
+
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Get a new code" })));
+
+    await waitFor(() => expect(screen.getByTestId("link-code").textContent).toBe("WXYZ-2345"));
+    expect(document.activeElement?.textContent).toBe("To finish linking @ada, post this from that account in Acme Slack.");
+  });
+
+  it("starts again with Switch's words when the link went before the screen asked", async () => {
+    vi.mocked(api.issueLinkCode).mockRejectedValue(
+      new api.ApiError(404, "You have not started linking this account. Link it first.", "You have not started linking this account. Link it first."),
+    );
+    const { onStartAgain } = show();
+
+    expect(await screen.findByText("You have not started linking this account. Link it first.", SHOWN)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    expect(onStartAgain).toHaveBeenCalledOnce();
+  });
+
+  it("gives Switch's reason, not a guess, when an account turns out unlinkable", async () => {
+    const reason = "This account cannot be linked to anyone. It is a bot. Your earlier link to it has been removed.";
+    vi.mocked(api.issueLinkCode).mockRejectedValue(new api.ApiError(409, reason, reason));
+    vi.mocked(api.fetchMyIdentities).mockResolvedValue([]);
+    show({ target: older });
+
+    expect(await screen.findByText(reason, SHOWN)).toBeTruthy();
+    expect(screen.queryByText(/was removed/, SHOWN)).toBeNull();
   });
 
   it("cancels a waiting link without unlinking anything", async () => {
@@ -227,6 +262,7 @@ describe("LinkConfirmation", () => {
         target={pending}
         initialCode={code()}
         onBusy={vi.fn()}
+        onAnnounce={vi.fn()}
         onConfirmed={vi.fn()}
         onCancelled={vi.fn()}
         onStartAgain={vi.fn()}
@@ -263,7 +299,8 @@ describe("LinkConfirmation", () => {
     expect(await screen.findByText(/Can't check whether the link was confirmed: Not authenticated/)).toBeTruthy();
   });
 
-  it("asks again when the read that settles a cancellation fails", { timeout: 10000 }, async () => {
+  it("asks again when the read that settles a cancellation fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
     vi.mocked(api.fetchMyIdentities)
       // The two reads on open (React runs the effect twice here) find nothing.
@@ -273,8 +310,13 @@ describe("LinkConfirmation", () => {
       .mockRejectedValueOnce(new Error("Network error"))
       .mockResolvedValue([]);
     show({ initialCode: code() });
+    await waitFor(() => expect(screen.getByText(/Can't check whether the link was confirmed: Network error/)).toBeTruthy());
 
-    expect(await screen.findByText(/The link to @ada was cancelled/, SHOWN, { timeout: 6000 })).toBeTruthy();
+    // The next poll asks again, and this time it settles.
+    await act(async () => vi.advanceTimersByTime(3100));
+
+    expect(await screen.findByText(/The link to @ada was cancelled/, SHOWN)).toBeTruthy();
+    vi.useRealTimers();
   });
 
   describe("with a message to tap", () => {
@@ -284,12 +326,12 @@ describe("LinkConfirmation", () => {
     it("leads with the number to tap, and keeps the code as the fallback", () => {
       show({ initialCode: sent() });
 
-      expect(screen.getByText("Switch sent @ada a message in Acme Slack. Tap 42 there to finish linking.")).toBeTruthy();
+      expect(screen.getByText("We sent @ada a message in Acme Slack. Tap 42 there to finish linking.")).toBeTruthy();
       expect(screen.getByTestId("link-prompt-number").textContent).toBe("42");
       expect(screen.getByRole("link", { name: "Open in Acme Slack" }).getAttribute("href")).toBe(
         "https://acme.slack.com/archives/D1",
       );
-      expect(screen.getByText(/Didn't get the message\? Post this from that account instead/)).toBeTruthy();
+      expect(screen.getByText("Didn't get it? Post this code from that account instead:")).toBeTruthy();
       expect(screen.getByTestId("link-code").textContent).toBe("ABCD-EFGH");
       expect(screen.getByRole("button", { name: "Send again" })).toBeTruthy();
       expect(screen.getByText(/Waiting for confirmation. The code expires at/)).toBeTruthy();
@@ -313,12 +355,15 @@ describe("LinkConfirmation", () => {
       expect(screen.getByRole("button", { name: "Get a new code" })).toBeTruthy();
     });
 
-    it("says a link dropped while the message was up may have been declined", async () => {
+    it("says a link dropped while the message was up may have gone from that message", async () => {
       vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
       show({ initialCode: sent() });
 
       expect(
-        await screen.findByText(/The link to @ada was cancelled. It may have been declined in Acme Slack/, SHOWN),
+        await screen.findByText(
+          "The link to @ada was cancelled, perhaps from the message in Acme Slack, so its code no longer works.",
+          SHOWN,
+        ),
       ).toBeTruthy();
     });
 
@@ -328,18 +373,110 @@ describe("LinkConfirmation", () => {
         .mockResolvedValueOnce([linkedIdentity({ id: "acct-1", verified: false })])
         .mockResolvedValueOnce([linkedIdentity({ id: "acct-1", verified: false })])
         .mockResolvedValue([]);
+      vi.mocked(api.issueLinkCode).mockResolvedValue(sent({ number: 17 }));
       show({ target: older, initialCode: sent() });
       await screen.findByTestId("link-prompt-number");
 
       await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send again" })));
 
-      expect(await screen.findByText(/The link to @ada was removed. It may have been declined/, SHOWN)).toBeTruthy();
+      expect(
+        await screen.findByText(
+          "The link to @ada was removed, perhaps from the message in Acme Slack, so it no longer counts.",
+          SHOWN,
+        ),
+      ).toBeTruthy();
+    });
+
+    it("notices a wrong number tapped while confirming an older link, which keeps it", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+      vi.mocked(api.fetchMyIdentities).mockResolvedValue([
+        linkedIdentity({ id: "acct-1", verified: false, awaiting_confirmation: true }),
+      ]);
+      show({ target: older, initialCode: sent() });
+      await waitFor(() => expect(api.fetchMyIdentities).toHaveBeenCalled());
+      await act(async () => {});
+
+      // A wrong number: the request goes, and the link stays.
+      vi.mocked(api.fetchMyIdentities).mockResolvedValue([
+        linkedIdentity({ id: "acct-1", verified: false, awaiting_confirmation: false }),
+      ]);
+      await act(async () => vi.advanceTimersByTime(3100));
+
+      expect(
+        await screen.findByText(/The confirmation was cancelled, perhaps from the message in Acme Slack/, SHOWN),
+      ).toBeTruthy();
+      expect(screen.getByText(/The link to @ada still works/, SHOWN)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Send again" })).toBeTruthy();
+      vi.useRealTimers();
+    });
+
+    it("does not call a confirmation cancelled on an answer to a question asked before the new code", async () => {
+      vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+      // The reads on open answer "waiting" about the code being replaced...
+      let answerOld: (value: api.LinkedIdentity[]) => void = () => {};
+      vi.mocked(api.fetchMyIdentities).mockImplementation(() => new Promise((resolve) => (answerOld = resolve)));
+      vi.mocked(api.issueLinkCode).mockResolvedValue(sent({ number: 61 }));
+      show({ target: older, initialCode: sent() });
+
+      // ...and land after Send again, whose own read says nothing waits yet.
+      vi.mocked(api.fetchMyIdentities).mockResolvedValue([
+        linkedIdentity({ id: "acct-1", verified: false, awaiting_confirmation: false }),
+      ]);
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send again" })));
+      await act(async () => answerOld([linkedIdentity({ id: "acct-1", verified: false, awaiting_confirmation: true })]));
+      await act(async () => {});
+
+      expect(screen.queryByText(/The confirmation was cancelled/, SHOWN)).toBeNull();
+      expect(screen.getByTestId("link-prompt-number").textContent).toBe("61");
+    });
+
+    it("replaces the number and the code with Send again", async () => {
+      show({ initialCode: sent() });
+
+      vi.mocked(api.issueLinkCode).mockResolvedValue({ ...sent({ number: 77 }), code: "NEWC-0DE1" });
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send again" })));
+
+      await waitFor(() => expect(screen.getByTestId("link-prompt-number").textContent).toBe("77"));
+      expect(screen.getByTestId("link-code").textContent).toBe("NEWC-0DE1");
+      expect(api.issueLinkCode).toHaveBeenCalledWith("b1", "acct-1");
+    });
+
+    it("falls back to the code, saying why, when Send again can send no message", async () => {
+      show({ initialCode: sent() });
+      vi.mocked(api.issueLinkCode).mockResolvedValue(
+        code({
+          code: "LAST-CODE",
+          prompt: { number: 12, sent: false, unavailable_reason: "This account has had three messages this hour.", link: null },
+        }),
+      );
+
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Send again" })));
+
+      await waitFor(() =>
+        expect(screen.getByText("Couldn't message @ada directly: This account has had three messages this hour.")).toBeTruthy(),
+      );
+      expect(screen.queryByTestId("link-prompt-number")).toBeNull();
+      expect(screen.getByTestId("link-code").textContent).toBe("LAST-CODE");
+      expect(screen.getByRole("button", { name: "Get a new code" })).toBeTruthy();
+    });
+
+    it("says an expired message and code have expired, and steps the open button back", () => {
+      show({ initialCode: { ...sent(), expires_in_seconds: 0 } });
+
+      expect(screen.getByText(/This code has expired. Send again to finish linking./)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Send again" }).className).toMatch(/contained/i);
+      expect(screen.getByRole("link", { name: "Open in Acme Slack" }).className).toMatch(/outlined/i);
+    });
+
+    it("opens the app itself where the message has no link of its own", () => {
+      show({ initialCode: sent({ link: null }), app: { ...app, home_url: "https://acme.slack.com" } });
+      expect(screen.getByRole("link", { name: "Open in Acme Slack" }).getAttribute("href")).toBe("https://acme.slack.com");
     });
 
     it("tells a screen reader which number to tap", () => {
-      show({ initialCode: sent() });
-      const live = screen.getAllByRole("status").find((el) => el.getAttribute("aria-live") === "polite")!;
-      expect(live.textContent).toBe("Waiting for you to tap 42 in the message sent to @ada.");
+      const { onAnnounce } = show({ initialCode: sent() });
+      expect(onAnnounce).toHaveBeenLastCalledWith("We sent @ada a message in Acme Slack. Tap 42 there.");
     });
   });
 });

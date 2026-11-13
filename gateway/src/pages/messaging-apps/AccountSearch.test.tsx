@@ -33,7 +33,7 @@ const code: LinkCode = {
 };
 
 function search(props: Partial<Parameters<typeof AccountSearch>[0]> = {}) {
-  const handlers = { onBusy: vi.fn(), onLinked: vi.fn(), onConfirm: vi.fn() };
+  const handlers = { onBusy: vi.fn(), onAnnounce: vi.fn(), onLinked: vi.fn(), onConfirm: vi.fn() };
   render(<AccountSearch app={app} currentUserId="u-ada" {...handlers} {...props} />);
   return handlers;
 }
@@ -213,12 +213,12 @@ describe("AccountSearch", () => {
     expect((thisIsMe as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("tells a screen reader how many people a search found", async () => {
+  it("tells the dialog's live region how many people a search found", async () => {
     vi.mocked(api.searchBridgeDirectory).mockResolvedValue({ source: "directory", note: null, users: [person()] });
-    search();
+    const { onAnnounce } = search();
     type("ada");
 
-    expect(await screen.findByText("1 person found.")).toBeTruthy();
+    await waitFor(() => expect(onAnnounce).toHaveBeenLastCalledWith("1 person found."));
   });
 
   it("drops a search that comes back after the query got too short", async () => {

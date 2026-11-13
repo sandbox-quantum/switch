@@ -106,13 +106,12 @@ export default function InstalledAppsSection({ onConnectionsChanged, memberView 
   // The server offers the OAuth platforms to its admins alone.
   const platforms = useMemo(() => {
     if (memberView) {
-      return claimable
-        .filter(
-          (c) =>
-            c.can_add_chat ||
-            rows.some((row) => row.platform === c.platform && row.status === "active"),
-        )
-        .map((c) => c.platform);
+      const seen = new Set<string>();
+      for (const c of claimable) if (c.can_add_chat) seen.add(c.platform);
+      // A live chat they may disconnect, even on a platform Switch no longer
+      // offers: the chat is still there to take out.
+      for (const row of rows) if (row.status === "active") seen.add(row.platform);
+      return [...seen];
     }
     const seen = new Set<string>();
     for (const c of claimable) seen.add(c.platform);

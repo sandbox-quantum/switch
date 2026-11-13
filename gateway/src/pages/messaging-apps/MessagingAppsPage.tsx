@@ -53,6 +53,10 @@ type OlderLinks = Record<string, { links: UnconfirmedLink[] } | { error: string 
 
 type Notice = { severity: "success" | "error"; text: string };
 
+/** How often the page re-reads your accounts while one waits to be confirmed
+ * from the account, slower than the dialog's own watch. */
+const WAITING_POLL_MS = 10_000;
+
 const PINNED = ["actions"];
 
 const SEARCH = {
@@ -96,7 +100,16 @@ export default function MessagingAppsPage() {
   // may be in one they entered without belonging to it.
   const standsHere = session?.tenants.some((t) => t.id === session.tenant?.id) ?? false;
   const { data: bridges, loading, error: loadError, refetch } = useBridges();
-  const accounts = useMyAccounts(null);
+  // Read again now and then while a link waits to be confirmed: the number
+  // is often tapped on a phone after the dialog is closed, and the row should
+  // not go on saying it waits.
+  const [awaiting, setAwaiting] = useState(false);
+  const accounts = useMyAccounts(awaiting ? WAITING_POLL_MS : null);
+  useEffect(() => {
+    setAwaiting(
+      (accounts.pending ?? []).length > 0 || (accounts.linked ?? []).some((i) => i.awaiting_confirmation),
+    );
+  }, [accounts.pending, accounts.linked]);
   const logos = useAppLogos();
   const [registerOpen, setRegisterOpen] = useState(false);
   // Bumped to reload the chats and installs below after something that
@@ -471,7 +484,7 @@ function ConnectedApps({
       )}
 
       {loading ? (
-        <CircularProgress />
+        <CircularProgress aria-label="Loading the messaging apps" />
       ) : failed ? (
         <Alert severity="error">Could not load the messaging apps. Reload the page to try again.</Alert>
       ) : (

@@ -77,6 +77,30 @@ describe("LinkAccountDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("announces the number to tap in a live region that was there before it", async () => {
+    vi.mocked(api.claimBridgeIdentity).mockResolvedValue({
+      id: "acct-1",
+      bridge_id: "b1",
+      external_user_id: "U-ada",
+      external_username: "ada",
+      claimed_by: [],
+      link_request: {
+        user_id: "u-ada",
+        code: { ...code, prompt: { number: 42, sent: true, unavailable_reason: null, link: null } },
+      },
+    });
+    open({ app, confirm: null });
+    const live = screen.getAllByRole("status").find((el) => el.getAttribute("aria-live") === "polite")!;
+    fireEvent.change(screen.getByLabelText("Search Acme Slack"), { target: { value: "ada" } });
+    await waitFor(() => expect(live.textContent).toBe("1 person found."));
+
+    const thisIsMe = await screen.findByRole("button", { name: "This is me: Ada Lovelace, @ada" });
+    await act(async () => fireEvent.click(thisIsMe));
+
+    expect(live.isConnected).toBe(true);
+    expect(live.textContent).toBe("We sent @ada a message in Acme Slack. Tap 42 there.");
+  });
+
   it("closes when a link opened from its row is cancelled", async () => {
     const onClose = open({ app, confirm: { identityId: "acct-1", username: "ada", kind: "pending" } });
     await screen.findByTestId("link-code");

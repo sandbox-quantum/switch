@@ -1,6 +1,5 @@
 import { Alert, Box, Button, Chip, CircularProgress, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
-import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import {
   type BridgeDetail,
   claimBridgeIdentity,
@@ -45,12 +44,16 @@ export default function AccountSearch({
   app,
   currentUserId,
   onBusy,
+  onAnnounce,
   onLinked,
   onConfirm,
 }: {
   app: BridgeDetail;
   currentUserId: string | null;
   onBusy: (busy: boolean) => void;
+  /** What a screen reader should hear as the search runs and answers, for
+   *  the dialog's one live region: the list itself appears silently. */
+  onAnnounce: (text: string) => void;
   /** The claim came back linked and confirmed: nothing to wait for. */
   onLinked: (username: string) => void;
   /** A link that waits on a code: one just made, one already waiting, or an
@@ -68,6 +71,11 @@ export default function AccountSearch({
   // still offer that link's code. The directory lists only links that count,
   // so these are matched to its people here.
   const { pending } = useMyAccounts(null);
+
+  const announcement = searchAnnouncement(result);
+  useEffect(() => {
+    onAnnounce(announcement);
+  }, [announcement, onAnnounce]);
 
   const query = text.trim();
   useEffect(() => {
@@ -124,9 +132,6 @@ export default function AccountSearch({
           setError(null);
         }}
       />
-      <Box role="status" aria-live="polite" sx={SCREEN_READER_ONLY}>
-        {searchAnnouncement(result)}
-      </Box>
       <Results
         app={app}
         result={result}
@@ -145,8 +150,7 @@ export default function AccountSearch({
   );
 }
 
-/** What a screen reader hears as a search runs and answers: the list
- * itself appears silently. */
+/** What a screen reader hears as a search runs and answers. */
 function searchAnnouncement(result: Result): string {
   switch (result.state) {
     case "idle":
@@ -191,7 +195,7 @@ function Results({
   if (result.state === "searching") {
     return (
       <Stack direction="row" spacing={1} alignItems="center">
-        <CircularProgress size={14} />
+        <CircularProgress size={14} aria-label="Searching" />
         <Typography variant="body2" color="text.secondary">
           Searching…
         </Typography>

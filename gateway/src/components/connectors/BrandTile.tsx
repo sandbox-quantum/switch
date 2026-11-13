@@ -54,7 +54,14 @@ export default function BrandTile({
           component="img"
           src={logoUrl}
           alt=""
-          sx={{ width: Math.round(size * 0.5), height: Math.round(size * 0.5), display: "block" }}
+          sx={(theme) => ({
+            width: Math.round(size * 0.5),
+            height: Math.round(size * 0.5),
+            display: "block",
+            // A logo drawn in black alone would vanish into the dark tile, and
+            // the server's markup cannot be recoloured as the marks above are.
+            ...theme.applyStyles("dark", { filter: "drop-shadow(0 0 1px rgb(255 255 255 / 0.7))" }),
+          })}
         />
       ) : svg ? (
         <Box

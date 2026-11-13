@@ -6,7 +6,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import BrandTile from "../../components/connectors/BrandTile";
 import InfoTip from "../../components/InfoTip";
-import { type BridgeDetail, cancelLinkRequest, releaseBridgeIdentity } from "../../data/api";
+import { ApiError, type BridgeDetail, cancelLinkRequest, releaseBridgeIdentity } from "../../data/api";
 import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import {
   type AccountLine,
@@ -21,11 +21,11 @@ import type { MyAccounts } from "./useMyAccounts";
 
 /** Beside a link made before links had to be confirmed. */
 const NOT_CONFIRMED_HELP =
-  "This link was made before Switch asked accounts to confirm their links. It still works. Confirm it from the account: tap the number Switch sends it, or post a one-time code.";
+  "This link was made before Switch asked accounts to confirm their links. It still works. Confirm it from the account: by tapping the number in a message from Switch, where Switch can send one, or by posting a one-time code.";
 
 /** Beside a link waiting to be confirmed, which is not a link yet. */
 const WAITING_HELP =
-  "This account isn't linked until it confirms the link: tap the number Switch sends it, or post a one-time code from it. Until then your agents don't recognise you here.";
+  "This account isn't linked until it confirms the link: by tapping the number in a message from Switch, where Switch can send one, or by posting a one-time code. Until then your agents don't recognise you here.";
 
 /**
  * Who you are in each messaging app connected to the workspace: every role
@@ -80,7 +80,12 @@ export default function YourAccountsSection({
       await cancelLinkRequest(app.bridge_id, line.id);
       setFocusApp(app.bridge_id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not cancel the link.");
+      // Nothing was waiting: confirmed from the account since this row was
+      // read (a number tapped on a phone), or cancelled elsewhere. The re-read
+      // below shows which, so it is not an error to report.
+      if (!(e instanceof ApiError && e.status === 404)) {
+        setError(e instanceof Error ? e.message : "Could not cancel the link.");
+      }
     } finally {
       setCancelling(null);
       // Either way: a refusal means it was confirmed or cancelled meanwhile.
@@ -123,7 +128,7 @@ export default function YourAccountsSection({
       appsFailed || accounts.error !== null ? (
         <Alert severity="error">Could not load your accounts. Reload the page to try again.</Alert>
       ) : (
-        <CircularProgress size={24} />
+        <CircularProgress size={24} aria-label="Loading your accounts" />
       );
   } else if (apps.length === 0) {
     body = (
@@ -311,7 +316,7 @@ function AppAccounts({
             size="small"
             startIcon={<AddLinkOutlined fontSize="small" />}
             disabled={unavailable !== null}
-            aria-label={counting ? `Link another account in ${app.display_name}` : `Link an account in ${app.display_name}`}
+            aria-label={counting ? `Link another account in ${app.display_name}` : `Link account in ${app.display_name}`}
             onClick={onLink}
           >
             {counting ? "Link another account" : "Link account"}
@@ -384,7 +389,7 @@ function AccountRow({
         </Typography>
         {line.kind === "unverified" && <Chip size="small" label="Not confirmed" />}
         {line.kind !== "linked" && (
-          <InfoTip>{line.kind === "pending" ? WAITING_HELP : NOT_CONFIRMED_HELP}</InfoTip>
+          <InfoTip label={`About ${whose}`}>{line.kind === "pending" ? WAITING_HELP : NOT_CONFIRMED_HELP}</InfoTip>
         )}
       </Stack>
       {line.kind !== "linked" && (

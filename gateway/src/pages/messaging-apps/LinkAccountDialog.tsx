@@ -1,6 +1,7 @@
 import CloseOutlined from "@mui/icons-material/CloseOutlined";
-import { Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton } from "@mui/material";
+import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import { useCallback, useRef, useState } from "react";
+import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import type { BridgeDetail, LinkCode } from "../../data/api";
 import { platformLabel } from "../../theme/format";
 import AccountSearch from "./AccountSearch";
@@ -103,10 +104,17 @@ function LinkAccountFlow({
   const [waiting, setWaiting] = useState<{ target: LinkTarget; code: LinkCode | null } | null>(
     open.confirm === null ? null : { target: open.confirm, code: null },
   );
+  // One live region for the whole dialog, there from its start, whose words
+  // the screens change: a region inserted with its text is often not read
+  // out, and the confirmation replaces the search in place.
+  const [announcement, setAnnouncement] = useState("");
   const platform = platformLabel(app.bridge_type);
 
   return (
     <>
+      <Box role="status" aria-live="polite" sx={SCREEN_READER_ONLY}>
+        {announcement}
+      </Box>
       <DialogTitle sx={{ fontSize: "1.0625rem", fontWeight: 600, pt: 3, pr: 8 }}>
         {waiting === null ? `Link your ${platform} account` : `Confirm your ${platform} account`}
       </DialogTitle>
@@ -124,6 +132,7 @@ function LinkAccountFlow({
             app={app}
             currentUserId={currentUserId}
             onBusy={onBusy}
+            onAnnounce={setAnnouncement}
             onLinked={(username) => onClose({ app, handle: accountHandle(username), kind: "linked" })}
             onConfirm={(target, code) => setWaiting({ target, code })}
           />
@@ -134,6 +143,7 @@ function LinkAccountFlow({
             target={waiting.target}
             initialCode={waiting.code}
             onBusy={onBusy}
+            onAnnounce={setAnnouncement}
             onConfirmed={() =>
               onClose({
                 app,

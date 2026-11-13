@@ -6,7 +6,7 @@ import { useAuth } from "../../data/AuthContext";
 import { ALL_OFF } from "../../data/featureFlags";
 import * as hooks from "../../data/hooks";
 import type { UseQueryResult } from "../../data/hooks";
-import { bridgeDetail, linkedIdentity } from "../collaborations/testFixtures";
+import { bridgeDetail, linkedIdentity, pendingIdentity } from "../collaborations/testFixtures";
 import MessagingAppsPage from "./MessagingAppsPage";
 
 vi.mock("../../components/DataTable", async () => ({
@@ -306,6 +306,20 @@ describe("MessagingAppsPage", () => {
     render(<MessagingAppsPage />);
 
     expect(await screen.findByText(/You're here as the platform operator/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Link an account/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Link account in/ })).toBeNull();
+  });
+
+  it("reads your accounts again now and then while one waits to be confirmed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([pendingIdentity({ bridge_id: "b1" })]);
+    setup({ isAdmin: false, bridges: [bridgeDetail({ display_name: "Acme Slack", bridge_type: "slack" })] });
+    render(<MessagingAppsPage />);
+    await screen.findByText(/Waiting for confirmation/);
+    const before = vi.mocked(api.fetchMyIdentities).mock.calls.length;
+
+    await act(async () => vi.advanceTimersByTime(10_100));
+
+    expect(vi.mocked(api.fetchMyIdentities).mock.calls.length).toBeGreaterThan(before);
+    vi.useRealTimers();
   });
 });

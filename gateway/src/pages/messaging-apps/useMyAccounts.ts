@@ -21,6 +21,9 @@ export interface MyAccounts {
    *  lists read apart is the newer. */
   linkedReadAt: number;
   pendingReadAt: number;
+  /** When the read that brought the linked list was asked (0 before then):
+   *  an answer can only speak for what happened before its question. */
+  linkedAskedAt: number;
   /** The last read's failure, cleared by a read that works. The lists keep
    *  what they last held. */
   error: string | null;
@@ -34,7 +37,7 @@ export interface MyAccounts {
  * waiting on a code; a tick that finds a read still running is skipped.
  */
 export function useMyAccounts(pollMs: number | null): MyAccounts {
-  const [linked, setLinked] = useState<{ list: LinkedIdentity[]; at: number } | null>(null);
+  const [linked, setLinked] = useState<{ list: LinkedIdentity[]; at: number; askedAt: number } | null>(null);
   const [pending, setPending] = useState<{ list: PendingIdentity[]; at: number } | null>(null);
   const [linkedError, setLinkedError] = useState<string | null>(null);
   const [pendingError, setPendingError] = useState<string | null>(null);
@@ -48,6 +51,7 @@ export function useMyAccounts(pollMs: number | null): MyAccounts {
 
   const load = useCallback(async () => {
     const seq = ++issued.current;
+    const askedAt = Date.now();
     running.current += 1;
     const newest = (settled: { current: number }) => {
       if (!alive.current || seq < settled.current) return false;
@@ -59,7 +63,7 @@ export function useMyAccounts(pollMs: number | null): MyAccounts {
         fetchMyIdentities().then(
           (list) => {
             if (!newest(settledLinked)) return;
-            setLinked({ list, at: Date.now() });
+            setLinked({ list, at: Date.now(), askedAt });
             setLinkedError(null);
           },
           (e: unknown) => {
@@ -107,6 +111,7 @@ export function useMyAccounts(pollMs: number | null): MyAccounts {
     pending: pending?.list ?? null,
     linkedReadAt: linked?.at ?? 0,
     pendingReadAt: pending?.at ?? 0,
+    linkedAskedAt: linked?.askedAt ?? 0,
     error: linkedError ?? pendingError,
     refresh,
   };

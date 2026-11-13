@@ -113,4 +113,12 @@ describe("InstalledAppsSection", () => {
 
     expect(await screen.findByText(/Could not load your chats/)).toBeTruthy();
   });
+
+  it("keeps a member's live chat on a platform Switch no longer offers, to take it out", async () => {
+    mockFetch([telegramChat({ status: "active" })], { platforms: [], claimable: [] });
+    render(<InstalledAppsSection onConnectionsChanged={() => {}} memberView />);
+
+    expect(await screen.findByText("Ops group")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
+  });
 });

@@ -17,7 +17,7 @@ vi.mock("../../data/api", async (importOriginal) => ({
 }));
 
 function accounts(linked: LinkedIdentity[] | null, pending: PendingIdentity[] | null): MyAccounts {
-  return { linked, pending, linkedReadAt: 1, pendingReadAt: 1, error: null, refresh: vi.fn() };
+  return { linked, pending, linkedReadAt: 1, pendingReadAt: 1, linkedAskedAt: 1, error: null, refresh: vi.fn() };
 }
 
 function section(apps: BridgeDetail[] | null, mine: MyAccounts, showHeading = true, standsHere = true) {
@@ -54,7 +54,7 @@ describe("YourAccountsSection", () => {
 
     expect(screen.getByText("Slack · Acme Slack")).toBeTruthy();
     expect(screen.getByText("Not linked")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Link an account in Acme Slack" }));
+    fireEvent.click(screen.getByRole("button", { name: "Link account in Acme Slack" }));
     expect(screen.getByRole("dialog", { name: "Link your Slack account" })).toBeTruthy();
   });
 
@@ -105,7 +105,7 @@ describe("YourAccountsSection", () => {
     expect(api.cancelLinkRequest).toHaveBeenCalledWith("b1", "a3");
     // Its row goes once the list is read again; focus waits on the app's own
     // button rather than falling to the top of the page.
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Link an account in Acme Slack" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Link account in Acme Slack" }));
     expect(api.releaseBridgeIdentity).not.toHaveBeenCalled();
     expect(mine.refresh).toHaveBeenCalled();
   });
@@ -136,7 +136,7 @@ describe("YourAccountsSection", () => {
     expect(screen.getByText("Error")).toBeTruthy();
     // Said in the row, where a keyboard can reach it.
     expect(screen.getByText(/Acme Slack isn't running, so Switch can't look accounts up/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Link an account in Acme Slack" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Link account in Acme Slack" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: /^Finish linking/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: /^Cancel link to/ }) as HTMLButtonElement).disabled).toBe(false);
   });
@@ -173,7 +173,7 @@ describe("YourAccountsSection", () => {
 
   it("offers a waiting link's app another account only once one counts", () => {
     section([slack], accounts([], [pendingIdentity({ id: "a3" })]));
-    expect(screen.getByRole("button", { name: "Link an account in Acme Slack" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link account in Acme Slack" })).toBeTruthy();
   });
 
   it("says when the accounts could not be refreshed, rather than looking current", () => {
@@ -193,5 +193,18 @@ describe("YourAccountsSection", () => {
   it("opens the app in its platform, for everyone", () => {
     section([{ ...slack, home_url: "https://acme.slack.com" }], accounts([], []));
     expect(screen.getByRole("link", { name: "Open Acme Slack" }).getAttribute("href")).toBe("https://acme.slack.com");
+  });
+
+  it("cancels a link confirmed from a phone since the row was read without calling it an error", async () => {
+    vi.mocked(api.cancelLinkRequest).mockRejectedValue(
+      new api.ApiError(404, "That user has no link to this account waiting to be confirmed", "That user has no link to this account waiting to be confirmed"),
+    );
+    const mine = accounts([], [pendingIdentity({ id: "a3" })]);
+    section([slack], mine);
+
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Cancel link to/ })));
+
+    expect(screen.queryByText(/no link to this account waiting/)).toBeNull();
+    expect(mine.refresh).toHaveBeenCalled();
   });
 });
