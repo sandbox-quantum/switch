@@ -1,4 +1,13 @@
-import { Box, List, ListItem, ListItemButton, ListItemText, Stack, Typography } from "@mui/material";
+import {
+  Box,
+  Divider,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText,
+  Stack,
+  Typography,
+} from "@mui/material";
 import { useEffect } from "react";
 import { Navigate, NavLink, Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
@@ -15,7 +24,11 @@ import { NoAccessPage } from "./StatusPages";
 /** A settings area: its section menu beside the page. The menu lists only the
  * pages this person may open; the area remembers the page they were on. Who
  * may enter the area at all is checked here, so a refused area shows no menu
- * of pages they cannot use. */
+ * of pages they cannot use.
+ *
+ * Each group of the menu sits below a rule: the area's own pages, then the
+ * pages about the person (Your account), then the way across to the other
+ * area, which leaves this one. */
 export function SettingsLayout({ area, layout }: { area: SettingsArea; layout: Layout }) {
   const { capabilities } = useAuth();
   const { pathname } = useLocation();
@@ -30,6 +43,8 @@ export function SettingsLayout({ area, layout }: { area: SettingsArea; layout: L
   if (!entry.allowed) return <NoAccessPage access={entry} />;
 
   const menu = menuOf(area, layout, capabilities);
+  const own = menu.filter((item) => !item.personal);
+  const personal = menu.filter((item) => item.personal);
   const organization = accessTo("/settings/org", layout, capabilities)?.allowed === true;
   const otherArea =
     area === "workspace" && organization
@@ -44,32 +59,45 @@ export function SettingsLayout({ area, layout }: { area: SettingsArea; layout: L
         <Typography variant="overline" sx={{ color: "text.secondary", px: 2 }}>
           {definition.title}
         </Typography>
-        <List dense>
-          {menu.map((item) => (
-            <ListItem key={item.path} disablePadding>
-              <ListItemButton
-                component={NavLink}
-                to={item.path}
-                selected={pathname === item.path}
-                sx={{ borderRadius: 1 }}
-              >
-                <ListItemText primary={item.label} />
-              </ListItemButton>
-            </ListItem>
-          ))}
-          {otherArea !== null && (
-            <ListItem disablePadding sx={{ mt: 1 }}>
-              <ListItemButton component={NavLink} to={otherArea.path} sx={{ borderRadius: 1 }}>
-                <ListItemText primary={otherArea.label} />
-              </ListItemButton>
-            </ListItem>
-          )}
+        <List dense sx={{ pb: 0 }}>
+          {own.map((item) => menuRow(item, pathname))}
         </List>
+        {personal.length > 0 && (
+          <>
+            <Divider sx={{ my: 2 }} />
+            <List dense disablePadding>
+              {personal.map((item) => menuRow(item, pathname))}
+            </List>
+          </>
+        )}
+        {otherArea !== null && (
+          <>
+            <Divider sx={{ my: 2 }} />
+            <List dense disablePadding>
+              {menuRow(otherArea, pathname)}
+            </List>
+          </>
+        )}
       </Box>
       <Box sx={{ flexGrow: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
         <Outlet />
       </Box>
     </Stack>
+  );
+}
+
+function menuRow(item: { label: string; path: string }, pathname: string) {
+  return (
+    <ListItem key={item.path} disablePadding>
+      <ListItemButton
+        component={NavLink}
+        to={item.path}
+        selected={pathname === item.path}
+        sx={{ borderRadius: 1 }}
+      >
+        <ListItemText primary={item.label} />
+      </ListItemButton>
+    </ListItem>
   );
 }
 

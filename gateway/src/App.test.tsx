@@ -254,6 +254,21 @@ describe("AppRoutes", () => {
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
   });
 
+  it("stays signed in, saying so, when signing out fails", async () => {
+    // An invitation to follow, so the screen is the one before a workspace.
+    storePendingInvite("abc");
+    mockFetch({
+      ...signedInAs("org_admin"),
+      "/auth/logout": [502, { detail: "Bad Gateway" }],
+    });
+    renderAt("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    expect(await screen.findByText("Couldn't sign out: Bad Gateway")).toBeTruthy();
+    expect(screen.queryByText("Switch Gateway")).toBeNull();
+    // Still signed in, so still on the way to the invitation.
+    expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
+  });
+
   it("says so when the session cannot be read, instead of showing sign-in", async () => {
     mockFetch({ "/auth/session": [500, { detail: "database unavailable" }] });
     renderAt("/rooms");
@@ -392,6 +407,29 @@ describe("today's layout", () => {
     expect(screen.queryByText("System healthy")).toBeNull();
     expect(screen.queryByRole("link", { name: "Help" })).toBeNull();
   });
+
+  it("keeps changing the password in the account menu, which has no Your account page", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Change password" }));
+    expect(await screen.findByRole("dialog", { name: "Change password" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Your account" })).toBeNull();
+  });
+
+  it("stays signed in, saying so, when signing out of every device from the menu fails", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/sessions/revoke": [500, { detail: "Internal Server Error" }],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
+    expect(
+      await screen.findByText("Couldn't sign out of every device: Internal Server Error"),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
+  });
 });
 
 describe("deleting the workspace", () => {
@@ -512,6 +550,29 @@ describe("the new layout (gateway_v2)", () => {
       mockFetch(signedInAs("org_admin", { flags: V2 }));
       renderAt("/settings/general");
       expect(await menuLabels("Workspace settings")).toContain("Organization settings ›");
+    });
+
+    it("sets Your account, and the way to Organization settings, each in a group of its own", async () => {
+      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      renderAt("/settings/general");
+      const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
+      const groups = within(menu)
+        .getAllByRole("list")
+        .map((list) => within(list).getAllByRole("link").map((link) => link.textContent));
+      expect(groups.slice(1)).toEqual([["Your account"], ["Organization settings ›"]]);
+      expect(groups[0]).not.toContain("Your account");
+      expect(within(menu).getAllByRole("separator")).toHaveLength(2);
+    });
+
+    it("gives a member's Your account its own group too, with no way to the organization", async () => {
+      mockFetch(signedInAs("member", { flags: V2 }));
+      renderAt("/settings/general");
+      const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
+      const lists = within(menu).getAllByRole("list");
+      expect(within(lists[lists.length - 1]).getAllByRole("link").map((l) => l.textContent)).toEqual([
+        "Your account",
+      ]);
+      expect(within(menu).getAllByRole("separator")).toHaveLength(1);
     });
 
     it("keeps Usage & budget at its own URL, inside the area", async () => {
@@ -809,14 +870,14 @@ describe("the new layout (gateway_v2)", () => {
   });
 
   describe("the account menu", () => {
-    it("leads to your account, and leaves switching workspace to the top bar", async () => {
+    it("leads to your account, where the password changes, and leaves switching workspace to the top bar", async () => {
       mockFetch(signedInAs("member", { flags: V2, tenants: [beta] }));
       renderAt("/rooms");
       fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
       const account = await screen.findByRole("menuitem", { name: "Your account" });
       expect(account.getAttribute("href")).toBe("/settings/account");
       expect(screen.queryByText("Switch to Beta Co")).toBeNull();
-      expect(screen.getByRole("menuitem", { name: "Change password" })).toBeTruthy();
+      expect(screen.queryByRole("menuitem", { name: "Change password" })).toBeNull();
       expect(screen.getByRole("menuitem", { name: "Create organization" })).toBeTruthy();
       expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
     });
@@ -852,8 +913,8 @@ describe("the new layout (gateway_v2)", () => {
   });
 
   it("shows a page that is not built yet as such", async () => {
-    mockFetch(signedInAs("member", { flags: V2 }));
-    renderAt("/settings/account");
+    mockFetch(signedInAs("org_admin", { flags: [...V2, "service_connections"] }));
+    renderAt("/connectors");
     expect(
       await screen.findByText("This page is part of the new layout and isn't built yet."),
     ).toBeTruthy();

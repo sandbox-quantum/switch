@@ -1494,6 +1494,15 @@ export class SwitchClient {
     });
   }
 
+  /**
+   * `GET /gateway/auth/me/deletion` — what deleting the signed-in account
+   * would be refused with now, or null when it would go ahead.
+   */
+  async accountDeletionRefusal(): Promise<string | null> {
+    const check = await this.gateway<{ refusal: string | null }>("GET", "/auth/me/deletion");
+    return check.refusal;
+  }
+
   /** `DELETE /gateway/users/{user_id}` — the deployment operator deletes someone's whole account. */
   async deleteUser(userId: string): Promise<void> {
     await this.gateway<unknown>("DELETE", `/users/${encodeURIComponent(userId)}`);

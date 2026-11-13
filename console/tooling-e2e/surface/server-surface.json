@@ -438,6 +438,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/auth/me/deletion",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/auth/me/identities",
       "auth": "session",
       "flags": []

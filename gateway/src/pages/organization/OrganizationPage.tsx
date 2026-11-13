@@ -166,6 +166,7 @@ export function OrganizationGeneralPage() {
             readOnlyHelper="Only an org admin can change this."
             editLabel="Rename organization"
             maxLength={ORGANIZATION_NAME_MAX}
+            width={420}
             onSave={rename}
           />
         </Stack>
