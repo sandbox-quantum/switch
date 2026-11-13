@@ -199,6 +199,20 @@
       ]
     },
     {
+      "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/devices/{controller_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/managed-agents/{agent_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
       "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}",
       "auth": "session",
       "flags": []
@@ -738,6 +752,13 @@
       "flags": [
         "organization_connector_apps",
         "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/organizations/current/devices",
+      "auth": "session",
+      "flags": [
+        "agent_management"
       ]
     },
     {

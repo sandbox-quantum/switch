@@ -583,10 +583,15 @@ describe("the new layout (gateway_v2)", () => {
         "Workspaces",
         "Users",
         "Guardrails",
-        "Devices",
         "Audit log",
         "‹ Workspace settings",
       ]);
+    });
+
+    it("lists Devices where the server runs agent management", async () => {
+      mockFetch(signedInAs("org_admin", { flags: [...V2, "agent_management"] }));
+      renderAt("/settings/org/general");
+      expect(await menuLabels("Organization settings")).toContain("Devices");
     });
 
     it("lists Connectors and apps where the server lets organizations have them", async () => {

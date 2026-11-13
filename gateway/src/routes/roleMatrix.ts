@@ -135,7 +135,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/settings/org/users", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/connectors", ORGANIZATION_ADMIN),
     built("/settings/org/guardrails", ORGANIZATION_ADMIN),
-    planned("/settings/org/devices", ORGANIZATION_ADMIN),
+    built("/settings/org/devices", ORGANIZATION_ADMIN),
     built("/settings/org/audit-log", ORGANIZATION_ADMIN),
 
     built("/platform/workspaces", OPERATOR),
@@ -173,6 +173,7 @@ export const REDIRECTS: Record<MatrixLayout, readonly MatrixRedirect[]> = {
     { from: "/settings/org/users", to: "/organization" },
     { from: "/settings/org/connectors", to: "/organization" },
     { from: "/settings/org/guardrails", to: "/organization" },
+    { from: "/settings/org/devices", to: "/organization" },
     { from: "/settings/org/audit-log", to: "/organization" },
     { from: "/platform", to: "/operator/workspaces" },
     { from: "/platform/workspaces", to: "/operator/workspaces" },

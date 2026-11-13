@@ -1,6 +1,6 @@
 """The Switch Trust policy that checks the bound workspace's messages, for
-anyone in it to read: which policy, and where to see it. Changing it is not
-here (`trust_settings.py`)."""
+anyone in it to read: which policy, and where to see it. Its organization's
+admins connect it (`organization_guardrails.py`)."""
 
 from __future__ import annotations
 
@@ -29,10 +29,12 @@ async def get_workspace_guardrails(
 ) -> WorkspaceGuardrails:
     settings = await trust_settings_for_workspace(session)
     if settings is None or not checks_messages(settings):
-        return WorkspaceGuardrails(checking=False, policy_id=None, policy_url=None)
-    assert settings.policy_id is not None  # `checks_messages` said so.
+        return WorkspaceGuardrails(
+            checking=False, policy_id=None, policy_name=None, policy_url=None
+        )
     return WorkspaceGuardrails(
         checking=True,
         policy_id=settings.policy_id,
+        policy_name=settings.policy_name,
         policy_url=policy_url(settings.endpoint, settings.policy_id),
     )

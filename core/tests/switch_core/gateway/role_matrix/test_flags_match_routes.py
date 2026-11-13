@@ -620,6 +620,30 @@ CHECKS: dict[str, Check] = {
                 within="managed_agents",
             ),
         ],
+        "a device, among the organization's": [
+            Check(
+                "can_remove",
+                _get(f"{G}/organizations/current/devices"),
+                _act(
+                    "DELETE",
+                    f"{G}/organizations/current/workspaces/{{tenant}}/devices/{{controller}}",
+                ),
+                match=("id", "controller"),
+                within="devices",
+            ),
+        ],
+        "a managed agent, among the organization's": [
+            Check(
+                "can_delete",
+                _get(f"{G}/organizations/current/devices"),
+                _act(
+                    "DELETE",
+                    f"{G}/organizations/current/workspaces/{{tenant}}/managed-agents/{{managed_agent}}",
+                ),
+                match=("agent_id", "managed_agent"),
+                within="managed_agents",
+            ),
+        ],
         "a messaging app": [
             Check(
                 "can_manage",

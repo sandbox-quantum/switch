@@ -1143,6 +1143,19 @@ ROUTES: dict[str, Case] = {
         owner_or_admins(refused=404),
         why="Stopping managing an agent: its owner's, and the workspace's admins'.",
     ),
+    "GET /gateway/organizations/current/devices": get(
+        f"{G}/organizations/current/devices", org_admin()
+    ),
+    "DELETE /gateway/organizations/current/workspaces/{workspace_id}/devices/{controller_id}": delete(
+        f"{G}/organizations/current/workspaces/{{tenant}}/devices/nobody",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such device.",
+    ),
+    "DELETE /gateway/organizations/current/workspaces/{workspace_id}/managed-agents/{agent_id}": delete(
+        f"{G}/organizations/current/workspaces/{{tenant}}/managed-agents/nobody",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such agent.",
+    ),
     "POST /gateway/management/operations": post(
         f"{G}/management/operations",
         owner(),

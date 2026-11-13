@@ -2553,12 +2553,14 @@ class OrganizationGuardrailsResponse(BaseModel):
 class WorkspaceGuardrails(BaseModel):
     """The Switch Trust policy that checks the bound workspace's messages, as
     anyone in it may read it: which policy, never the key it is checked with.
-    `policy_id` is null when nothing checks them; `policy_url`, where the
-    policy is shown on Switch Trust, is null too when it is on an endpoint
-    Switch cannot link into."""
+    `policy_id` is null when nothing checks them; `policy_name` is Switch
+    Trust's name for it, when it gave one; `policy_url`, where the policy is
+    shown on Switch Trust, is null too when it is on an endpoint Switch
+    cannot link into."""
 
     checking: bool
     policy_id: str | None
+    policy_name: str | None
     policy_url: str | None
 
 

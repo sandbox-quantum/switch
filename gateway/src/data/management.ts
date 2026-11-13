@@ -389,6 +389,60 @@ export function fetchWorkspaceDevices(): Promise<WorkspaceDevices> {
   return request<WorkspaceDevices>("/workspace");
 }
 
+/** Which of the organization's workspaces a row of Organization › Devices is in. */
+interface InWorkspace {
+  workspace_id: string;
+  workspace_name: string;
+}
+
+/** Every device and managed agent in the organization's workspaces, as an
+ *  admin of each sees them, each saying which workspace it is in. */
+export interface OrganizationDevices {
+  devices: (WorkspaceDevice & InWorkspace)[];
+  managed_agents: (WorkspaceManagedAgent & InWorkspace)[];
+}
+
+const ORGANIZATION = "/gateway/organizations/current";
+
+/** A refusal from an Organization › Devices route: the gateway's `detail`
+ *  from the checks made first (not an organization admin, a workspace
+ *  elsewhere), or the management envelope from the route's own. */
+async function organizationError(res: Response): Promise<ManagementApiError> {
+  const body: unknown = await res
+    .clone()
+    .json()
+    .catch(() => null);
+  const detail = body && typeof body === "object" && "detail" in body ? (body as { detail: unknown }).detail : null;
+  if (typeof detail === "string") return new ManagementApiError(res.status, "http_error", detail);
+  return managementError(res);
+}
+
+async function organizationRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${ORGANIZATION}${path}`, { ...init, credentials: "include" });
+  if (!res.ok) throw await organizationError(res);
+  return (await res.json()) as T;
+}
+
+export function fetchOrganizationDevices(): Promise<OrganizationDevices> {
+  return organizationRequest<OrganizationDevices>("/devices");
+}
+
+/** Remove a device in one of the organization's workspaces. */
+export async function removeOrganizationDevice(workspaceId: string, controllerId: string): Promise<void> {
+  await organizationRequest<{ ok: boolean }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/devices/${encodeURIComponent(controllerId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Stop managing an agent in one of the organization's workspaces. */
+export async function unmanageOrganizationAgent(workspaceId: string, agentId: string): Promise<void> {
+  await organizationRequest<{ ok: boolean }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/managed-agents/${encodeURIComponent(agentId)}`,
+    { method: "DELETE" },
+  );
+}
+
 /** The caller's cloud machine, as its owner sees it from this workspace. */
 export interface CloudMachine {
   machine_id: string;

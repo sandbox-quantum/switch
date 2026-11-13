@@ -59,6 +59,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -293,6 +294,9 @@ def build_harness(
         session_factory
     )
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    gateway_app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
+        OrganizationStore()
+    )
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_template_store] = lambda: (
         TemplateStore()
@@ -432,9 +436,14 @@ class EnrolledController:
 
 
 async def enroll_console(
-    harness: Harness, client: httpx.AsyncClient, owner: User, name: str = "laptop"
+    harness: Harness,
+    client: httpx.AsyncClient,
+    owner: User,
+    name: str = "laptop",
+    tenant_id: str = TENANT_ZERO_ID,
 ) -> EnrolledController:
-    """Enroll a console controller for `owner` and exchange its credential."""
+    """Enroll a console controller for `owner` in `tenant_id` and exchange
+    its credential."""
     response = await client.post(
         "/gateway/management/controllers",
         json={
@@ -443,7 +452,7 @@ async def enroll_console(
             "platform": platform(),
             "version": "0.1.0",
         },
-        cookies=cookies_for(owner),
+        cookies=cookies_for(owner, tenant_id),
     )
     assert response.status_code == 201, response.text
     body = response.json()

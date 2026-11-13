@@ -1084,12 +1084,14 @@ export async function deleteApiKey(keyId: string): Promise<void> {
 
 // ── Guardrails ───────────────────────────────────────────────────────────────
 
-/** The Switch Trust policy that checks the workspace's messages: null `policy_id`
- *  when nothing checks them, and null `policy_url` when the policy is on a
+/** The Switch Trust policy that checks the workspace's messages, its
+ *  organization's: null `policy_id` when nothing checks them, `policy_name`
+ *  when Switch Trust gave none, and null `policy_url` when the policy is on a
  *  Switch Trust Switch can't link into. */
 export interface WorkspaceGuardrails {
   checking: boolean;
   policy_id: string | null;
+  policy_name: string | null;
   policy_url: string | null;
 }
 

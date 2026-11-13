@@ -92,8 +92,13 @@ version of their own to them without also giving them a release of their own.
   in, makes or unmakes Org admins, adds people to a workspace, changes their
   role in one or removes them from it, and makes invite links to any
   workspace; Guardrails connects and disconnects the organization's Switch
-  Trust policy. Today's organization page gains the Guardrails section too,
-  since guardrails are now set only there.
+  Trust policy; and, with agent management on, Devices lists every device
+  and managed agent in the organization's workspaces with the workspace each
+  is in, and removes a device or stops managing an agent there
+  (`GET /organizations/current/devices`, and `DELETE` on
+  `/organizations/current/workspaces/{id}/devices/{controller_id}` and
+  `…/managed-agents/{agent_id}`). Today's organization page gains the
+  Guardrails section too, since guardrails are now set only there.
 - **Workspace settings › API keys, Guardrails and Devices in the new
   dashboard layout.** Behind `gateway_v2`:
   - API keys: a workspace's admins (its admins, its organization's admin and
@@ -107,8 +112,9 @@ version of their own to them without also giving them a release of their own.
     under.
   - Guardrails: everyone in a workspace sees which Switch Trust policy checks
     it, with its ID to copy and a link to it on Switch Trust
-    (`GET /workspace/guardrails`, which never returns the key). The policy's
-    name and detectors aren't shown: Switch can read only its ID.
+    (`GET /workspace/guardrails`, which never returns the key), and its
+    name where Switch Trust gave one as it was connected. Its detectors are
+    listed on Switch Trust.
   - Devices: a table of devices and one of managed agents. Admins see
     everyone's and remove any device or managed agent; everyone else sees and
     acts on their own. `GET /management/workspace` lists them as the caller

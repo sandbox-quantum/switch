@@ -91,6 +91,7 @@ export default function OrganizationGuardrails({
         <Stack spacing={1}>
           <GuardrailPolicyCard
             policyId={data.policy_id}
+            policyName={data.policy_name}
             policyUrl={data.policy_url}
             actions={
               <RowActionsMenu

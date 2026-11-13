@@ -12,6 +12,7 @@ import OrganizationConnectorsSection from "./OrganizationConnectorsSection";
 import OrganizationServicesSection from "./OrganizationServicesSection";
 import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
 import OrganizationMembersSection from "./OrganizationMembersSection";
+import OrganizationDevicesSettings from "./devices/OrganizationDevicesSettings";
 import OrganizationGuardrails from "./guardrails/OrganizationGuardrails";
 import OrganizationUsersSettings from "./users/OrganizationUsersSettings";
 import OrganizationWorkspacesSettings from "./workspaces/OrganizationWorkspacesSettings";
@@ -211,6 +212,13 @@ export function OrganizationGuardrailsPage() {
   if (error) return <Alert severity="error">{error}</Alert>;
   if (organization === null) return <CircularProgress />;
   return <OrganizationGuardrails organizationName={organization.name} heading="page" />;
+}
+
+export function OrganizationDevicesPage() {
+  const { data: organization, error } = useOrganization();
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return <OrganizationDevicesSettings organizationName={organization.name} />;
 }
 
 export function OrganizationConnectorsPage() {

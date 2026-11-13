@@ -109,7 +109,7 @@ WORKSPACE = "/organizations/current/workspaces/{workspace_id}"
 NOT_IN_ORGANIZATION = "That workspace isn't in this organization."
 
 
-class _Acting:
+class Acting:
     """An `org_admin` about to act on one of the organization's workspaces:
     how they got in, and where the request was made from, read while the
     request's own workspace is still the one bound (`made_from`)."""
@@ -120,27 +120,27 @@ class _Acting:
         self.made_from = made_from(access)
 
 
-async def _org_admin(
+async def acting_org_admin(
     session: AsyncSession,
     user_store: UserStore,
     organization_store: OrganizationStore,
     user: User,
-) -> _Acting:
+) -> Acting:
     """The caller as the bound workspace's organization's `org_admin`, or 403;
     then the request's connection let go, as the work is done on a session
     of the target workspace's own."""
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
-    acting = _Acting(access, user)
+    acting = Acting(access, user)
     await session.commit()
     return acting
 
 
 @asynccontextmanager
-async def _in_workspace(
+async def in_organization_workspace(
     session_factory: async_sessionmaker[AsyncSession],
-    acting: _Acting,
+    acting: Acting,
     workspace_id: str,
 ) -> AsyncIterator[tuple[AsyncSession, Tenant]]:
     """A session bound to `workspace_id`, and its row, locked until the
@@ -175,7 +175,7 @@ async def rename_organization_workspace(
     """Rename one of the organization's workspaces, as its own General page
     does (`tenants.rename_workspace`), recorded in both audit logs. Refused,
     409, for a name another of its workspaces has in any case."""
-    acting = await _org_admin(session, user_store, organization_store, user)
+    acting = await acting_org_admin(session, user_store, organization_store, user)
     await refuse_a_workspace_name_taken(
         session,
         session_factory,
@@ -183,7 +183,10 @@ async def rename_organization_workspace(
         req.name,
         renaming=workspace_id,
     )
-    async with _in_workspace(session_factory, acting, workspace_id) as (bound, _):
+    async with in_organization_workspace(session_factory, acting, workspace_id) as (
+        bound,
+        _,
+    ):
         if await rename_workspace(
             bound,
             workspace_id,
@@ -214,9 +217,12 @@ async def set_organization_workspace_admins(
     checked as one made on the workspace's own page
     (`tenants.change_member_role`): never its last admin demoted. Someone
     named who is not such a member is refused, 400, with nothing changed."""
-    acting = await _org_admin(session, user_store, organization_store, user)
+    acting = await acting_org_admin(session, user_store, organization_store, user)
     wanted = set(req.user_ids)
-    async with _in_workspace(session_factory, acting, workspace_id) as (bound, tenant):
+    async with in_organization_workspace(session_factory, acting, workspace_id) as (
+        bound,
+        tenant,
+    ):
         organization_admins = await organization_store.admin_ids(
             bound, acting.access.organization_id
         )
@@ -273,9 +279,12 @@ async def add_organization_member_to_workspace(
     through an invitation; for someone already in the workspace; for an
     archived workspace; and for making the registration service account an
     admin. Recorded in the workspace's audit log and the organization's."""
-    acting = await _org_admin(session, user_store, organization_store, user)
+    acting = await acting_org_admin(session, user_store, organization_store, user)
     organization_id = acting.access.organization_id
-    async with _in_workspace(session_factory, acting, workspace_id) as (bound, tenant):
+    async with in_organization_workspace(session_factory, acting, workspace_id) as (
+        bound,
+        tenant,
+    ):
         if await bound.get(OrganizationMember, (organization_id, req.user_id)) is None:
             raise HTTPException(
                 status_code=404,
@@ -344,8 +353,11 @@ async def change_organization_workspace_member_role(
     """Change someone's role in one of the organization's workspaces, as its
     own Users page does (`tenants.change_member_role`)."""
     role = validated_member_role(req.role)
-    acting = await _org_admin(session, user_store, organization_store, user)
-    async with _in_workspace(session_factory, acting, workspace_id) as (bound, tenant):
+    acting = await acting_org_admin(session, user_store, organization_store, user)
+    async with in_organization_workspace(session_factory, acting, workspace_id) as (
+        bound,
+        tenant,
+    ):
         _, membership = await change_member_role(
             bound, user_store, workspace_id, user_id, role, actor_id=user.id
         )
@@ -373,8 +385,11 @@ async def preview_organization_workspace_member_removal(
 ) -> dict:
     """Who would receive what someone owns in one of the organization's
     workspaces if the caller removed them now (`tenants.member_removal_preview`)."""
-    acting = await _org_admin(session, user_store, organization_store, user)
-    async with _in_workspace(session_factory, acting, workspace_id) as (bound, _):
+    acting = await acting_org_admin(session, user_store, organization_store, user)
+    async with in_organization_workspace(session_factory, acting, workspace_id) as (
+        bound,
+        _,
+    ):
         return await member_removal_preview(
             bound, user_store, workspace_id, user_id, actor_id=user.id
         )
@@ -403,7 +418,7 @@ async def remove_organization_workspace_member(
     Users page does (`tenants.remove_member_from_workspace`): their keys and
     connections there revoked, what they own handed over, refused while they
     own agents there or are its last admin."""
-    acting = await _org_admin(session, user_store, organization_store, user)
+    acting = await acting_org_admin(session, user_store, organization_store, user)
     revocation = AccessRevocation(
         agent_store=agent_store,
         api_key_store=api_key_store,
@@ -412,7 +427,10 @@ async def remove_organization_workspace_member(
         sign_in_flows=request.app.state.sign_in_flows,
     )
     try:
-        async with _in_workspace(session_factory, acting, workspace_id) as (bound, _):
+        async with in_organization_workspace(session_factory, acting, workspace_id) as (
+            bound,
+            _,
+        ):
             removed = await remove_member_from_workspace(
                 bound, user_store, revocation, workspace_id, user_id, actor_id=user.id
             )
@@ -443,8 +461,11 @@ async def invite_to_organization_workspace(
     """Make an invite link to one of the organization's workspaces, as its own
     Users page does (`tenants.mint_invitation`): the Organization › Users
     page's Invite, for the workspace and role chosen there."""
-    acting = await _org_admin(session, user_store, organization_store, user)
-    async with _in_workspace(session_factory, acting, workspace_id) as (bound, _):
+    acting = await acting_org_admin(session, user_store, organization_store, user)
+    async with in_organization_workspace(session_factory, acting, workspace_id) as (
+        bound,
+        _,
+    ):
         return await mint_invitation(
             bound, invitation_store, config, mailer, workspace_id, req, actor=user
         )
@@ -452,7 +473,7 @@ async def invite_to_organization_workspace(
 
 async def _set_archived(
     session_factory: async_sessionmaker[AsyncSession],
-    acting: _Acting,
+    acting: Acting,
     workspace_id: str,
     *,
     archived: bool,
@@ -461,7 +482,10 @@ async def _set_archived(
     audit logs' records of it in the same commit. One already as asked
     changes and records nothing."""
     user = acting.user
-    async with _in_workspace(session_factory, acting, workspace_id) as (bound, tenant):
+    async with in_organization_workspace(session_factory, acting, workspace_id) as (
+        bound,
+        tenant,
+    ):
         if (tenant.archived_at is not None) != archived:
             # The database's clock, as the scheduler's (`RoomScheduler`): the
             # runs skipped on restore are those due by its now, not this
@@ -527,7 +551,7 @@ async def archive_organization_workspace(
     other process; asked again of a workspace already archived, that is done
     again, so a call that failed part way is finished by repeating it."""
     blocked = archive_blocked_reason(workspace_id, require_tenant_id())
-    acting = await _org_admin(session, user_store, organization_store, user)
+    acting = await acting_org_admin(session, user_store, organization_store, user)
     if blocked is not None:
         raise HTTPException(status_code=409, detail=blocked)
     response = await _set_archived(session_factory, acting, workspace_id, archived=True)
@@ -553,7 +577,7 @@ async def restore_organization_workspace(
     start, and its schedules go on from their next run, the runs missed
     meanwhile skipped in the same commit. As archiving, done again when
     repeated."""
-    acting = await _org_admin(session, user_store, organization_store, user)
+    acting = await acting_org_admin(session, user_store, organization_store, user)
     response = await _set_archived(
         session_factory, acting, workspace_id, archived=False
     )
