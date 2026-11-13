@@ -62,7 +62,9 @@ version of their own to them without also giving them a release of their own.
   admin of a workspace or organization that has other people in it, instead
   of after you've typed your email. A new `GET /gateway/auth/me/deletion`
   answers with the reason `DELETE /gateway/auth/me` would give, or null.
-  Change password moves out of the account menu in the new layout.
+  Change password moves out of the account menu in the new layout. In the
+  settings menu, Your account and the way across to the other settings area
+  each sit in a group of their own, below a divider.
 - **Workspace settings › API keys, Guardrails and Devices in the new
   dashboard layout.** Behind `gateway_v2`:
   - API keys: a workspace's admins (its admins, its organization's admin and

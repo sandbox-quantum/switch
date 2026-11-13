@@ -548,6 +548,29 @@ describe("the new layout (gateway_v2)", () => {
       expect(await menuLabels("Workspace settings")).toContain("Organization settings ›");
     });
 
+    it("sets Your account, and the way to Organization settings, each in a group of its own", async () => {
+      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      renderAt("/settings/general");
+      const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
+      const groups = within(menu)
+        .getAllByRole("list")
+        .map((list) => within(list).getAllByRole("link").map((link) => link.textContent));
+      expect(groups.slice(1)).toEqual([["Your account"], ["Organization settings ›"]]);
+      expect(groups[0]).not.toContain("Your account");
+      expect(within(menu).getAllByRole("separator")).toHaveLength(2);
+    });
+
+    it("gives a member's Your account its own group too, with no way to the organization", async () => {
+      mockFetch(signedInAs("member", { flags: V2 }));
+      renderAt("/settings/general");
+      const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
+      const lists = within(menu).getAllByRole("list");
+      expect(within(lists[lists.length - 1]).getAllByRole("link").map((l) => l.textContent)).toEqual([
+        "Your account",
+      ]);
+      expect(within(menu).getAllByRole("separator")).toHaveLength(1);
+    });
+
     it("keeps Usage & budget at its own URL, inside the area", async () => {
       mockFetch(signedInAs("workspace_admin", { flags: V2 }));
       renderAt("/usage");

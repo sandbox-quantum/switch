@@ -105,6 +105,8 @@ export interface PageRoute {
   /** The settings area the page sits in, with its label in that area's menu. */
   area?: SettingsArea;
   menu?: string;
+  /** About the person rather than the area, so its menu row sits apart. */
+  personal?: true;
 }
 
 /** An area's own URL, which opens the page last used there. */
@@ -172,6 +174,17 @@ function settingsPage(
   element: ReactNode,
 ): PageRoute {
   return { kind: "page", path, layouts: V2, access, element, area, menu };
+}
+
+/** A page about the signed-in person, listed in the workspace settings menu
+ * below the area's own pages, in a group of its own. */
+function personalSettingsPage(
+  path: string,
+  menu: string,
+  access: Rule,
+  element: ReactNode,
+): PageRoute {
+  return { ...settingsPage(path, "workspace", menu, access, element), personal: true };
 }
 
 function areaIndex(path: string, area: SettingsArea): AreaRoute {
@@ -272,7 +285,7 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   redirect("/settings/devices", CURRENT, "/machines"),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
-  settingsPage("/settings/account", "workspace", "Your account", everyone, <AccountPage />),
+  personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
   // Organization settings: the area admits the organization's admins, and
   // the operator to restore one; its pages beyond that are the admins' alone.
@@ -382,14 +395,14 @@ export function menuOf(
   area: SettingsArea,
   layout: Layout,
   caps: Capabilities,
-): { label: string; path: string }[] {
+): { label: string; path: string; personal: boolean }[] {
   return routesFor(layout)
     .filter(
       (r): r is PageRoute & { menu: string } =>
         r.kind === "page" && r.area === area && r.menu !== undefined,
     )
     .filter((r) => r.access(caps).allowed)
-    .map((r) => ({ label: r.menu, path: r.path }));
+    .map((r) => ({ label: r.menu, path: r.path, personal: r.personal === true }));
 }
 
 export interface RailItem {
