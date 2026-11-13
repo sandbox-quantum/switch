@@ -67,6 +67,7 @@ HTTP_PUBLIC = "http://switch.example.com"
 APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
+PAGERDUTY = "pagerduty"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
 GITHUB_CLIENT_ID = "example-github-client-id"
@@ -368,7 +369,12 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab"}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab", PAGERDUTY}
+        pagerduty = f"{PUBLIC}/gateway/service-connections/{PAGERDUTY}/flows/callback"
+        assert apps[PAGERDUTY]["redirect_uris"] == [pagerduty]
+        assert apps[PAGERDUTY]["configuration_variables"] == [
+            "PAGERDUTY_CLIENT_CONFIG_PATH"
+        ]
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google

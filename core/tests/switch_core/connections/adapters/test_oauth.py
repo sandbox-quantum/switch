@@ -1020,3 +1020,77 @@ class TestTheShippedGitLabEntry:
         ] * 2
         for request in sent:
             assert "resource" not in parse_qs(request.content.decode())
+
+
+# The shipped PagerDuty entry, its vendor's addresses pointed at the fake one.
+PAGERDUTY = (
+    (
+        Path(__file__).parents[4]
+        / "switch_core/connections/catalog/pagerduty/connection.yaml"
+    )
+    .read_text()
+    .replace("https://identity.pagerduty.com/oauth", ISSUER)
+    .replace("https://api.pagerduty.com/users/me", IDENTITY_URL)
+    .replace("https://mcp.pagerduty.com/mcp", MCP_URL)
+    .replace("account_id: user.id", "account_id: account.id")
+    .replace("label: user.email", "label: account.email")
+)
+PAGERDUTY_SCOPES = ["users.read", "incidents.read", "incidents.write"]
+
+
+class TestPagerDuty:
+    """PagerDuty's Scoped OAuth, as its docs describe it: the documented
+    endpoints with no discovery, PKCE with S256, scopes separated by spaces,
+    the client secret in the form body, day-long tokens, and no revocation."""
+
+    async def test_signs_in_at_its_documented_endpoints_with_pkce(self) -> None:
+        vendor = FakeOAuthServer(lifetime=86400)
+        adapter, _ = _adapter(vendor, PAGERDUTY)
+        verifier = secrets.token_urlsafe(48)
+        url = await adapter.authorization_url(
+            redirect_uri=REDIRECT,
+            state="state-1",
+            code_challenge=s256(verifier),
+            scopes=PAGERDUTY_SCOPES,
+        )
+        assert url.startswith(f"{ISSUER}/authorize?")
+        query = parse_qs(urlsplit(url).query)
+        assert query["scope"] == ["users.read incidents.read incidents.write"]
+        assert query["code_challenge_method"] == ["S256"]
+        assert query["code_challenge"] == [s256(verifier)]
+        # Nothing PagerDuty does not document, and never the secret.
+        assert "resource" not in query and "prompt" not in query
+        assert "client_secret" not in url
+        back = parse_qs(urlsplit(vendor.authorize(url)).query)
+        signed_in = await adapter.exchange_code(
+            code=back["code"][0],
+            verifier=verifier,
+            redirect_uri=REDIRECT,
+            scopes=PAGERDUTY_SCOPES,
+        )
+        [exchange] = vendor.token_requests
+        assert exchange["client_secret"] == STATIC_CLIENT_SECRET
+        assert exchange["code_verifier"] == verifier
+        assert "resource" not in exchange
+        assert signed_in.secret.expires_at == pytest.approx(time.time() + 86400, abs=5)
+        # Endpoints come from the catalog: nothing was discovered.
+        assert not any(".well-known" in path for path in vendor.paths)
+
+    async def test_a_refresh_sends_the_secret_and_keeps_the_newest_token(
+        self,
+    ) -> None:
+        vendor = FakeOAuthServer(lifetime=86400)
+        adapter, _ = _adapter(vendor, PAGERDUTY)
+        secret = await _sign_in(adapter, vendor)
+        renewed = await adapter.refresh(secret)
+        assert renewed.values["refresh_token"] != secret.values["refresh_token"]
+        assert vendor.token_requests[-1]["grant_type"] == "refresh_token"
+        assert vendor.token_requests[-1]["client_secret"] == STATIC_CLIENT_SECRET
+
+    async def test_says_where_people_revoke_it_since_switch_cannot(self) -> None:
+        vendor = FakeOAuthServer(lifetime=86400)
+        adapter, _ = _adapter(vendor, PAGERDUTY)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ConnectionNotRevocable, match="OAuth Apps"):
+            await adapter.revoke_connection(secret)
+        assert vendor.revoked == []

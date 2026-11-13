@@ -1,0 +1,96 @@
+slug: pagerduty
+name: PagerDuty
+category: Incident management
+description: Read incidents, services and who is on call in PagerDuty, and acknowledge or resolve incidents, as you.
+enabled: true
+publisher: PagerDuty
+links:
+  documentation: https://developer.pagerduty.com/docs/ZG9jOjExMDI5NTgw-model-context-protocol-mcp
+  support: https://support.pagerduty.com
+  privacy: https://www.pagerduty.com/privacy-policy/
+adapter: oauth
+auth:
+  type: oauth
+  # Each refresh returns a new refresh token. PagerDuty does not say whether
+  # the previous one stops working, so refreshes are never raced. Refresh
+  # tokens live 30 days, renewed by each refresh, for at most a year.
+  refresh: rotating
+  oauth:
+    # PagerDuty's MCP server takes OAuth but offers no dynamic registration,
+    # so each server's operator registers a Scoped OAuth app (Integrations,
+    # Developer Tools, App Registration) with the scopes below, and names its
+    # settings in PAGERDUTY_CLIENT_CONFIG_PATH or saves it under Connector
+    # apps. Scoped OAuth, not Classic: Classic offers only blanket read or
+    # write, and its access tokens live 30 days, past the most Switch accepts.
+    # Scoped OAuth apps are confidential clients and must use PKCE (S256).
+    registration: static
+    client_settings: PAGERDUTY
+    # PagerDuty's documented endpoints, rather than discovery from the MCP
+    # server; the secret goes in the form body, as PagerDuty's docs send it.
+    authorization_url: https://identity.pagerduty.com/oauth/authorize
+    token_url: https://identity.pagerduty.com/oauth/token
+    # Back to Core's own https callback: the server needs GATEWAY_PUBLIC_URL,
+    # and nothing listens on people's computers.
+    redirect: [core]
+    # A scope the app was not registered with is not refused: PagerDuty grants
+    # a token holding only openid, and the identity call then fails. A Scoped
+    # OAuth app works at once on the account that registered it; elsewhere
+    # PagerDuty must publish it and an admin of each account install it.
+    unchecked: >-
+      Switch can't check that the app has every scope listed here, or that it
+      is installed on each PagerDuty account people connect from. Connect once
+      to confirm.
+    # PagerDuty has no endpoint to revoke one sign-in; a person revokes their
+    # own authorization on the app's page.
+    remove_access: >-
+      Revoke Switch's access in PagerDuty: open the app under Integrations,
+      OAuth Apps (Configuration, Integrations, OAuth Apps on PD Reliability
+      Platform) and revoke your user token. Until then it works until it
+      expires, within a day.
+  identity:
+    # Answers for a user's OAuth token, never an account-level one.
+    url: https://api.pagerduty.com/users/me
+    account_id: user.id
+    label: user.email
+# PagerDuty's Scoped OAuth access tokens live 1 day (documented, not
+# measured), and none can be revoked alone, so an agent's copy may outlive its
+# grant by up to that long. Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    # The US service region only. Accounts in the EU region are served at
+    # mcp.eu.pagerduty.com and api.eu.pagerduty.com, which this entry does
+    # not name. The server takes the OAuth token as Bearer.
+    - { name: pagerduty, url: "https://mcp.pagerduty.com/mcp" }
+access:
+  # Scopes are per resource, from PagerDuty's REST API reference for the
+  # endpoints each browse_ tool calls. users.read is needed to connect at all.
+  # A token reaches the intersection of these and the person's own role.
+  # Not asked for: event_orchestrations, status_pages and incident_workflows,
+  # whose browse_ tools are refused; and every write but incidents.write, so
+  # the manage_ tools for services, schedules, teams, event orchestrations,
+  # alert grouping and status pages are refused, as is starting a workflow.
+  # incidents.write includes creating incidents, acknowledging, resolving,
+  # reassigning and adding notes and responders.
+  read:
+    scopes:
+      - users.read
+      - incidents.read
+      - services.read
+      - schedules.read
+      - oncalls.read
+      - escalation_policies.read
+      - teams.read
+      - change_events.read
+  write:
+    scopes:
+      - users.read
+      - incidents.read
+      - incidents.write
+      - services.read
+      - schedules.read
+      - oncalls.read
+      - escalation_policies.read
+      - teams.read
+      - change_events.read
+tools: { mode: pass_through }
