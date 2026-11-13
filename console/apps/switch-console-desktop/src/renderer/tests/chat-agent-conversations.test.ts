@@ -6,6 +6,9 @@ import {
 import type { ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 
+/** No room has any known activity: they order by name. */
+const none = () => 0;
+
 const agent = (id: string, name: string, displayName: string | null = null) => ({
   id,
   name,
@@ -49,7 +52,8 @@ describe('agentConversations', () => {
     const split = agentConversations(
       [direct, slackDm, channel],
       [room('team', 'team'), room('dm', 'dm'), room('slack-dm', 'Dana'), room('old', 'old', true)],
-      new Set()
+      new Set(),
+      none
     );
     expect(split.direct.map((chat) => chat.roomId)).toEqual(['dm']);
     expect(split.rooms.map((each) => each.roomId)).toEqual(['slack-dm', 'team']);
@@ -71,7 +75,7 @@ describe('agentConversations', () => {
 
   it('puts a direct room with two agents under Rooms', () => {
     const shared = summary({ roomId: 'pair', agents: [agent('a', 'alpha'), agent('b', 'beta')] });
-    const split = agentConversations([shared], [], new Set());
+    const split = agentConversations([shared], [], new Set(), none);
     expect(split.direct).toEqual([]);
     expect(split.rooms).toEqual([{ roomId: 'pair', roomName: 'Chat with helper' }]);
   });
@@ -83,7 +87,7 @@ describe('agentConversations', () => {
       channelType: 'channel_private',
       agents: [agent('a', 'alpha'), agent('b', 'beta')],
     });
-    const split = agentConversations([group], [room('team', 'team')], new Set());
+    const split = agentConversations([group], [room('team', 'team')], new Set(), none);
     expect(split.direct).toEqual([]);
     expect(split.rooms).toEqual([
       { roomId: 'team', roomName: 'team', archived: false, status: 'live', roomRole: null },
@@ -95,7 +99,8 @@ describe('agentConversations', () => {
     const split = agentConversations(
       [],
       [room('removed', 'Removed Room'), room('live', 'Live Room')],
-      new Set(['removed'])
+      new Set(['removed']),
+      none
     );
     expect(split.rooms.map((each) => each.roomId)).toEqual(['live']);
   });

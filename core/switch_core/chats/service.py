@@ -1918,6 +1918,7 @@ class ChatService:
         mention_agent_ids: list[str],
         mention_user_ids: list[str],
         mention_spans: list[ChatMention],
+        command: tuple[str, str] | None,
     ) -> tuple[Room, list[Message]]:
         """Post the user's message, every part of it in one transaction.
 
@@ -1998,7 +1999,6 @@ class ChatService:
             # command: written as the command event a bridge writes for it, so
             # the room's command handling runs it, rather than as a message the
             # agents read. Its mentions are its arguments, written as typed.
-            command = None if uploads else room_command(body)
             if command is not None:
                 mentions, people, mention_spans, typed = [], [], [], []
             shift = 0
@@ -2584,24 +2584,6 @@ def _may_use(agent: Agent, user: User, *, room_id: str, group_id: str | None) ->
 
 def _utf16_len(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
-
-
-def room_command(body: str) -> tuple[str, str] | None:
-    """`(name, args)` when `body` is a room command a member can type here
-    (`!name args`, split as the platform bridges split one), else None. Only a
-    command Switch has is taken: "!important" stays a message."""
-    text = body.strip()
-    if not text.startswith("!"):
-        return None
-    # Imported here: the command table reaches the agent protocol, which
-    # imports this module.
-    from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
-
-    parts = text.split(None, 1)
-    name = parts[0][1:]
-    if name not in COMMANDS_BY_NAME:
-        return None
-    return name, parts[1].strip() if len(parts) > 1 else ""
 
 
 def _span_texts(body: str, spans: list[ChatMention]) -> list[str]:
