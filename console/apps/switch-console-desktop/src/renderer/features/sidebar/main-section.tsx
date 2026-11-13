@@ -2,12 +2,14 @@ import { DoorOpen, MessageCircle, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
+import { byActivity, roomActivityAt } from '@renderer/features/switch-servers/room-order';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
@@ -50,6 +52,8 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
   const flags = useFeatureFlags(switchServersStore.activeServerId);
   const buddyPending = useBuddyPending(switchServersStore.activeServerId);
   const rooms = useListedRoomsInActiveScope();
+  // While the agents are showing, a dot on Rooms says a room has something new.
+  const roomsUnread = rooms.some((room) => chatsStore.unread(room.id) > 0);
   // No count until the agents are read: a 0 that turns into the real number
   // a moment later reads as the list changing.
   const count = tab === 'agents' ? (agents.data?.length ?? null) : rooms.length;
@@ -63,7 +67,11 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
             setTab(next);
             localStorage.setItem(TAB_KEY, next);
           }}
-          options={TABS}
+          options={TABS.map((option) =>
+            option.value === 'rooms' && roomsUnread && tab !== 'rooms'
+              ? { ...option, dot: true }
+              : option
+          )}
           ariaLabel="Show agents or rooms"
           quiet
         />
@@ -108,9 +116,22 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
   );
 });
 
-/** New Room, then one row per room: its messaging app and its name. Nothing is nested under it. */
-const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummary[] }) {
+/** The sidebar's rooms: unread first, then the most recently active (see `byActivity`). */
+function sidebarOrder(rooms: RemoteRoomSummary[]): RemoteRoomSummary[] {
+  return byActivity(rooms, (room) => ({
+    name: room.name,
+    activityAt: roomActivityAt(chatsStore.chat(room.id), room.createdAt),
+    unread: chatsStore.unread(room.id) > 0,
+  }));
+}
+
+/**
+ * New Room, then one row per room: its messaging app and its name, the rooms
+ * with something new first. Nothing is nested under it.
+ */
+const RoomList = observer(function RoomList({ rooms: listed }: { rooms: RemoteRoomSummary[] }) {
   const showCreateRoomModal = useShowModal('createRoomModal');
+  const rooms = sidebarOrder(listed);
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
       <NewRoomRow onCreate={() => showCreateRoomModal({})} />

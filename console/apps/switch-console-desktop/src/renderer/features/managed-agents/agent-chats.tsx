@@ -15,6 +15,7 @@ import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-car
 import { buddySetupCardsEnabled } from '@renderer/features/switch-buddy/buddy-setup-step';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
 import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
+import { roomActivityAt } from '@renderer/features/switch-servers/room-order';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -132,7 +133,12 @@ function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   return {
     agentRooms,
     archived,
-    ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed),
+    ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed, (roomId) =>
+      roomActivityAt(
+        ownServer ? chatsStore.chat(roomId) : undefined,
+        switchRoomsStore.roomSummaryById(roomId)?.createdAt
+      )
+    ),
   };
 }
 

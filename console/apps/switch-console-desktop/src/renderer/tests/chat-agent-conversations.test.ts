@@ -55,6 +55,20 @@ describe('agentConversations', () => {
     expect(split.rooms.map((each) => each.roomId)).toEqual(['slack-dm', 'team']);
   });
 
+  it('lists the rooms the most recently active first', () => {
+    const activity: Record<string, string> = {
+      quiet: '2026-11-01T00:00:00Z',
+      busy: '2026-11-13T00:00:00Z',
+    };
+    const split = agentConversations(
+      [],
+      [room('quiet', 'aardvark'), room('busy', 'zebra'), room('unknown', 'mid')],
+      new Set(),
+      (roomId) => activity[roomId] ?? ''
+    );
+    expect(split.rooms.map((each) => each.roomId)).toEqual(['busy', 'quiet', 'unknown']);
+  });
+
   it('puts a direct room with two agents under Rooms', () => {
     const shared = summary({ roomId: 'pair', agents: [agent('a', 'alpha'), agent('b', 'beta')] });
     const split = agentConversations([shared], [], new Set());
