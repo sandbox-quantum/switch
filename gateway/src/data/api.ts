@@ -1005,12 +1005,21 @@ export interface ApiKeyDetail {
   id: string;
   label: string;
   type: string;
+  /** The start of the key's hash, not of the key: tells keys apart without
+   *  giving any of the secret away. */
   key_prefix: string;
   created_at: string;
   /** `null` for a key that never expires. */
   expires_at: string | null;
-  // Copying the key, and deleting it: never a key an agent still signs in
-  // with, though one a deleted agent left behind can go.
+  owner_id: string;
+  owner_name: string;
+  /** The agent that signs in with it, by its name now; null for any other
+   *  key, and for an agent key whose agent is gone. */
+  agent_id: string | null;
+  agent_name: string | null;
+  // Copying the key, its owner's alone; and deleting it, its owner's or an
+  // admin's for a key that adds agents, and never one an agent still signs
+  // in with, though one a deleted agent left behind can go.
   can_reveal: boolean;
   can_delete: boolean;
 }
@@ -1028,6 +1037,16 @@ export type ApiKeyLifetime = number | "never";
 
 export async function fetchApiKeys(): Promise<ApiKeyDetail[] | null> {
   return fetchJson<ApiKeyDetail[]>("/api-keys");
+}
+
+/** The caller's own keys. */
+export async function loadApiKeys(): Promise<ApiKeyDetail[]> {
+  return jsonRequest<ApiKeyDetail[]>("/api-keys", "GET");
+}
+
+/** Every key in the workspace, for its admins. */
+export async function loadWorkspaceApiKeys(): Promise<ApiKeyDetail[]> {
+  return jsonRequest<ApiKeyDetail[]>("/api-keys/workspace", "GET");
 }
 
 export async function createApiKey(
@@ -1059,11 +1078,23 @@ export async function revealApiKey(keyId: string): Promise<string> {
   return data.key;
 }
 
-export async function deleteApiKey(keyId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/api-keys/${keyId}`, {
-    method: "DELETE",
-  });
-  return res?.ok ?? false;
+export async function deleteApiKey(keyId: string): Promise<void> {
+  await jsonRequest<{ ok: boolean }>(`/api-keys/${encodeURIComponent(keyId)}`, "DELETE");
+}
+
+// ── Guardrails ───────────────────────────────────────────────────────────────
+
+/** The Switch Trust policy that checks the workspace's messages: null `policy_id`
+ *  when nothing checks them, and null `policy_url` when the policy is on a
+ *  Switch Trust Switch can't link into. */
+export interface WorkspaceGuardrails {
+  checking: boolean;
+  policy_id: string | null;
+  policy_url: string | null;
+}
+
+export async function loadWorkspaceGuardrails(): Promise<WorkspaceGuardrails> {
+  return jsonRequest<WorkspaceGuardrails>("/workspace/guardrails", "GET");
 }
 
 // ── Collaborations ───────────────────────────────────────────────────────────

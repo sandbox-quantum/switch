@@ -297,11 +297,37 @@ class TestCanDeleteWorkspace:
 
 
 class TestCanDeleteApiKey:
-    def test_the_owner_may_delete_their_own_key(self) -> None:
-        assert can_delete_api_key(ALICE, "u-alice", an_agent_signs_in_with_it=False)
+    @pytest.mark.parametrize("key_type", ["registration", "agent", "bootstrap"])
+    def test_the_owner_may_delete_their_own_key(self, key_type: str) -> None:
+        assert can_delete_api_key(
+            ALICE, "u-alice", key_type, an_agent_signs_in_with_it=False
+        )
 
     def test_not_one_an_agent_still_signs_in_with(self) -> None:
-        assert not can_delete_api_key(ALICE, "u-alice", an_agent_signs_in_with_it=True)
+        assert not can_delete_api_key(
+            ALICE, "u-alice", "agent", an_agent_signs_in_with_it=True
+        )
 
-    def test_not_someone_elses_even_as_an_admin(self) -> None:
-        assert not can_delete_api_key(ADMIN, "u-alice", an_agent_signs_in_with_it=False)
+    @pytest.mark.parametrize("key_type", ["registration", "retired"])
+    def test_an_admin_may_delete_anyones_key_for_adding_agents(
+        self, key_type: str
+    ) -> None:
+        assert can_delete_api_key(
+            ADMIN, "u-alice", key_type, an_agent_signs_in_with_it=False
+        )
+
+    @pytest.mark.parametrize("key_type", ["agent", "bootstrap"])
+    def test_not_someone_elses_agent_or_bootstrap_key_even_as_an_admin(
+        self, key_type: str
+    ) -> None:
+        assert not can_delete_api_key(
+            ADMIN, "u-alice", key_type, an_agent_signs_in_with_it=False
+        )
+
+    def test_not_someone_elses_as_a_member(self) -> None:
+        assert not can_delete_api_key(
+            Principal("u-bob", False),
+            "u-alice",
+            "registration",
+            an_agent_signs_in_with_it=False,
+        )
