@@ -881,7 +881,7 @@ describe("the new layout (gateway_v2)", () => {
 
   it("shows a page that is not built yet as such", async () => {
     mockFetch(signedInAs("member", { flags: V2 }));
-    renderAt("/settings/guardrails");
+    renderAt("/settings/account");
     expect(
       await screen.findByText("This page is part of the new layout and isn't built yet."),
     ).toBeTruthy();

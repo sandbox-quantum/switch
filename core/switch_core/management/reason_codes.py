@@ -18,6 +18,8 @@ STALE_GENERATION = "stale_generation"
 UNKNOWN_CONNECTION = "unknown_connection"
 NO_STREAM = "no_stream"
 MANAGED_BY_CONTROLLER = "managed_by_controller"
+# Switch names and removes a cloud device, not its owner or an admin.
+CLOUD_MANAGED = "cloud_managed"
 ALREADY_CLAIMED = "already_claimed"
 CANCELLED = "cancelled"
 LEASE_EXPIRED = "lease_expired"
@@ -56,6 +58,7 @@ ALL_REASON_CODES = frozenset(
         UNKNOWN_CONNECTION,
         NO_STREAM,
         MANAGED_BY_CONTROLLER,
+        CLOUD_MANAGED,
         ALREADY_CLAIMED,
         CANCELLED,
         LEASE_EXPIRED,

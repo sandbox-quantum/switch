@@ -327,6 +327,126 @@ export function createOperation(body: {
   return request<Operation>("/operations", { method: "POST", body: JSON.stringify(body) });
 }
 
+/** What a device is, as people tell them apart. */
+export type DeviceType = "computer" | "remote_ssh" | "cloud";
+
+/** A device in the workspace's list, as the caller may see it: everyone's to
+ *  an admin, their own to anyone else. Removed devices are left out. */
+export interface WorkspaceDevice {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: Controller["kind"];
+  type: DeviceType;
+  platform: Platform | null;
+  version: string | null;
+  state: ControllerState;
+  last_seen_at: string | null;
+  created_at: string;
+  owner_id: string;
+  owner_name: string;
+  /** The providers it last reported, by id. */
+  providers: Provider[];
+  agents_total: number;
+  agents_running: number;
+  /** Rename and describe it; ask it to re-check its providers; remove it.
+   *  Its owner does the first two, and its owner or an admin removes it, but
+   *  nobody renames or removes a cloud device: Switch does. */
+  can_edit: boolean;
+  can_recheck: boolean;
+  can_remove: boolean;
+}
+
+/** A managed agent in the workspace's list, as the caller may see it. */
+export interface WorkspaceManagedAgent {
+  agent_id: string;
+  name: string;
+  display_name: string | null;
+  provider: Provider;
+  controller_id: string | null;
+  controller_name: string | null;
+  controller_kind: Controller["kind"] | null;
+  controller_state: ControllerState | null;
+  desired_state: DesiredState;
+  /** What its device last reported of it; null before it has, and for one
+   *  placed nowhere. */
+  process: string | null;
+  owner_id: string;
+  owner_name: string;
+  /** Start, stop, restart and edit it: its owner. Stop managing it, or delete
+   *  it: its owner or an admin. */
+  can_edit: boolean;
+  can_delete: boolean;
+}
+
+export interface WorkspaceDevices {
+  devices: WorkspaceDevice[];
+  managed_agents: WorkspaceManagedAgent[];
+  operations: Operation[];
+}
+
+export function fetchWorkspaceDevices(): Promise<WorkspaceDevices> {
+  return request<WorkspaceDevices>("/workspace");
+}
+
+/** The caller's cloud machine, as its owner sees it from this workspace. */
+export interface CloudMachine {
+  machine_id: string;
+  state: string;
+  desired_state: string;
+  stop_reason: string | null;
+  stopped_by_admin: boolean;
+  sleeping: boolean;
+  revision: number;
+  error: string | null;
+  error_code: string | null;
+  retain_until: string | null;
+  heartbeat_at: string | null;
+  /** The controller it enrolled as here; null until it has. */
+  controller_id: string | null;
+}
+
+export type CloudMachineAction = "stop" | "start" | "retry";
+
+const HOSTED = "/gateway/hosted-machines";
+
+async function hostedRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${HOSTED}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+  });
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => null);
+    const detail = body && typeof body === "object" && "detail" in body ? (body as { detail: unknown }).detail : null;
+    throw new ManagementApiError(
+      res.status,
+      "http_error",
+      typeof detail === "string" ? detail : `${res.status} ${res.statusText}`,
+    );
+  }
+  return (await res.json()) as T;
+}
+
+/** The caller's cloud machine, when it serves this workspace. */
+export async function fetchCloudMachines(): Promise<CloudMachine[]> {
+  return (await hostedRequest<{ available: boolean; machines: CloudMachine[] }>("")).machines;
+}
+
+/** Stop, start or retry the caller's cloud machine, at the revision they saw. */
+export async function cloudMachineLifecycle(
+  machineId: string,
+  action: CloudMachineAction,
+  revision: number,
+): Promise<CloudMachine> {
+  return (
+    await hostedRequest<{ machine: CloudMachine }>(`/${encodeURIComponent(machineId)}/lifecycle`, {
+      method: "POST",
+      body: JSON.stringify({ action, revision }),
+    })
+  ).machine;
+}
+
 /** One word for a POSIX shell: as it is when nothing in it is special, else single-quoted. */
 export function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
