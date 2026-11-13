@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 
 from switch_core import room_policy
 from switch_core.addressing import (
@@ -129,6 +129,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_schedule_store import RoomScheduleStore
+from switch_core.db.stores.room_store import visible_to_agent
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -4551,10 +4552,16 @@ class AgentCore:
             include_archived=include_archived,
         )
 
-    async def _visible_room_ids(self, session: AsyncSession, agent_id: str) -> set[str]:
-        """Ids of `rooms_visible_to`, archived rooms included."""
-        rooms = await self.rooms_visible_to(session, agent_id, include_archived=True)
-        return {r.id for r in rooms}
+    async def _room_visibility(
+        self, session: AsyncSession, agent_id: str
+    ) -> ColumnElement[bool]:
+        """True for a `Room` row among `rooms_visible_to`, archived or not."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return visible_to_agent(
+            owner_id, reader_is_admin=owner_is_admin, agent_id=agent_id
+        )
 
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
@@ -4750,7 +4757,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=agent,
-                visible_room_ids=await self._visible_room_ids(session, agent_id),
+                visible=await self._room_visibility(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,
@@ -4824,7 +4831,7 @@ class AgentCore:
             return await assemble_agent_detail(
                 session,
                 agent=refreshed,
-                visible_room_ids=await self._visible_room_ids(session, agent_id),
+                visible=await self._room_visibility(session, agent_id),
                 agent_store=self.agent_store,
                 room_store=self.room_store,
                 user_store=self.user_store,

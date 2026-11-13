@@ -399,6 +399,13 @@ class AgentRoomMembership(BaseModel):
     room_role: str | None
 
 
+class AgentRooms(BaseModel):
+    """One agent's rooms, as `GET /agents/{agent_id}` lists them in `rooms`."""
+
+    agent_id: str
+    rooms: list[AgentRoomMembership]
+
+
 class AgentSessionDetail(BaseModel):
     """One row of the agent's session table.
 

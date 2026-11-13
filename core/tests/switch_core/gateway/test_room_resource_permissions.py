@@ -43,7 +43,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.agents import get_agent_detail
+from switch_core.gateway.agents import get_agent_detail, list_agent_rooms
 from switch_core.gateway.documents import (
     detach_document_from_room,
     get_room_document,
@@ -604,6 +604,61 @@ async def test_an_agents_detail_names_only_rooms_its_viewer_may_read(
         assert await rooms_seen_by(world.member, False) == {"public", "theirs"}
         assert await rooms_seen_by(world.stranger, False) == {"public"}
         assert await rooms_seen_by(world.stranger, True) == {"public", "theirs"}
+
+
+async def test_agents_rooms_name_only_rooms_their_viewer_may_read(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # `colleague` is in `theirs` alongside `member`'s own agent, which is what
+    # lets `member` read it: the room is named for every agent in it, not only
+    # for `member`'s.
+    protocol = SimpleNamespace(
+        agent_session_store=AgentSessionStore(),
+        room_role_store=RoomRoleStore(),
+        connections=AgentConnectionRegistry(),
+    )
+    async with session_factory() as session:
+        world = await _world(session)
+        colleague = await add_agent(session, name="colleague", owner_id=world.owner.id)
+        await session.execute(
+            room_agents.insert().values(
+                [
+                    {"room_id": world.public.id, "agent_id": world.member_agent_id},
+                    {"room_id": world.public.id, "agent_id": colleague.id},
+                    {"room_id": world.theirs.id, "agent_id": colleague.id},
+                ]
+            )
+        )
+        await session.commit()
+
+        async def rooms_seen_by(user: User, admin: bool) -> dict[str, set[str]]:
+            listed = await list_agent_rooms(
+                session,
+                _AGENT_STORE,
+                _ROOM_STORE,
+                protocol,  # type: ignore[arg-type]
+                user,
+                admin,
+                [world.member_agent_id, colleague.id, "no-such-agent"],
+            )
+            return {
+                entry.agent_id: {room.room_name for room in entry.rooms}
+                for entry in listed
+            }
+
+        member, colleague_id = world.member_agent_id, colleague.id
+        assert await rooms_seen_by(world.member, False) == {
+            member: {"public", "theirs"},
+            colleague_id: {"public", "theirs"},
+        }
+        assert await rooms_seen_by(world.stranger, False) == {
+            member: {"public"},
+            colleague_id: {"public"},
+        }
+        assert await rooms_seen_by(world.stranger, True) == {
+            member: {"public", "theirs"},
+            colleague_id: {"public", "theirs"},
+        }
 
 
 async def test_removing_from_a_package_names_only_readable_rooms(

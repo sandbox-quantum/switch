@@ -372,6 +372,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/agents/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/agents/{agent_id}",
       "auth": "session",
       "flags": []

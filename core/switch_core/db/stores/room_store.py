@@ -99,6 +99,14 @@ class Membership:
     joined_at: datetime
 
 
+class AgentRoom(NamedTuple):
+    """A room an agent is a member of, as its list of rooms names it."""
+
+    room_id: str
+    name: str
+    archived: bool
+
+
 class RoomStore:
     async def create(self, session: AsyncSession, room: Room) -> Room:
         session.add(room)
@@ -378,9 +386,11 @@ class RoomStore:
         may read (as `list_readable`; every room for a workspace admin) and
         those `member_agent_id` is in. An agent with no owner sees public
         rooms and its own."""
-        stmt = select(Room)
-        if not reader_is_admin:
-            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        stmt = select(Room).where(
+            visible_to_agent(
+                reader_id, reader_is_admin=reader_is_admin, agent_id=member_agent_id
+            )
+        )
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         if name_contains:
@@ -403,9 +413,11 @@ class RoomStore:
         include_archived: bool,
     ) -> list[Room]:
         """Every room an agent may see, as `page_all` filters them, unpaged."""
-        stmt = select(Room)
-        if not reader_is_admin:
-            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        stmt = select(Room).where(
+            visible_to_agent(
+                reader_id, reader_is_admin=reader_is_admin, agent_id=member_agent_id
+            )
+        )
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         return list((await session.execute(stmt)).scalars().all())
@@ -440,6 +452,21 @@ class RoomStore:
             select(Room.id).where(Room.id.in_(room_ids), visible)
         )
         return set(result.scalars().all())
+
+    async def visible_names(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> dict[str, str]:
+        """Of `room_ids`, the names of the rooms `visible` holds for, keyed by
+        room id."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(Room.id, Room.name).where(any_of(Room.id, room_ids), visible)
+        )
+        return {room_id: name for room_id, name in result.tuples()}
 
     async def involved_room_ids(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]
@@ -633,6 +660,36 @@ class RoomStore:
         )
         for agent_id, room_id in result.all():
             by_agent[agent_id].add(room_id)
+        return by_agent
+
+    async def rooms_of_agents(
+        self,
+        session: AsyncSession,
+        agent_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> dict[str, list[AgentRoom]]:
+        """The rooms each agent is a member of that `visible` holds for,
+        archived rooms included, in one query. Every agent asked about has a
+        key.
+
+        Reads only the agents' own rooms, and only what a membership names, so
+        its cost follows how many rooms those agents are in, not how many the
+        reader could see."""
+        by_agent: dict[str, list[AgentRoom]] = {agent_id: [] for agent_id in agent_ids}
+        if not by_agent:
+            return by_agent
+        # Aliased: `visible` may ask about `room_agents` in a subquery of its
+        # own (an agent's own rooms, a room with an agent the reader owns),
+        # which would otherwise be correlated to this membership row.
+        member = room_agents.alias("member")
+        result = await session.execute(
+            select(member.c.agent_id, Room.id, Room.name, Room.archived_at)
+            .select_from(member)
+            .join(Room, Room.id == member.c.room_id)
+            .where(any_of(member.c.agent_id, by_agent), visible)
+        )
+        for agent_id, room_id, name, archived_at in result.tuples():
+            by_agent[agent_id].append(AgentRoom(room_id, name, archived_at is not None))
         return by_agent
 
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
@@ -1193,6 +1250,16 @@ def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
     if user_id is None:
         return Room.read_visibility == "public"
     return or_(Room.read_visibility == "public", involves(user_id))
+
+
+def visible_to_agent(
+    reader_id: str | None, *, reader_is_admin: bool, agent_id: str
+) -> ColumnElement[bool]:
+    """True for a `Room` row an agent may see: every room when its owner
+    `reader_id` is a workspace admin, otherwise as `_visible_to_agent`."""
+    if reader_is_admin:
+        return true()
+    return _visible_to_agent(reader_id, agent_id)
 
 
 def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[bool]:
