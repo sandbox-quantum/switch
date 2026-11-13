@@ -635,6 +635,37 @@ class TestResourcePermissions:
 
             assert (listed.can_edit, listed.can_manage) == (True, True)
 
+    @pytest.mark.parametrize(
+        ("write_visibility", "can_edit"), [("private", False), ("public", True)]
+    )
+    async def test_someone_elses_public_reference_type_is_listed_with_what_may_be_done(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        write_visibility: str,
+        can_edit: bool,
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            member = await add_user(session, name="member")
+            session.add(
+                ReferenceType(
+                    type="notion",
+                    owner_id=owner.id,
+                    read_visibility="public",
+                    write_visibility=write_visibility,
+                    display_name="Notion",
+                    instructions="",
+                    value_hint="",
+                )
+            )
+            await session.flush()
+
+            [listed] = await list_owned_reference_types(
+                session, _svc(session_factory), _USER_STORE, member, False
+            )
+
+            assert (listed.can_edit, listed.can_manage) == (can_edit, False)
+
     async def test_a_rooms_own_document_is_not_the_librarys_to_change(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

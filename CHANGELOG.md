@@ -250,6 +250,20 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **A workspace can be renamed.** `PATCH /gateway/tenants/{tenant_id}` with
+  `{"name": ...}` renames the workspace the session is in, for whoever
+  administers it: its admins, its organization's admins and the operator.
+  The name is trimmed, at most 255 characters, needs a character that can be
+  seen and can't hold a line break or tab; the workspace's slug does not
+  change. Each rename is recorded in the workspace's audit log
+  (`tenant.renamed`) and in its organization's
+  (`organization.workspace_renamed`, shown as "Workspace renamed"), with the
+  new and previous names. In the dashboard's new layout (`gateway_v2`),
+  Workspace settings › General shows the name with a pencil to rename it in
+  place, and the breadcrumb and workspace switcher show the new name at once;
+  a member sees the name read-only, with who can change it. Switch Console
+  shows the old name until it next reads its workspace list, at launch or
+  sign-in.
 - **Deleting a room from the dashboard can retire its platform channel**, as
   Switch Console already could. The delete dialog offers to archive the
   channel on Slack and Mattermost, delete it on Discord, or have the bot leave
@@ -297,6 +311,9 @@ version of their own to them without also giving them a release of their own.
   each connector's `category` and `description`.
 
 #### Changed
+- **A refusal for not being a workspace admin says "Workspace admin access
+  required"**, where it said "Tenant admin access required", on every
+  gateway route that only the workspace's admins may use.
 - **New generated agent icons no longer carry the agent's name.** A managed
   agent created without an icon, and every choice the icon picker offers, is
   now a DiceBear face seeded with the first 32 hex digits of the name's
@@ -452,12 +469,32 @@ version of their own to them without also giving them a release of their own.
   the action fails. Deleting a role, which takes its instructions with it,
   used to happen at one click, and a failed delete or bulk archive gave no
   reason. Unarchiving still acts at once.
+- **The Resources page uses the dashboard's shared table, as the design has
+  it.** References, Documents, Packages and Reference types each count their
+  rows and search the name, description and owner. Owner (and on References,
+  Type) is a dropdown above the table and a filter in its column header, as
+  is Access; lists open newest first. The name links to the resource's page.
+  Reference types puts Edit, Transfer ownership and Delete in each row's menu,
+  offered as the server allows each type, and Delete confirms first.
+- **The Reference types list includes every type you can read.** It showed a
+  member the built-ins and their own types only, though another person's
+  public type is offered when creating a reference; a type anyone may change
+  can now be edited from it. `GET /gateway/references/reference-types/owned`
+  returns every stored type the caller may read, each with `can_edit` and
+  `can_manage`, where it returned only those they manage.
+- **Removing something from a resource asks first.** Unlinking a reference,
+  document or package from a room and taking something out of a package
+  confirm in a dialog, which keeps the server's reason if it is refused.
+  Deleting a resource names, before you confirm, the packages it is taken out
+  of as well as the rooms.
 
 #### Fixed
 - **Messaging apps says when a change is refused or the list fails to load.**
   Turning agent greetings or channel creation on or off said nothing when
   Switch refused it, and a list that failed to load showed "No messaging apps
   yet". Both now show what happened.
+- **The retention window picker sits beside "Delete messages older than"
+  again** in Workspace settings, rather than stretching across the page.
 - **A GitLab disconnect or reconnect no longer says agents keep their
   access.** Revoking the sign-in at GitLab also ends the access tokens agents
   hold, so neither warns any more that they may keep working until they
@@ -611,6 +648,27 @@ version of their own to them without also giving them a release of their own.
   greyed out with no explanation, most often because a room with no bridge
   needs an agent. It now names what is missing, and Agents is marked required
   while no bridge is chosen.
+- **A second URL can be typed into a reference.** The dashboard's URL box
+  dropped a new line as soon as it was typed, so only a pasted list could hold
+  more than one. Creating a reference now also waits for a URL, which the
+  server requires, rather than failing after Create.
+- **The dashboard's resource pages say when they cannot load.** A list that
+  failed showed "Failed to fetch data" over an empty table that said there
+  were none, a resource page said "not found" whatever went wrong, and a
+  package's contents read as empty. Each now says what failed, with Retry.
+- **Smaller fixes on the dashboard's resource pages.** Name, description and
+  a document's content can no longer be saved empty. Attaching to several
+  rooms, or adding several items to a package, shows the ones that went in
+  when others are refused. A package you can't open is counted rather than
+  shown by its id. A document that belongs to one room no longer offers
+  "Attach to room", which was refused. A transfer no longer reloads the
+  browser, and says when there is no one to give the resource to. A failed
+  page's Back goes to its own tab. A few errors that read "[object Object]"
+  give the reason, and each list loads once when opened, not twice.
+- **Dashboard tables no longer scroll sideways by a sliver.** A table whose
+  last column has a header menu could be scrolled 23px to the side at any
+  width, because the menu button the table hides until the header is hovered
+  stuck out past it.
 
 #### Security
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,

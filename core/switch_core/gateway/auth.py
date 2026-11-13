@@ -1328,7 +1328,7 @@ async def require_tenant_admin(
     itself.
     """
     if not is_admin:
-        raise HTTPException(status_code=403, detail="Tenant admin access required")
+        raise HTTPException(status_code=403, detail="Workspace admin access required")
     return user
 
 

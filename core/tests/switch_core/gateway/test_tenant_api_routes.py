@@ -50,6 +50,7 @@ from switch_core.db.models import (
     Invitation,
     Message,
     Organization,
+    OrganizationAuditEvent,
     OrganizationMember,
     Room,
     ServiceTokenIssuance,
@@ -2235,6 +2236,287 @@ class TestWorkspaceDeletionFlag:
         assert response.status_code == 200, response.text
         assert response.json()["administers"] is True
         assert response.json()["can_delete"] is False
+
+
+class TestRenameWorkspace:
+    """`PATCH /tenants/{id}`: whoever administers the workspace renames it,
+    and the workspace's and its organization's audit logs both say so."""
+
+    async def _in_organization(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        members: dict[str, str] | None = None,
+    ) -> str:
+        """`TENANT_A` in an organization, with `members` (user id ->
+        organization role)."""
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="Acme")
+            )
+            await session.flush()
+            session.add(
+                Tenant(
+                    id=TENANT_A,
+                    slug=TENANT_A,
+                    name=TENANT_A,
+                    organization_id=organization_id,
+                )
+            )
+            for user_id, role in (members or {}).items():
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=user_id, role=role
+                    )
+                )
+            await session.commit()
+        return organization_id
+
+    async def _tenant(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tenant_id: str,
+    ) -> Tenant:
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            assert tenant is not None
+            return tenant
+
+    async def _events(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[list[tuple[str, dict | None]], list[tuple[str, dict | None]]]:
+        """The rename events in the workspace's log and in its organization's."""
+        async with tenant_session(session_factory, TENANT_A) as session:
+            workspace = await session.execute(
+                select(AuditEvent.action, AuditEvent.details).where(
+                    AuditEvent.tenant_id == TENANT_A,
+                    AuditEvent.action == "tenant.renamed",
+                )
+            )
+            organization = await session.execute(
+                select(
+                    OrganizationAuditEvent.action, OrganizationAuditEvent.details
+                ).where(
+                    OrganizationAuditEvent.action == "organization.workspace_renamed",
+                    OrganizationAuditEvent.target_id == TENANT_A,
+                )
+            )
+            return (
+                [(action, details) for action, details in workspace.all()],
+                [(action, details) for action, details in organization.all()],
+            )
+
+    async def test_an_admin_renames_it_and_both_logs_record_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            renamed = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": "  Research  "}
+            )
+            current = await client.get("/tenants/current")
+            listed = await client.get("/tenants")
+
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json() == {"id": TENANT_A, "name": "Research"}
+        assert current.json()["name"] == "Research"
+        assert [t["name"] for t in listed.json()] == ["Research"]
+        tenant = await self._tenant(session_factory, TENANT_A)
+        assert (tenant.name, tenant.slug) == ("Research", TENANT_A)
+        details = {"name": "Research", "previous_name": TENANT_A}
+        assert await self._events(session_factory) == (
+            [("tenant.renamed", details)],
+            [("organization.workspace_renamed", details)],
+        )
+
+    async def test_an_org_admin_with_no_membership_renames_it_unmarked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._in_organization(session_factory, {admin_id: "org_admin"})
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            renamed = await client.patch(f"/tenants/{TENANT_A}", json={"name": "Ops"})
+
+        assert renamed.status_code == 200, renamed.text
+        _, organization = await self._events(session_factory)
+        assert organization == [
+            (
+                "organization.workspace_renamed",
+                {"name": "Ops", "previous_name": TENANT_A},
+            )
+        ]
+
+    async def test_the_operator_on_the_operator_flag_alone_is_marked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        operator_id = await _make_member(
+            session_factory,
+            name="operator",
+            tenant_id=TENANT_ZERO_ID,
+            role="admin",
+            user_role="admin",
+        )
+        token = _token(operator_id, "operator@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            renamed = await client.patch(f"/tenants/{TENANT_A}", json={"name": "Ops"})
+
+        assert renamed.status_code == 200, renamed.text
+        workspace, organization = await self._events(session_factory)
+        assert workspace == [
+            ("tenant.renamed", {"name": "Ops", "previous_name": TENANT_A})
+        ]
+        assert organization == [
+            (
+                "organization.workspace_renamed",
+                {"name": "Ops", "previous_name": TENANT_A, "platform_access": True},
+            )
+        ]
+
+    async def test_a_member_is_refused_and_nothing_changes(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        member_id = await _make_member(
+            session_factory, name="ws-member", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(member_id, "ws-member@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            refused = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": "Mine now"}
+            )
+
+        assert refused.status_code == 403, refused.text
+        assert (await self._tenant(session_factory, TENANT_A)).name == TENANT_A
+        assert await self._events(session_factory) == ([], [])
+
+    async def test_another_workspace_named_in_the_path_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        await _make_tenant(session_factory, TENANT_B)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            refused = await client.patch(f"/tenants/{TENANT_B}", json={"name": "B2"})
+
+        assert refused.status_code == 403, refused.text
+        assert (await self._tenant(session_factory, TENANT_B)).name == TENANT_B
+        assert (await self._tenant(session_factory, TENANT_A)).name == TENANT_A
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            "   ",
+            "\u3000",
+            # Zero-width spaces: nothing to see, though not whitespace.
+            "\u200b\u200b",
+            "Line\nbreak",
+            "Tab\tbed",
+            "x" * 256,
+        ],
+    )
+    async def test_a_blank_unseeable_multiline_or_overlong_name_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession], name: str
+    ) -> None:
+        await self._in_organization(session_factory)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            refused = await client.patch(f"/tenants/{TENANT_A}", json={"name": name})
+
+        assert refused.status_code == 422, refused.text
+        assert (await self._tenant(session_factory, TENANT_A)).name == TENANT_A
+
+    async def test_a_name_with_nothing_visible_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            refused = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": "\u200b"}
+            )
+
+        assert refused.status_code == 422, refused.text
+        assert [error["msg"] for error in refused.json()["detail"]] == [
+            "A name needs at least one visible character."
+        ]
+
+    async def test_any_script_is_a_name(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            renamed = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": "研究チーム 🔬"}
+            )
+
+        assert renamed.status_code == 200, renamed.text
+        assert (await self._tenant(session_factory, TENANT_A)).name == "研究チーム 🔬"
+
+    async def test_the_name_it_already_has_changes_and_records_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            same = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": f" {TENANT_A} "}
+            )
+
+        assert same.status_code == 200, same.text
+        assert same.json() == {"id": TENANT_A, "name": TENANT_A}
+        assert await self._events(session_factory) == ([], [])
+
+    async def test_a_workspace_in_no_organization_is_renamed_in_its_own_log_only(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            renamed = await client.patch(f"/tenants/{TENANT_A}", json={"name": "Solo"})
+
+        assert renamed.status_code == 200, renamed.text
+        assert await self._events(session_factory) == (
+            [("tenant.renamed", {"name": "Solo", "previous_name": TENANT_A})],
+            [],
+        )
 
 
 class TestWorkspaceCountsRoute:

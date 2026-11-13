@@ -1140,6 +1140,11 @@
       "flags": []
     },
     {
+      "route": "PATCH /gateway/tenants/{tenant_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PATCH /gateway/tenants/{tenant_id}/members/{user_id}",
       "auth": "session",
       "flags": []

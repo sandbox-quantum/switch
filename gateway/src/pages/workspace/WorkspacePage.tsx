@@ -1,5 +1,12 @@
-import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
-import type { Session, TenantMembership } from "../../data/api";
+import { Alert, Box, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
+import { useState } from "react";
+import EditableField from "../../components/EditableField";
+import {
+  type Session,
+  type TenantMembership,
+  WORKSPACE_NAME_MAX,
+  renameWorkspace,
+} from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
@@ -92,6 +99,48 @@ export default function WorkspacePage() {
   );
 }
 
+/** The workspace's name, which whoever administers it may change. After a
+ * rename the session is read again, and with it every place that shows the
+ * name: the breadcrumb, the switcher and the rest. */
+function WorkspaceNameField({ tenant }: { tenant: TenantMembership }) {
+  const { capabilities, recheck } = useAuth();
+  // Kept after the message closes, so it still names the workspace while it
+  // fades out.
+  const [renamedTo, setRenamedTo] = useState("");
+  const [noticeOpen, setNoticeOpen] = useState(false);
+
+  const rename = async (draft: string) => {
+    const { name } = await renameWorkspace(tenant.id, draft);
+    await recheck();
+    setRenamedTo(name);
+    setNoticeOpen(true);
+  };
+
+  return (
+    <>
+      <EditableField
+        label="Workspace name"
+        value={tenant.name}
+        canEdit={capabilities.administersWorkspace}
+        readOnlyHelper="An org admin or a workspace admin can change this."
+        editLabel="Rename workspace"
+        maxLength={WORKSPACE_NAME_MAX}
+        onSave={rename}
+      />
+      <Snackbar
+        open={noticeOpen}
+        autoHideDuration={5000}
+        onClose={() => setNoticeOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Alert severity="success" onClose={() => setNoticeOpen(false)}>
+          Workspace renamed to {renamedTo}.
+        </Alert>
+      </Snackbar>
+    </>
+  );
+}
+
 /** Workspace settings › General, in the new layout. */
 export function WorkspaceGeneralPage() {
   const { session } = useAuth();
@@ -100,8 +149,11 @@ export function WorkspaceGeneralPage() {
 
   return (
     <Box>
-      <WorkspaceHeading tenant={tenant} />
+      <Typography variant="h5" mb={3}>
+        General
+      </Typography>
       <Stack spacing={4}>
+        <WorkspaceNameField tenant={tenant} />
         <DataProtectionSections tenant={tenant} />
         <RoomsSections tenant={tenant} />
         <DeleteSection tenant={tenant} />

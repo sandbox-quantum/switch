@@ -1313,6 +1313,14 @@ export class SwitchClient {
   }
 
   /**
+   * `PATCH /gateway/tenants/{tenant_id}` — rename the bound workspace. Whoever
+   * administers it: its admins, its organization's admin and the operator.
+   */
+  async renameTenant(tenantId: string, name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", `/tenants/${encodeURIComponent(tenantId)}`, { name });
+  }
+
+  /**
    * `DELETE /gateway/tenants/{tenant_id}` — delete the bound workspace, once it
    * is empty, by typing its name. Its own admins only. The server re-mints the
    * session onto the caller's only other workspace, if there is exactly one,
