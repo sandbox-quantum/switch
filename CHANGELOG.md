@@ -693,7 +693,11 @@ version of their own to them without also giving them a release of their own.
   token is the owner's own. The change now marks those tokens withdrawn and
   its warning names the service and the time until which they may keep
   working: up to an hour for Google Workspace, and up to eight hours for
-  Atlassian, whose tokens cannot be asked for shorter.
+  Atlassian, whose tokens cannot be asked for shorter. Disconnecting or
+  reconnecting Google Workspace is an exception, as GitLab is: Switch revokes
+  the sign-in at Google, which ends every token on it, so once that succeeds
+  the warning leaves Google Workspace out. A catalog entry says so with
+  `revocation_ends_tokens`.
 - **A template's room params name only rooms its runner can see.** A room
   param checked its value against every room on the server, and `$first` or
   a list of candidates could settle on someone else's private room. That told
@@ -1365,6 +1369,16 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Small connector answers line up.** `GET /connector-apps`, the impact of
+  replacing an app and removing one count a person connected in two
+  workspaces once in `connected_members`, rather than once per workspace.
+  `GET /connector-apps` no longer returns `registered`, which no client read.
+  Starting a GitHub sign-in with a state already used answers 409, as every
+  other service's sign-in does, rather than 503.
+- **The dashboard's "Make owner-only" sets the owner alone,** as Switch
+  Console does, rather than the owner and the owner's agents, and its warning
+  reads as Console's. Its note on a token that lives longer than an hour no
+  longer says disconnecting ends it, which Atlassian's does not.
 - **Delivering an event to an agent behind a controller no longer reads the
   agent's head first.** The notification of a new agent event already carries
   its number, and the controller's stream now keeps it as the agent's head, so
@@ -1573,6 +1587,81 @@ version of their own to them without also giving them a release of their own.
   account still revokes it, and so does a disconnect. A sign-in that Switch
   does not keep, because the workspace switched Google Workspace off during
   it, no longer ends the existing connection either.
+- **A sign-in the vendor refuses fails with the vendor's reason.** When a
+  vendor sent the browser back with an error instead of a code, every one was
+  recorded as "sign-in was cancelled" and what the vendor said was dropped, so
+  a GitHub App whose callback URL does not match, or an identity provider
+  refusing the app, read as the person cancelling. The sign-in now fails with
+  the vendor's own description ("Atlassian refused the sign-in: …"), with any
+  markup taken out and long text cut short, and the browser's page says the
+  same. A bare `access_denied` still reads as cancelled, and an
+  `access_denied` with a description reads as cancelled or refused, in the
+  vendor's words ("GitHub sign-in was cancelled or refused: …"), because
+  vendors send it for both. Switch Console hands
+  on a refusal that reached its own listener through the new
+  `POST /gateway/service-connections/{service}/flows/{id}/fail`, so that
+  sign-in fails at once too.
+- **A sign-in refused on its way to the vendor fails at once, with the
+  reason.** When the browser reached Switch's step in front of the vendor
+  after the service was switched off or its app removed, or when the vendor
+  would not register Switch, the page said the sign-in was interrupted but the
+  sign-in itself was left waiting, so Switch Console's Connect dialog waited
+  for up to ten minutes. The sign-in now fails with the reason, which the page
+  shows too. The same goes for a service switched off or removed while Switch
+  Console hands the code back.
+- **switch-buddy calls an agent's tab by its name, Connectors.** The setup guides
+  for GitHub, Google Workspace and Airtable quote the not-set-up message as
+  it reads now, drop the confirm step removed in 0.31.0, and say that turning
+  a service off for an agent stops its sessions using it within a minute (not
+  an hour), and that disconnecting Airtable does not end a token already
+  handed out.
+- **GitHub can be set up on a server at a loopback http address, such as one
+  Switch Console runs.** Switch refused a GitHub App on any server whose
+  `GATEWAY_PUBLIC_URL` was not https, on the belief that GitHub calls back
+  only to https. GitHub also calls back to plain http on the loopback address,
+  where a server Switch Console runs lives (`http://127.0.0.1:<port>`), so
+  GitHub could never be set up there: Connector apps held its Set up back
+  with a sentence saying https was needed, and the Connectors page called it
+  unavailable. A GitHub App is now saved, checked, loaded and signed in
+  through at `localhost`, `127.0.0.1` or `::1` over http, as at any https
+  address. A server at any other http address still refuses it, and the
+  reason now names both ways it can work. A `GITHUB_APP_CONFIG_PATH` file
+  whose `origin` GitHub would not call back stops the server naming that
+  origin, where it said only "GitHub connection configuration is invalid";
+  so does one with a path in its origin, a malformed slug, or no client
+  secret, each saying which. The GitHub sign-in's cookie is no longer marked
+  Secure over plain http on the loopback address, where a browser drops it,
+  as the other connectors' sign-ins already did. switch-buddy no longer tells
+  people on a server Switch Console runs that GitHub can't work there.
+- **GitHub says why it can't be used on a server with no GitHub App.** Its
+  routes answered "GitHub connections are not enabled on this server." for
+  every cause, which is what the dashboard's GitHub grant and Switch Console's
+  GitHub settings showed. They now give the reason the Connectors page does:
+  the App is not set up yet, and who sets it up, or the server's address is
+  one GitHub does not call back.
+- **`DISABLED_SERVICES` stops a GitHub sign-in without the
+  `service_connections` flag too.** With the flag off, a GitHub sign-in
+  started even where the operator had switched GitHub off, and was refused
+  only once GitHub had issued the person's token, which was then left live
+  at GitHub. The server's switch now refuses the sign-in before it starts,
+  flag or no flag, and a sign-in refused as it completes is revoked at
+  GitHub.
+- **Checking a GitHub App says whether it has the permissions agents are
+  granted, and an App that can only read lets agents read.** Saving or
+  checking a GitHub App under Connector apps proved its key, client ID and
+  secret, and said a check could not see its permissions, though GitHub's
+  answer carries them. An App without Contents or Pull requests set to Read
+  and write was saved, and failed only at the first token a grant asked for.
+  The check now holds the App's permissions against the catalog's levels and
+  names each one that falls short and what it has. Short of what agents need
+  to read, the save is refused. Short only of what they need to write, the
+  App is saved read-only, and the check passes saying so: read grants work,
+  and a write grant on it, or a token for one made before, is refused with
+  the reason and who can change it. Switch keeps what GitHub answered, and
+  checking the App again follows a change made at GitHub. The connector-apps
+  answer says `read_only` and `lacks_write`, and the service-connections
+  answer `read_only_reason`. An App from configuration is not checked before
+  use, so it is taken to have them, as before.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
@@ -1678,6 +1767,44 @@ version of their own to them without also giving them a release of their own.
   and `/room-url` leaves the menu but still works when typed. A self-hosted
   Teams app shows the change once its package is rebuilt with `--bump` and
   uploaded again.
+- **A session is no longer given a service whose every token request is
+  refused.** A session got the skill and tools of each service its agent was
+  granted, leaving out only one the workspace switched off or whose key never
+  expires. A service the operator switched off (`DISABLED_SERVICES`), one
+  whose app is not set up or was removed, and GitHub without its App's
+  signing key still came with tools whose every call failed. A session now
+  gets a service only where Switch hands out its tokens, and a running one is
+  restarted without a service that stops being usable, as it already was for
+  the workspace's switch. The grant is kept, so the service comes back once
+  it can be used again. A service whose sign-ins need the server's public
+  address is also no longer handed out on a server without one, which already
+  showed it as unavailable.
+- **`get_my_context` no longer calls a service available when the workspace
+  has it switched off.** `available` now also needs the workspace's switch to
+  be on, and the new `workspace_enabled` says whether it is, so an agent tells
+  its owner to ask a workspace admin rather than to connect it.
+- **A connection made through an app the server no longer uses needs
+  reconnecting everywhere it is shown.** Connectors already said so, but its
+  row stays active until something asks for a token, and `get_my_context`
+  and a workspace admin's counts read the row: switch-buddy was told the
+  connection was active, offered to give it to an agent, and failed. Both now
+  read it as Connectors does, and the counts leave out every connection that
+  needs reconnecting. A client Switch registers for itself (Atlassian's),
+  registered again when its redirects or scopes change, now counts as
+  replaced too, where it used to surface later as a refused sign-in.
+- **A refusal to reconnect is worded for who reads it.** Opening your own
+  GitHub repositories, or granting a service, could answer "The agent's owner
+  must reconnect GitHub under Settings, Connections", addressed to someone
+  else and naming a page that does not exist. You are now told to reconnect
+  it from Connectors in Switch Console, and an agent asking for a token is
+  told its owner must.
+- **The dashboard says when the workspace has a service switched off.** An
+  agent's Service access offered to turn on, or to grant GitHub for, a
+  service the workspace had switched off, and the server refused. It now
+  says the service is not enabled in the workspace and who can switch it on,
+  as Switch Console does, and a grant that is on can still be turned off.
+  GitHub that this server can't grant for another reason says so in place of
+  its form, rather than only when its App is not set up.
 
 #### Removed
 - **Server-side connectors.** switch-core no longer runs agents itself: the
@@ -3576,6 +3703,14 @@ version of their own to them without also giving them a release of their own.
 - **Saving a connector app shows what its check said.** After Check and save
   or an updated secret, the app's page opens with the vendor's answer and any
   note, as Check it works shows them.
+- **A GitHub App that can only read says so.** Under Admin → Connector apps,
+  a GitHub App without Contents or Pull requests at Read and write reads
+  "Agents can read only", naming what it lacks, and Check it works shows the
+  change once the App's permissions change at GitHub. Where the server says
+  so, granting GitHub offers Read and push disabled with the reason, and an
+  agent's Connectors card says why a write grant it already has gets
+  nothing. A server that does not send `read_only`, `lacks_write` or
+  `read_only_reason` is read as one whose App can write.
 - **Connectors says why Airtable or Google Workspace can't be connected on a
   server without a public address**: the operator is told to set
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
@@ -3758,6 +3893,39 @@ version of their own to them without also giving them a release of their own.
   installed, and Update installs `agy` there. An Antigravity sign-in Switch
   holds for the older runtime cannot sign `agy` in: a session given one now
   says how to sign in on the machine instead of starting signed out.
+- **A sign-in the vendor refuses ends at once, with the vendor's reason.**
+  When a service refused a sign-in, for instance after a permission was
+  unticked on Atlassian's consent page, the browser came back to Console with
+  an error Console did not recognise: the page said the connection was not
+  started by this Switch Console, and the Connect dialog kept waiting for up to
+  ten minutes. Console now ends the sign-in, shows what the vendor said in the
+  browser and in the dialog, and tells the server. Against a server too old to
+  be told, the dialog still shows the reason. The dialog also stops asking you
+  to finish signing in in your browser once the sign-in has failed.
+- **A GitHub sign-in Switch could not finish says why.** When the server
+  refused to keep a GitHub sign-in, for instance because that GitHub account
+  is linked to another Switch user, the browser said Switch Console would say
+  what happened, but Console said only that the sign-in was interrupted. It
+  now shows the reason the server gave until you cancel, as other services'
+  sign-ins already did.
+- **Connectors and Admin say when the server's settings can't be read.**
+  When Console had never read a server's feature flags, it took connectors to
+  be off and sent you from Connectors to Your Agents without a word, or left
+  Admin loading. Both pages now say the settings could not be read, with the
+  reason and Retry.
+- **Connector wording says what is so.** The note beside a service an agent
+  uses as you said an Atlassian token already handed out stays valid "until
+  it expires or you disconnect", but disconnecting Atlassian does not end it.
+  It now says the token may keep working until it expires, up to eight hours
+  after it was handed out; the disconnect's own warning says what it could
+  not take back. The Switch skill tells agents to link an agent's Connectors
+  tab, as it is named, rather than its Connections tab.
+- **GitHub's card says what GitHub needs from a server.** Where GitHub can't
+  be used, the Connectors page said it needs a server with an https address.
+  A server on this computer works too, and a switch-core from this release
+  sets GitHub up there, so the card now says so. On a server Switch Console
+  runs at some other plain http address, it names the addresses GitHub
+  accepts.
 - **Console no longer opens to a blank window on a database a newer build
   has changed.** Stable and Canary share one database, so after Canary added a
   migration, an older build found tables it was not written for, applied
@@ -3844,6 +4012,17 @@ version of their own to them without also giving them a release of their own.
   which cannot be given to another machine, and gives the workaround for a
   machine whose organization does not enforce the keyring: switch Codex to file
   storage, which keeps the login in plaintext, and sign in again (#1048).
+- **A session that loses a service gives every reason it may have gone.**
+  Switch now also leaves a service out once the server can no longer hand it
+  out, so the session's notice says that as well as the workspace's switch
+  and a removed grant.
+- **An agent's Connectors tab no longer sends you to connect what can't be
+  turned on.** Its "Not connected" note named every service you had not
+  connected: Datadog, whose keys Switch never hands to agents, GitHub on a
+  server where its App can't work, a service whose app isn't set up, and one
+  the workspace has switched off. It now names only what you could connect
+  and then turn on here. A card for a service the workspace or the server
+  stops says why, as Connectors does, even when it is turned on.
 
 #### Removed
 - **Usage events nothing needed any more.** `buddy_message_sent` (the Switch

@@ -42,6 +42,7 @@ const EXAMPLE: ConnectionCatalogEntry = {
   status: 'not_connected',
   unavailable_reason: null,
   unavailable_code: null,
+  read_only_reason: null,
   pass_through: false,
   token_lifetime: null,
   agent_access_note: null,
@@ -314,6 +315,26 @@ it('offers a new sign-in on a connected service when it is opened to reconnect',
   expect(dialog().textContent).toContain(
     'Signing in to another Example account replaces this one. Each agent then needs Example turned on again.'
   );
+});
+
+it('stops waiting on the browser once the vendor refused the sign-in', async () => {
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'failed',
+    account: null,
+    error: 'Example refused the sign-in: Your identity provider refused this app.',
+    warning: null,
+  });
+  await render(connectStep());
+  await signIn();
+
+  await vi.waitFor(() =>
+    expect(dialog().querySelector('[role="alert"]')?.textContent).toBe(
+      'Example refused the sign-in: Your identity provider refused this app.'
+    )
+  );
+  expect(dialog().textContent).not.toMatch(/Finish signing in in your browser/);
+  expect(switchServers.getServiceFlow).toHaveBeenCalledOnce();
+  expect(closable()).toBe(true);
 });
 
 it('counts a cancel of a sign-in the server already dropped as cancelled', async () => {

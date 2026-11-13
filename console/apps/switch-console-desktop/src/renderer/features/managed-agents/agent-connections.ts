@@ -3,6 +3,7 @@ import {
   accountChangedNote,
   grantCardNote,
   grantStands,
+  serviceBlockedReason,
 } from '@renderer/features/locations/components/settings-view/sections/service-grants';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
@@ -34,10 +35,21 @@ function grantable(service: ConnectionCatalogEntry): boolean {
 }
 
 /**
+ * Whether connecting the service from Connectors would let it be turned on
+ * here: the server can connect it and hand it to agents, and the workspace
+ * has it on. Connectors says why any other can't be.
+ */
+function connectableHere(service: ConnectionCatalogEntry): boolean {
+  return service.connectable && serviceBlockedReason(service) === null;
+}
+
+/**
  * The cards on an agent's Connectors tab, in catalog order: every service
  * the owner has connected that a grant can be made on, and every grant the
  * agent holds, whatever its connection's state, so a grant is never hidden.
- * `unconnected` names the grantable services the owner has not connected.
+ * `unconnected` names the grantable services the owner has not connected and
+ * could connect to turn on here; one the server or the workspace stops is
+ * left out, as connecting it would turn nothing on.
  */
 export function agentConnectionCards(
   services: readonly ConnectionCatalogEntry[],
@@ -51,7 +63,7 @@ export function agentConnectionCards(
     const offered = grantable(service);
     if (grant === null && !offered) continue;
     if (grant === null && service.status === 'not_connected') {
-      unconnected.push(service.name);
+      if (connectableHere(service)) unconnected.push(service.name);
       continue;
     }
     cards.push({
@@ -77,18 +89,36 @@ export function connectionCardStatus(card: AgentConnectionCard): string {
 }
 
 /**
- * The card's one line: what the grant lets the agent do, or why it cannot be
- * turned on, or what the service is.
+ * Why the server or the workspace stops the card's service, whatever its
+ * grant; null when neither does, or when the catalog no longer lists it.
+ * The card and its drawer both say it.
+ */
+export function connectionCardBlockedReason(card: AgentConnectionCard): string | null {
+  return card.service === null ? null : serviceBlockedReason(card.service);
+}
+
+/**
+ * The card's one line: why the server or the workspace stops the service,
+ * even for a grant that is on, which does nothing until that changes; that a
+ * grant made for another account gives no access now; why a write grant
+ * gets no token where the server lets agents read only; else what the grant
+ * lets the agent do; else why it cannot be turned on; else what the service
+ * is.
  */
 export function connectionCardDetail(card: AgentConnectionCard): string {
-  if (card.grant) {
-    if (card.kind !== 'on-off') return grantCardNote(card.grant, card.kind === 'github');
-    return grantStands(card.grant) ? card.grant.summary : accountChangedNote(card.name);
+  const { grant, service } = card;
+  const blocked = connectionCardBlockedReason(card);
+  if (blocked !== null) return blocked;
+  if (grant) {
+    if (!grantStands(grant))
+      return card.kind === 'on-off'
+        ? accountChangedNote(card.name)
+        : grantCardNote(grant, card.kind === 'github');
+    if (grant.access === 'write' && service?.read_only_reason) return service.read_only_reason;
+    return grant.summary;
   }
-  const { service } = card;
   if (service === null) return '';
-  if (service.unavailable_reason !== null) return service.unavailable_reason;
-  if (service.status === 'needs_reauthorization' || service.status === 'error')
+  if (service.status === 'needs_reauthorization')
     return `Your ${service.name} connection needs reconnecting. Reconnect it from Connectors.`;
   return service.description;
 }

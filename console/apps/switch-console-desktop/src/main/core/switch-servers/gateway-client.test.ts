@@ -65,6 +65,7 @@ const {
   completeGitHubConnection,
   startServiceConnection,
   completeServiceConnection,
+  failServiceConnection,
   connectServiceWithKey,
   disconnectService,
   acceptInvitation,
@@ -213,6 +214,8 @@ const CONNECTOR_APP = {
   needs_public_url: true,
   scopes: [],
   setup_blocked: null,
+  read_only: false,
+  lacks_write: [],
   install_url: 'https://github.com/apps/switch-example/installations/new',
   updated_by_name: 'Ada',
   updated_at: '2026-10-16T09:00:00+00:00',
@@ -1505,6 +1508,7 @@ describe('GitHub connection transport', () => {
         unavailable_reason: entry.unavailable_reason,
         // A server that predates them says none of these.
         unavailable_code: null,
+        read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
         agent_access_note: null,
@@ -1563,6 +1567,35 @@ describe('GitHub connection transport', () => {
       ['jira', null, null],
     ]);
   });
+  it('reads why a service can be granted for reading only', async () => {
+    const reason =
+      "This server's GitHub App lets agents read only, so GitHub can't be granted for writing.";
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      configured: true,
+      unavailable_reason: null,
+      read_only_reason: reason,
+      status: 'active',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [entry, { ...entry, slug: 'jira', enabled: false }],
+        })
+      )
+    );
+    const catalog = await getConnectionCatalog(SERVER);
+    expect(catalog.map((item) => [item.slug, item.read_only_reason])).toEqual([
+      ['github', reason],
+      ['jira', null],
+    ]);
+  });
   it('reads the older catalog from a server without service connections', async () => {
     const github = {
       slug: 'github',
@@ -1582,6 +1615,7 @@ describe('GitHub connection transport', () => {
         connectable: true,
         unavailable_reason: null,
         unavailable_code: null,
+        read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
         agent_access_note: null,
@@ -1982,6 +2016,26 @@ describe('a service sign-in', () => {
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
     ]);
+  });
+
+  it('hands on the vendor’s refusal on the service’s own route', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await failServiceConnection(
+      SERVER,
+      'example',
+      state,
+      'server_error',
+      'Denied here',
+      'b'.repeat(43)
+    );
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe(`${flows}/${state}/fail`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      error: 'server_error',
+      error_description: 'Denied here',
+      completion_secret: 'b'.repeat(43),
+    });
   });
 
   it('accepts Core’s own authorize step on this server in core mode', async () => {

@@ -103,6 +103,33 @@ class OrganizationAppCredentialStore:
         await session.refresh(row)
         return row
 
+    async def record_settings(
+        self,
+        session: AsyncSession,
+        *,
+        organization_id: str,
+        service: str,
+        client_id: str,
+        settings: dict[str, str],
+        updated_by: str,
+    ) -> OrganizationAppCredential | None:
+        """Store `settings` as the vendor answered them again for the app
+        saved with `client_id`, its secrets untouched. None, with nothing
+        written, where that app is no longer the one saved. Holds the lock a
+        save does."""
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"organization-app-credential:{organization_id}:{service}"},
+        )
+        row = await self.get(session, organization_id, service)
+        if row is None or row.client_id != client_id:
+            return None
+        row.settings = dict(settings)
+        row.updated_by = updated_by
+        await session.flush()
+        await session.refresh(row)
+        return row
+
     async def remove(
         self, session: AsyncSession, organization_id: str, service: str
     ) -> OrganizationAppCredential | None:
