@@ -76,7 +76,7 @@ export default function RemoveMemberDialog({
         )}
         {preview.data !== null ? (
           <Typography variant="body2">
-            {removalDescription(member, preview.data.handed_over_to, selfId)}
+            {removalDescription(member, preview.data.handed_over_to, selfId, null)}
           </Typography>
         ) : (
           <Alert severity="warning">

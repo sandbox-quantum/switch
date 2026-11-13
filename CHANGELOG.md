@@ -82,6 +82,18 @@ version of their own to them without also giving them a release of their own.
   choose its admins in one step (`PUT …/admins`), change someone's role or
   remove them (with the same hand-over preview), and make invite links,
   each checked as on the workspace's own pages, without switching into it.
+  Creating a workspace refuses a name the organization already uses, in
+  any case.
+- **Organization settings pages in the new dashboard layout.** Behind
+  `gateway_v2`: General renames the organization; Workspaces lists each
+  workspace with its status, people, agents and rooms, its admins and when it
+  was made, and creates, renames, chooses admins for, archives and restores
+  them; Users lists everyone in the organization with the workspaces they are
+  in, makes or unmakes Org admins, adds people to a workspace, changes their
+  role in one or removes them from it, and makes invite links to any
+  workspace; Guardrails connects and disconnects the organization's Switch
+  Trust policy. Today's organization page gains the Guardrails section too,
+  since guardrails are now set only there.
 - **Messages sent while an agent works can steer its running turn.** Each
   agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
   kept on the agent so re-registering leaves it alone, changed on the agent's

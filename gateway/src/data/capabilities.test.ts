@@ -19,6 +19,7 @@ const membership: TenantMembership = {
   role: "member",
   organization_role: "member",
   organization_id: "o1",
+  archived_at: null,
 };
 
 function session(tenant: Partial<TenantMembership> = {}, isOperator = false): Session {

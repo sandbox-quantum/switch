@@ -16,7 +16,7 @@ import {
   Tooltip,
 } from "@mui/material";
 import { useCallback, useState } from "react";
-import { type TenantRole, createInvitation } from "../../data/api";
+import { type TenantRole, createInvitation, inviteToOrganizationWorkspace } from "../../data/api";
 import { type DeliveryNotice, deliveryNotice, inviteUrl } from "../../data/sessionState";
 import { announceInvitationCreated } from "./invitationEvents";
 import { WORKSPACE_ROLES, workspaceRoleLabel } from "./roles";
@@ -36,6 +36,9 @@ const DEFAULT_EXPIRY_HOURS = 24 * 7;
 interface Props {
   open: boolean;
   tenantId: string;
+  /** Made from the organization's settings, for any of its workspaces, rather
+   * than from the workspace the session is in. */
+  fromOrganization: boolean;
   workspaceName: string;
   emailEnabled: boolean;
   onClose: () => void;
@@ -49,6 +52,7 @@ interface Props {
 export default function CreateInvitationDialog({
   open,
   tenantId,
+  fromOrganization,
   workspaceName,
   emailEnabled,
   onClose,
@@ -80,12 +84,15 @@ export default function CreateInvitationDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const created = await createInvitation(tenantId, {
+      const input = {
         role,
         email: email.trim() === "" ? null : email.trim(),
         expires_in_hours: hours,
         uses_remaining: Number(uses),
-      });
+      };
+      const created = fromOrganization
+        ? await inviteToOrganizationWorkspace(tenantId, input)
+        : await createInvitation(tenantId, input);
       setLink(inviteUrl(window.location.origin, created.token));
       setNotice(deliveryNotice(created.email_delivery, created.email));
       announceInvitationCreated();
@@ -94,7 +101,7 @@ export default function CreateInvitationDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [tenantId, role, email, hours, uses]);
+  }, [tenantId, fromOrganization, role, email, hours, uses]);
 
   const copy = useCallback(async () => {
     if (link === null) return;

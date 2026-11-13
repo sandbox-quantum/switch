@@ -163,6 +163,7 @@ function signedInAs(role: Role, layout: "v1" | "v2") {
     role: role === "admin" ? ("admin" as const) : ("member" as const),
     organization_role: null,
     organization_id: null,
+    archived_at: null,
   };
   const session: Session = {
     user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: false },

@@ -17,6 +17,7 @@ const acme: TenantMembership = {
   role: "member",
   organization_role: "member",
   organization_id: "o1",
+  archived_at: null,
 };
 
 function session(overrides: Partial<Session> = {}): Session {

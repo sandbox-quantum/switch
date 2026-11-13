@@ -14,6 +14,7 @@ const acme: TenantMembership = {
   role: "admin",
   organization_role: "org_admin",
   organization_id: "o1",
+  archived_at: null,
 };
 const beta: TenantMembership = {
   id: "t2",
@@ -22,6 +23,7 @@ const beta: TenantMembership = {
   role: "member",
   organization_role: "member",
   organization_id: "o2",
+  archived_at: null,
 };
 
 function session(overrides: Partial<Session>): Session {
@@ -75,6 +77,7 @@ function signedInAs(
     role: role === "member" ? "member" : "admin",
     organization_role: !inOrganization ? null : role === "org_admin" ? "org_admin" : "member",
     organization_id: inOrganization ? "o1" : null,
+    archived_at: null,
   };
   return {
     "/auth/session": [
@@ -686,6 +689,7 @@ describe("the new layout (gateway_v2)", () => {
         role: "admin",
         organization_role: null,
         organization_id: "o9",
+        archived_at: null,
       };
       const operator = signedInAs("operator", { flags: V2, tenants: [beta] });
       mockFetch({

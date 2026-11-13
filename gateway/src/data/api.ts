@@ -1613,6 +1613,10 @@ export interface TenantMembership {
   role: TenantRole;
   organization_role: OrganizationRole | null;
   organization_id: string | null;
+  /** When it was archived; null while it is not. Only its organization's
+   * admins, and the operator, are ever told of an archived one: nobody else
+   * may enter it. */
+  archived_at: string | null;
 }
 
 export interface SessionUser {
@@ -1875,14 +1879,173 @@ export interface OperatorWorkspace {
   name: string;
   organization_id: string | null;
   organization_name: string | null;
+  archived_at: string | null;
 }
 
 export async function fetchCurrentOrganization(): Promise<CurrentOrganization> {
   return jsonRequest<CurrentOrganization>("/organizations/current", "GET");
 }
 
-export async function fetchOrganizationWorkspaces(): Promise<TenantMembership[]> {
-  return jsonRequest<TenantMembership[]>("/organizations/current/workspaces", "GET");
+/** The Switch Trust policy the organization connected, as its admins see
+ * it: never the API key, only its last four characters. */
+export interface OrganizationGuardrails {
+  connected: boolean;
+  policy_id: string | null;
+  /** Switch Trust's name for the policy, from its answer when connected. */
+  policy_name: string | null;
+  /** Where Switch Trust shows the policy; null when Switch can't link there. */
+  policy_url: string | null;
+  api_key_last4: string | null;
+  connected_by_name: string | null;
+  connected_at: string | null;
+}
+
+export async function fetchOrganizationGuardrails(): Promise<OrganizationGuardrails> {
+  return jsonRequest("/organizations/current/guardrails", "GET");
+}
+
+/** Connect a policy, checked with Switch Trust first; refused when it
+ * refuses the policy ID or the key. */
+export async function connectOrganizationGuardrails(
+  policyId: string,
+  apiKey: string,
+): Promise<OrganizationGuardrails> {
+  return jsonRequest("/organizations/current/guardrails", "PUT", {
+    policy_id: policyId,
+    api_key: apiKey,
+  });
+}
+
+export async function disconnectOrganizationGuardrails(): Promise<OrganizationGuardrails> {
+  return jsonRequest("/organizations/current/guardrails", "DELETE");
+}
+
+/** The longest organization name the server takes. */
+export const ORGANIZATION_NAME_MAX = 255;
+
+/** Rename the organization; its admins only. */
+export async function renameOrganization(name: string): Promise<{ id: string; name: string }> {
+  return jsonRequest("/organizations/current", "PATCH", { name });
+}
+
+/** One of the organization's workspaces, as its Workspaces page lists it.
+ * The counts are what each list shows: people (org admins included),
+ * agents, and rooms not archived. `admins` names its admins by membership,
+ * the organization's admins left out. */
+export interface OrganizationWorkspace extends TenantMembership {
+  created_at: string;
+  users: number;
+  agents: number;
+  rooms: number;
+  admins: string[];
+  can_archive: boolean;
+  archive_blocked_reason: string | null;
+  can_restore: boolean;
+}
+
+export async function fetchOrganizationWorkspaces(): Promise<OrganizationWorkspace[]> {
+  return jsonRequest<OrganizationWorkspace[]>("/organizations/current/workspaces", "GET");
+}
+
+function organizationWorkspacePath(workspaceId: string, rest = ""): string {
+  return `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}${rest}`;
+}
+
+/** Rename one of the organization's workspaces, from the organization. */
+export async function renameOrganizationWorkspace(
+  workspaceId: string,
+  name: string,
+): Promise<{ id: string; name: string }> {
+  return jsonRequest(organizationWorkspacePath(workspaceId), "PATCH", { name });
+}
+
+/** Make exactly `userIds` the workspace's admins among its members who are
+ * not organization admins; the rest become members. All or nothing. */
+export async function setOrganizationWorkspaceAdmins(
+  workspaceId: string,
+  userIds: string[],
+): Promise<{ id: string; name: string; admins: string[] }> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/admins"), "PUT", {
+    user_ids: userIds,
+  });
+}
+
+export interface WorkspaceArchiveState {
+  id: string;
+  name: string;
+  archived_at: string | null;
+}
+
+export async function archiveOrganizationWorkspace(
+  workspaceId: string,
+): Promise<WorkspaceArchiveState> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/archive"), "POST");
+}
+
+export async function restoreOrganizationWorkspace(
+  workspaceId: string,
+): Promise<WorkspaceArchiveState> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/restore"), "POST");
+}
+
+/** One of the organization's workspaces someone holds a membership in. */
+export interface OrganizationMemberWorkspace {
+  id: string;
+  name: string;
+  role: TenantRole;
+  archived: boolean;
+}
+
+/** Add someone already in the organization to one of its workspaces. */
+export async function addToOrganizationWorkspace(
+  workspaceId: string,
+  userId: string,
+  role: TenantRole,
+): Promise<OrganizationMemberWorkspace> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/members"), "POST", {
+    user_id: userId,
+    role,
+  });
+}
+
+export async function changeOrganizationWorkspaceRole(
+  workspaceId: string,
+  userId: string,
+  role: TenantRole,
+): Promise<OrganizationMemberWorkspace> {
+  return jsonRequest(
+    organizationWorkspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`),
+    "PATCH",
+    { role },
+  );
+}
+
+export async function previewOrganizationWorkspaceRemoval(
+  workspaceId: string,
+  userId: string,
+): Promise<MemberRemovalPreview> {
+  return jsonRequest(
+    organizationWorkspacePath(workspaceId, `/members/${encodeURIComponent(userId)}/removal`),
+    "GET",
+  );
+}
+
+export async function removeFromOrganizationWorkspace(
+  workspaceId: string,
+  userId: string,
+): Promise<MemberRemovalResult> {
+  return jsonRequest(
+    organizationWorkspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`),
+    "DELETE",
+  );
+}
+
+/** An invite link to one of the organization's workspaces. */
+export async function inviteToOrganizationWorkspace(
+  workspaceId: string,
+  input: CreateInvitationInput,
+): Promise<CreatedInvitation> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/invitations"), "POST", input);
 }
 
 /** Add a workspace to the current organization. The session stays where it is. */
@@ -1942,8 +2105,15 @@ export async function clearOrganizationService(
   return jsonRequest(`/organizations/current/services/${service}`, "DELETE");
 }
 
-export async function fetchOrganizationMembers(): Promise<OrganizationMember[]> {
-  return jsonRequest<OrganizationMember[]>("/organizations/current/members", "GET");
+/** An organization member as its Users page lists them: with the
+ * organization's workspaces they hold a membership in. An org admin in none
+ * is in the organization as a whole. */
+export interface OrganizationMemberEntry extends OrganizationMember {
+  workspaces: OrganizationMemberWorkspace[];
+}
+
+export async function fetchOrganizationMembers(): Promise<OrganizationMemberEntry[]> {
+  return jsonRequest<OrganizationMemberEntry[]>("/organizations/current/members", "GET");
 }
 
 export async function updateOrganizationRole(

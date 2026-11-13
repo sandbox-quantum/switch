@@ -46,6 +46,7 @@ import OrganizationPage, {
   OrganizationAuditLogPage,
   OrganizationConnectorsPage,
   OrganizationGeneralPage,
+  OrganizationGuardrailsPage,
   OrganizationUsersPage,
   OrganizationWorkspacesPage,
 } from "../pages/organization/OrganizationPage";
@@ -303,8 +304,9 @@ export const ROUTES: readonly AppRoute[] = [
     "organization",
     "Guardrails",
     organizationAdminsOnly,
-    <PlannedPage title="Guardrails" />,
+    <OrganizationGuardrailsPage />,
   ),
+  redirect("/settings/org/guardrails", CURRENT, "/organization"),
   settingsPage(
     "/settings/org/devices",
     "organization",
