@@ -41,6 +41,7 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats import is_console_chat
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import (
     ExternalUser,
@@ -1098,6 +1099,7 @@ class RoomService:
                 "has_instructions": config.instructions is not None,
                 "created_by_kind": config.created_by_kind,
                 "from_template": config.from_template,
+                "console_chat": config.chat_operation_id is not None,
             },
         )
         for spec in config.roles or []:
@@ -1317,6 +1319,7 @@ class RoomService:
                 "age_days": age_days(room.created_at),
                 "was_ever_active": was_ever_active,
                 "agent_count": agent_count,
+                "console_chat": is_console_chat(room),
             },
         )
         return channel
@@ -1668,6 +1671,7 @@ class RoomService:
                 "bridge_platform": await self._bridge_platform(room.bridge_id),
                 "age_days": age_days(room.created_at),
                 "was_ever_active": await self._was_ever_active(room.tenant_id, room_id),
+                "console_chat": is_console_chat(room),
             },
         )
 

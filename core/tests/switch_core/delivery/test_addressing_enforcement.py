@@ -15,6 +15,9 @@ from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE as _ADDRESSING_DENIED_MESSAGE,
 )
 from switch_core.delivery.addressing import (
+    ADDRESSING_OWNER_ONLY_MESSAGE as _ADDRESSING_OWNER_ONLY_MESSAGE,
+)
+from switch_core.delivery.addressing import (
     ADDRESSING_UNCLAIMED_MESSAGE as _ADDRESSING_UNCLAIMED_MESSAGE,
 )
 from switch_core.delivery.addressing import (
@@ -202,10 +205,14 @@ def _allowed_client(
     owner_id: str | None = None,
     on_behalf_of: str | None = None,
     claimed_external_ids: tuple[str, ...] = (),
+    claimed_on_bridges: tuple[str, ...] = (),
 ) -> SimpleNamespace:
     """Fake resolver for `permitted`: the agent carries `policy` and is owned
     by `owner_id`, the sender resolves to `principal` (kind, id, claimants)
-    owned by `sender_owner_id`, and the room has `group_id`."""
+    owned by `sender_owner_id`, and the room has `group_id`. Every chat account
+    is on bridge `bridge-1`, and the owner has claimed the accounts in
+    `claimed_external_ids`, each on its bridge in `claimed_on_bridges` (or
+    `bridge-1`)."""
 
     agent = SimpleNamespace(name="fixer", addressing_policy=policy, owner_id=owner_id)
 
@@ -221,17 +228,27 @@ def _allowed_client(
         return SimpleNamespace(group_id=group_id)
 
     async def _claimed(_session, _user_id):  # type: ignore[no-untyped-def]
-        return [SimpleNamespace(id=ext_id) for ext_id in claimed_external_ids]
+        bridges = claimed_on_bridges or ("bridge-1",) * len(claimed_external_ids)
+        return [
+            SimpleNamespace(id=ext_id, bridge_id=bridge_id)
+            for ext_id, bridge_id in zip(claimed_external_ids, bridges, strict=True)
+        ]
+
+    async def _get_external(_session, external_user_id):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(id=external_user_id, bridge_id="bridge-1")
 
     resolver = SimpleNamespace(
         agent=agent,
         resolve_sender=_resolve,
         _room_store=SimpleNamespace(get=_get_room),
-        _external_user_store=SimpleNamespace(get_by_user=_claimed),
+        _external_user_store=SimpleNamespace(get_by_user=_claimed, get=_get_external),
     )
     # The real reads `permitted` makes through the stores above.
     resolver.group_of = AddressingResolver.group_of.__get__(resolver)
     resolver.claimed_accounts = AddressingResolver.claimed_accounts.__get__(resolver)
+    resolver.owner_linked_beside = AddressingResolver.owner_linked_beside.__get__(
+        resolver
+    )
     return resolver
 
 
@@ -421,6 +438,39 @@ class TestOwnerAddressing:
         )
         decision = await _decide(client)
         assert decision.allowed is False
+        assert decision.refusal == _ADDRESSING_UNCLAIMED_MESSAGE
+        # Written for both people who read it (GitHub #1185): the owner, who
+        # links, and a colleague, who asks the owner.
+        assert "link this account" in decision.refusal
+        assert "ask my owner to let you in" in decision.refusal
+
+    async def test_unclaimed_sender_beside_a_linked_owner_is_not_told_to_link(
+        self,
+    ) -> None:
+        # The owner already has an account linked on this platform, so the
+        # unlinked sender is someone else, and linking cannot help them.
+        client = _allowed_client(
+            policy=self._POLICY,
+            principal=("user", "ext-3", []),
+            owner_id="user-1",
+            claimed_external_ids=("ext-owner",),
+        )
+        decision = await _decide(client)
+        assert decision.allowed is False
+        assert decision.refusal == _ADDRESSING_OWNER_ONLY_MESSAGE
+        assert "link" not in decision.refusal
+
+    async def test_owner_linked_elsewhere_still_hears_how_to_link(self) -> None:
+        # A link on another platform says nothing about this account: it may
+        # be the owner's own, not yet linked.
+        client = _allowed_client(
+            policy=self._POLICY,
+            principal=("user", "ext-3", []),
+            owner_id="user-1",
+            claimed_external_ids=("ext-owner",),
+            claimed_on_bridges=("bridge-2",),
+        )
+        decision = await _decide(client)
         assert decision.refusal == _ADDRESSING_UNCLAIMED_MESSAGE
 
     async def test_unclaimed_sender_without_owner_rule_gets_generic_wording(

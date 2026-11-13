@@ -543,6 +543,97 @@ def test_inbound_channel_command_after_bot_mention_routes_to_on_command() -> Non
     assert messages == []
 
 
+def _channel_activity(text: str, mentioned: str) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "id": "302",
+        "serviceUrl": "https://smba.example/amer/",
+        "text": text,
+        "from": {"aadObjectId": "aad-1", "name": "Alice"},
+        "recipient": {"id": "28:app-123"},
+        "entities": [{"type": "mention", "mentioned": {"id": mentioned}}],
+        "conversation": {
+            "id": "19:abc@thread.tacv2;messageid=302",
+            "conversationType": "channel",
+        },
+        "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
+    }
+
+
+def test_a_bare_command_straight_after_the_bot_mention_is_a_command() -> None:
+    # What the link instructions tell people to send: mention the app, then
+    # the command with no "!".
+    adapter = _adapter()
+    adapter._channel_type["19:abc@thread.tacv2"] = "channel_public"
+    commands = _capture_commands(adapter)
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._dispatch_activity(
+            _channel_activity("<at>Switch</at> link-account ABCD-EFGH", "28:app-123")
+        )
+    )
+
+    assert [(c.command, c.args) for c in commands] == [("link-account", "ABCD-EFGH")]
+    assert messages == []
+
+
+def test_ordinary_words_after_the_bot_mention_stay_a_message() -> None:
+    adapter = _adapter()
+    adapter._channel_type["19:abc@thread.tacv2"] = "channel_public"
+    commands = _capture_commands(adapter)
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._dispatch_activity(
+            _channel_activity("<at>Switch</at> can you summarise this", "28:app-123")
+        )
+    )
+
+    assert commands == []
+    assert [m.content for m in messages] == ["@Switch can you summarise this"]
+
+
+def test_a_command_word_is_not_a_command_unless_the_message_opens_with_the_bot() -> (
+    None
+):
+    # Mentioning the bot later in the sentence addresses it, but "help" at the
+    # start is still somebody talking.
+    adapter = _adapter()
+    adapter._channel_type["19:abc@thread.tacv2"] = "channel_public"
+    commands = _capture_commands(adapter)
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._dispatch_activity(
+            _channel_activity("help is on the way, <at>Switch</at>", "28:app-123")
+        )
+    )
+
+    assert commands == []
+    assert len(messages) == 1
+
+
+def test_a_bare_command_after_the_bot_mention_counts_on_the_graph_path() -> None:
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+
+    chat_message = {
+        "id": "701",
+        "messageType": "message",
+        "from": {"user": {"id": "user-1", "displayName": "Dave"}},
+        "channelIdentity": {"channelId": "19:abc@thread.tacv2"},
+        "body": {
+            "contentType": "html",
+            "content": '<p><at id="0">Switch</at> link-account ABCD-EFGH</p>',
+        },
+        "mentions": [{"id": 0, "mentioned": {"application": {"id": "app-123"}}}],
+    }
+    _run(adapter._deliver_graph_message(chat_message))
+
+    assert [(c.command, c.args) for c in commands] == [("link-account", "ABCD-EFGH")]
+
+
 def test_graph_channel_command_after_bot_mention_routes_to_on_command() -> None:
     # Same rule on the Graph capture path: strip the bot's leading <at> mention
     # (here wrapped in a <p>) before detecting the "!" command.

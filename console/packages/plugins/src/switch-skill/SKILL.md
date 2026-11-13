@@ -569,13 +569,19 @@ none of it is needed to take part in a conversation.
   for a rename once they confirm.
 
   A person links their chat account to their Switch user in Switch Console,
-  which shows them a one-time code. The link counts only once they post
-  `!link-account CODE` from that chat account; Console says exactly how on each
-  platform (on Teams they @mention the Switch app with `link-account CODE`, on
-  Telegram they send `/link_account CODE`). `!unlink-account` lists the
-  Switch users a chat account is linked to, and `!unlink-account NAME` removes
-  one; both act only on the account that sends them. Never ask for a code or
-  post one yourself: it only works from the account it was issued for.
+  or in the dashboard's Messaging apps settings where it offers that.
+  Switch's bot usually sends that chat account a direct message with a few
+  numbers: tapping the one Switch shows confirms the link, and **Not me**
+  cancels it. Switch also shows a one-time code, which works where the
+  message can't be sent. The person posts `!link-account CODE` from that chat
+  account, and Switch says exactly how on each platform (on Slack,
+  `/link-account CODE` works from any conversation; on Teams they @mention the
+  Switch app with `link-account CODE`; on Telegram they send
+  `/link_account CODE`). `!unlink-account` lists the Switch users a chat
+  account is linked to, and `!unlink-account NAME` removes one. Both act only
+  on the account that sends them, and the bridge answers them to that person,
+  not in a room. Never ask for a code or number, or post one yourself: they
+  only work from the account they were issued for.
 - **`request_agent_deletion`** — ask for another of your owner's agents to be
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by
@@ -704,8 +710,8 @@ You can also author a document scoped to the room:
   for the agent reading it, the same way an attached reference does.
 - **`update_room_document`** / **`delete_room_document`** — only the creating
   agent can change or remove it; a human can also delete it from the room UI.
-  A document the room's template made can be changed or removed by any agent
-  in the room, including one added later.
+  A document the room's template made can be changed or removed by an agent
+  in the room whose owner can edit the room, the same as the room's roles.
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
@@ -1273,8 +1279,8 @@ Every Switch tool you call in normal operation, one line each.
 - `list_all_references` — every reference your owner can read, instance-wide.
 - `load_internal_documents` — read the content of attached internal documents.
 - `create_room_document` — author a document scoped to the connected room.
-- `update_room_document` — change a document you created, or one the room's template made.
-- `delete_room_document` — remove a document you created, or one the room's template made.
+- `update_room_document` — change a document you created, or one the room's template made if your owner can edit the room.
+- `delete_room_document` — remove a document you created, or one the room's template made if your owner can edit the room.
 - `add_users_to_room` — add human users to an existing room by name.
 - `archive_room` — archive a room you belong to.
 - `unarchive_room` — reverse an archive.

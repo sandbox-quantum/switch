@@ -61,6 +61,7 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     answer_actions,
     card_action,
     interrupt_action,
+    prompt_actions,
     read_press,
 )
 from switch_core.bridges.collaboration.mattermost.http_client import NoRedirectClient
@@ -73,7 +74,9 @@ from switch_core.bridges.collaboration.models import (
     ChannelNotUsable,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
     DirectoryUser,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -1372,6 +1375,132 @@ class MattermostAdapter(PlatformAdapter):
         if driver is None:
             return None
         return await self._create_posts(driver, channel_id, content, thread_root_id)
+
+    def direct_prompt_unavailable(self) -> str | None:
+        if (
+            self._admin_bot_driver is None
+            or self._admin_bot_id is None
+            or self._main_loop is None
+        ):
+            return (
+                "Switch's bot isn't connected to Mattermost right now, so use "
+                "the code instead."
+            )
+        if self._button_address() is None:
+            return (
+                "This Mattermost connection has no callback address, so its "
+                "buttons couldn't be pressed. Use the code instead."
+            )
+        return None
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message one person in the Switch Admin bot's own direct channel with
+        them.
+
+        The bot cannot join a DM between two others, but it can always open
+        one of its own. Each button is signed the way a card's answer buttons
+        are, so `_handle_callback` reads a press as the same `Press` and hands
+        it on with the post it sits on as its `message_ref`, which is the id
+        returned here.
+
+        Only a process holding the bridge has the bot's driver: a quiet one
+        mints no bot token, and says the prompt cannot go out from there.
+        """
+        driver = self._admin_bot_driver
+        bot_id = self._admin_bot_id
+        loop = self._main_loop
+        if driver is None or bot_id is None or loop is None:
+            logger.warning(
+                "Cannot send a direct prompt on %s: this process has no driver "
+                "for the Switch Admin bot.",
+                self._config.url,
+            )
+            raise DirectMessageUnavailable(
+                "Switch's bot isn't connected to Mattermost right now, so use "
+                "the code instead."
+            )
+        address = self._button_address()
+        if address is None:
+            raise DirectMessageUnavailable(
+                "This Mattermost connection has no callback address, so its "
+                "buttons couldn't be pressed. Use the code instead."
+            )
+        url, key = address
+        props = {
+            _ATTACHMENTS_PROP: [
+                {"actions": prompt_actions(key, url, prompt.token, prompt.labels)}
+            ]
+        }
+        try:
+            channel = await loop.run_in_executor(
+                None,
+                driver.channels.create_direct_message_channel,
+                [bot_id, external_user_id],
+            )
+            channel_id = str(channel.get("id") or "")
+            if not channel_id:
+                raise RuntimeError(
+                    "Mattermost opened a direct channel but returned no id."
+                )
+            return await self._post_or_raise(
+                driver, channel_id, self.translate_outbound(prompt.text), None, props
+            )
+        except _DEFINITE_REFUSALS as e:
+            logger.warning(
+                "Mattermost refused a direct prompt to user %s: %s",
+                external_user_id,
+                e,
+            )
+            raise DirectMessageUnavailable(
+                "Mattermost wouldn't let Switch's bot message this account, so "
+                "use the code instead."
+            ) from e
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The post's permalink, on `public_url` only: `url` is often an address
+        only Switch can reach (the bundled deployment's
+        `http://mattermost:8065`), and a link that opens nothing is worse than
+        no link."""
+        if not self._config.public_url:
+            return None
+        base = self._config.public_url.rstrip("/")
+        return f"{base}/{self._config.team_name}/pl/{message_ref}"
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        """Replace an answered prompt's text and take its buttons off.
+
+        Edited as the bot that sent it where this process has it, and as the
+        admin user where it does not: a press reaches whichever process the
+        callback address leads to, and only the one holding the bridge has
+        the bot's token.
+        """
+        driver = self._admin_bot_driver or self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            logger.warning(
+                "Cannot replace Mattermost prompt %s: not connected. It was "
+                "answered: %s",
+                message_ref,
+                text,
+            )
+            return
+        try:
+            props = await self._props_with_actions(driver, loop, message_ref, [])
+            await loop.run_in_executor(
+                None,
+                driver.posts.patch_post,
+                message_ref,
+                {"message": self.translate_outbound(text), "props": props},
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not replace Mattermost prompt %s: %s. It was answered: %s",
+                message_ref,
+                e,
+                text,
+            )
 
     async def send_attachment(
         self,

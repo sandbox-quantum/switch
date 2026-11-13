@@ -503,6 +503,15 @@ def _strip_leading_mention(text: str) -> str:
     return _LEADING_MENTION_TAG.sub("", text, count=1)
 
 
+def _opens_with_mention(markup: str, self_mention_token: str | None) -> bool:
+    """Whether a message that @mentions the bot opens with a mention.
+
+    Teams delivers a channel message to the bot only when it is mentioned, so
+    the leading mention is the bot's in practice; the same assumption lets
+    ``_strip_leading_mention`` expose a ``!`` after it."""
+    return self_mention_token is not None and bool(_LEADING_MENTION_TAG.match(markup))
+
+
 def _aad_failure_message(exc: Exception) -> str:
     """Reduce an AAD token failure to the sentence an operator can act on.
 
@@ -3170,7 +3179,7 @@ class TeamsAdapter(PlatformAdapter):
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
         # Teams hands the bot a channel message only when it is mentioned, and
-        # a bare command name counts once it is.
+        # a bare command name straight after that mention counts.
         return (
             "From that account, @mention the Switch app in a channel or chat it "
             f"is in and add `link-account {code}`."
@@ -3748,7 +3757,8 @@ class TeamsAdapter(PlatformAdapter):
             channel_name=channel_name,
             self_mention_token=self_mention_token,
             command_text=command_text,
-            is_targeted=bool((activity.get("recipient") or {}).get("isTargeted")),
+            addressed=bool((activity.get("recipient") or {}).get("isTargeted"))
+            or _opens_with_mention(raw_text, self_mention_token),
         )
 
     async def _dispatch_card_action(
@@ -3913,7 +3923,7 @@ class TeamsAdapter(PlatformAdapter):
             return
         await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
-    def _command_in(self, probe: str, *, is_targeted: bool) -> str | None:
+    def _command_in(self, probe: str, *, addressed: bool) -> str | None:
         """The command this message runs, or None if it is ordinary text.
 
         Two ways a command arrives, and both need a name Switch knows.
@@ -3923,12 +3933,15 @@ class TeamsAdapter(PlatformAdapter):
         path and you got "unknown command" instead of your message. Telegram
         already guards against that; this is the same guard.
 
-        **Bare, on a targeted message** — Teams' `/` picker prepends the slash
-        itself and inserts the command's bare name, so `activity.text` is
-        `help`, not `/help`. That is why the slash-triggered list in the shipped
-        manifest declares titles without one, matching Microsoft's own samples.
-        A bare name is only read as a command when the message was targeted at
-        this bot: outside that, "help" in a channel is somebody talking.
+        **Bare, on a message addressed to this bot** — Teams' `/` picker
+        prepends the slash itself and inserts the command's bare name, so
+        `activity.text` is `help`, not `/help`, on a message Teams marks as
+        targeted. That is why the slash-triggered list in the shipped manifest
+        declares titles without one, matching Microsoft's own samples. A message
+        that opens by @mentioning the app is addressed to it just as plainly,
+        and it is how the link instructions tell people to send
+        `link-account CODE`. Outside those two, "help" in a channel is somebody
+        talking.
         """
         if not probe:
             return None
@@ -3937,7 +3950,7 @@ class TeamsAdapter(PlatformAdapter):
         if name in COMMANDS_BY_NAME:
             # Known, however it was written: `!help`, `/help`, or the bare
             # `help` the picker inserts.
-            return name if first[:1] in _COMMAND_PREFIXES or is_targeted else None
+            return name if first[:1] in _COMMAND_PREFIXES or addressed else None
         # Unknown. Whether that is worth answering depends on which prefix was
         # used, because the two mean different things to a person.
         #
@@ -3964,7 +3977,7 @@ class TeamsAdapter(PlatformAdapter):
         channel_name: str | None,
         self_mention_token: str | None = None,
         command_text: str | None = None,
-        is_targeted: bool = False,
+        addressed: bool,
     ) -> None:
         """Route a parsed inbound message to the command or message callback.
 
@@ -3974,7 +3987,10 @@ class TeamsAdapter(PlatformAdapter):
         ``command_text`` is the message with a leading bot @mention removed; it is
         used only to detect and parse ``!``-commands (a channel command arrives as
         ``@Bot !cmd``), while ``text`` — mention intact — is what a plain message
-        is bridged as. Defaults to ``text`` when the caller has nothing to strip."""
+        is bridged as. Defaults to ``text`` when the caller has nothing to strip.
+
+        ``addressed`` says the message was aimed at this bot, so a bare command
+        name in it is a command; see ``_command_in``."""
         # The post this message sits in — itself, when it opened the post.
         # Remembered so an untied reply lands under the question rather than
         # starting a conversation of its own; see _post_to_answer_in.
@@ -3985,7 +4001,7 @@ class TeamsAdapter(PlatformAdapter):
             is_channel=channel_type in ("channel_public", "channel_private"),
         )
         command_probe = (command_text if command_text is not None else text).strip()
-        command = self._command_in(command_probe, is_targeted=is_targeted)
+        command = self._command_in(command_probe, addressed=addressed)
         if command is not None and self._on_command is not None:
             parts = command_probe.split(None, 1)
             await self._on_command(
@@ -4719,6 +4735,7 @@ class TeamsAdapter(PlatformAdapter):
             channel_name=None,
             self_mention_token=self_mention_token,
             command_text=command_text,
+            addressed=_opens_with_mention(raw_content, self_mention_token),
         )
 
     def _graph_self_mention_token(self, chat_message: dict[str, Any]) -> str | None:

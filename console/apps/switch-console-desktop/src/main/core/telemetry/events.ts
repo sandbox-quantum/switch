@@ -227,6 +227,35 @@ export type TelemetryRoomCreateFailure =
   | 'server_error'
   | 'error';
 
+/**
+ * Why a chat action failed, as an enumerated code. The gateway's own refusal
+ * codes (`NOT_A_MEMBER`, …) are not passed through: they are the server's
+ * vocabulary and grow with it, and a refusal is one bucket here — the server
+ * reports its own side.
+ */
+export type TelemetryChatFailure =
+  | 'none'
+  | 'unauthenticated'
+  /** The server answered and said no: a 4xx not named below, coded or not. */
+  | 'refused'
+  /** A 429: the server asked the app to slow down. */
+  | 'rate_limited'
+  /** `REQUEST_REUSED`: the request id was already used for a different request. */
+  | 'request_reused'
+  /** No answer: the server could not be reached, or the request timed out (408). */
+  | 'network'
+  | 'server_error'
+  | 'error';
+
+/**
+ * A chat as the server made it: one agent and its person, or a group.
+ * `unknown` when the create failed, so there is no chat to read it from.
+ */
+export type TelemetryChatKind = 'direct' | 'group' | 'unknown';
+
+/** Whom a message named: nobody, an agent, a person, or both. Never which. */
+export type TelemetryChatMentions = 'none' | 'agent' | 'person' | 'both';
+
 /** How a room came to be made: the Create room dialog, or a template run. */
 export type TelemetryRoomCreateSource = 'dialog' | 'template';
 
@@ -697,6 +726,61 @@ export type TelemetryEventMap = {
     docker_available: TelemetryDockerAvailability;
   };
   /**
+   * A Switch Console chat was made: a 1-1 with an agent, or a group. `kind` is
+   * read from the chat the server made. `agent_count` and `person_count` are
+   * what was asked for — the counts of agents and of other people invited,
+   * never who. `on_messaging_app` is a chat opened in a messaging app
+   * connection rather than in Switch. Finishing a create an earlier attempt
+   * already made, or a retry of one already reported, is not reported again.
+   */
+  chat_created: {
+    server_kind: TelemetryServerKind;
+    kind: TelemetryChatKind;
+    agent_count: number;
+    person_count: number;
+    on_messaging_app: boolean;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /**
+   * A message was sent in a chat. Nothing of the message: whether it carried
+   * files, whether it was a thread reply, and whether it named an agent or a
+   * person — never which.
+   */
+  chat_message_sent: {
+    server_kind: TelemetryServerKind;
+    has_attachment: boolean;
+    in_thread: boolean;
+    mentions: TelemetryChatMentions;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /** A person or an agent was added to a chat, or taken out of one. */
+  chat_member_changed: {
+    server_kind: TelemetryServerKind;
+    change: 'added' | 'removed';
+    member_kind: 'person' | 'agent';
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /**
+   * Stop, Reset, Compact or Retry was sent to an agent in a chat. Written out
+   * rather than taken from `ChatControlCommand`, so the disclosure test reads
+   * the values; a command added there fails to compile at the call site.
+   */
+  chat_control_sent: {
+    server_kind: TelemetryServerKind;
+    command: 'interrupt' | 'reset' | 'compact' | 'retry';
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /** An agent's approval request was answered in a chat. Never the answer. */
+  chat_approval_answered: {
+    server_kind: TelemetryServerKind;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /**
    * The events from here to `renderer_crashed` are reported by the interface,
    * through the one gate in `./renderer-events`. They are here because they are
    * catalogue events like any other — the same consent check, the same property
@@ -850,6 +934,26 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   ],
   room_deleted: ['server_kind', 'outcome'],
   room_agents_added: ['agent_count', 'direction', 'outcome', 'failure_reason'],
+  chat_created: [
+    'server_kind',
+    'kind',
+    'agent_count',
+    'person_count',
+    'on_messaging_app',
+    'outcome',
+    'failure_reason',
+  ],
+  chat_message_sent: [
+    'server_kind',
+    'has_attachment',
+    'in_thread',
+    'mentions',
+    'outcome',
+    'failure_reason',
+  ],
+  chat_member_changed: ['server_kind', 'change', 'member_kind', 'outcome', 'failure_reason'],
+  chat_control_sent: ['server_kind', 'command', 'outcome', 'failure_reason'],
+  chat_approval_answered: ['server_kind', 'outcome', 'failure_reason'],
   server_sign_in: ['auth_method', 'server_kind', 'outcome', 'failure_reason'],
   server_sign_out: ['server_kind'],
   host_setup_step: ['step_kind', 'agent_type', 'action', 'outcome'],

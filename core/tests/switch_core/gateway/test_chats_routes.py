@@ -49,8 +49,11 @@ from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
 )
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.session_activity.listener import Change
+from switch_core.transport.observer import ParticipantMessage
 from tests.switch_core.gateway.conftest import _Harness, _Process
+from tests.telemetry_records import recording_telemetry
 
 
 def _code(response: httpx.Response) -> str:
@@ -515,6 +518,50 @@ async def test_a_send_that_failed_before_commit_posts_once_on_retry(
     assert len(rows) == 3
     groups = {row.content["com.switch.attachment_group"]["id"] for row in rows}
     assert len(groups) == 1
+
+
+async def test_an_observer_that_raises_does_not_fail_the_send(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post is committed before the observer hears of it, so a failure
+    there must not answer the send with an error: the retry would be told
+    nothing was sent. Counted instead."""
+
+    class _Broken:
+        def observe(self, message: ParticipantMessage) -> None:
+            raise RuntimeError("observer bug")
+
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    registry = MetricsRegistry()
+    install(registry)
+    monkeypatch.setattr(chats.service, "_message_observer", _Broken())
+    try:
+        sent = await chats.send(chats.alice, room_id, "s1", "still sent")
+        failures = next(
+            p
+            for p in registry.collect()
+            if p.name == "switch.messages.observer_failures"
+        )
+    finally:
+        uninstall()
+
+    assert sent.status_code == 200, sent.text
+    assert [m.body for m in await chats.message_rows(room_id)] == ["still sent"]
+    assert failures.numbers[0].value == 1.0
+
+
+async def test_a_chat_is_reported_as_a_console_chat_when_made(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    telemetry, sink = recording_telemetry()
+    monkeypatch.setattr(chats.room_service, "_telemetry", telemetry)
+    agent = await chats.agent("helper", owner=chats.alice)
+
+    await chats.new_chat(chats.alice, agent, "c1")
+
+    [created] = sink.events("room_created")
+    assert created["console_chat"] is True
 
 
 async def test_one_request_id_from_two_users_is_two_sends(chats: _Harness) -> None:

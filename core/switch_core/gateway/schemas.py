@@ -909,6 +909,22 @@ class IdentityClaimant(BaseModel):
     can_unlink: bool
 
 
+class LinkPromptSummary(BaseModel):
+    """The message Switch sent the account alongside a code (CHOO-4121),
+    offering numbers to tap."""
+
+    # The number to show the Switch user: tapping it in the message confirms
+    # the link. Only ever on the response that issued it, like the code.
+    number: int
+    sent: bool
+    # Why no message went out, in words to show beside the code, when `sent`
+    # is false.
+    unavailable_reason: str | None
+    # A web link that opens the message on the platform, when it went out and
+    # the platform can link to it.
+    link: str | None
+
+
 class LinkCode(BaseModel):
     """A one-time code that confirms a link when posted from the account."""
 
@@ -920,6 +936,10 @@ class LinkCode(BaseModel):
     # How to post it on this platform, in Markdown. The platforms differ in
     # which messages reach Switch at all, so this is the bridge's to say.
     instructions: str
+    # Set when the caller asked for a prompt (`wants_prompt`): the quicker way
+    # to confirm, with the code as its fallback. Null for a caller that did
+    # not ask, which has no way to show the number.
+    prompt: LinkPromptSummary | None = None
 
 
 class LinkRequestSummary(BaseModel):
@@ -998,6 +1018,18 @@ class ClaimIdentityRequest(BaseModel):
     # refused while the link needs confirming, since that text would show the
     # code to the wrong person.
     expects_confirmation: bool = False
+    # That the caller can show the number from a prompt (CHOO-4121), so Switch
+    # should message the account one alongside the code. Left out by a Console
+    # from before then, whose user would be sent numbers they cannot match.
+    wants_prompt: bool = False
+
+
+class IssueLinkCodeRequest(BaseModel):
+    """Asking for a fresh link code. The body is optional: a Console from
+    before prompts sends none."""
+
+    # As on `ClaimIdentityRequest`.
+    wants_prompt: bool = False
 
 
 class LinkedIdentity(BaseModel):
