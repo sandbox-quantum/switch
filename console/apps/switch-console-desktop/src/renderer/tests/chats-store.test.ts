@@ -8,6 +8,7 @@ import {
   type ChatsEvents,
   READ_DEBOUNCE_MS,
 } from '@renderer/features/chats/stores/chats-store';
+import { withConsoleGroupChats } from '@renderer/features/switch-servers/room-filters';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
 
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
@@ -607,5 +608,35 @@ describe('ChatsStore read progress', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('a chat the person is invited to', () => {
+  it('appears among the sidebar rooms when its summary arrives on the feed', async () => {
+    const { store, push, group } = await viewer();
+    const invited = {
+      ...group,
+      roomId: 'invited',
+      name: 'Test room - X/M/L',
+      memberUserIds: ['owner', 'u'],
+      memberCount: 2,
+    };
+    expect(withConsoleGroupChats([], store.chats.values()).map((room) => room.id)).toEqual(['g']);
+
+    push(invited);
+
+    const rooms = withConsoleGroupChats([], store.chats.values());
+    expect(rooms.map((room) => room.id).sort()).toEqual(['g', 'invited']);
+    expect(rooms.find((room) => room.id === 'invited')).toMatchObject({
+      name: 'Test room - X/M/L',
+      viewerIsMember: true,
+      isConsoleChat: true,
+    });
+  });
+
+  it('is not added a second time when the room list already has it', async () => {
+    const { store } = await viewer();
+    const listed = withConsoleGroupChats([], store.chats.values());
+    expect(withConsoleGroupChats(listed, store.chats.values())).toHaveLength(1);
   });
 });
