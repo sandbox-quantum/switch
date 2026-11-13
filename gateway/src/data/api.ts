@@ -1503,6 +1503,18 @@ export async function deleteWorkspace(tenantId: string, name: string): Promise<v
   await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "DELETE", { name });
 }
 
+/** The longest name the server takes for a workspace. */
+export const WORKSPACE_NAME_MAX = 255;
+
+/** Rename the bound workspace. The server trims the name and answers with
+ * it as stored. */
+export async function renameWorkspace(
+  tenantId: string,
+  name: string,
+): Promise<{ id: string; name: string }> {
+  return jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "PATCH", { name });
+}
+
 export type OwnershipKind =
   | "agent"
   | "room"

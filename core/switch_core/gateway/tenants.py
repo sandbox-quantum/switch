@@ -39,8 +39,10 @@ from switch_core.connections.broker import (
 )
 from switch_core.db.audit import (
     AuditAction,
+    OrganizationAuditAction,
     list_audit_events,
     record_audit_event,
+    record_organization_audit_event,
 )
 from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
@@ -173,6 +175,8 @@ from switch_core.gateway.schemas import (
     TenantCreateRequest,
     TenantDeleteRequest,
     TenantMembershipResponse,
+    TenantRenameRequest,
+    TenantRenameResponse,
     UnansweredRoom,
     UsageTotalResponse,
     WorkspaceCountsResponse,
@@ -480,6 +484,59 @@ async def create_tenant(
         auth_time=session_auth_time(request),
     )
     return created.workspace
+
+
+@router.patch("/tenants/{tenant_id}")
+async def rename_tenant(
+    tenant_id: str,
+    req: TenantRenameRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> TenantRenameResponse:
+    """Rename the bound workspace. Whoever administers it may, as with its
+    other settings: its admins, its organization's `org_admin` and the
+    operator. The slug stays as it is, being an identifier rather than the
+    name. The name it already has changes nothing and records nothing.
+
+    Recorded in the workspace's audit log and in its organization's, as
+    creating it is, so the organization's admins see it beside the workspaces
+    added.
+    """
+    _require_bound_tenant(tenant_id)
+    # Locked, so renames made at the same moment each record the name they
+    # replaced, and the second of two the same is the no-op it should be.
+    tenant = await session.get(Tenant, tenant_id, with_for_update=True)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
+    if req.name != tenant.name:
+        details: dict[str, object] = {"name": req.name, "previous_name": tenant.name}
+        tenant.name = req.name
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user.id,
+            action=AuditAction.TENANT_RENAMED,
+            target_type="tenant",
+            target_id=tenant_id,
+            details=details,
+        )
+        # A workspace from before organizations has none to record it in.
+        if tenant.organization_id is not None:
+            if request.state.platform_access:
+                details = {**details, "platform_access": True}
+            await record_organization_audit_event(
+                session,
+                organization_id=tenant.organization_id,
+                actor_user_id=user.id,
+                action=OrganizationAuditAction.WORKSPACE_RENAMED,
+                target_type="workspace",
+                target_id=tenant_id,
+                details=details,
+            )
+        await session.commit()
+        logger.info("User %s renamed workspace %s", user.id, tenant_id)
+    return TenantRenameResponse(id=tenant_id, name=req.name)
 
 
 @router.delete("/tenants/{tenant_id}")

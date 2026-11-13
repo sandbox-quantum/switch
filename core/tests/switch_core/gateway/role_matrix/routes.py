@@ -222,6 +222,9 @@ ROUTES: dict[str, Case] = {
             "or the operator; let through, then refused while it isn't empty."
         ),
     ),
+    "PATCH /gateway/tenants/{tenant_id}": patch(
+        W, admins(), json={"name": "{tag}-renamed"}
+    ),
     "GET /gateway/tenants/{tenant_id}/retention": get(f"{W}/retention", admins()),
     "GET /gateway/tenants/{tenant_id}/retention/preview": get(
         f"{W}/retention/preview", admins(), days="30"

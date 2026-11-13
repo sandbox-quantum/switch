@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -13,6 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
 from switch_core.bridges.agent.protocol.types import OverallStatus
@@ -1405,6 +1407,34 @@ class WorkspaceCreateRequest(BaseModel):
 
 class TenantDeleteRequest(BaseModel):
     # The workspace's name, typed by the person deleting it.
+    name: str
+
+
+def _shown_on_one_line(name: str) -> str:
+    """A name shown on one line, as a breadcrumb or a switcher shows it: with
+    a character in it that can be seen, so it is never blank there, and no
+    control character, such as a line break, to break the line."""
+    if any(unicodedata.category(char) == "Cc" for char in name):
+        raise PydanticCustomError(
+            "control_character", "A name can't contain a line break or a tab."
+        )
+    if not any(char.isprintable() and not char.isspace() for char in name):
+        raise PydanticCustomError(
+            "nothing_visible", "A name needs at least one visible character."
+        )
+    return name
+
+
+class TenantRenameRequest(BaseModel):
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+        AfterValidator(_shown_on_one_line),
+    ]
+
+
+class TenantRenameResponse(BaseModel):
+    id: str
     name: str
 
 
