@@ -118,37 +118,39 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
         {tab === "templates" && <TemplatesTab refreshKey={refreshKey} />}
       </Box>
 
-      {tab === "references" && (
+      {/* Mounted only while open: each dialog loads what it offers, which no
+          one needs until they create something. */}
+      {createOpen && tab === "references" && (
         <CreateReferenceDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handleReferenceCreated}
         />
       )}
-      {tab === "types" && (
+      {createOpen && tab === "types" && (
         <CreateReferenceTypeDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handleReferenceTypeCreated}
         />
       )}
-      {tab === "documents" && (
+      {createOpen && tab === "documents" && (
         <CreateDocumentDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handleDocumentCreated}
         />
       )}
-      {tab === "packages" && (
+      {createOpen && tab === "packages" && (
         <CreatePackageDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handlePackageCreated}
         />
       )}
-      {tab === "templates" && (
+      {createOpen && tab === "templates" && (
         <CreateTemplateDialog
-          open={createOpen}
+          open
           title="Upload template"
           submitLabel="Upload"
           initial={null}

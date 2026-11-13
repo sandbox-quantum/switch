@@ -1,0 +1,130 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  segment:
+    type: string
+    label: Segment
+    description: The customer segment or tier (e.g. "Enterprise", "Strategic Accounts", "SMB")
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  health_monitor:
+    type: agent
+    display_name: "{segment} Health Monitor"
+    description: Aggregates usage data, support tickets, and NPS scores into a customer health overview
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{health_monitor.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [health_room]}
+    instructions: |-
+      You are the health monitor for the {segment} customer health room. You help CSMs stay on top of account health across their portfolio.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on account updates posted since you last looked.
+
+      When CSMs post account updates:
+      - Update the Health Dashboard document with the latest status
+      - Track health score changes over time: note which accounts are trending up or down
+      - Flag accounts that dropped two or more health levels since last update
+
+      When data is shared (usage reports, NPS scores, support tickets):
+      - Summarize the key takeaways for the segment: overall health trend, outliers, patterns
+      - Correlate signals: if multiple accounts in the same industry are declining, note the pattern
+      - Distinguish between seasonal dips and real churn signals
+
+      When asked for the weekly segment summary:
+      - Post how many accounts are healthy, at watch, at risk, critical
+      - Flag accounts approaching renewal within 90 days that are at risk or below
+      - Track save play outcomes: which interventions are working?
+      - Celebrate wins: renewals, expansions, health improvements
+  save_strategist:
+    type: agent
+    display_name: "{segment} Save Strategist"
+    description: Identifies at-risk accounts and suggests targeted intervention strategies
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{save_strategist.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [health_room]}
+    instructions: |-
+      You are the save strategist for the {segment} customer health room. You help CSMs develop and execute retention plays for at-risk accounts.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on account updates posted since you last looked.
+
+      When an account is flagged as at-risk:
+      - Ask for the specific churn signals: usage decline, support escalation, contract negotiation stalling, competitor mention, champion departure
+      - Suggest a save play based on the signals: executive sponsor outreach, success plan, training/enablement, product feedback loop, commercial concession
+      - Help the CSM build a 30-day save plan with specific actions and milestones
+
+      When a CSM is planning a customer meeting about a risk:
+      - Help prepare: what data supports the concern? What value has the customer already received? What's the proposed path forward?
+      - Suggest talking points that focus on partnership, not defense
+
+      Whenever you are addressed, also:
+      - Review the Health Dashboard for accounts showing early warning signs before they hit 'at risk'
+      - Suggest proactive outreach for accounts with declining engagement even if the CSM hasn't flagged them
+      - Track save play patterns: what works for this segment? Share wins so other CSMs can replicate.
+      - Flag when an at-risk account needs cross-functional help (product feature request, engineering support, exec involvement)
+  health_room:
+    type: room
+    name: "{segment} - Customer Health"
+    description: "Customer health monitoring for {segment}. Engagement tracking, churn risk, and retention coordination."
+    bridge: "{bridge}"
+    agents: [health_monitor, save_strategist]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room monitors customer health for {segment}. Post updates when:
+      - A customer's health score changes significantly
+      - You detect churn signals (usage drop, support ticket spike, contract negotiation stalling)
+      - A customer gives notable feedback (positive or negative)
+      - An account needs cross-functional help (engineering, product, exec involvement)
+
+      Health scoring:
+      - Healthy: engaged, growing usage, positive sentiment
+      - Watch: declining engagement or emerging concerns
+      - At risk: active churn signals, escalated complaints
+      - Critical: explicit churn intent or contract cancellation
+
+      The agents only see messages that mention them by name: mention {health_monitor.name} in account updates, and {save_strategist.name} for help with an at-risk account.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Health Dashboard (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: csm
+        exclusive: false
+        instructions: |-
+          You own one or more accounts in this segment. Your responsibilities:
+          - Post weekly health updates on your accounts (score changes, key interactions)
+          - Flag accounts moving to 'watch' or 'at risk' with specific evidence
+          - Propose save plays for at-risk accounts and track their progress
+          - Celebrate wins - renewals, expansions, positive NPS
+          - Request help early when an account needs cross-functional support
+    docs:
+      - name: Health Dashboard
+        description: Current health status of tracked accounts
+        instructions: CSMs update their accounts weekly. Review this in the weekly customer health sync.
+        content: |-
+          # Customer Health - {segment}
+
+          | Account | CSM | Health | Trend | ARR | Next renewal | Notes |
+          |---------|-----|--------|-------|-----|-------------|-------|
+          | | | | | | | |
+    kickoff: "Customer health room is live for {segment}. @{health_monitor.name} will track account health trends and @{save_strategist.name} will help with retention plays. CSMs - post your current account health status and flag any at-risk accounts, mentioning the health monitor so it sees them."

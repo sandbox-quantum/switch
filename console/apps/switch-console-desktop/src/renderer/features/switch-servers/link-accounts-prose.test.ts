@@ -38,7 +38,7 @@ describe('LINK_ACCOUNTS_LATER', () => {
 });
 
 function linkCode(instructions: string): LinkCode {
-  return { code: 'AB12-CD34', expiresAt: '', expiresInSeconds: 600, instructions };
+  return { code: 'AB12-CD34', expiresAt: '', expiresInSeconds: 600, instructions, prompt: null };
 }
 
 describe('commandToPost', () => {

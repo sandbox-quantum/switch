@@ -342,21 +342,21 @@ class TestTheToggle:
         assert "assigned agent" in assigned.json()["detail"]
         assert stranger.status_code == 422
 
-    async def test_a_writer_who_does_not_own_the_room_turns_it_on_and_off(
+    async def test_someone_who_does_not_own_the_room_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Auto-route is a room setting: its owner's and admins', even in a
+        room everyone could once write to."""
         owner = await _user(session_factory, "owner", "member")
         writer = await _user(session_factory, "writer", "member")
         room, _, _ = await _room(session_factory, owner)
         async with _as(_app(session_factory), writer) as client:
-            on = await client.put(f"/rooms/{room.id}/auto-route", json={"on": True})
-            assert (await _metadata(session_factory, room.id))[AUTO_ROUTE_ON_KEY]
-            off = await client.put(f"/rooms/{room.id}/auto-route", json={"on": False})
+            refused = await client.put(
+                f"/rooms/{room.id}/auto-route", json={"on": True}
+            )
 
-        assert on.status_code == 200
-        assert on.json()["on"] is True
-        assert off.status_code == 200
-        assert off.json()["on"] is False
+        assert refused.status_code == 403
+        assert AUTO_ROUTE_ON_KEY not in await _metadata(session_factory, room.id)
 
     async def test_a_read_only_viewer_of_a_private_room_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -398,7 +398,7 @@ class TestTheToggle:
             )
 
         assert named.status_code == 403
-        assert "owner or a workspace admin" in named.json()["detail"]
+        assert "a room admin or a workspace admin" in named.json()["detail"]
         assert cleared.status_code == 403
         metadata = await _metadata(session_factory, room.id)
         assert AUTO_ROUTE_FALLBACK_KEY not in metadata

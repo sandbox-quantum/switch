@@ -1,0 +1,183 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  cycle:
+    type: string
+    label: Budget cycle
+    description: The budget cycle (e.g. "FY2026", "H1 2026")
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  budget_compiler:
+    type: agent
+    display_name: "{cycle} Budget Compiler"
+    description: Aggregates department budget submissions, checks against targets, and flags conflicts
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{budget_compiler.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [budget_room]}
+    instructions: |-
+      You are the budget compiler for the {cycle} budget planning cycle. You aggregate department submissions into a consolidated view and surface conflicts early.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on submissions posted since you last looked.
+
+      When department submissions come in:
+      - Check that each submission follows the Budget Template format
+      - Flag missing line items or categories
+      - Compare the submission against any top-down targets or guardrails the budget-owner has set
+      - Note where a department's request is significantly higher or lower than the prior period
+
+      When multiple submissions are in:
+      - Produce a consolidated view: total budget requested by category across all departments
+      - Compare total requests against the available budget envelope
+      - Flag where total requests exceed what's available, broken down by category
+      - Identify the largest drivers of any gap between requests and targets
+
+      During revision cycles:
+      - Track which departments have submitted revised numbers and which haven't
+      - Show what changed between revisions
+      - Update the consolidated view after each round of revisions
+
+      Keep the budget-owner informed. Each time you are given a new submission or revision, post a summary so they can see the picture evolving.
+  forecast_modeler:
+    type: agent
+    display_name: "{cycle} Forecast Modeler"
+    description: Runs scenario analysis on budget proposals and models the impact of different assumptions
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{forecast_modeler.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [budget_room]}
+    instructions: |-
+      You are the forecast modeler for the {cycle} budget planning cycle. You help the team understand the financial impact of different budget decisions before they commit.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the submissions and numbers posted since you last looked.
+
+      When the team asks 'what if' questions:
+      - Model the scenario with clear assumptions stated
+      - Show the impact on total budget, runway, and key ratios
+      - Compare the scenario against the base case
+      - Flag second-order effects: if we hire 5 more engineers, that also means more laptop spend, more office space, more tooling licenses
+
+      Common scenarios to be ready for:
+      - Headcount changes: what if we hire X more/fewer in a department?
+      - Contractor vs full-time tradeoffs: cost comparison over 6 and 12 month horizons
+      - Program cuts or additions: what does adding or removing a program do to the total?
+      - Revenue sensitivity: what if revenue comes in 10% above or below plan?
+
+      When presenting scenarios:
+      - Use a clear side-by-side comparison: base case vs scenario
+      - Always show the net impact (not just the changed line items)
+      - State assumptions explicitly so the team can challenge them
+      - Flag which assumptions are the most sensitive (small changes in them produce big budget swings)
+
+      Don't advocate for a specific budget outcome. Present the numbers and tradeoffs clearly so the decision-makers can choose.
+  budget_room:
+    type: room
+    name: "Budget - {cycle}"
+    description: "Budget planning for {cycle}. Department submissions, scenario modeling, and consolidated review."
+    bridge: "{bridge}"
+    agents: [budget_compiler, forecast_modeler]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room coordinates budget planning for {cycle}. Department leads submit their budget requests here, and the team works through reviews and revisions until the budget is approved.
+
+      Process:
+      1. Budget-owner sets top-down targets and the submission deadline
+      2. Department leads submit requests using the Budget Template
+      3. Budget compiler produces a consolidated view
+      4. Team reviews, discusses tradeoffs, and runs scenarios
+      5. Revision rounds until the budget fits within targets
+      6. Budget-owner approves the final budget
+
+      When submitting:
+      - Use the Budget Template format
+      - Include headcount plans with start dates
+      - Flag anything that is a significant change from the prior period and explain why
+
+      The agents only see messages that mention them by name: mention {budget_compiler.name} with each submission or revision, and {forecast_modeler.name} for what-if scenarios.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Budget Template (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: budget-owner
+        exclusive: true
+        instructions: |-
+          You own the budget process for {cycle}. Your responsibilities:
+          - Set the overall budget envelope and top-down targets
+          - Set the submission deadline and review timeline
+          - Review consolidated submissions and identify where cuts or adjustments are needed
+          - Facilitate tradeoff discussions between departments
+          - Approve the final budget
+      - name: department-lead
+        exclusive: false
+        instructions: |-
+          You're submitting a budget for your department. Your responsibilities:
+          - Submit your budget request using the Budget Template by the deadline
+          - Include headcount plans, program costs, and tooling needs
+          - Justify significant changes from the prior period
+          - Participate in tradeoff discussions when total requests exceed targets
+          - Submit revised numbers when asked, by the revision deadline
+    docs:
+      - name: Budget Template
+        description: Standard format for department budget submissions
+        instructions: Each department submits their budget using this format.
+        content: |-
+          # Budget Submission - {cycle}
+
+          **Department:** 
+          **Submitted by:** 
+          **Date:** 
+
+          ## Headcount
+
+          | Role | Current HC | Planned HC | Start date | Annual cost |
+          |------|-----------|------------|------------|-------------|
+          | | | | | |
+
+          **Total headcount cost:** 
+
+          ## Programs & Projects
+
+          | Program | Description | Cost | New or continuing |
+          |---------|-------------|------|-------------------|
+          | | | | |
+
+          **Total program cost:** 
+
+          ## Tools & Infrastructure
+
+          | Item | Description | Annual cost | New or renewal |
+          |------|-------------|-------------|----------------|
+          | | | | |
+
+          **Total tools cost:** 
+
+          ## Summary
+
+          | Category | Prior period | Requested | Change | Change % |
+          |----------|-------------|-----------|--------|----------|
+          | Headcount | | | | |
+          | Programs | | | | |
+          | Tools | | | | |
+          | **Total** | | | | |
+    kickoff: "Budget planning room is live for {cycle}. @{budget_compiler.name} will consolidate submissions and @{forecast_modeler.name} can model scenarios. Budget-owner - post the targets and submission deadline. Department leads - start preparing your submissions, and mention the budget compiler when you post them."

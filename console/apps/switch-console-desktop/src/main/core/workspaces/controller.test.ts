@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
+const addRoomAgents = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const createRoomOnServer = vi.hoisted(() => vi.fn());
 const disconnectBridgeOnServer = vi.hoisted(() => vi.fn());
@@ -106,7 +107,7 @@ vi.mock('@main/core/switch-servers/teams-package', () => ({ saveTeamsPackage }))
 vi.mock('@main/core/switch-servers/update-bridge', () => ({ updateBridgeOnServer }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({
   addBridgeTeam,
-  addRoomAgents: vi.fn(),
+  addRoomAgents,
   agentExistsOnServer: vi.fn(),
   connectServiceWithKey,
   disconnectGitHub,
@@ -162,6 +163,7 @@ vi.mock('./workspaces-store', () => ({
 }));
 
 const { workspacesController } = await import('./controller');
+const { GatewayError } = await import('@main/core/switch-servers/gateway-client');
 const { log } = await import('@main/lib/logger');
 
 function server(overrides: Record<string, unknown>) {
@@ -802,6 +804,75 @@ describe('reporting what a template made', () => {
   });
 });
 
+describe('adding agents to a room', () => {
+  const params = {
+    workspaceId: 'ws',
+    roomId: 'r1',
+    agentIds: ['a1', 'a2'],
+    direction: 'agents_to_room' as const,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('reports the agents it added', async () => {
+    addRoomAgents.mockResolvedValue(undefined);
+
+    await workspacesController.addRoomAgents(params);
+
+    expect(trackEvent).toHaveBeenCalledExactlyOnceWith('room_agents_added', {
+      agent_count: 2,
+      direction: 'agents_to_room',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
+
+  it.each([
+    ['a refusal from the server', { kind: 'http', status: 409 }, 'conflict'],
+    ['a session the server turned down', { kind: 'unauthorized', status: 401 }, 'unauthenticated'],
+    ['a request that never arrived', { kind: 'network' }, 'network'],
+    ['a server that broke', { kind: 'http', status: 502 }, 'server_error'],
+  ] as const)('reports %s as a failure, and still throws it', async (_label, fields, reason) => {
+    // The double's constructor takes none of the real one's fields, so they are set here.
+    const refusal = Object.assign(new GatewayError(fields.kind, 'refused'), fields);
+    addRoomAgents.mockRejectedValue(refusal);
+
+    await expect(workspacesController.addRoomAgents(params)).rejects.toBe(refusal);
+
+    expect(trackEvent).toHaveBeenCalledExactlyOnceWith('room_agents_added', {
+      agent_count: 2,
+      direction: 'agents_to_room',
+      outcome: 'failure',
+      failure_reason: reason,
+    });
+  });
+
+  it('reports a host known to be down without asking it', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({
+      sshHost: 'h',
+      status: 'unreachable',
+      lastError: 'no route to host',
+      lastCheckedAt: null,
+    });
+
+    await expect(workspacesController.addRoomAgents(params)).rejects.toBeInstanceOf(
+      HostUnreachableError
+    );
+
+    expect(addRoomAgents).not.toHaveBeenCalled();
+    expect(trackEvent).toHaveBeenCalledWith(
+      'room_agents_added',
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'unreachable' })
+    );
+  });
+});
+
 describe('an action a workspace whose host has gone down cannot take', () => {
   const blocked = {
     sshHost: 'h',
@@ -956,7 +1027,11 @@ describe('selecting the workspace’s tenant before the call', () => {
     const srv = expect.objectContaining({ id: 'srv' });
     const flow = { workspaceId: 'ws', service: 'example', flowId: 'flow-1' };
 
-    await workspacesController.startServiceConnection({ workspaceId: 'ws', service: 'example' });
+    await workspacesController.startServiceConnection({
+      workspaceId: 'ws',
+      service: 'example',
+      choices: { site: 'eu.example.test' },
+    });
     await workspacesController.getServiceFlow(flow);
     await workspacesController.cancelServiceConnection(flow);
     await workspacesController.connectServiceWithKey({
@@ -970,6 +1045,7 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(serviceBrowserFlow.startServiceBrowserFlow).toHaveBeenCalledWith(
       srv,
       'example',
+      { site: 'eu.example.test' },
       expect.any(Function)
     );
     expect(serviceBrowserFlow.getServiceBrowserFlow).toHaveBeenCalledWith(srv, 'example', 'flow-1');

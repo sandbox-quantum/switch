@@ -9,6 +9,9 @@ vi.mock('@renderer/lib/modal/modal-store', () => ({
   modalStore: { closeModal: vi.fn() },
 }));
 
+const report = vi.hoisted(() => vi.fn());
+vi.mock('@renderer/lib/telemetry/report', () => ({ report }));
+
 const { NavigationStore } = await import('@renderer/lib/stores/navigation-store');
 
 /** The retired Settings tab that CHOO-1809 moved out to its own view. */
@@ -100,5 +103,21 @@ describe('NavigationStore stale-param guards', () => {
 
     expect(store.currentViewId).toBe('session');
     expect(store.snapshot.viewParams.session).toEqual({ sessionId: 's1' });
+  });
+});
+
+describe('what navigating reports', () => {
+  beforeEach(() => {
+    report.mockClear();
+  });
+
+  it('reports a screen someone opens, but not the one a launch resumes on', () => {
+    const store = makeStore({});
+
+    store.restoreSnapshot({ currentViewId: 'session', viewParams: {} });
+    expect(report).not.toHaveBeenCalled();
+
+    store.navigate('settings');
+    expect(report).toHaveBeenCalledExactlyOnceWith('view_opened', { view_id: 'settings' });
   });
 });

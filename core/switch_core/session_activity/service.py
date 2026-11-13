@@ -202,6 +202,7 @@ class AgentSessionActivityService:
         occurred_at: datetime,
         usage: list[TokenSpend],
         subagent: bool = False,
+        delivery: str | None = None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
@@ -213,6 +214,13 @@ class AgentSessionActivityService:
         if subagent and kind != "tool-activity":
             raise SessionError(
                 "INVALID_EVENT", "Only tool activity can describe a subagent."
+            )
+        if delivery is not None and (
+            kind != "user-message" or delivery not in ("steered", "queued")
+        ):
+            raise SessionError(
+                "INVALID_EVENT",
+                "Only a person's message says how it was delivered: steered or queued.",
             )
         if status not in ITEM_STATUSES[kind]:
             raise SessionError(
@@ -265,6 +273,7 @@ class AgentSessionActivityService:
                         item_id=item_id,
                         kind=kind,
                         subagent=subagent,
+                        delivery=delivery,
                         revision=revision,
                         status=status,
                         title=title,

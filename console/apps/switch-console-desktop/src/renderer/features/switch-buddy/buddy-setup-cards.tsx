@@ -89,7 +89,6 @@ const Cards = observer(function Cards({
   const showConnect = useShowModal('connectMessagingAppModal');
   const showClaimIdentity = useShowModal('claimIdentityModal');
   const [picked, setPicked] = useState<BuddyPlatform | null>(null);
-  const [reopened, setReopened] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   // A refusal from creating the hand-off answers for that connection, as a resume's would.
@@ -199,7 +198,6 @@ const Cards = observer(function Cards({
       (message) => message.sender.kind === 'human' && message.body === BUDDY_STAY_MESSAGE
     ) || timeline.pending.some((send) => send.body === BUDDY_STAY_MESSAGE);
   const stay = () => {
-    setReopened(false);
     timeline.send({
       body: BUDDY_STAY_MESSAGE,
       threadRootId: null,
@@ -211,19 +209,7 @@ const Cards = observer(function Cards({
     });
   };
 
-  if (stayed && !reopened)
-    return (
-      <div className="mt-4" data-testid="buddy-setup-cards">
-        <StatusRow>
-          <span className="min-w-0 flex-1 text-foreground-muted">
-            Continuing here in Switch Console.
-          </span>
-          <Button size="sm" variant="outline" onClick={() => setReopened(true)}>
-            Connect a chat app
-          </Button>
-        </StatusRow>
-      </div>
-    );
+  if (stayed) return null;
 
   const pressed = (app: BuddyPlatform) =>
     platform === app && (picked !== null || (step.kind !== 'loading' && step.kind !== 'unknown'));

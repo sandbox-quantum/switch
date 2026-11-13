@@ -59,6 +59,7 @@ function room(id: string, ownerId: string | null, overrides: Partial<RemoteRoomS
     externalChannelUrl: null,
     ownerId,
     viewerIsMember: false,
+    viewerIsRoomAdmin: false,
     isConsoleChat: false,
     archived: false,
     createdAt: '2026-01-01T00:00:00Z',

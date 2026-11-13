@@ -69,15 +69,16 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   const providers = useMemo(() => buddyProviders(agentProviders(), reported), [reported]);
   const [outOfPatience, setOutOfPatience] = useState(false);
   const machineReady = reported !== null;
+  // Counted from when the page opens, not from the first report: a computer
+  // that never reports must not leave a spinner with nothing to press.
   useEffect(() => {
-    if (!machineReady) return;
     const timer = setTimeout(() => setOutOfPatience(true), CHECK_PATIENCE_MS);
     return () => clearTimeout(timer);
-  }, [machineReady]);
+  }, []);
   // The Start buttons appear once, together, and stay as they first were:
   // the row would change under the eye if each were added as its check came
   // back.
-  const decided = machineReady ? startButtons(providers, outOfPatience) : null;
+  const decided = machineReady || outOfPatience ? startButtons(providers, outOfPatience) : null;
   const [firstDecided, setFirstDecided] = useState<string[] | null>(null);
   useEffect(() => {
     if (decided && firstDecided === null) setFirstDecided(decided.map((provider) => provider.id));
@@ -92,7 +93,6 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     serverId,
     workspaceId,
     computer,
-    entryPoint: 'onboarding',
     onCreated,
   });
   const firstName = firstNameOf(buddyPerson(serverId).name);
@@ -137,7 +137,6 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         <ProviderSetup
           serverId={serverId}
           workspaceId={workspaceId}
-          entryPoint="onboarding"
           onCreated={onCreated}
           thisComputer={thisComputer}
         />
@@ -180,9 +179,14 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         }}
       />
       {computer.kind === 'failed' && (
-        <p role="alert" className="text-center text-sm text-destructive">
-          {computer.error}
-        </p>
+        <div className="flex flex-col items-center gap-2">
+          <p role="alert" className="text-center text-sm text-destructive">
+            {computer.error}
+          </p>
+          <Button variant="outline" size="sm" onClick={thisComputer.retry}>
+            Try again
+          </Button>
+        </div>
       )}
       {error && (
         <p role="alert" className="text-center text-sm text-destructive">

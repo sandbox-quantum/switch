@@ -293,6 +293,43 @@ class TestTokenExchange:
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "invalid_credential"
 
+    async def test_a_revoked_controllers_exchange_is_counted_as_a_refusal(
+        self, harness: Harness
+    ) -> None:
+        """The refusal a revoked controller really hits is on the public
+        token route, answered by the management routes themselves: counted
+        there, by code and kind of route only (observability)."""
+        from switch_core.observability.metrics import (
+            MetricsRegistry,
+            install,
+            uninstall,
+        )
+
+        owner = await add_member(harness.session_factory, "ada")
+        registry = MetricsRegistry()
+        install(registry)
+        try:
+            async with harness.client() as client:
+                controller = await enroll_console(harness, client, owner)
+                await client.delete(
+                    f"/gateway/management/controllers/{controller.controller_id}",
+                    cookies=cookies_for(owner),
+                )
+                response = await client.post(
+                    f"/v1/management/controllers/{controller.controller_id}/token",
+                    json={"credential": controller.credential},
+                )
+            counted = {
+                (dict(p.attributes)["reason"], dict(p.attributes)["route"]): p.value
+                for payload in registry.collect()
+                if payload.name == "switch.controller.credential_refusals"
+                for p in payload.numbers
+            }
+        finally:
+            uninstall()
+        assert response.status_code == 401
+        assert counted == {("invalid_credential", "management"): 1.0}
+
 
 class TestCredentialRotation:
     async def test_rotation_replaces_the_credential(self, harness: Harness) -> None:

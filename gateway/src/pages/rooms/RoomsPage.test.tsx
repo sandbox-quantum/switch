@@ -45,9 +45,12 @@ const room = (id: string, overrides: Partial<RoomSummary>) =>
     created_at: "2026-10-01T00:00:00Z",
     archived: false,
     viewer_is_member: false,
+    viewer_is_room_admin: false,
     can_write: false,
     can_change_members: false,
     can_manage: false,
+    can_archive: false,
+    can_manage_admins: false,
     can_unlink: false,
     can_transfer: false,
     ...overrides,
@@ -59,9 +62,17 @@ const ROOMS = [
     viewer_is_member: true,
     can_write: true,
     can_manage: true,
+    can_archive: true,
+    can_manage_admins: true,
     created_at: "2026-10-03T00:00:00Z",
   }),
-  room("open", { write_visibility: "public", can_write: true, created_at: "2026-10-02T00:00:00Z" }),
+  // Changed and archived, as a room admin may, but not managed.
+  room("open", {
+    write_visibility: "public",
+    can_write: true,
+    can_archive: true,
+    created_at: "2026-10-02T00:00:00Z",
+  }),
   room("readonly", { created_at: "2026-10-01T00:00:00Z" }),
   room("bridged", {
     bridge_id: "b1",
@@ -69,8 +80,10 @@ const ROOMS = [
     viewer_is_member: true,
     can_write: true,
     can_manage: true,
+    can_archive: true,
+    can_manage_admins: true,
   }),
-  room("old", { archived: true, viewer_is_member: true, can_write: true }),
+  room("old", { archived: true, viewer_is_member: true, can_write: true, can_archive: true }),
 ];
 
 vi.mock("../../data/hooks", () => ({
@@ -209,7 +222,7 @@ describe("RoomsPage rows and actions", () => {
     expect(rowNames()).toEqual(["old"]);
   });
 
-  it("offers archive on rooms the viewer may write, delete on rooms they manage", async () => {
+  it("offers archive on rooms the viewer may archive, delete on rooms they manage", async () => {
     render(<RoomsPage />);
 
     await openMenu("mine");

@@ -2,10 +2,16 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Template, TemplateRunRecord, require_tenant_id
+from switch_core.db.models import (
+    HiddenOfficialTemplate,
+    Template,
+    TemplateRunRecord,
+    require_tenant_id,
+)
 
 _LIKE_ESCAPE = "\\"
 
@@ -291,3 +297,26 @@ class TemplateStore:
             )
         )
         return int(result.scalar_one())
+
+    # ── Official templates removed from the workspace ──────────────────────
+    # Named by tenant as well as left to the policy: these also run on the
+    # owner connection the policy does not apply to.
+
+    async def hidden_official_slugs(self, session: AsyncSession) -> set[str]:
+        result = await session.execute(
+            select(HiddenOfficialTemplate.slug).where(
+                HiddenOfficialTemplate.tenant_id == require_tenant_id()
+            )
+        )
+        return set(result.scalars().all())
+
+    async def hide_official(
+        self, session: AsyncSession, slug: str, hidden_by: str
+    ) -> None:
+        """Remove an official template from the bound workspace; removing it
+        again changes nothing."""
+        await session.execute(
+            insert(HiddenOfficialTemplate)
+            .values(tenant_id=require_tenant_id(), slug=slug, hidden_by=hidden_by)
+            .on_conflict_do_nothing()
+        )

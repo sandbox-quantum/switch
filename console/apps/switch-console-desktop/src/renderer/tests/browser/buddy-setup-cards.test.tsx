@@ -597,15 +597,13 @@ describe('switch-buddy setup cards', () => {
     await shot(el, 'i-retry-done');
   });
 
-  it('(k) Console only: continuing here, with the chat apps one click away', async () => {
+  it('(k) Console only: setup cards are hidden after staying', async () => {
     timeline.messages = [
       { sender: { kind: 'human' }, body: 'I’ll stay in Switch Console for now.' },
     ];
     const el = await render();
 
-    expect(el.textContent).toContain('Continuing here in Switch Console.');
-    expect(findButton(el, 'Connect a chat app')).toBeDefined();
-    expect(el.textContent).not.toContain('Where does your team chat?');
+    expect(el.querySelector('[data-testid="buddy-setup-cards"]')).toBeNull();
     await shot(el, 'k-console-only');
   });
 

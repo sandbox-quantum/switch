@@ -43,6 +43,7 @@ from switch_core.observability.health import (
     session_activity_listener_check,
     signal_bus_check,
 )
+from switch_core.observability.hosted import HostedSampler, reconciler_watch
 from switch_core.observability.logs import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_QUEUE_CAPACITY,
@@ -55,7 +56,7 @@ from switch_core.observability.metrics import (
     install,
     uninstall,
 )
-from switch_core.observability.otlp import OtlpClient, OtlpResource
+from switch_core.observability.otlp import OtlpClient, OtlpResource, flint_env
 from switch_core.observability.pool import PoolStats
 from switch_core.observability.runtime import (
     EventLoopLag,
@@ -277,6 +278,7 @@ def start_observability(
         repository_url=switch_core_repository_url(),
         instance_id=process_id,
         pod_name=config.pod_name or socket.gethostname(),
+        flint_env=flint_env(config.environment),
     )
 
     if config.otlp_metrics_enabled:
@@ -294,6 +296,20 @@ def start_observability(
             registry.register_observer(sampler.readings)
             tasks.append(
                 asyncio.create_task(sampler.run_forever(), name="db-server-sampler")
+            )
+        if config.hosted_agents_enabled:
+            # How long since the hosted controller service last called this
+            # process: in memory, nothing started. Counted from now until it
+            # first calls, so a reconciler down at boot still reads as silent.
+            reconciler_watch().start()
+            registry.register_observer(reconciler_watch().readings)
+        if db_server_engine is not None and config.hosted_agents_enabled:
+            # Its own connection too: it holds the lock that makes this the
+            # one process reporting the cloud machines' gauges.
+            hosted = HostedSampler(db_server_engine)
+            registry.register_observer(hosted.readings)
+            tasks.append(
+                asyncio.create_task(hosted.run_forever(), name="hosted-sampler")
             )
         logger.info(
             "Reporting metrics to %s every %.0fs as service %r.",

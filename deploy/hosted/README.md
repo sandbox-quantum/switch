@@ -1,6 +1,6 @@
-# Switch cloud machines on EC2
+# Switch Cloud machines on EC2
 
-A Switch cloud machine is an EC2 VM, one per user whatever workspaces they
+A Switch Cloud machine is an EC2 VM, one per user whatever workspaces they
 use it in, that runs the standard `switch-agent-controller`, the program a
 laptop or an SSH host runs agents with, once per workspace. The user's managed
 agents placed on it run there, each as a Linux user of its own. Each machine
@@ -27,7 +27,7 @@ authenticated HTTPS API, as any agent controller does.
 
 ## How a user gets a machine
 
-Picking "Switch cloud" in Switch Console claims the user's machine
+Picking "Switch Cloud" in Switch Console claims the user's machine
 (`POST /gateway/hosted-machines/ensure`), or joins it from this workspace when
 the user already has one, and creates a managed agent on the machine's
 controller for this workspace once it has reported. A machine serves up to 8

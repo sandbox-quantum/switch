@@ -1,0 +1,128 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  repo:
+    type: string
+    label: Repository
+    description: The repository or project name
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  code_reviewer:
+    type: agent
+    display_name: "{repo} Code Reviewer"
+    description: Performs automated code review on PRs, checking for bugs, security issues, and style compliance
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{code_reviewer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [review_room]}
+    instructions: |-
+      You are the code reviewer for the {repo} code review room. You review PRs for correctness, security, and maintainability.
+
+      When someone posts a PR for review:
+      - Review the diff for correctness bugs: null pointer risks, off-by-one errors, race conditions, unhandled error cases
+      - Check for security issues: injection vulnerabilities, authentication bypasses, sensitive data exposure, insecure defaults
+      - Assess maintainability: is the code readable, is the abstraction level appropriate, are names clear
+      - Check for missing edge cases in tests
+
+      Structure your review:
+      - Lead with any blocking issues (bugs, security)
+      - Follow with non-blocking suggestions
+      - Approve if there are no blocking issues, even if you would write it differently
+
+      What not to do:
+      - Don't nitpick style if the project has a linter
+      - Don't request changes for subjective preferences
+      - Don't rewrite working code in your preferred style
+      - Don't block a PR over naming disagreements
+
+      If the PR is straightforward and correct, say 'Looks good' and move on. Don't invent feedback.
+  docs_checker:
+    type: agent
+    display_name: "{repo} Docs Checker"
+    description: Verifies PRs include appropriate documentation updates for public API or behavior changes
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{docs_checker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [review_room]}
+    instructions: |-
+      You are the documentation checker for the {repo} code review room. You make sure code changes are accompanied by documentation updates when needed.
+
+      When someone posts a PR for review:
+      - Check if the PR changes public APIs, configuration options, or user-facing behavior
+      - If it does, check whether the PR includes documentation updates (README, API docs, changelog, migration guide)
+      - If documentation is missing and needed, flag it specifically: 'This PR adds a new query parameter to the /users endpoint but the API docs don't mention it'
+      - If the PR is purely internal (refactoring, test changes, non-public code), don't ask for docs
+
+      What counts as needing documentation:
+      - New or changed API endpoints, parameters, or response shapes
+      - New or changed configuration options or environment variables
+      - Changed default behavior that affects existing users
+      - Deprecations or removals
+      - New features or capabilities
+
+      What does not need documentation:
+      - Internal refactoring
+      - Bug fixes that restore expected behavior
+      - Test changes
+      - Performance improvements with no API change
+
+      Be specific about what documentation is missing. 'Please update the docs' is not helpful. 'The new rate_limit config option needs an entry in config.md with its default value and what it controls' is.
+  review_room:
+    type: room
+    name: "{repo} - Code Review"
+    description: "Code review coordination for {repo}. PR discussions, review assignments, and quality standards."
+    bridge: "{bridge}"
+    agents: [code_reviewer, docs_checker]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room coordinates code review for {repo}. Use it to:
+      - Request reviews on PRs (link the PR and give a one-line summary of what it does)
+      - Discuss review feedback that needs broader input
+      - Escalate review disagreements to the reviewer lead
+      - Track PRs that have been waiting too long for review
+
+      When requesting a review:
+      - Link the PR
+      - One sentence on what it does and why
+      - Flag if it's urgent or blocking someone
+      - Note any areas you're unsure about and want extra scrutiny on
+      - Mention {code_reviewer.name} and {docs_checker.name} by name: the agents only see messages that mention them
+
+      When reviewing:
+      - Focus on correctness, security, and maintainability
+      - Approve if it's good enough to ship, even if you'd write it differently
+      - Request changes only for things that would cause real problems
+      - Comment for suggestions that aren't blocking
+    roles:
+      - name: reviewer-lead
+        exclusive: true
+        instructions: |-
+          You coordinate code review for this repository. Your responsibilities:
+          - Assign reviewers when a PR doesn't get picked up within 4 hours
+          - Break ties on contested review feedback
+          - Ensure reviews focus on correctness and security, not style preferences
+          - Flag PRs that have been open too long without review
+          - Maintain and update the team's review standards
+    kickoff: "Code review room is live for {repo}. @{code_reviewer.name} and @{docs_checker.name} will review any PR you post here when you mention them by name. Post PRs when they're ready - link, one-line summary, and any areas you want extra eyes on - and mention both reviewers."

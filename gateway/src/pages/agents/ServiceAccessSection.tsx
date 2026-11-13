@@ -55,7 +55,7 @@ function installationOf(
 }
 
 /** The repositories a GitHub grant names, by full name where the person can still see them. */
-function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
+export function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
   const installation = installationOf(github, grant.resources);
   return repositoryIds(grant.resources).map((id) => {
     const repository = installation?.repositories.find((r) => r.id === id);
@@ -107,20 +107,25 @@ export default function ServiceAccessSection({
     }
   }, [agent.id]);
 
-  const loadServices = useCallback(async () => {
+  const loadServices = useCallback(async (): Promise<ServiceConnection[] | null> => {
     try {
-      setServices(await fetchServiceConnections());
+      const list = await fetchServiceConnections();
+      setServices(list);
+      return list;
     } catch (err) {
       setServicesError(errorText(err));
+      return null;
     }
   }, []);
 
   // The viewer's own connections are read only once the grants show this is
-  // their agent.
+  // their agent. GitHub's only while it is set up here: until then the server
+  // has no connection to answer with, and the form says it is not set up.
   useEffect(() => {
-    void load().then((own) => {
+    void load().then(async (own) => {
       if (!own) return;
-      void loadServices();
+      const list = await loadServices();
+      if (list?.find((service) => service.slug === "github")?.server_setup_needed) return;
       fetchGitHubConnection().then(setGitHub, (err: unknown) => setGitHubError(errorText(err)));
     });
   }, [load, loadServices]);
@@ -147,6 +152,8 @@ export default function ServiceAccessSection({
   const onOff = services.filter((service) => service.enabled && service.pass_through);
   const onOffSlugs = new Set(onOff.map((service) => service.slug));
   const githubService = services.find((service) => service.slug === "github") ?? null;
+  // Why GitHub can't be granted here at all, said where its form would be.
+  const githubBlocked = githubService === null ? null : serviceBlockedReason(githubService);
 
   return (
     <>
@@ -189,9 +196,8 @@ export default function ServiceAccessSection({
             }
           >
             Anyone who can address {agent.name} can have it use these grants. Owner-only
-            stops that, but it still reads what others write in shared rooms, can be
-            reached through your other agents that are open, and posts results to
-            shared rooms.
+            stops that: only you can address it. It still reads what others write in
+            shared rooms and posts results there.
           </Alert>
         )}
 
@@ -206,7 +212,7 @@ export default function ServiceAccessSection({
                 variant="outlined"
                 label={grant.access === "write" ? "Read and write" : "Read"}
               />
-              {canGrant && grant.service === "github" && (
+              {canGrant && grant.service === "github" && githubBlocked === null && (
                 <Button size="small" disabled={busy} onClick={() => setEditing(true)}>
                   Change
                 </Button>
@@ -229,6 +235,11 @@ export default function ServiceAccessSection({
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
               {grant.summary}
             </Typography>
+            {grant.access === "write" && readOnlyReasonFor(services, grant.service) && (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                {readOnlyReasonFor(services, grant.service)}
+              </Alert>
+            )}
             {grant.service === "github" && (
               <Typography variant="body2" sx={{ mt: 0.5 }}>
                 {repositoryNames(github, grant).join(", ")}
@@ -255,13 +266,18 @@ export default function ServiceAccessSection({
             />
           ))}
 
-        {grants && canGrant && (editing || !githubGrant) && (
+        {grants && canGrant && githubBlocked !== null && (
+          <Typography variant="body2" color="text.secondary">
+            {githubBlocked}
+            {isOperator && githubService?.server_setup_needed && <SetUpLink />}
+          </Typography>
+        )}
+        {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
           <GitHubGrantForm
             github={github}
             githubError={githubError}
-            notSetUp={githubService?.server_setup_needed ? githubService.unavailable_reason : null}
-            canSetUp={isOperator}
             current={githubGrant}
+            readOnlyReason={githubService?.read_only_reason ?? null}
             busy={busy}
             onCancel={githubGrant ? () => setEditing(false) : null}
             onSave={(access, resources) =>
@@ -283,9 +299,11 @@ export default function ServiceAccessSection({
 /**
  * What turning on a service whose agents use the owner's own token means, and
  * how long turning it off takes: Switch stops handing it out within a minute,
- * and a token that lives longer stays valid at the vendor until it expires. A
- * service connected with a key hands out the key itself, which does not
- * expire, so its note says only how far the key reaches.
+ * and a token that lives longer may keep working at the vendor until it
+ * expires. Whether disconnecting ends it sooner is the vendor's to say, so the
+ * note does not promise it; the disconnect's own warning says what it could
+ * not take back. A service connected with a key hands out the key itself,
+ * which does not expire, so its note says only how far the key reaches.
  */
 export function onOffGrantNote(
   agentName: string,
@@ -296,9 +314,35 @@ export function onOffGrantNote(
   if (service.key)
     return `On, ${agentName} uses ${name} with your key, as far as the key allows. ${off}`;
   const note = `On, ${agentName} acts as you at ${name}, with everything your ${name} connector allows. ${off}`;
-  return service.token_lifetime !== null && service.token_lifetime > 3600
-    ? `${note} A token already handed out stays valid at ${name} until it expires or you disconnect.`
-    : note;
+  if (service.token_lifetime === null || service.token_lifetime <= 3600) return note;
+  const hours = Math.ceil(service.token_lifetime / 3600);
+  return `${note} A token already handed out may keep working at ${name} until it expires, up to ${hours} hours after it was handed out.`;
+}
+
+/**
+ * Why the service can't be used by agents here at all, whoever is connected:
+ * the server's own reason first, then the workspace's switch, worded as the
+ * server's refusal is. Null when neither stops it.
+ */
+export function serviceBlockedReason(
+  service: Pick<ServiceConnection, "name" | "unavailable_reason" | "workspace_enabled">,
+): string | null {
+  if (service.unavailable_reason !== null) return service.unavailable_reason;
+  if (!service.workspace_enabled)
+    return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
+  return null;
+}
+
+/**
+ * Why a service can be granted for reading only on this server, which a
+ * write grant on it made before gets no token for; null where writing can
+ * be granted too.
+ */
+export function readOnlyReasonFor(
+  services: Pick<ServiceConnection, "slug" | "read_only_reason">[],
+  slug: string,
+): string | null {
+  return services.find((service) => service.slug === slug)?.read_only_reason ?? null;
 }
 
 /** The operator's way from a service that is not set up to where it is set
@@ -338,9 +382,10 @@ function OnOffGrant({
   onTurnOff: () => void;
 }) {
   const connected = service.status === "active";
+  // Said whether or not it is on: on, the grant does nothing until it changes.
+  const blocked = serviceBlockedReason(service);
   // A grant can be turned off whatever the server's state; on needs a usable connection.
-  const blocked =
-    grant === null && (!canTurnOn || !connected || service.unavailable_reason !== null);
+  const blocksOn = grant === null && (!canTurnOn || !connected || blocked !== null);
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }}>
       <Stack direction="row" alignItems="center" spacing={1}>
@@ -350,7 +395,7 @@ function OnOffGrant({
         <Chip size="small" variant="outlined" label={grant ? "On" : "Off"} />
         <Switch
           checked={grant !== null}
-          disabled={busy || blocked}
+          disabled={busy || blocksOn}
           onChange={(_, on) => (on ? onTurnOn() : onTurnOff())}
           slotProps={{ input: { "aria-label": `${service.name} for ${agentName}` } }}
         />
@@ -366,13 +411,13 @@ function OnOffGrant({
           Signs in through your organization&apos;s {service.name} app.
         </Typography>
       )}
-      {service.unavailable_reason && (
+      {blocked && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          {service.unavailable_reason}
+          {blocked}
           {canSetUp && service.server_setup_needed && <SetUpLink />}
         </Typography>
       )}
-      {!grant && !connected && !service.unavailable_reason && (
+      {!grant && !connected && !blocked && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
           To turn {service.name} on, first connect it in Switch Console, under Connectors.
         </Typography>
@@ -384,22 +429,20 @@ function OnOffGrant({
   );
 }
 
-function GitHubGrantForm({
+export function GitHubGrantForm({
   github,
   githubError,
-  notSetUp,
-  canSetUp,
   current,
+  readOnlyReason,
   busy,
   onCancel,
   onSave,
 }: {
   github: GitHubConnection | null;
   githubError: string | null;
-  /** Why GitHub is not set up on this server, when its App is not. */
-  notSetUp: string | null;
-  canSetUp: boolean;
   current: ServiceGrant | null;
+  /** Why the server's App lets agents read only; null where pushing can be granted. */
+  readOnlyReason: string | null;
   busy: boolean;
   onCancel: (() => void) | null;
   onSave: (access: Access, resources: Record<string, unknown>) => void;
@@ -414,13 +457,6 @@ function GitHubGrantForm({
     current ? repositoryIds(current.resources) : [],
   );
 
-  if (notSetUp)
-    return (
-      <Typography variant="body2" color="text.secondary">
-        {notSetUp}
-        {canSetUp && <SetUpLink />}
-      </Typography>
-    );
   if (githubError) return <Alert severity="error">{githubError}</Alert>;
   if (github === null) return <CircularProgress size={20} />;
   if (github.status === "not_connected")
@@ -471,8 +507,14 @@ function GitHubGrantForm({
             value="write"
             control={<Radio size="small" />}
             label="Read and push"
+            disabled={readOnlyReason !== null}
           />
         </RadioGroup>
+        {readOnlyReason && (
+          <Typography variant="body2" color="text.secondary">
+            {readOnlyReason}
+          </Typography>
+        )}
         <Box sx={{ display: "flex", gap: 1 }}>
           <Button
             variant="contained"

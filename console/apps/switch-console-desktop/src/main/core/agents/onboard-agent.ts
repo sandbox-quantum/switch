@@ -254,6 +254,6 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   await autoSessionWatcher.bringUp(agent.id, 'explicit');
 
   await locationManager.openLocation(location);
-  agentEvents._emit('agent:created', agent, ONBOARD_ENTRY_POINT);
+  agentEvents._emit('agent:created', agent, ONBOARD_ENTRY_POINT, 'created');
   return ok(agent);
 }

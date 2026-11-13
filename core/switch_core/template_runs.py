@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -200,6 +200,28 @@ def pending_addressing(
         for plan in plans
         if plan.addressing in TEMPLATE_ADDRESSING
     }
+
+
+def opening_rooms_as_made(
+    creator: TemplateAgents | None,
+    tenant_id: str,
+    created: Sequence[CreatedAgent],
+    room_addressing: dict[str, list[str]],
+) -> Callable[[str, str], Awaitable[None]] | None:
+    """What provisioning calls as each room is made, before its kickoff:
+    opens the run's agents to the rooms made so far (see
+    `TemplateAgents.open_to_rooms`). None when no agent is opened to a room."""
+    if creator is None or not room_addressing:
+        return None
+    made: dict[str, str] = {}
+
+    async def room_made(name: str, room_id: str) -> None:
+        made[name] = room_id
+        await creator.open_to_rooms(
+            tenant_id, created, room_addressing, dict(made), so_far=True
+        )
+
+    return room_made
 
 
 def room_ids_of(result: dict[str, Any]) -> dict[str, str]:
@@ -583,21 +605,32 @@ class TemplateAgents:
         created: Sequence[CreatedAgent],
         room_addressing: dict[str, list[str]],
         room_ids: dict[str, str],
+        *,
+        so_far: bool = False,
     ) -> None:
         """Let anyone in the named rooms address the agents opened to them,
-        once those rooms exist, on top of their owner."""
+        once those rooms exist, on top of their owner.
+
+        With ``so_far``, the rooms made so far: called as each room is made,
+        before its kickoff is posted, so the kickoff reaches the agents it
+        mentions. An agent is opened to those of its rooms that exist, and a
+        room still to come is not an error. Without it, every room named must
+        exist."""
         for agent in created:
             rooms = room_addressing.get(agent.name)
             if not rooms:
                 continue
             missing = [r for r in rooms if r not in room_ids]
-            if missing:
+            if missing and not so_far:
                 raise RuntimeError(
                     f"{agent.name} is opened to {', '.join(missing)}, which "
                     "the run did not create"
                 )
+            made = [room_ids[r] for r in rooms if r in room_ids]
+            if not made:
+                continue
             policy = owner_only_policy([])
-            policy.rules.append(AddressingRule(rooms=[room_ids[r] for r in rooms]))
+            policy.rules.append(AddressingRule(rooms=made))
             async with tenant_session(
                 self._protocol.session_factory, tenant_id
             ) as session:

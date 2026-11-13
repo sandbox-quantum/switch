@@ -42,6 +42,90 @@ def _interactions(messages: list[Message]) -> list[str]:
     return [f"- {a} -> {b}: {n}" for (a, b), n in pairs.most_common(10)]
 
 
+CONVERSATION_RULE = (
+    "A message right after an agent answered or addressed the sender, in a thread "
+    "or in the room, continues that conversation and is for that agent, even when "
+    'it is short ("continue", "yes", "go ahead", "merged", "you here?"), unless it '
+    "answers or names another person."
+)
+
+
+def _back_and_forth(
+    messages: list[Message], sender: str, agents: set[str]
+) -> tuple[str, int] | None:
+    """The agent the sender has been going back and forth with at the end of
+    `messages`, with nobody else in between, and how many times it spoke. The
+    sender must have spoken in that stretch, or the agent addressed them."""
+    partner = next((m.sender for m in reversed(messages) if m.sender != sender), None)
+    if partner not in agents:
+        return None
+    turns = 0
+    involved = False
+    for m in reversed(messages):
+        if m.sender not in (sender, partner):
+            break
+        turns += m.sender == partner
+        involved = involved or m.sender == sender or sender in m.addressed
+    return (partner, turns) if involved else None
+
+
+def _thread_agent(thread: list[Message], agents: set[str]) -> str | None:
+    """The agent that spoke or was addressed most recently in the thread."""
+    for m in reversed(thread):
+        if m.sender_kind == "agent" and m.sender in agents:
+            return m.sender
+        tagged = [a for a in m.addressed if a in agents]
+        if tagged:
+            return tagged[-1]
+    return None
+
+
+def conversation_state(req: DecideRequest, history_limit: int) -> list[str]:
+    """What the visible conversation says about the sender being mid-exchange
+    with an agent, one line per fact; empty when they aren't."""
+    agents = {a.name for a in req.agents}
+    sender = req.message.sender
+    thread = req.thread[-history_limit:]
+    in_thread = bool(req.message.thread_id and thread)
+    messages = thread if in_thread else req.recent[-history_limit:]
+    lines = []
+    exchange = _back_and_forth(messages, sender, agents)
+    if exchange:
+        agent, turns = exchange
+        lines.append(
+            f"- {sender}'s current back-and-forth with agents, nobody else speaking "
+            f"in between: {agent} ({turns})"
+        )
+    if in_thread and (agent := _thread_agent(thread, agents)):
+        spoke = [i for i, m in enumerate(thread) if m.sender == agent]
+        if not spoke:
+            since = "it has not spoken in the visible thread."
+        else:
+            others = sorted(
+                {m.sender for m in thread[spoke[-1] + 1 :] if m.sender != sender}
+            )
+            since = (
+                f"since then {', '.join(others)} spoke."
+                if others
+                else "nobody else has spoken since."
+            )
+        lines.append(
+            f"- In this thread, the last agent to speak or be addressed is {agent}; {since}"
+        )
+    if messages:
+        last = messages[-1]
+        replied_to = len(messages) >= 2 and messages[-2].sender == sender
+        if (
+            last.sender_kind == "agent"
+            and last.sender in agents
+            and (sender in last.addressed or replied_to)
+        ):
+            lines.append(
+                f"- The message just before this one is from {last.sender}, to {sender}."
+            )
+    return lines
+
+
 def build_state(req: DecideRequest, history_limit: int) -> str:
     """The room's context as one text block: what a decision model reads."""
     agents = "\n".join(
@@ -67,6 +151,9 @@ def build_state(req: DecideRequest, history_limit: int) -> str:
     talked = _interactions(recent + thread)
     if talked:
         parts.append("Who talked to whom recently:\n" + "\n".join(talked))
+    state = conversation_state(req, history_limit)
+    if state:
+        parts.append("Conversation state:\n" + "\n".join(state))
     where = (
         "in the thread above"
         if req.message.thread_id
@@ -78,9 +165,19 @@ def build_state(req: DecideRequest, history_limit: int) -> str:
     return "\n\n".join(parts)
 
 
+_SYSTEM_RULES, _SYSTEM_FORMAT = SYSTEM.split("\n\nGive a short reason first")
+
+
+def system_prompt(req: DecideRequest, history_limit: int) -> str:
+    """SYSTEM, with the conversation rule when the sender is mid-exchange."""
+    if not conversation_state(req, history_limit):
+        return SYSTEM
+    return f"{_SYSTEM_RULES}\n{CONVERSATION_RULE}\n\nGive a short reason first{_SYSTEM_FORMAT}"
+
+
 def build_messages(req: DecideRequest, history_limit: int) -> list[dict[str, str]]:
     return [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": system_prompt(req, history_limit)},
         {"role": "user", "content": build_state(req, history_limit)},
     ]
 
@@ -106,6 +203,13 @@ NONE_CRITERION = (
 )
 
 
+def speaker_instructions(req: DecideRequest, history_limit: int) -> str:
+    """SPEAKER_INSTRUCTIONS, with the conversation rule when the sender is mid-exchange."""
+    if not conversation_state(req, history_limit):
+        return SPEAKER_INSTRUCTIONS
+    return f"{SPEAKER_INSTRUCTIONS} {CONVERSATION_RULE}"
+
+
 def systemone_request(req: DecideRequest, model: str, history_limit: int) -> dict:
     criteria = {
         a.name: f"{a.name}: {a.description}" + (f" (role: {a.role})" if a.role else "")
@@ -118,7 +222,7 @@ def systemone_request(req: DecideRequest, model: str, history_limit: int) -> dic
         "questions": {
             SPEAKER_QUESTION: {
                 "type": "choice",
-                "instructions": SPEAKER_INSTRUCTIONS,
+                "instructions": speaker_instructions(req, history_limit),
                 "criteria": criteria,
             }
         },
@@ -170,6 +274,15 @@ LETTER_SYSTEM = (
 )
 
 
+def letter_system(req: DecideRequest, history_limit: int) -> str:
+    """LETTER_SYSTEM, with the conversation rule when the sender is mid-exchange."""
+    if not conversation_state(req, history_limit):
+        return LETTER_SYSTEM
+    return LETTER_SYSTEM.replace(
+        "\n\nAnswer with the letter", f"\n{CONVERSATION_RULE}\n\nAnswer with the letter"
+    )
+
+
 def letter_messages(
     req: DecideRequest, history_limit: int
 ) -> tuple[list[dict[str, str]], dict[str, str]]:
@@ -192,6 +305,6 @@ def letter_messages(
         + "\n\nAnswer:"
     )
     return [
-        {"role": "system", "content": LETTER_SYSTEM},
+        {"role": "system", "content": letter_system(req, history_limit)},
         {"role": "user", "content": user},
     ], options

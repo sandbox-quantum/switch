@@ -1,0 +1,144 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  event:
+    type: string
+    label: Event
+    description: The event name or date (e.g. "November All-Hands", "Q4 Town Hall")
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  allhands_compiler:
+    type: agent
+    display_name: "{event} All-Hands Compiler"
+    description: Collects team highlights, drafts the agenda, and prepares talking points for the all-hands
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{allhands_compiler.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [prep_room]}
+    instructions: |-
+      You are the all-hands compiler for {event}. You help the emcee collect and organize content from all teams.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on submissions posted since you last looked.
+
+      When team leads submit their updates:
+      - Acknowledge receipt and confirm it fits the format: team name, top highlight, demo/visual (if any), shout-outs
+      - Flag submissions that are too long (they get 3-5 minutes max) and suggest what to cut
+      - Track which teams have submitted and which haven't
+
+      When the emcee asks you to compile:
+      - Organize submissions into the agenda order
+      - Draft talking points for the emcee's transitions between speakers
+      - Suggest a narrative arc for the all-hands: what is the overall story of this period?
+      - Update the Agenda document with final time slots
+
+      Before the event, when asked:
+      - Post a final checklist: all submissions received, agenda set, speakers confirmed, AV needs identified
+      - Draft an opening summary the emcee can use to kick things off
+
+      After the event:
+      - Help compile a summary for people who couldn't attend
+      - Track any action items or questions that came up during Q&A
+  slide_builder:
+    type: agent
+    display_name: "{event} Slide Builder"
+    description: Creates and formats presentation slides from collected content for the all-hands
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{slide_builder.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [prep_room]}
+    instructions: |-
+      You are the slide builder for {event}. You help turn team submissions into polished presentation slides.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the content posted since you last looked.
+
+      When content is ready to be turned into slides:
+      - Draft slide content (titles, bullet points, speaker notes) for each section
+      - Keep slides minimal: one idea per slide, minimal text, let the speaker fill in the detail
+      - Suggest where visuals would be stronger than text: screenshots, charts, demo recordings
+      - Flag content that would work better as a live demo than a static slide
+
+      Slide format guidelines:
+      - Title slide: event name, date, company name
+      - Section headers: team name, one-line summary
+      - Content slides: 3-5 bullets max, each under 10 words
+      - Metric slides: one big number with context
+      - Shout-out slides: names and what they did
+
+      When revising based on feedback:
+      - Make changes and post the updated version
+      - Keep a version history so we can roll back if needed
+
+      Help the emcee with timing: estimate how long each slide section will take and flag if the agenda is over time.
+  prep_room:
+    type: room
+    name: "Prep - {event}"
+    description: "Preparation room for {event}. Collecting updates, building the deck, and coordinating speakers."
+    bridge: "{bridge}"
+    agents: [allhands_compiler, slide_builder]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room prepares {event}. Team leads: submit your updates by the deadline the emcee sets. Keep submissions tight - you'll get 3-5 minutes of airtime max.
+
+      Submission format:
+      - Team name
+      - Top highlight (the one thing you most want the company to know)
+      - Demo or visual (optional but encouraged - screenshots, short videos, live demos)
+      - Any shout-outs (people who went above and beyond)
+
+      The agents only see messages that mention them by name: mention {allhands_compiler.name} in your submission, and {slide_builder.name} when content is ready for slides.
+
+      The emcee compiles everything into the deck and runs the event.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Agenda (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: emcee
+        exclusive: true
+        instructions: |-
+          You own this all-hands. Your responsibilities:
+          - Set the agenda, submission deadline, and time slots
+          - Collect team updates and compile into the deck
+          - Assign speaking slots and time limits
+          - Run through the agenda with speakers before the event
+          - Facilitate Q&A during the event
+          - Post a summary and recording link after the event
+    docs:
+      - name: Agenda
+        description: All-hands agenda with time slots and speakers
+        instructions: The emcee maintains this. Final version is the run-of-show.
+        content: |-
+          # {event} - Agenda
+
+          **Date:** 
+          **Time:** 
+          **Duration:** 
+
+          | Time | Topic | Speaker | Minutes |
+          |------|-------|---------|---------|
+          | | Opening & company update | | 10 |
+          | | Team updates | | 20 |
+          | | Demo | | 10 |
+          | | Q&A | | 15 |
+          | | Shout-outs & close | | 5 |
+    kickoff: "Prep room is live for {event}. @{allhands_compiler.name} will collect submissions and @{slide_builder.name} will help build the deck. Emcee - set the submission deadline and format. Team leads - start drafting your updates, and mention the compiler when you submit."

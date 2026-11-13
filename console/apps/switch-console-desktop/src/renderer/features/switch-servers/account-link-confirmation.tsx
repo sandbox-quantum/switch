@@ -1,10 +1,11 @@
 import { format } from 'date-fns';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { log } from '@renderer/utils/logger';
@@ -43,10 +44,17 @@ export type AccountLinkTarget = {
  * The server keeps no copy of a code, so there is no "show it again": every
  * code shown after the first is a new one, and asking for it retires the last.
  *
+ * A current server also messages the account with three numbers to pick from
+ * (CHOO-4121). When that message went out, the number to tap leads, with a
+ * button that opens the message where the platform can link to it, and the code
+ * is the fallback; when it could not, the server says why and the code is all
+ * there is.
+ *
  * A pending link can also be cancelled somewhere else — by an admin, on another
- * device, by unlinking — and the screen notices rather than waiting forever.
- * An unverified link cannot be watched that way: the pending list leaves out
- * requests for links that already exist, so its absence there says nothing.
+ * device, by unlinking, by "Not me" or a wrong number in that message — and the
+ * screen notices rather than waiting forever. An unverified link is watched in
+ * the linked list instead, since the pending list leaves out requests for links
+ * that already exist: "Not me" removes it, and its leaving the list is the sign.
  */
 export const AccountLinkConfirmation = observer(function AccountLinkConfirmation({
   workspaceId,
@@ -143,15 +151,22 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
   // so one read of each can straddle it and show neither. The pending read
   // counts only if it was made since the screen opened; then a read of the
   // linked accounts begun after it settles which happened.
+  // An unverified link counts only as gone once this screen has seen it listed.
+  const listed = identities?.some((i) => i.id === target.identityId) ?? false;
+  const sawListed = useRef(false);
+  useEffect(() => {
+    if (listed) sawListed.current = true;
+  }, [listed]);
   const absent =
-    target.kind === 'pending' &&
     !gone &&
     confirmed === null &&
     identities !== null &&
-    pending !== null &&
-    pendingReadAt >= openedAt &&
-    !pending.some((p) => p.id === target.identityId) &&
-    !identities.some((i) => i.id === target.identityId);
+    !listed &&
+    (target.kind === 'pending'
+      ? pending !== null &&
+        pendingReadAt >= openedAt &&
+        !pending.some((p) => p.id === target.identityId)
+      : sawListed.current);
   useEffect(() => {
     if (!absent) return;
     let current = true;
@@ -253,6 +268,12 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
     );
   }
 
+  // Only the latest message counts: a new code retires the buttons on the one
+  // before.
+  const prompt = code?.prompt ?? null;
+  const promptSent = prompt?.sent === true;
+  const promptLink = promptSent ? (prompt?.link ?? null) : null;
+
   if (gone) {
     return (
       <div
@@ -260,7 +281,11 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
         data-testid="account-link-confirmation"
       >
         <p className="text-sm text-foreground">
-          The link to {handle} was cancelled, so its code no longer works.
+          {target.kind === 'unverified'
+            ? `The link to ${handle} was removed — it may have been declined in ${bridgeDisplayName} — so it no longer works.`
+            : promptSent
+              ? `The link to ${handle} was cancelled — it may have been declined in ${bridgeDisplayName} — so its code no longer works.`
+              : `The link to ${handle} was cancelled, so its code no longer works.`}
         </p>
         <Button size="sm" onClick={onStartAgain}>
           Start again
@@ -270,58 +295,106 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
   }
 
   const busy = issuing || cancelling;
+  const goal = target.kind === 'pending' ? 'finish linking' : 'confirm the link';
+  const waiting = promptSent ? 'Waiting for confirmation.' : 'Waiting for the code.';
+
+  const codeBox = (
+    <div className={SHOWN_BOX}>
+      {code === null ? (
+        <span className="flex items-center gap-2 text-sm text-foreground-muted">
+          <Spinner className="size-3.5" />
+          Getting a code…
+        </span>
+      ) : (
+        <span data-testid="link-code" className={`select-all ${shownText(expired)}`}>
+          {code.code}
+        </span>
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        className="shrink-0"
+        disabled={code === null || expired}
+        onClick={() => void copy()}
+      >
+        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+        {copied ? 'Copied' : 'Copy'}
+      </Button>
+    </div>
+  );
+
+  const instructions = code !== null && (
+    <p className="text-xs text-foreground-muted">
+      <InlineCode text={code.instructions} />
+    </p>
+  );
+
   return (
     <div className="flex w-full flex-col gap-4" data-testid="account-link-confirmation">
-      <p className="text-sm text-foreground">
-        {target.kind === 'pending'
-          ? `To finish linking ${handle}, post this code from that account in ${bridgeDisplayName}.`
-          : `Confirm ${handle} is yours by posting this code from that account in ${bridgeDisplayName}. The link keeps working meanwhile.`}
-      </p>
-
-      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background-1 px-3 py-2.5">
-        {code === null ? (
-          <span className="flex items-center gap-2 text-sm text-foreground-muted">
-            <Spinner className="size-3.5" />
-            Getting a code…
-          </span>
-        ) : (
-          <span
-            data-testid="link-code"
-            className={`font-mono text-xl tracking-widest select-all ${expired ? 'text-foreground-muted line-through' : 'text-foreground'}`}
-          >
-            {code.code}
-          </span>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          disabled={code === null || expired}
-          onClick={() => void copy()}
-        >
-          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-          {copied ? 'Copied' : 'Copy'}
-        </Button>
-      </div>
-
-      {code !== null && (
-        <p className="text-xs text-foreground-muted">
-          <InlineCode text={code.instructions} />
-        </p>
+      {prompt !== null && prompt.sent ? (
+        <>
+          <p className="text-sm text-foreground">
+            {target.kind === 'pending'
+              ? `We sent ${handle} a message in ${bridgeDisplayName}. Tap ${prompt.number} there to finish linking.`
+              : `We sent ${handle} a message in ${bridgeDisplayName}. Tap ${prompt.number} there to confirm the link. The link keeps working meanwhile.`}
+          </p>
+          <div className={SHOWN_BOX}>
+            <span data-testid="link-prompt-number" className={shownText(expired)}>
+              {prompt.number}
+            </span>
+          </div>
+          {promptLink !== null && (
+            <Button
+              size="sm"
+              className="self-start"
+              onClick={() =>
+                void openExternalUrl(promptLink, `Could not open ${bridgeDisplayName}`)
+              }
+            >
+              <ExternalLink className="size-3" />
+              Open in {bridgeDisplayName}
+            </Button>
+          )}
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-foreground-muted">
+              Didn’t get it? Post this code from that account instead:
+            </p>
+            {codeBox}
+            {instructions}
+          </div>
+        </>
+      ) : (
+        <>
+          {prompt !== null && (
+            <p data-testid="link-prompt-unavailable" className="text-xs text-foreground-muted">
+              {prompt.unavailableReason === null
+                ? `Couldn’t message ${handle} directly.`
+                : `Couldn’t message ${handle} directly: ${prompt.unavailableReason}`}
+            </p>
+          )}
+          <p className="text-sm text-foreground">
+            {target.kind === 'pending'
+              ? `To finish linking ${handle}, post this code from that account in ${bridgeDisplayName}.`
+              : `Confirm ${handle} is yours by posting this code from that account in ${bridgeDisplayName}. The link keeps working meanwhile.`}
+          </p>
+          {codeBox}
+          {instructions}
+        </>
       )}
 
       {shown !== null &&
         (expired ? (
           <p className="text-xs text-amber-600 dark:text-amber-500">
-            This code has expired. Get a new one to{' '}
-            {target.kind === 'pending' ? 'finish linking' : 'confirm the link'}.
+            {promptSent
+              ? `This code has expired. Send again to ${goal}.`
+              : `This code has expired. Get a new one to ${goal}.`}
           </p>
         ) : (
           <p className="flex items-center gap-2 text-xs text-foreground-muted">
             <Spinner className="size-3" />
             {Number.isFinite(shown.deadline)
-              ? `Waiting for the code. It expires at ${format(shown.deadline, 'HH:mm')}.`
-              : 'Waiting for the code.'}
+              ? `${waiting} ${promptSent ? 'The code' : 'It'} expires at ${format(shown.deadline, 'HH:mm')}.`
+              : waiting}
           </p>
         ))}
 
@@ -332,7 +405,13 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
           disabled={busy}
           onClick={() => void issueCode()}
         >
-          {issuing ? 'Getting a code…' : 'Get a new code'}
+          {promptSent
+            ? issuing
+              ? 'Sending…'
+              : 'Send again'
+            : issuing
+              ? 'Getting a code…'
+              : 'Get a new code'}
         </Button>
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => void cancel()}>
           {cancelling
@@ -347,6 +426,14 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
     </div>
   );
 });
+
+/** The box a code, or the number to tap, is shown in. */
+const SHOWN_BOX =
+  'flex items-center justify-between gap-3 rounded-md border border-border bg-background-1 px-3 py-2.5';
+
+function shownText(expired: boolean): string {
+  return `font-mono text-xl tracking-widest ${expired ? 'text-foreground-muted line-through' : 'text-foreground'}`;
+}
 
 /** A code with when it stops working, on this machine's clock. */
 type ShownCode = { code: LinkCode; deadline: number };

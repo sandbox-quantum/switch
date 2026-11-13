@@ -28,6 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.registration_bootstrap import (
+    SERVICE_ACCOUNT_ADMIN_REFUSAL,
+    is_bootstrap_owner,
+)
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import (
@@ -142,7 +146,10 @@ def _member_detail(
         created_at=str(member.created_at),
         warning=warning,
         can_change_role=change,
-        can_grant_org_admin=change and accepts_promotion,
+        # Never the registration service account (`SERVICE_ACCOUNT_ADMIN_REFUSAL`).
+        can_grant_org_admin=change
+        and accepts_promotion
+        and not is_bootstrap_owner(user),
         # Removing takes the organization's own admin; the operator restoring
         # one is let through to change roles only.
         can_remove=access is not None and not access.platform_access,
@@ -765,6 +772,12 @@ async def update_organization_member_role(
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
+    if req.role == ORGANIZATION_ADMIN_ROLE and member.role != ORGANIZATION_ADMIN_ROLE:
+        target = await user_store.get(session, user_id)
+        if target is None:
+            raise RuntimeError(f"Organization member {user_id} has no user")
+        if is_bootstrap_owner(target):
+            raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ADMIN_REFUSAL)
     last_admin = "Cannot demote the last organization admin"
     # Before the directory is asked, so the plain case costs no sign-in; the
     # count that decides is taken under the lock below.

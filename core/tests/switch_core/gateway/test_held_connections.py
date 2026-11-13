@@ -96,7 +96,14 @@ class _Provisioning:
     async def invite_to_room(self, transport_room_id: str, user_id: str) -> None:
         self._calls.record("matrix invite")
 
-    async def kick_user(self, transport_room_id: str, user_id: str) -> None:
+    async def record_leave(
+        self, session: object, room_id: str, user_id: str, **_kwargs: object
+    ) -> Callable[[], None]:
+        return lambda: None
+
+    async def kick_user(
+        self, transport_room_id: str, user_id: str, **_kwargs: object
+    ) -> None:
         self._calls.record("matrix kick")
 
     async def delete_room(self, transport_room_id: str) -> None:
@@ -183,6 +190,11 @@ class _CollabLifecycle:
 
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
 
     def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
         return True

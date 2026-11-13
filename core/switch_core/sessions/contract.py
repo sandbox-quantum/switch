@@ -123,6 +123,9 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    # For a user message sent while another turn ran: "steered" into that
+    # turn, or "queued" behind it. None for every other item.
+    delivery: Literal["steered", "queued"] | None = None
 
 
 class ApprovalOption(_Model):

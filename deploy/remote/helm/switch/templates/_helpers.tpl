@@ -977,6 +977,14 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: SERVICE_ACCESS_PROFILES
   value: {{ toJson . | quote }}
 {{- end }}
+{{- with .Values.switchCore.serviceSignInRedirect }}
+- name: SERVICE_SIGN_IN_REDIRECT
+  value: {{ toJson . | quote }}
+{{- end }}
+{{- if .Values.switchCore.allowNonExpiringKeys }}
+- name: ALLOW_NON_EXPIRING_KEYS
+  value: "true"
+{{- end }}
 {{- if has "follow_the_conversation" .Values.switchCore.featureFlags.enabled }}
 - name: FOLLOW_THE_CONVERSATION_WINDOW_SECONDS
   value: {{ .Values.switchCore.followTheConversation.windowSeconds | quote }}
@@ -1077,8 +1085,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.telemetry.endpoint | quote }}
 - name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
   value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+{{- with .Values.switchCore.telemetry.environment }}
 - name: TELEMETRY_ENVIRONMENT
-  value: {{ .Values.switchCore.telemetry.environment | quote }}
+  value: {{ . | quote }}
+{{- end }}
 - name: TELEMETRY_INTERNAL
   value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}

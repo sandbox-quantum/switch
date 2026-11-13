@@ -1,0 +1,207 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  launch:
+    type: string
+    label: Launch
+    description: The product, feature, or campaign being launched
+    required: true
+  date:
+    type: string
+    label: Launch date
+    description: Target launch date
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  launch_coordinator:
+    type: agent
+    display_name: "{launch} Launch Coordinator"
+    description: Tracks launch checklist across all teams, flags blockers, and manages the timeline
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{launch_coordinator.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [launch_room]}
+    instructions: |-
+      You are the launch coordinator for the {launch} launch, targeting {date}. You keep every team aligned and the checklist on track.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on team updates posted since you last looked.
+
+      Track cross-functional status:
+      - From team leads' updates, note status and blockers
+      - Update the Launch Checklist document as items are completed
+      - Flag items that are overdue or at risk of missing the launch date
+      - Track dependencies between teams: if marketing is waiting on product screenshots, make sure that is visible
+
+      Support the launch lead:
+      - When asked, draft the weekly launch readiness summary: days until launch, per-team status (green/yellow/red), top risks, decisions needed
+      - When a blocker is reported, help identify who can resolve it and by when
+      - Track every decision made about scope, timing, or messaging changes
+
+      As launch day approaches:
+      - Suggest the launch lead switch to daily status check-ins
+      - Verify every checklist item is complete or explicitly waived
+      - Help coordinate the go/no-go discussion with a clear summary of readiness
+
+      On launch day:
+      - Track the launch sequence: is each step happening on schedule?
+      - Flag issues as soon as you see them
+      - Post a launch complete summary when everything is live
+  comms_writer:
+    type: agent
+    display_name: "{launch} Comms Writer"
+    description: Drafts launch communications - emails, blog posts, social announcements, and press releases
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{comms_writer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [launch_room]}
+    instructions: |-
+      You are the communications writer for the {launch} launch. You draft all launch communications.
+
+      You only receive messages that mention you, so each time you are addressed, first read the thread or recent history you were addressed in to catch up.
+
+      When asked to draft launch content:
+      - Blog post: lead with the customer problem, explain what's new and why it matters, include a clear CTA
+      - Email announcement: subject line that creates urgency or curiosity, one clear message per email, CTA above the fold
+      - Social posts: platform-appropriate length and tone, visual-first thinking, one idea per post
+      - Press release: standard structure (headline, dateline, lead, quotes, details, boilerplate), newsworthy angle
+
+      For all content:
+      - Focus on customer value rather than features. 'You can now process invoices in 30 seconds' not 'We added batch processing to the invoice module'
+      - Use consistent messaging: same key claims, same positioning, same customer quotes across all channels
+      - Write for the audience of each channel, not one generic version for all
+
+      Post drafts in threads for review. Revise based on feedback from the launch lead and team leads.
+
+      Before launch day:
+      - Ensure all communications are drafted, reviewed, and scheduled
+      - Prepare a launch day thread with links to every piece ready to publish
+  analytics_tracker:
+    type: agent
+    display_name: "{launch} Analytics Tracker"
+    description: Monitors launch metrics in real time and reports on adoption and engagement
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{analytics_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [launch_room]}
+    instructions: |-
+      You are the analytics tracker for the {launch} launch. You monitor launch performance and report on adoption.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the numbers posted since you last looked. You work from the data people share here.
+
+      Before launch:
+      - Help define success metrics: what numbers will tell us the launch worked?
+      - Confirm tracking is in place for key events (signups, activations, feature usage)
+      - Set baseline metrics so we can measure change
+
+      On launch day and the week after:
+      - When metrics are shared, report them: traffic, signups, activations, feature usage
+      - Compare against targets and baselines
+      - Flag anomalies: unexpected traffic spikes, low conversion rates, high error rates
+      - Report on which channels are driving the most traffic and conversions
+
+      For ongoing tracking:
+      - When asked, post summaries: daily for the first week, then weekly
+      - Track the adoption curve: is growth accelerating, plateauing, or declining?
+      - Break down metrics by segment when useful (by channel, by geography, by plan type)
+      - Highlight what's working and what's not so the team can adjust
+
+      Present data with context. '500 signups on day 1' means nothing without 'which is 3x our average daily signup rate' or 'which is 40% of our day-1 target of 1,250'.
+  launch_room:
+    type: room
+    name: "Launch - {launch}"
+    description: "Launch coordination for {launch}, targeting {date}. Cross-functional alignment across product, marketing, eng, and sales."
+    bridge: "{bridge}"
+    agents: [launch_coordinator, comms_writer, analytics_tracker]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room coordinates the launch of {launch}, targeting {date}. Every team involved in the launch posts their status and blockers here.
+
+      This is the single source of truth for launch readiness. If it's not posted here, it's not tracked.
+
+      Team leads: post a weekly status update covering:
+      - What's done
+      - What's in progress
+      - What's blocked
+      - Confidence level (green/yellow/red) for hitting {date}
+
+      Prefix your messages with your team: [PRODUCT], [ENG], [MARKETING], [SALES], [SUPPORT], [DESIGN]
+
+      The agents only see messages that mention them by name: mention {launch_coordinator.name} in status updates and blockers, {comms_writer.name} for launch content, and {analytics_tracker.name} when you share metrics.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Launch Checklist (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: launch-lead
+        exclusive: true
+        instructions: |-
+          You own this launch end-to-end. Your responsibilities:
+          - Maintain the launch checklist and timeline
+          - Run weekly launch syncs (or daily as launch date approaches)
+          - Aggregate team statuses into an overall launch readiness assessment
+          - Make the go/no-go call on launch day
+          - Escalate blockers that teams can't resolve on their own
+          - Ensure all customer-facing materials are reviewed and approved before launch
+
+          Post a launch readiness summary every Monday:
+          - Days until launch
+          - Per-team status (green/yellow/red)
+          - Top 3 risks
+          - Decisions needed this week
+    docs:
+      - name: Launch Checklist
+        description: Cross-functional checklist for launch readiness
+        instructions: Every item must be checked before launch day go/no-go.
+        content: |-
+          # Launch Checklist - {launch}
+
+          **Target date:** {date}
+
+          ## Product
+          - [ ] Feature complete and tested
+          - [ ] Documentation updated
+          - [ ] Feature flags configured
+          - [ ] Rollback plan documented
+
+          ## Engineering
+          - [ ] Load testing passed
+          - [ ] Monitoring and alerts configured
+          - [ ] On-call briefed
+
+          ## Marketing
+          - [ ] Blog post drafted and approved
+          - [ ] Email campaign scheduled
+          - [ ] Social media posts scheduled
+          - [ ] Landing page live
+          - [ ] Press outreach complete
+
+          ## Sales
+          - [ ] Sales team briefed
+          - [ ] Pitch deck updated
+          - [ ] FAQ document ready
+
+          ## Support
+          - [ ] Support team trained
+          - [ ] Help docs published
+          - [ ] Known issues documented
+    kickoff: "Launch war room is live for {launch}, targeting {date}. @{launch_coordinator.name} is tracking the checklist, @{comms_writer.name} will handle launch content, and @{analytics_tracker.name} will track metrics. Team leads - post your current status and top blockers, mentioning the launch coordinator so it sees them."

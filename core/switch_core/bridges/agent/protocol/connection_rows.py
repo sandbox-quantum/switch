@@ -62,9 +62,9 @@ from typing import TYPE_CHECKING, Any
 from switch_core.bridges.agent.protocol.agent_connections import (
     AGENT_DELETED,
     ENDINGS,
+    UNRECORDED,
     AgentConnection,
     AgentConnectionRegistry,
-    Closure,
     ConnectionError_,
     Released,
     UnknownConnectionError,
@@ -294,14 +294,7 @@ class SharedConnections:
                 for conn in registry.held_here(agent_id):
                     if held_before.get(conn.id) != conn.stream_generation:
                         conn.tenant_id = None
-                        registry.close(
-                            conn.id,
-                            Closure(
-                                code="closed",
-                                message="the connection could not be recorded",
-                                room_id=None,
-                            ),
-                        )
+                        registry.close(conn.id, UNRECORDED)
                 self._apply(agent_id, tenant_id, rows)
                 raise
             self._bump(agent_id)

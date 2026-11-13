@@ -209,6 +209,9 @@ export const APP_THEME = () =>
                 },
               },
               { props: { variant: "outlined", color: "inherit" }, style: { borderColor: tokenVar("input") } },
+              // The destructive outline: an action that removes something but
+              // asks first, so it does not shout like the confirm itself.
+              { props: { variant: "outlined", color: "error" }, style: { color: tokenVar("destructive-text") } },
               {
                 props: { variant: "contained", color: "error" },
                 style: {

@@ -19,6 +19,7 @@ import { type SwitchServerRow, switchServers } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import {
   normaliseServerUrl,
+  sameApiEndpoint,
   urlOrigin,
   type AddServerParams,
   type ManagedServerParams,
@@ -436,26 +437,39 @@ export async function removeServer(id: string): Promise<void> {
   if (server) trackEvent('server_removed', { server_kind: serverKindOf(server) });
 }
 
-/** The reported kind of a server, in the same terms `server_added` uses. */
-export function serverKindOf(server: SwitchServer): TelemetryServerKind {
+/**
+ * The reported kind of a server, in the same terms `server_added` uses. Takes
+ * the three fields it reads, so an address that failed to register can be
+ * described the same way as a row.
+ */
+export function serverKindOf(
+  server: Pick<SwitchServer, 'managed' | 'managementKind' | 'url'>
+): TelemetryServerKind {
   if (server.managed) return server.managementKind === 'remote' ? 'remote_managed' : 'local';
-  return isSwitchCloud(server.url) ? 'cloud' : 'external';
+  return addressedServerKind(server.url);
 }
 
 /**
- * Whether `url` is Switch Cloud's, as this build or run names it. A build that
- * names no Cloud, or names one it cannot parse, has no Cloud server to count:
- * the misconfiguration surfaces where the Cloud is offered, not here, where it
- * would fail whatever is being reported on.
+ * Switch Cloud when `url` is the Cloud this build or run names, matched by
+ * origin as the interface matches it (`sameApiEndpoint`), and any other server
+ * otherwise. A Cloud named by an address that cannot be read leaves no way to
+ * tell the two apart, so the server is `unknown`: the misconfiguration is
+ * logged here, and surfaces to the user where the Cloud is offered, rather than
+ * failing whatever is being reported on.
  */
-function isSwitchCloud(url: string): boolean {
+function addressedServerKind(url: string): TelemetryServerKind {
   let cloud: ReturnType<typeof switchCloudEndpoint>;
   try {
     cloud = switchCloudEndpoint();
-  } catch {
-    return false;
+  } catch (error) {
+    log.warn('telemetry: Switch Cloud is misconfigured, so a server kind is reported unknown', {
+      event: 'telemetry_server_kind_unknown',
+      error: String(error),
+    });
+    return 'unknown';
   }
-  return cloud !== null && normaliseUrl(cloud.url) === normaliseUrl(url);
+  if (cloud === null) return 'external';
+  return sameApiEndpoint(cloud.url, url) ? 'cloud' : 'external';
 }
 
 /**

@@ -27,7 +27,10 @@ type Outcome = { warning: string | null; error: string | null };
  * Switching one off reaches other people's running sessions, so when anyone
  * is connected or any agent uses it, it asks first, naming both counts. A
  * switch shows what the server says: it never flips before the server has
- * answered, and a failure leaves it as it was, with the reason under it.
+ * answered, and a failure leaves it as it was, with the reason under it. A
+ * service the server can't serve keeps its switch, with the server's reason
+ * under it, so an admin can set it before the app is set up. A switch the
+ * organization locked can't be flipped, and says so.
  */
 export function WorkspaceSwitchesTab({
   workspaceId,
@@ -143,7 +146,7 @@ export function WorkspaceSwitchesTab({
                 <Switch
                   aria-label={`${service.name} for this workspace`}
                   checked={service.enabled}
-                  disabled={busy}
+                  disabled={busy || !service.can_change}
                   onCheckedChange={(on) => flip(service, on)}
                 />
               </>
@@ -152,9 +155,21 @@ export function WorkspaceSwitchesTab({
             {category && (
               <span className="mt-1 block text-xs text-foreground-muted">{category}</span>
             )}
-            <span className="mt-2 block text-sm text-foreground-muted">
-              {switchStanding(service)}
-            </span>
+            {switchStanding(service) !== null && (
+              <span className="mt-2 block text-sm text-foreground-muted">
+                {switchStanding(service)}
+              </span>
+            )}
+            {service.organization_locked && (
+              <span className="mt-1 block text-xs text-foreground-muted">
+                Set by your organization.
+              </span>
+            )}
+            {service.unavailable_reason !== null && (
+              <span className="mt-1 block text-xs text-foreground-muted">
+                {service.unavailable_reason}
+              </span>
+            )}
             {service.updated_at !== null && (
               <span className="mt-1 block text-xs text-foreground-muted">
                 {workspaceSwitchNote(service, (iso) => format(new Date(iso), 'MMM d, yyyy'))}

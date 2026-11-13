@@ -525,6 +525,12 @@ KEY_REISSUED = Closure(
     room_id=None,
 )
 
+#: How a connection ends when the block that opened it could not record it,
+#: so no other process could see it (`connection_rows.py`).
+UNRECORDED = Closure(
+    code="closed", message="the connection could not be recorded", room_id=None
+)
+
 #: Why an agent's connections were ended by deleting their rows, by the name a
 #: signal carries to the other processes (`connection_rows.py`).
 ENDINGS: dict[str, Closure] = {"deleted": AGENT_DELETED, "key_reissued": KEY_REISSUED}

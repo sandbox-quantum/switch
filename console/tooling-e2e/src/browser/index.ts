@@ -1,7 +1,14 @@
 import { expect } from 'vitest';
+import { ROLE_MATRIX_SCENARIOS } from './role-matrix/index.ts';
 import { browserHeader, type BrowserScenario } from './scenario.ts';
 
-/** The login form signs the admin in, and the app opens on the rooms list. */
+/** The start page of each layout, by its heading. */
+const START_PAGE_HEADING = { current: 'Rooms', v2: 'Overview' } as const;
+
+/**
+ * The login form signs the admin in, and the app opens on its start page: the
+ * rooms list, or Overview in the new layout.
+ */
 const signIn: BrowserScenario = {
   header: browserHeader('gateway-sign-in', [
     'GET /gateway/auth/config',
@@ -10,8 +17,9 @@ const signIn: BrowserScenario = {
   ]),
   async run({ ui }) {
     await ui.signIn();
+    const heading = START_PAGE_HEADING[ui.layout];
     await expect
-      .poll(() => ui.page.getByRole('heading', { name: 'Rooms', level: 5 }).isVisible())
+      .poll(() => ui.page.getByRole('heading', { name: heading, level: 5 }).isVisible())
       .toBe(true);
     await ui.settled();
   },
@@ -20,7 +28,7 @@ const signIn: BrowserScenario = {
 /**
  * Every page in the navigation rail opens without an error: each link the
  * signed-in admin is shown, so a page added to the rail is visited without
- * this list changing.
+ * this list changing. A settings area's link opens the area's first page.
  */
 const everyPage: BrowserScenario = {
   header: browserHeader('gateway-every-page', ['GET /gateway/rooms', 'GET /gateway/agents']),
@@ -29,10 +37,8 @@ const everyPage: BrowserScenario = {
     const links = await ui.navLinks();
     expect(links.map((link) => link.path)).toEqual(expect.arrayContaining(['/rooms', '/agents']));
     for (const link of links) {
-      await ui.nav().getByRole('link', { name: link.label, exact: true }).click();
-      await expect.poll(() => ui.path()).toBe(link.path);
-      await ui.settled();
-      log(`${link.label} (${link.path}) opened`);
+      await ui.openFromRail(link.label);
+      log(`${link.label} (${ui.path()}) opened`);
     }
   },
 };
@@ -44,6 +50,7 @@ const roomFromList: BrowserScenario = {
     const agent = await fixtures.agent('member');
     const room = await fixtures.internalRoom('room', [agent]);
     await ui.signIn();
+    await ui.openFromRail('Rooms');
     const row = ui.page.getByRole('row').filter({ hasText: room.name });
     await expect.poll(() => row.count(), { timeout: 15_000 }).toBe(1);
     await row.click();
@@ -69,7 +76,9 @@ const createRoom: BrowserScenario = {
     const name = names.name('ui-room');
     const description = `Made in the gateway form by the Switch end-to-end harness (run ${names.runId}). Safe to delete.`;
     await ui.signIn();
-    await ui.page.getByRole('button', { name: 'New room' }).click();
+    await ui.openFromRail('Rooms');
+    // An empty list offers the same button again in the table: either opens the form.
+    await ui.page.getByRole('button', { name: 'New room' }).first().click();
     await expect.poll(() => ui.path()).toBe('/rooms/new');
     await ui.page.getByRole('textbox', { name: /^Name/ }).fill(name);
     await ui.page.getByRole('textbox', { name: /^Description/ }).fill(description);
@@ -122,4 +131,5 @@ export const BROWSER_SCENARIOS: readonly BrowserScenario[] = [
   roomFromList,
   createRoom,
   signOut,
+  ...ROLE_MATRIX_SCENARIOS,
 ];

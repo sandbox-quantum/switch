@@ -15,6 +15,10 @@ function service(overrides: Partial<WorkspaceService> = {}): WorkspaceService {
     updated_at: null,
     connected_members: 0,
     granted_agents: 0,
+    unavailable_code: null,
+    unavailable_reason: null,
+    can_change: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -31,14 +35,23 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     agent_access_note: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
   };
 }
 
@@ -148,5 +161,9 @@ describe('the workspace switches as tiles', () => {
     expect(switchStanding(service({ connected_members: 3, granted_agents: 1 }))).toBe(
       '3 members connected · 1 agent uses it'
     );
+  });
+
+  it('says nothing of who a switch reaches when the server keeps it to admins', () => {
+    expect(switchStanding(service({ connected_members: null, granted_agents: null }))).toBeNull();
   });
 });

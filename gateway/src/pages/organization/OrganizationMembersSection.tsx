@@ -86,6 +86,7 @@ export default function OrganizationMembersSection({
   selfId,
   organizationId,
   asOperator,
+  canManage,
   fromDirectory,
   directoryTakesChanges,
   onChanged,
@@ -95,6 +96,9 @@ export default function OrganizationMembersSection({
   // The platform operator, who is no admin here, may manage the members only
   // while the organization has no admin left, to make one.
   asOperator: boolean;
+  // The server's `can_manage_members`: whether this person may list and
+  // manage the members at all. The operator is not asked for them where not.
+  canManage: boolean;
   // The members come from the organization's account settings: nobody can be
   // made Org Admin here, and what is taken away here comes back while those
   // settings still grant it.
@@ -106,7 +110,11 @@ export default function OrganizationMembersSection({
   // Called after each change that went through.
   onChanged: () => void;
 }) {
-  const load = useCallback(() => fetchOrganizationMembers(), []);
+  const lockedOut = asOperator && !canManage;
+  const load = useCallback(
+    () => (lockedOut ? Promise.resolve(null) : fetchOrganizationMembers()),
+    [lockedOut],
+  );
   const { data: members, error, errorStatus, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionWarning, setActionWarning] = useState<string | null>(null);
@@ -258,7 +266,7 @@ export default function OrganizationMembersSection({
         Organization admins administer every workspace in the organization. Someone is removed
         from each workspace before they can be removed from the organization.
       </Typography>
-      {asOperator && errorStatus === 403 ? (
+      {lockedOut || (asOperator && errorStatus === 403) ? (
         <Alert severity="info">
           As platform operator you can manage this organization's users only while it has no
           admin, to make someone one.
@@ -266,7 +274,7 @@ export default function OrganizationMembersSection({
       ) : (
         error && <Alert severity="error">{error}</Alert>
       )}
-      {asOperator && !error && !loading && (
+      {asOperator && !lockedOut && !error && !loading && (
         <Alert severity="warning">
           {fromDirectory
             ? "This organization has no admin. Its admins come from its account settings, so " +
@@ -321,7 +329,7 @@ export default function OrganizationMembersSection({
       )}
       {loading ? (
         <CircularProgress />
-      ) : error ? null : (
+      ) : error || lockedOut ? null : (
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
           columns={shown}

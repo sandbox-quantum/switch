@@ -155,7 +155,7 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 # every tenant at once and claims it in one statement across them, and a row
 # carries no customer data, only which process runs which id.
 #
-# `cloud_machines` is a user's Switch cloud VM: one per person, whichever
+# `cloud_machines` is a user's Switch Cloud VM: one per person, whichever
 # workspaces it serves, as the person is global. It holds the VM's lifecycle,
 # disk and instance, and no workspace's data: what the machine runs for a
 # workspace is that workspace's `machine_workspaces` row, which is scoped, and

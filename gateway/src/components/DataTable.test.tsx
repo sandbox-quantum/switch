@@ -161,6 +161,88 @@ describe("DataTable toolbar", () => {
     expect(screen.getByText("1–10 of 11")).toBeTruthy();
   });
 
+  it("filters from a dropdown above the toolbar, with the same chip the header menu gives", async () => {
+    render(table({ quickFilters: [], selectFilters: [{ field: "status", label: "State", allLabel: "All states" }] }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Idle" }));
+
+    expect(screen.getByText("1 of 3 agents")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "State" }).textContent).toBe("Idle");
+    fireEvent.click(screen.getByRole("button", { name: "Remove Status: Idle filter" }));
+    expect(screen.getByRole("combobox", { name: "State" }).textContent).toBe("All states");
+    expect(screen.getByText("3 agents")).toBeTruthy();
+  });
+
+  it("says how many are picked when the header menu picked several", async () => {
+    render(table({ quickFilters: [], selectFilters: [{ field: "status", label: "State", allLabel: "All states" }] }));
+    fireEvent.click(screen.getByRole("button", { name: /Status column menu/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Filter" }));
+    const picker = await screen.findByRole("dialog", { name: "Filter by Status" });
+    fireEvent.click(within(picker).getByRole("checkbox", { name: "Idle" }));
+    fireEvent.click(within(picker).getByRole("checkbox", { name: "Active" }));
+
+    expect(screen.getByRole("combobox", { name: "State", hidden: true }).textContent).toBe("2 selected");
+  });
+
+  it("drops a pick no row holds any more, rather than leave it over an empty table", async () => {
+    const { rerender } = render(table({ quickFilters: [], selectFilters: [{ field: "status", label: "State", allLabel: "All states" }] }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Idle" }));
+    expect(screen.getByText("1 of 3 agents")).toBeTruthy();
+
+    rerender(
+      table({
+        rows: rows.filter((row) => row.status !== "Idle"),
+        quickFilters: [],
+        selectFilters: [{ field: "status", label: "State", allLabel: "All states" }],
+      }),
+    );
+
+    expect(screen.getByText("2 agents")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove Status: Idle filter" })).toBeNull();
+  });
+
+  it("filters on an empty value from a dropdown, which reading as nothing picked would lose", async () => {
+    const unnamed = [...rows, { id: 4, name: "orphan", status: "" }];
+    const statusColumn: TableColumn<Row> = {
+      field: "status",
+      headerName: "Status",
+      width: 120,
+      filter: {
+        value: (row) => row.status,
+        options: [
+          { value: "Active", label: "Active" },
+          { value: "", label: "No status" },
+        ],
+      },
+    };
+    render(
+      table({
+        rows: unnamed,
+        columns: [columns[0], statusColumn, columns[2]],
+        quickFilters: [],
+        selectFilters: [{ field: "status", label: "State", allLabel: "All states" }],
+      }),
+    );
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
+    fireEvent.click(await screen.findByRole("option", { name: "No status" }));
+
+    expect(screen.getByText("1 of 4 agents")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "State" }).textContent).toBe("No status");
+  });
+
+  it("opens sorted as asked", () => {
+    const { container } = render(table({ initialSort: { field: "name", sort: "desc" } }));
+    const header = container.querySelector('.MuiDataGrid-columnHeader[data-field="name"]') as HTMLElement;
+    expect(header.getAttribute("aria-sort")).toBe("descending");
+  });
+
+  it("refuses a select filter on a column without a filter", () => {
+    expect(() => render(table({ selectFilters: [{ field: "name", label: "Name", allLabel: "All names" }] }))).toThrow(
+      /has no filter/,
+    );
+  });
+
   it("refuses a quick filter on a column without a filter", () => {
     expect(() =>
       render(table({ quickFilters: [{ field: "name", value: "release-bot", label: "Release bot" }] })),

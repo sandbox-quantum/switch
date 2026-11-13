@@ -1,4 +1,3 @@
-import type { SessionStartedNotice } from '@switch-console/agent-providers';
 import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
   EmbeddedControllerEnrollment,
@@ -81,8 +80,6 @@ export type EmbeddedControllerDeps = {
   log: ServiceLog;
   /** Where the controller's own log lines go. */
   controllerLine: (serverId: string, level: ControllerLogLevel, line: string) => void;
-  /** A session of an agent on this computer started (`reportManagedSessionStarted`). */
-  sessionStarted: (notice: SessionStartedNotice) => void;
   now: () => number;
   backoff: ControllerBackoff;
   /** How long a revoked controller is given to stop its agents and exit by itself. */
@@ -466,7 +463,6 @@ export class EmbeddedControllerService {
         onPhase: (phase) => this.setRunnerPhase(serverId, phase),
         onFinal: (exit) => void this.onFinal(serverId, exit),
         onLine: (level, line) => this.deps.controllerLine(serverId, level, line),
-        onSessionStarted: (notice) => this.deps.sessionStarted(notice),
         now: this.deps.now,
         backoff: this.deps.backoff,
       }),

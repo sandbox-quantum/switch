@@ -96,7 +96,7 @@ async def test_mcp_identity_protocol(monkeypatch, shape):
     monkeypatch.setattr(oauth, "StreamableHttpTransport", transport)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         adapter = _adapter(http)
-        identity = await adapter.identify("example-bearer-value")
+        identity = await adapter.identify("example-bearer-value", {})
     assert identity.account_id == ("42" if shape == "integer" else "account-example")
     assert identity.label == (
         identity.account_id if shape == "missing-label" else "Example account"
@@ -132,7 +132,7 @@ async def test_mcp_identity_rejects_unusable_results(monkeypatch, shape, caplog)
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError) as exc:
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
     assert "private-diagnostic" not in str(exc.value)
     assert "example-bearer-value" not in str(exc.value)
     assert "private-diagnostic" not in caplog.text
@@ -146,19 +146,21 @@ async def test_mcp_identity_sanitizes_transport_failure(monkeypatch):
     monkeypatch.setattr(oauth, "StreamableHttpTransport", fail)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError, match="could not identify") as exc:
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
     assert exc.value.__context__ is None
     _assert_reason(exc.value, "protocol_error")
     assert "private-diagnostic" not in str(exc.value)
 
 
-def _adapter(http):
+def _adapter(http, arguments: dict[str, str] | None = None):
     entry = yaml.safe_load(OAUTH_ENTRY)
     entry["auth"]["identity"] = {
         "mcp_tool": "get_user",
         "account_id": "data.gid",
         "label": "data.name",
     }
+    if arguments is not None:
+        entry["auth"]["identity"]["arguments"] = arguments
     return OAuthAdapter(
         ConnectionDefinition.model_validate(entry),
         StaticClient(
@@ -181,7 +183,7 @@ async def test_mcp_identity_refuses_http_redirects(monkeypatch, location):
     _over_mock(monkeypatch, handler)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError, match="could not identify"):
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
     assert requests
     assert {str(request.url) for request in requests} == {_adapter_url()}
 
@@ -211,7 +213,7 @@ async def test_mcp_identity_malformed_http_does_not_log_token(
     _over_mock(monkeypatch, handler)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError):
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
     assert "example-bearer-value" not in caplog.text
     logging.getLogger("mcp.client.streamable_http").warning(
         "outside identity diagnostic"
@@ -250,7 +252,7 @@ async def test_vendor_log_notifications_never_reach_the_logs(monkeypatch):
     logging.getLogger().addHandler(handler)
     try:
         async with guarded_async_client(_NOTHING_ALLOWED) as http:
-            identity = await _adapter(http).identify("example-bearer-value")
+            identity = await _adapter(http).identify("example-bearer-value", {})
     finally:
         fastmcp_logger.removeHandler(handler)
         fastmcp_logger.setLevel(level)
@@ -337,7 +339,7 @@ async def test_identity_refuses_mutating_or_parameterized_tools(
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError, match="could not identify"):
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
     assert called == []
 
 
@@ -355,7 +357,7 @@ async def test_identity_never_selects_the_first_account_from_an_array(
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError):
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
 
 
 @pytest.mark.parametrize("account_id", [None, "", [], ["a", "b"], {}, True])
@@ -369,7 +371,7 @@ async def test_identity_requires_one_scalar_account_id(monkeypatch, account_id):
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError):
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
 
 
 async def test_existing_rest_identity_keeps_its_get_and_account_mapping():
@@ -393,7 +395,7 @@ async def test_existing_rest_identity_keeps_its_get_and_account_mapping():
             ),
             http,
         )
-        result = await adapter.identify("example-bearer-value")
+        result = await adapter.identify("example-bearer-value", {})
     assert (result.account_id, result.label) == ("example-account", "Example")
     assert len(requests) == 1
     assert requests[0].method == "GET"
@@ -413,7 +415,7 @@ async def test_optional_identity_selector_is_never_supplied(monkeypatch):
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
-        result = await _adapter(http).identify("example-bearer-value")
+        result = await _adapter(http).identify("example-bearer-value", {})
     assert result.account_id == "current-account"
     assert calls == ["me"]
 
@@ -463,7 +465,7 @@ def _unevaluated_chain(levels: int, keyword: str) -> dict[str, Any]:
 )
 def test_accepts_no_arguments_takes_a_safe_shape(schema):
     started = time.monotonic()
-    assert oauth._accepts_no_arguments(schema) is True
+    assert oauth._accepts_arguments(schema, []) is True
     assert time.monotonic() - started < 0.1
 
 
@@ -480,7 +482,7 @@ def test_accepts_no_arguments_takes_a_safe_shape(schema):
     ids=lambda schema: str(schema)[:40],
 )
 def test_accepts_no_arguments_refuses_other_shapes(schema):
-    assert oauth._accepts_no_arguments(schema) is False
+    assert oauth._accepts_arguments(schema, []) is False
 
 
 async def test_mcp_identity_refuses_a_schema_that_rejects_empty_arguments(
@@ -499,9 +501,107 @@ async def test_mcp_identity_spends_no_time_on_a_hostile_schema(monkeypatch):
     _over_mock(monkeypatch, vendor)
     started = time.monotonic()
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
-        identity = await _adapter(http).identify("example-bearer-value")
+        identity = await _adapter(http).identify("example-bearer-value", {})
     assert time.monotonic() - started < 1
     assert identity.account_id == "account-example"
+
+
+ME = {"query": "me"}
+# Linear's get_user input schema, as measured.
+QUERY_SCHEMA = {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "query": {"type": "string", "description": 'User ID, name, email, or "me"'}
+    },
+    "required": ["query"],
+    "additionalProperties": False,
+}
+
+
+async def _identify_with(arguments: dict[str, str], tool: dict[str, Any], monkeypatch):
+    vendor = _ScriptedMcp({None: ([tool], None)})
+    _over_mock(monkeypatch, vendor)
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
+        try:
+            result = await _adapter(http, arguments).identify(
+                "example-bearer-value", {}
+            )
+        except ServiceAdapterError as error:
+            assert error.__context__ is None and error.__cause__ is None
+            return error, vendor
+    return result, vendor
+
+
+async def test_mcp_identity_sends_the_catalogs_arguments_exactly(monkeypatch):
+    tool = {**GET_USER, "inputSchema": QUERY_SCHEMA}
+    identity, vendor = await _identify_with(ME, tool, monkeypatch)
+    assert not isinstance(identity, ServiceAdapterError)
+    assert identity.account_id == "account-example"
+    assert [call["params"]["name"] for call in vendor.calls] == ["get_user"]
+    assert [call["params"]["arguments"] for call in vendor.calls] == [ME]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "properties": {"other": {"type": "string"}}},
+        {"type": "object"},
+        {"type": "object", "properties": ["query"]},
+        {**QUERY_SCHEMA, "required": ["query", "team"]},
+        {**QUERY_SCHEMA, "required": "query"},
+        {**QUERY_SCHEMA, "required": {"query": 1}},
+        {"type": "object", "properties": {"query": {"type": "integer"}}},
+        {"type": "object", "properties": {"query": {"type": ["string"]}}},
+        {"type": "object", "properties": {"query": True}},
+        {**QUERY_SCHEMA, "type": "array"},
+        {key: value for key, value in QUERY_SCHEMA.items() if key != "type"},
+    ],
+    ids=lambda schema: str(schema)[:60],
+)
+async def test_mcp_identity_refuses_a_schema_its_arguments_do_not_fit(
+    monkeypatch, schema
+):
+    error, vendor = await _identify_with(
+        ME, {**GET_USER, "inputSchema": schema}, monkeypatch
+    )
+    assert isinstance(error, ServiceAdapterError)
+    _assert_reason(error, "needs_arguments")
+    assert vendor.calls == []
+
+
+async def test_mcp_identity_with_arguments_still_needs_a_read_only_tool(monkeypatch):
+    tool = {
+        "name": "get_user",
+        "inputSchema": QUERY_SCHEMA,
+        "annotations": {"readOnlyHint": False},
+    }
+    error, vendor = await _identify_with(ME, tool, monkeypatch)
+    assert isinstance(error, ServiceAdapterError)
+    _assert_reason(error, "not_read_only")
+    assert vendor.calls == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        QUERY_SCHEMA,
+        {"type": "object", "properties": {"query": {}}},
+        {"type": "object", "properties": {"query": {"type": "string"}, "team": {}}},
+        {**QUERY_SCHEMA, "required": []},
+        {**QUERY_SCHEMA, "allOf": [{}] * 21000},
+    ],
+    ids=lambda schema: str(schema)[:60],
+)
+def test_accepts_arguments_takes_a_schema_they_fit(schema):
+    started = time.monotonic()
+    assert oauth._accepts_arguments(schema, ["query"]) is True
+    assert time.monotonic() - started < 0.1
+
+
+def test_accepts_arguments_refuses_an_unhashable_required_entry():
+    schema = {**QUERY_SCHEMA, "required": [{"query": 1}]}
+    assert oauth._accepts_arguments(schema, ["query"]) is False
 
 
 @pytest.mark.parametrize(
@@ -545,7 +645,7 @@ async def test_composite_identity_protocol(monkeypatch, source, parts, expected)
         adapter._identity = ConnectionIdentity(
             **source_fields, account_id=["user", "org"], label="user"
         )
-        identity = await adapter.identify("example-bearer-value")
+        identity = await adapter.identify("example-bearer-value", {})
     assert identity.account_id == expected
     assert identity.label == parts["user"]
 
@@ -560,7 +660,7 @@ async def test_composite_identity_refuses_any_invalid_component(bad):
             url="https://example.com/me", account_id=["user", "org"], label="user"
         )
         with pytest.raises(ServiceAdapterError, match="account's id"):
-            await adapter.identify("example-bearer-value")
+            await adapter.identify("example-bearer-value", {})
 
 
 async def test_composite_identity_changes_with_account():
@@ -571,9 +671,9 @@ async def test_composite_identity_changes_with_account():
         adapter._identity = ConnectionIdentity(
             url="https://example.com/me", account_id=["user", "org"], label="user"
         )
-        first = await adapter.identify("example-bearer-value")
+        first = await adapter.identify("example-bearer-value", {})
         payload["org"] = "second-account"
-        second = await adapter.identify("example-bearer-value")
+        second = await adapter.identify("example-bearer-value", {})
     assert first.account_id != second.account_id
 
 
@@ -674,7 +774,7 @@ async def _identify_error(
 ) -> ServiceAdapterError:
     async with guarded_async_client(policy) as http:
         with pytest.raises(ServiceAdapterError) as raised:
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
     error = raised.value
     assert error.__context__ is None
     assert error.__cause__ is None
@@ -887,7 +987,7 @@ async def test_mcp_identity_reads_a_small_server_over_http(monkeypatch):
         monkeypatch, _paged_server(3, page_size=2), json_response=False
     ):
         async with guarded_async_client(_NOTHING_ALLOWED) as http:
-            identity = await _adapter(http).identify("example-bearer-value")
+            identity = await _adapter(http).identify("example-bearer-value", {})
     assert identity.account_id == "account-example"
 
 
@@ -898,7 +998,7 @@ async def test_mcp_identity_page_limit(monkeypatch, pages, succeeds):
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     if succeeds:
         async with guarded_async_client(_NOTHING_ALLOWED) as http:
-            identity = await _adapter(http).identify("example-bearer-value")
+            identity = await _adapter(http).identify("example-bearer-value", {})
         assert identity.account_id == "account-example"
     else:
         _assert_reason(await _identify_error(), "bad_result")
@@ -908,7 +1008,7 @@ async def test_mcp_identity_finds_the_tool_on_a_later_page(monkeypatch):
     server = _paged_server(7, page_size=2)
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
-        identity = await _adapter(http).identify("example-bearer-value")
+        identity = await _adapter(http).identify("example-bearer-value", {})
     assert identity.account_id == "account-example"
 
 
@@ -1022,7 +1122,7 @@ async def test_mcp_identity_asks_for_identity_encoding(monkeypatch):
     vendor = _ScriptedMcp()
     _over_mock(monkeypatch, vendor)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
-        await _adapter(http).identify("example-bearer-value")
+        await _adapter(http).identify("example-bearer-value", {})
     assert vendor.requests
     assert {r.headers.get("accept-encoding") for r in vendor.requests} == {"identity"}
 
@@ -1062,7 +1162,7 @@ async def test_mcp_identity_never_fetches_an_output_schema_reference(monkeypatch
         vendor = _ScriptedMcp({None: ([{**GET_USER, "outputSchema": output}], None)})
         _over_mock(monkeypatch, vendor)
         async with guarded_async_client(_NOTHING_ALLOWED) as http:
-            identity = await _adapter(http).identify("example-bearer-value")
+            identity = await _adapter(http).identify("example-bearer-value", {})
     assert hits == []
     assert identity.account_id == "account-example"
 
@@ -1076,7 +1176,7 @@ async def test_mcp_identity_reads_a_tool_with_an_output_schema(monkeypatch):
     vendor = _ScriptedMcp({None: ([{**GET_USER, "outputSchema": output}], None)})
     _over_mock(monkeypatch, vendor)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
-        identity = await _adapter(http).identify("example-bearer-value")
+        identity = await _adapter(http).identify("example-bearer-value", {})
     assert identity.account_id == "account-example"
     assert len(vendor.calls) == 1
 
@@ -1132,7 +1232,7 @@ async def test_mcp_identity_refuses_a_client_not_held_to_the_policy(monkeypatch)
     async with httpx.AsyncClient(transport=httpx.MockTransport(vendor)) as http:
         assert not isinstance(http, GuardedAsyncClient)
         with pytest.raises(ServiceAdapterError) as raised:
-            await _adapter(http).identify("example-bearer-value")
+            await _adapter(http).identify("example-bearer-value", {})
     assert type(raised.value) is ServiceAdapterError
     assert str(raised.value) == NOT_HELD
     assert raised.value.__context__ is None
@@ -1191,7 +1291,7 @@ async def test_mcp_identity_transport_has_the_clients_policy(monkeypatch, verify
     monkeypatch.setattr(oauth, "guarded_transport", transport)
     policy = OutboundPolicy.parse("10.0.0.0/8")
     async with guarded_async_client(policy, verify=verify) as http:
-        await _adapter(http).identify("example-bearer-value")
+        await _adapter(http).identify("example-bearer-value", {})
     assert built == [(policy, {"verify": verify})]
 
 
@@ -1247,10 +1347,10 @@ async def test_mcp_identity_leaves_the_shared_client_open(monkeypatch, status):
     async with _local_server() as url:
         async with guarded_async_client(OutboundPolicy.parse("127.0.0.1/32")) as http:
             if status is None:
-                await _adapter(http).identify("example-bearer-value")
+                await _adapter(http).identify("example-bearer-value", {})
             else:
                 with pytest.raises(ServiceUnavailableError):
-                    await _adapter(http).identify("example-bearer-value")
+                    await _adapter(http).identify("example-bearer-value", {})
             assert http.is_closed is False
             assert (await http.get(url)).text == "ok"
     assert [t.closed for t in built] == [True]

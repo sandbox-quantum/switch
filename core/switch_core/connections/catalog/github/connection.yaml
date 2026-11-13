@@ -3,6 +3,11 @@ name: GitHub
 category: Source control
 description: Clone, branch, push and open pull requests in the repository you grant.
 enabled: true
+publisher: GitHub
+links:
+  documentation: https://docs.github.com/en/apps/using-github-apps/about-using-github-apps
+  support: https://support.github.com
+  privacy: https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement
 adapter: github
 auth:
   type: oauth

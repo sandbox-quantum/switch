@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { MatrixLayout } from '../../../../gateway/src/routes/roleMatrix.ts';
 import { describeEnv } from '../core/env.ts';
 import { RunContext } from '../core/run.ts';
 import { admit, assertValidHeaders } from '../core/scenario.ts';
@@ -34,12 +35,20 @@ const run = new RunContext();
 let lane: LaneResolution;
 let browser: Browser | null = null;
 let watch: ServerLogWatch;
+let layout: MatrixLayout;
 
 beforeAll(async () => {
   lane = await resolveLane('browser');
   if (!lane.target) return;
   console.log(`browser lane run ${run.runId}: ${describeEnv(lane.target.env)}`);
   console.log(`  ${describeServerLogCheck(lane.target.env.serverLog)}`);
+  // The server decides the dashboard's layout, so the lane checks whichever
+  // one it serves.
+  const flags = await lane.target.switchClient.enabledFeatureFlags();
+  layout = flags.has('gateway_v2') ? 'v2' : 'current';
+  console.log(
+    `  the dashboard's ${layout === 'v2' ? 'new layout (gateway_v2 on)' : 'current layout'}`
+  );
   watch = new ServerLogWatch(lane.target.env.serverLog);
   if (lane.target.env.gatewayUiUrl !== null) browser = await chromium.launch();
 }, 120_000);
@@ -80,6 +89,7 @@ describe('browser lane', () => {
         browserContext,
         page,
         env.gatewayUiUrl,
+        layout,
         env.switch,
         new IssuedSecrets(env.secretsFile)
       );
@@ -94,14 +104,22 @@ describe('browser lane', () => {
           failure = error;
         }
         problems = [...ui.recorded()];
-        if ((failure !== null || problems.length > 0) && env.outputDir !== null) {
-          const dir = path.join(env.outputDir, 'screenshots');
-          mkdirSync(dir, { recursive: true });
-          const file = path.join(dir, `${scenario.header.id}.png`);
-          await ui.screenshot(file);
-          log(`screenshot of the last page: ${file}`);
+        // A page or browser that crashed must not keep teardown from running:
+        // it puts back the operator's choice of workspace, which every later
+        // scenario signs in with, as well as removing what this one made.
+        try {
+          if ((failure !== null || problems.length > 0) && env.outputDir !== null) {
+            const dir = path.join(env.outputDir, 'screenshots');
+            mkdirSync(dir, { recursive: true });
+            const file = path.join(dir, `${scenario.header.id}.png`);
+            await ui.screenshot(file);
+            log(`screenshot of the last page: ${file}`);
+          }
+          await browserContext.close();
+        } catch (error) {
+          if (failure === null) failure = error;
+          else log(`closing the browser failed too: ${String(error)}`);
         }
-        await browserContext.close();
         leftovers = await fixtures.teardown();
       } finally {
         observer.stop();
