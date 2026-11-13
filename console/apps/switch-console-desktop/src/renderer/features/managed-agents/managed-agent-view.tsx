@@ -127,14 +127,11 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
               serverState(server) !== 'connected' &&
               serverState(server) !== 'running-local' &&
               pill}
-            {agent &&
-              (chat ? (
-                <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities}>
-                  <ManagedAgentActionItems agent={agent} />
-                </ChatHeaderControls>
-              ) : (
-                <ManagedAgentActionsMenu agent={agent} />
-              ))}
+            {/* The agent's own actions sit with its profile (`AgentProfileActions`):
+            this menu is the chat's. */}
+            {agent && chat && (
+              <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities} />
+            )}
           </div>
         </>
       }

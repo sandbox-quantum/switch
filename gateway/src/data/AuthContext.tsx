@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router";
 import {
   type CurrentTenant,
   type Session,
@@ -16,6 +17,16 @@ import { type Capabilities, capabilitiesOf } from "./capabilities";
 import { ALL_OFF, type FeatureFlags, GATEWAY_V2 } from "./featureFlags";
 import { landingAfterSwitch } from "./settingsLanding";
 import { clearPendingInvite } from "./sessionState";
+import {
+  followWorkspaceLink,
+  forgetLinkForSignIn,
+  keepLinkForSignIn,
+  linkAddress,
+  linkedWorkspace,
+  onThisDashboard,
+  takeLinkAfterSignIn,
+  withoutLinkedWorkspace,
+} from "./workspaceLink";
 
 interface AuthState {
   session: Session | null;
@@ -30,6 +41,10 @@ interface AuthState {
   // Set when the session could not be read again on coming back to the tab:
   // what the page shows may be out of date, and it says so.
   staleError: string | null;
+  // Set when the page was opened from a link naming a workspace it could not
+  // switch to, so it says which workspace it shows instead.
+  linkNotice: string | null;
+  dismissLinkNotice: () => void;
   // Reads the session again, after any read already under way, which may
   // have started before what the caller just changed. Never rejects: a read
   // that fails sets `staleError`.
@@ -52,7 +67,11 @@ interface Loaded {
  * the server sees the caller in it. All three or an error, never a partial
  * answer that would hide pages for the wrong reason. */
 async function loadAll(): Promise<Loaded> {
-  const session = await fetchSession();
+  return loadFor(await fetchSession());
+}
+
+/** `loadAll` for a session already read. */
+async function loadFor(session: Session | null): Promise<Loaded> {
   if (session === null) return { session: null, tenant: null, flags: ALL_OFF };
   const [flags, tenant] = await Promise.all([
     fetchFeatureFlags(),
@@ -72,6 +91,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [staleError, setStaleError] = useState<string | null>(null);
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  // Read on arrival only: the address drops it straight away.
+  const [linked] = useState(() => linkedWorkspace(location.search));
+  const arrived = useRef(location);
 
   const refresh = useCallback(async () => {
     try {
@@ -83,9 +108,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // What a link naming a workspace asks of this load, given the session:
+  // true when the page is leaving for another address, so nothing more is
+  // read here. A link followed while signed out is kept, and followed on the
+  // first load signed in.
+  const followLink = useCallback(
+    async (session: Session | null): Promise<boolean> => {
+      if (linked === null) {
+        const kept = session === null ? null : takeLinkAfterSignIn();
+        if (kept === null) return false;
+        window.location.replace(linkAddress(kept));
+        return true;
+      }
+      const here = withoutLinkedWorkspace(arrived.current);
+      navigate(here, { replace: true });
+      if (session === null) {
+        keepLinkForSignIn({ path: here, workspace: linked });
+        return false;
+      }
+      try {
+        const outcome = await followWorkspaceLink(linked, session);
+        if (outcome.switched) {
+          window.location.replace(onThisDashboard(here));
+          return true;
+        }
+        setLinkNotice(outcome.notice);
+      } catch (err) {
+        setLinkNotice(
+          `Couldn't switch to the workspace the link you followed is for: ${errorMessage(err)}`,
+        );
+      }
+      return false;
+    },
+    [linked, navigate],
+  );
+
+  // Once per page load, a development build's second run included, so a
+  // link switches workspace at most once. A switch reloads the page in the
+  // new workspace before anything is read for the old one. The session is
+  // read once, for the link and the load both.
+  const started = useRef(false);
   useEffect(() => {
-    refresh().finally(() => setLoading(false));
-  }, [refresh]);
+    if (started.current) return;
+    started.current = true;
+    void (async () => {
+      try {
+        const session = await fetchSession();
+        if (await followLink(session)) return;
+        setLoaded(await loadFor(session));
+        setLoadError(null);
+        setStaleError(null);
+      } catch (err) {
+        setLoadError(errorMessage(err));
+      }
+      setLoading(false);
+    })();
+  }, [followLink]);
+  const dismissLinkNotice = useCallback(() => setLinkNotice(null), []);
 
   // What this page holds can fall behind the server. Back or forward can
   // restore it from the browser's cache as it was left, and switching
@@ -154,21 +233,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (email: string, password: string) => {
       await apiLogin(email, password);
+      const kept = takeLinkAfterSignIn();
+      if (kept !== null) {
+        window.location.replace(linkAddress(kept));
+        return;
+      }
       await refresh();
     },
     [refresh],
   );
 
   const logout = useCallback(async () => {
-    // The next person to sign in on this tab must not inherit an invitation
-    // they never followed.
+    // The next person to sign in on this tab must not inherit an invitation,
+    // or a link, they never followed.
     clearPendingInvite();
+    forgetLinkForSignIn();
     await apiLogout();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
 
   const logoutEverywhere = useCallback(async () => {
     clearPendingInvite();
+    forgetLinkForSignIn();
     await signOutEverywhere();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
@@ -194,6 +280,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     canAdminTenant: capabilities.administersWorkspace,
     capabilities,
     staleError,
+    linkNotice,
+    dismissLinkNotice,
     recheck,
     refresh,
     login,

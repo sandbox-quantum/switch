@@ -660,6 +660,69 @@ class TestSessionStateEndpoint:
             as_member["can_add_workspace"],
         ) == (False, False)
 
+    async def test_an_org_admin_is_offered_every_workspace_of_the_organization(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The session's `tenants` are the workspaces the caller may switch to,
+        so an `org_admin` sees the organization's workspaces they hold no
+        membership in, and a member of the same workspace does not. The
+        dashboard relies on it to follow a link naming one of them."""
+        admin_id = await _make_user(
+            session_factory, name="covering-admin", tenant_id=TENANT_ZERO_ID
+        )
+        member_id = await _make_user(
+            session_factory, name="plain-colleague", tenant_id=TENANT_ZERO_ID
+        )
+        async with session_factory() as session:
+            session.add(
+                Tenant(
+                    id=TENANT_B,
+                    slug=TENANT_B,
+                    name=TENANT_B,
+                    organization_id=TENANT_ZERO_ID,
+                )
+            )
+            for user_id, role in ((admin_id, "org_admin"), (member_id, "member")):
+                member = await session.get(
+                    OrganizationMember, (TENANT_ZERO_ID, user_id)
+                )
+                if member is None:
+                    session.add(
+                        OrganizationMember(
+                            organization_id=TENANT_ZERO_ID, user_id=user_id, role=role
+                        )
+                    )
+                else:
+                    member.role = role
+            await session.commit()
+
+        def token(user_id: str) -> str:
+            return create_jwt(
+                user_id,
+                "x@example.invalid",
+                "user",
+                _KEYRING,
+                TENANT_ZERO_ID,
+                session_version=0,
+                auth_time=datetime.now(UTC),
+            )
+
+        as_admin = (
+            await self._get(
+                session_factory, token(admin_id), signup_mode="default_tenant"
+            )
+        ).json()
+        as_member = (
+            await self._get(
+                session_factory, token(member_id), signup_mode="default_tenant"
+            )
+        ).json()
+
+        covered = next(t for t in as_admin["tenants"] if t["id"] == TENANT_B)
+        assert covered["role"] == "admin"
+        assert covered["organization_role"] == "org_admin"
+        assert {t["id"] for t in as_member["tenants"]} == {TENANT_ZERO_ID}
+
     async def test_invite_only_offers_no_workspace_creation(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

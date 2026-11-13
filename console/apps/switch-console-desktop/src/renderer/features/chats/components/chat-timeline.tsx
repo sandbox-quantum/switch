@@ -15,6 +15,7 @@ import {
   liveSessionStartingNotices,
   turnEndNotice,
 } from '@shared/core/chats/chats';
+import { personColour } from '@shared/core/people/person-colour';
 import { foldTurnEndNotices, placeRequests, placeTurns, type TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import {
@@ -108,10 +109,11 @@ function MentionText({
   );
 }
 
-function PersonAvatar({ name }: { name: string }) {
+function PersonAvatar({ name, userId }: { name: string; userId: string | null }) {
   return (
     <span
-      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[11px] font-medium text-foreground"
+      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
+      style={personColour(userId ?? name)}
       title={name}
       aria-hidden
     >
@@ -375,7 +377,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 id={messageAnchorId(message.messageId)}
                 className={cn('group/row flex gap-3', spacing())}
               >
-                <PersonAvatar name={message.sender.name} />
+                <PersonAvatar name={message.sender.name} userId={message.sender.userId} />
                 <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
                   <span className="flex items-center gap-1.5 text-xs">
                     <span className="font-medium text-foreground-muted">{message.sender.name}</span>

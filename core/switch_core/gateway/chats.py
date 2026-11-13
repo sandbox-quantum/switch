@@ -34,7 +34,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME
 from switch_core.chats.service import (
     ChatError,
     ChatService,
@@ -528,6 +528,20 @@ async def upload_attachment(
     )
 
 
+def room_command(body: str) -> tuple[str, str] | None:
+    """`(name, args)` when `body` is a room command a member can type here
+    (`!name args`, split as the platform bridges split one), else None. Only a
+    command Switch has is taken: "!important" stays a message."""
+    text = body.strip()
+    if not text.startswith("!"):
+        return None
+    parts = text.split(None, 1)
+    name = parts[0][1:]
+    if name not in COMMANDS_BY_NAME:
+        return None
+    return name, parts[1].strip() if len(parts) > 1 else ""
+
+
 @router.post("/{room_id}/messages", response_model=SentMessages)
 async def send_message(
     room_id: str, req: SendRequest, user: CurrentUser, service: Service
@@ -545,6 +559,7 @@ async def send_message(
         mention_agent_ids=req.mention_agent_ids,
         mention_user_ids=req.mention_user_ids,
         mention_spans=req.mention_spans,
+        command=None if req.upload_ids else room_command(req.body),
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return SentMessages(messages=await chat_messages(session, room, posted))
