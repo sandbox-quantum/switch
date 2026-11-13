@@ -908,6 +908,27 @@ class SwitchConfig(BaseSettings):
     # agent lost, against 161 pool timeouts and 56 agents lost without the
     # gate (dev-abel, 28 Oct 2026). 0 turns it off.
     agent_open_limit: int = Field(default=8, ge=0)
+    # The share of a process's pool (its size and overflow) gateway requests
+    # may hold at once. The rest stays for the process's own work: renewing
+    # its lease, recording controllers' connections, storing and delivering
+    # agents' events. Past it, requests wait their turn and then are answered
+    # 503 (`gateway/admission.py`). Without it, one client sending enough
+    # requests at once fills the pool, and a lease that lapses behind them
+    # drops the process's agents. 0.75 of 30 + 10 is 30, leaving 10.
+    gateway_pool_share: float = Field(default=0.75, gt=0, le=1)
+    # Gateway requests one caller (a signed-in person, a bearer token, or an
+    # address) may run at once in a process, so one caller cannot take the
+    # share everyone's requests run in. Past it, its requests wait their turn
+    # and then are answered 429. A Switch Console sidebar sends two at a
+    # time; one from before `GET /gateway/agents/rooms` sends one per agent,
+    # which queue.
+    gateway_requests_per_caller: int = Field(default=8, ge=1)
+    # The longest one statement of a gateway read (GET or HEAD) may run, a
+    # Postgres interval. A read that slow is a bug or someone loading the
+    # database on purpose, and its client gave up well before: the tailnet's
+    # proxy gives up after about 10 s. It is answered 503. Writes are not
+    # limited, as some do a workspace's worth of work in one statement.
+    gateway_read_statement_timeout: str = "10s"
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of
@@ -1577,6 +1598,22 @@ class SwitchConfig(BaseSettings):
                 f"milliseconds, got {value!r}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_admission(self) -> "SwitchConfig":
+        if not _PG_INTERVAL_RE.match(self.gateway_read_statement_timeout):
+            raise ValueError(
+                "GATEWAY_READ_STATEMENT_TIMEOUT must be a Postgres interval such "
+                "as '10s', '500ms' or a bare count of milliseconds, got "
+                f"{self.gateway_read_statement_timeout!r}."
+            )
+        return self
+
+    @property
+    def gateway_requests_at_once(self) -> int:
+        """Gateway requests a process runs at once (`gateway_pool_share`)."""
+        pool = self.db_pool_size + self.db_max_overflow
+        return max(1, int(pool * self.gateway_pool_share))
 
     @model_validator(mode="after")
     def _validate_github_app(self) -> "SwitchConfig":
