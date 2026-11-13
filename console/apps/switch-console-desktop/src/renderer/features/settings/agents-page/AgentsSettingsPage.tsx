@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { RefreshCw } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
 import React, { useCallback, useState } from 'react';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { useAgentInstallationStatuses } from '@renderer/lib/stores/use-agent-installation-statuses';
@@ -7,9 +8,11 @@ import { recheckThisComputer } from '@renderer/lib/stores/use-this-computer-repo
 import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
+import { settingsServer } from '../pages/settings-server';
 import { CliAgentsList, type AgentFilter } from './CliAgentsList';
 
-export function AgentsSettingsPage() {
+export const AgentsSettingsPage = observer(function AgentsSettingsPage() {
+  const { server } = settingsServer();
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<AgentFilter>('all');
@@ -36,7 +39,7 @@ export function AgentsSettingsPage() {
       <PageHeader
         sticky
         title="Agent providers"
-        description="Configure the providers available for creating agents on this instance."
+        description={`Configure the providers available for creating agents on ${server?.name ?? 'this Switch server'}.`}
       >
         {/* <DefaultAgentSelector /> */}
         <div className="flex items-center justify-between gap-2">
@@ -75,4 +78,4 @@ export function AgentsSettingsPage() {
       </div>
     </>
   );
-}
+});
