@@ -24,7 +24,10 @@ from switch_core.authz import (
     effective_tenant_role,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
+from switch_core.bridges.agent.registration_bootstrap import (
+    SERVICE_ACCOUNT_ADMIN_REFUSAL,
+    is_bootstrap_owner,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -39,8 +42,10 @@ from switch_core.connections.broker import (
 )
 from switch_core.db.audit import (
     AuditAction,
+    OrganizationAuditAction,
     list_audit_events,
     record_audit_event,
+    record_organization_audit_event,
 )
 from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
@@ -173,6 +178,8 @@ from switch_core.gateway.schemas import (
     TenantCreateRequest,
     TenantDeleteRequest,
     TenantMembershipResponse,
+    TenantRenameRequest,
+    TenantRenameResponse,
     UnansweredRoom,
     UsageTotalResponse,
     WorkspaceCountsResponse,
@@ -246,6 +253,11 @@ def _invitation_detail(invitation: Invitation) -> InvitationDetail:
     return InvitationDetail(**_invitation_fields(invitation))
 
 
+LAST_ADMIN_REFUSAL = (
+    "This is the workspace's last admin. Make someone else an admin first."
+)
+
+
 def _member_detail(
     user: User,
     membership: TenantMember,
@@ -253,11 +265,24 @@ def _member_detail(
     *,
     caller_id: str,
     administers: bool,
+    admin_count: int,
 ) -> MemberDetail:
+    """`admin_count` is the tenant's admin memberships, read without a lock:
+    the reasons it gives are what the routes would answer now, and the routes
+    check again, locked, when asked."""
     may_change = can_change_workspace_member(
         administers=administers,
         member_is_organization_admin=organization_role == ORGANIZATION_ADMIN_ROLE,
     )
+    last_admin = membership.role == "admin" and admin_count <= 1
+    change_refusal: str | None = None
+    remove_refusal: str | None = None
+    if may_change:
+        if last_admin:
+            change_refusal = remove_refusal = LAST_ADMIN_REFUSAL
+        elif membership.role != "admin" and is_bootstrap_owner(user):
+            # Admin is the only other role, so there is nothing to change it to.
+            change_refusal = SERVICE_ACCOUNT_ADMIN_REFUSAL
     return MemberDetail(
         user_id=user.id,
         name=user.name,
@@ -267,8 +292,10 @@ def _member_detail(
         service_account=is_bootstrap_owner(user),
         organization_role=organization_role,
         via_organization=False,
-        can_change_role=may_change,
-        can_remove=may_change,
+        can_change_role=may_change and change_refusal is None,
+        change_role_blocked_reason=change_refusal,
+        can_remove=may_change and remove_refusal is None,
+        remove_blocked_reason=remove_refusal,
         can_receive_transfer=user.id != caller_id,
     )
 
@@ -480,6 +507,59 @@ async def create_tenant(
         auth_time=session_auth_time(request),
     )
     return created.workspace
+
+
+@router.patch("/tenants/{tenant_id}")
+async def rename_tenant(
+    tenant_id: str,
+    req: TenantRenameRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+) -> TenantRenameResponse:
+    """Rename the bound workspace. Whoever administers it may, as with its
+    other settings: its admins, its organization's `org_admin` and the
+    operator. The slug stays as it is, being an identifier rather than the
+    name. The name it already has changes nothing and records nothing.
+
+    Recorded in the workspace's audit log and in its organization's, as
+    creating it is, so the organization's admins see it beside the workspaces
+    added.
+    """
+    _require_bound_tenant(tenant_id)
+    # Locked, so renames made at the same moment each record the name they
+    # replaced, and the second of two the same is the no-op it should be.
+    tenant = await session.get(Tenant, tenant_id, with_for_update=True)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
+    if req.name != tenant.name:
+        details: dict[str, object] = {"name": req.name, "previous_name": tenant.name}
+        tenant.name = req.name
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user.id,
+            action=AuditAction.TENANT_RENAMED,
+            target_type="tenant",
+            target_id=tenant_id,
+            details=details,
+        )
+        # A workspace from before organizations has none to record it in.
+        if tenant.organization_id is not None:
+            if request.state.platform_access:
+                details = {**details, "platform_access": True}
+            await record_organization_audit_event(
+                session,
+                organization_id=tenant.organization_id,
+                actor_user_id=user.id,
+                action=OrganizationAuditAction.WORKSPACE_RENAMED,
+                target_type="workspace",
+                target_id=tenant_id,
+                details=details,
+            )
+        await session.commit()
+        logger.info("User %s renamed workspace %s", user.id, tenant_id)
+    return TenantRenameResponse(id=tenant_id, name=req.name)
 
 
 @router.delete("/tenants/{tenant_id}")
@@ -1951,6 +2031,7 @@ async def list_members(
             if member.role == ORGANIZATION_ADMIN_ROLE:
                 organization_admins.append((person, member))
     members = await user_store.list_tenant_members(session)
+    admin_count = sum(1 for _, membership in members if membership.role == "admin")
     roster = [
         _member_detail(
             person,
@@ -1958,6 +2039,7 @@ async def list_members(
             organization_roles.get(person.id),
             caller_id=caller_id,
             administers=is_admin,
+            admin_count=admin_count,
         )
         for person, membership in members
     ]
@@ -1975,7 +2057,9 @@ async def list_members(
             # Changed only through the organization's members; and a transfer
             # needs a membership here, which they don't hold.
             can_change_role=False,
+            change_role_blocked_reason=None,
             can_remove=False,
+            remove_blocked_reason=None,
             can_receive_transfer=False,
         )
         for person, member in organization_admins
@@ -2006,6 +2090,10 @@ async def update_member_role(
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
+    user = await user_store.get(session, user_id)
+    assert user is not None
+    if role == "admin" and membership.role != "admin" and is_bootstrap_owner(user):
+        raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ADMIN_REFUSAL)
 
     if membership.role == "admin" and role != "admin":
         if await user_store.lock_admins(session) <= 1:
@@ -2024,14 +2112,14 @@ async def update_member_role(
     membership.role = role
     await session.commit()
 
-    user = await user_store.get(session, user_id)
-    assert user is not None
     return _member_detail(
         user,
         membership,
         await user_store.organization_role(session, tenant_id, user_id),
         caller_id=admin.id,
-        administers=True,
+        # Read again: an admin who just stepped down no longer administers.
+        administers=await user_store.administers(session, admin),
+        admin_count=await user_store.count_admins(session),
     )
 
 

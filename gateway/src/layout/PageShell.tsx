@@ -3,7 +3,8 @@ import { type ReactNode, Suspense, lazy } from "react";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
 import { GATEWAY_CHATS } from "../data/featureFlags";
-import { type Layout, areaOf } from "../routes/routeTable";
+import { type Layout, outsideWorkspace } from "../routes/routeTable";
+import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
@@ -24,11 +25,12 @@ function WithChats({ children }: { children: ReactNode }) {
 /** The signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
- *  The new layout's organization settings are a place of their own, outside
- *  the workspace: no rail there, and the top bar leads back. */
+ *  The new layout's organization settings and Platform area are places of
+ *  their own, outside the workspace: no rail there, and the top bar leads
+ *  back. */
 export default function PageShell({ layout }: { layout: Layout }) {
   const { pathname } = useLocation();
-  const withRail = areaOf(pathname, layout) !== "organization";
+  const withRail = !outsideWorkspace(pathname, layout);
   return (
     <Box
       sx={{
@@ -64,6 +66,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
           }}
         >
           <StaleSessionBanner />
+          <LinkNoticeBanner />
           <WithChats>
             <Outlet />
           </WithChats>
@@ -83,7 +86,7 @@ function StaleSessionBanner() {
       severity="warning"
       sx={{ mb: 2 }}
       action={
-        <Button color="inherit" size="small" onClick={recheck}>
+        <Button color="inherit" size="small" onClick={() => void recheck()}>
           Retry
         </Button>
       }

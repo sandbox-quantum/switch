@@ -115,8 +115,8 @@ const AgentActionsMenu = observer(function AgentActionsMenu({
 
   const label = agent?.name ?? 'this agent';
   const gatewayUrl =
-    agent?.serverId && agent.switchAgentId
-      ? switchRoomsStore.gatewayAgentUrl(agent.serverId, agent.switchAgentId)
+    agent?.workspaceId && agent.switchAgentId
+      ? switchRoomsStore.gatewayAgentUrl(agent.workspaceId, agent.switchAgentId)
       : null;
 
   return (

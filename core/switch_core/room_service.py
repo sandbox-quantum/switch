@@ -526,18 +526,24 @@ class RoomService:
 
     async def _require_channel_creation(self, bridge_id: str) -> None:
         """Refuse to make a channel on a connection an operator has withheld it
-        from, before anything is provisioned.
+        from, or that lacks what a channel needs (a Teams default team), before
+        anything is provisioned.
 
-        Only the operator's switch is checked here. A platform that cannot
-        create channels at all is caught by its own adapter raising, which says
-        so in the platform's terms — naming the bot, the link, the step to take
-        — and that is a better error than anything this layer could compose.
+        A platform that cannot create channels at all is not checked here: its
+        own adapter raises, saying so in the platform's terms — naming the bot,
+        the link, the step to take — and that is a better error than anything
+        this layer could compose.
         """
         async with self._session_factory() as session:
             bridge = await self._collab_bridge_store.get(session, bridge_id)
         if bridge is None:
             raise ValueError(f"Bridge not found: {bridge_id}")
         if bridge.channel_creation_enabled:
+            blocker = self._collab_lifecycle.channel_creation_blocker(
+                bridge.type, bridge.connection_config or {}
+            )
+            if blocker is not None:
+                raise ChannelCreationUnsupported(blocker)
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "

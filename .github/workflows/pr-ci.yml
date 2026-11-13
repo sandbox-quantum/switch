@@ -131,6 +131,9 @@ jobs:
               - 'gateway/**'
               # The chat UI the gateway compiles from Console's package.
               - 'console/packages/chat-ui/**'
+              # The dashboard pages Switch Console opens, which the gateway's
+              # tests check it still routes.
+              - 'console/apps/switch-console-desktop/src/shared/core/switch-servers/dashboard-pages.ts'
             # The step of the local-server bundle that builds the gateway's
             # pages. The bundle itself is only built at release, so the console
             # jobs below run (with this step) when it, or what it installs,

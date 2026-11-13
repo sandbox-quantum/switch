@@ -174,7 +174,6 @@
     "GET /gateway/collaborations/{bridge_id}/teams-package",
     "GET /gateway/collaborations/{bridge_id}/users",
     "GET /gateway/connector-apps/{service}/impact",
-    "GET /gateway/hosted-machines",
     "GET /gateway/hosted-machines/{machine_id}",
     "GET /gateway/invitations/mine",
     "GET /gateway/joinable-tenants",

@@ -1596,10 +1596,12 @@ async def list_bridges() -> list[dict[str, Any]]:
         (at most one).
 
         `can_create_channels` is false when Switch cannot make a channel on
-        that bridge — either the platform has no such call (Telegram) or an
-        operator has withheld it. Creating a room on one of those fails, so
-        offer an existing channel instead: the chat is made on the platform,
-        the Switch app is added to it, and the room is adopted from that.
+        that bridge — the platform has no such call (Telegram), an operator
+        has withheld it, or a Microsoft Teams connection has no default team
+        yet, which it gets when Switch is added to a team. Creating a room on
+        one of those fails, so offer an existing channel instead: the chat is
+        made on the platform, the Switch app is added to it, and the room is
+        adopted from that.
 
         `can_create_private_channels` says whether `channel_type`
         "channel_private" can be asked for there. Where

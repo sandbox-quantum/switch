@@ -103,6 +103,26 @@ describe("New room: why Create is disabled", () => {
     expect(create().disabled).toBe(false);
   });
 
+  it("says why a connection that may make channels cannot make one yet", () => {
+    const reason = "No default team is set for this Teams messaging app.";
+    showForm([
+      bridge({
+        display_name: "Contoso",
+        bridge_type: "teams",
+        channel_creation_blocker: reason,
+      }),
+    ]);
+    fill("Name", "planning");
+    fill("Description", "Sprint planning");
+    chooseBridge("Contoso (teams)");
+
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(
+      (screen.getByRole("radio", { name: "Create new channel" }) as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect(screen.getByText("Paste the external channel ID.")).toBeTruthy();
+  });
+
   it("says when the bridge can neither make nor link a channel", () => {
     showForm([
       bridge({

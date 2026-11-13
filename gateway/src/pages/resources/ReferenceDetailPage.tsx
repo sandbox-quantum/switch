@@ -1,11 +1,8 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
-import TransferOwnershipSection from "../../components/TransferOwnershipSection";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
-  Alert,
   Box,
+  Alert,
   Button,
-  Chip,
   CircularProgress,
   Divider,
   IconButton,
@@ -13,11 +10,12 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import {
   type ReferenceDetail,
-  fetchReference,
+  loadReference,
   updateReference,
 } from "../../data/api";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
@@ -27,56 +25,38 @@ import {
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
-import { usePackages, useReferenceTypes } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
+import { useReferenceTypes } from "../../data/hooks";
+import { formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
+import { referenceTypeLabel } from "./ReferencesTab";
+import {
+  DangerSection,
+  DetailLoadFailed,
+  DetailLoading,
+  InPackagesSection,
+  InfoLine,
+  requiredHelper,
+  useAfterTransfer,
+  useResourceDetail,
+} from "./detailParts";
+import { CategoryChip } from "./resourceList";
 import JsonValueForm from "./value_forms/JsonValueForm";
 import UrlsValueForm from "./value_forms/UrlsValueForm";
+
+const LIST_PATH = "/resources?tab=references";
 
 export default function ReferenceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: types } = useReferenceTypes();
-  const [ref, setRef] = useState<ReferenceDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { data: ref, setData: setRef, error, loading, reload } = useResourceDetail(id, loadReference);
+  const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadReference, setRef, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    setLoading(true);
-    fetchReference(id).then((r) => {
-      if (cancelled) return;
-      if (r) setRef(r);
-      else setFetchError("Reference not found");
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  if (loading) {
-    return (
-      <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-
-  if (fetchError || !ref || !id) {
-    return (
-      <Box>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/resources")}>
-          Back to resources
-        </Button>
-        <Alert severity="error" sx={{ mt: 2 }}>
-          {fetchError ?? "Reference not found"}
-        </Alert>
-      </Box>
-    );
+  if (ref === null && loading) return <DetailLoading />;
+  if (ref === null || !id) {
+    return <DetailLoadFailed what="reference" listPath={LIST_PATH} error={error} onRetry={reload} />;
   }
 
   // Visibility-filtered, so it may miss a type this reference legitimately
@@ -84,9 +64,10 @@ export default function ReferenceDetailPage() {
   const visibleTypeSpec = (types ?? []).find((t) => t.type === ref.type);
   return (
     <Box>
+      {refreshNotice}
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
-          onClick={() => navigate("/resources?tab=references")}
+          onClick={() => navigate(LIST_PATH)}
           size="small"
           aria-label="Back"
         >
@@ -95,10 +76,7 @@ export default function ReferenceDetailPage() {
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           {ref.name || "Reference"}
         </Typography>
-        <Chip
-          label={ref.type_display_name ?? `${ref.type} (unknown type)`}
-          size="small"
-        />
+        <CategoryChip label={referenceTypeLabel(ref)} />
         <AccessChip pair={ref} />
       </Stack>
 
@@ -110,6 +88,7 @@ export default function ReferenceDetailPage() {
           canEdit={ref.can_edit}
           canChangeAccess={ref.can_manage}
           valueHint={visibleTypeSpec?.value_hint}
+          typeKnown={ref.type_display_name !== null}
           onSaved={(updated) => setRef(updated)}
         />
         <Divider />
@@ -118,7 +97,9 @@ export default function ReferenceDetailPage() {
         <ResourceAttachmentsSection
           kind="reference"
           resourceId={id}
+          resourceLabel={ref.name || id}
           hiddenRoomsCount={ref.hidden_rooms_count}
+          canAttach
         />
         {ref.can_manage && (
           <>
@@ -129,27 +110,29 @@ export default function ReferenceDetailPage() {
               resourceLabel={ref.name || id}
               ownerId={ref.owner_id}
               blockedReason={null}
-              onTransferred={() => navigate(0)}
+              onTransferred={() => void afterTransfer()}
             />
           </>
         )}
         {ref.can_manage && (
           <>
             <Divider />
-            <DangerSection onDelete={() => setDeleteOpen(true)} />
+            <DangerSection what="reference" onDelete={() => setDeleteOpen(true)} />
           </>
         )}
       </Stack>
 
-      <DeleteResourceDialog
-        open={deleteOpen}
-        kind="reference"
-        resourceId={id}
-        resourceLabel={ref.name || id}
-        hiddenRoomsCount={ref.hidden_rooms_count}
-        onClose={() => setDeleteOpen(false)}
-        onDeleted={() => navigate("/resources?tab=references")}
-      />
+      {deleteOpen && (
+        <DeleteResourceDialog
+          kind="reference"
+          resourceId={id}
+          resourceLabel={ref.name || id}
+          hiddenRoomsCount={ref.hidden_rooms_count}
+          packageCount={(ref.packages ?? []).length}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => navigate(LIST_PATH)}
+        />
+      )}
     </Box>
   );
 }
@@ -160,10 +143,7 @@ function RefInfoSection({ ref_ }: { ref_: ReferenceDetail }) {
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Info
       </Typography>
-      <InfoLine
-        label="Type"
-        value={ref_.type_display_name ?? `${ref_.type} (unknown type)`}
-      />
+      <InfoLine label="Type" value={referenceTypeLabel(ref_)} />
       {ref_.owner_name ? (
         <InfoLine label="Owner" value={ref_.owner_name} />
       ) : (
@@ -174,42 +154,20 @@ function RefInfoSection({ ref_ }: { ref_: ReferenceDetail }) {
   );
 }
 
-function InfoLine({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string | null | undefined;
-  mono?: boolean;
-}) {
-  return (
-    <Typography variant="body2" color="text.secondary">
-      <strong>{label}:</strong>{" "}
-      {value ? (
-        <Box component="span" sx={mono ? MONO_SX : undefined}>
-          {value}
-        </Box>
-      ) : (
-        <Box component="span" sx={{ color: "text.secondary" }}>
-          {EM_DASH}
-        </Box>
-      )}
-    </Typography>
-  );
-}
-
 function EditFieldsSection({
   ref_,
   canEdit,
   canChangeAccess,
   valueHint,
+  typeKnown,
   onSaved,
 }: {
   ref_: ReferenceDetail;
   canEdit: boolean;
   canChangeAccess: boolean;
   valueHint: string | undefined;
+  /** Whether a type of this slug exists at all, visible to the viewer or not. */
+  typeKnown: boolean;
   onSaved: (updated: ReferenceDetail) => void;
 }) {
   const [name, setName] = useState(ref_.name);
@@ -256,6 +214,12 @@ function EditFieldsSection({
   // user. Reading the stored bag rather than the edit state keeps the choice of
   // editor fixed for the lifetime of an edit.
   const isUrlsValue = Array.isArray(ref_.value.urls);
+  // What creating one requires, kept on an edit: a name, a description, and
+  // a URL for a reference that points at them.
+  const complete =
+    name.trim() !== "" &&
+    description.trim() !== "" &&
+    (!isUrlsValue || (Array.isArray(value.urls) && value.urls.length > 0));
 
   return (
     <Stack spacing={2}>
@@ -267,6 +231,7 @@ function EditFieldsSection({
         value={name}
         onChange={(e) => setName(e.target.value)}
         disabled={!canEdit || saving}
+        {...requiredHelper(name)}
       />
       <TextField
         label="Description"
@@ -275,7 +240,7 @@ function EditFieldsSection({
         disabled={!canEdit || saving}
         multiline
         minRows={2}
-        helperText="Short, human-readable summary. Shown in lists."
+        {...requiredHelper(description, "Short, human-readable summary. Shown in lists.")}
       />
       <TextField
         label="Instructions"
@@ -293,7 +258,9 @@ function EditFieldsSection({
           disabled={!canEdit || saving}
           helperText={
             valueHint ??
-            "This reference's type is not visible to you. Enter one URL per line."
+            (typeKnown
+              ? "This reference's type is not visible to you. Enter one URL per line."
+              : "No type of this name exists any more. Enter one URL per line.")
           }
         />
       ) : (
@@ -316,66 +283,12 @@ function EditFieldsSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!(canEdit || canChangeAccess) || !dirty || saving || !valueValid}
+          disabled={!(canEdit || canChangeAccess) || !dirty || !complete || saving || !valueValid}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save
         </Button>
       </Box>
-    </Stack>
-  );
-}
-
-function InPackagesSection({ packageIds }: { packageIds: string[] }) {
-  const navigate = useNavigate();
-  const { data: allPackages } = usePackages();
-  const nameById = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const p of allPackages ?? []) m[p.id] = p.name || p.description;
-    return m;
-  }, [allPackages]);
-  return (
-    <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        In packages
-      </Typography>
-      {packageIds.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          Not in any package.
-        </Typography>
-      ) : (
-        <Stack direction="row" flexWrap="wrap" gap={0.5}>
-          {packageIds.map((pid) => (
-            <Chip
-              key={pid}
-              label={nameById[pid] ?? pid}
-              size="small"
-              variant="outlined"
-              onClick={() => navigate(`/resources/packages/${pid}`)}
-              sx={{ cursor: "pointer" }}
-            />
-          ))}
-        </Stack>
-      )}
-    </Stack>
-  );
-}
-
-function DangerSection({ onDelete }: { onDelete: () => void }) {
-  return (
-    <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "error.main", display: "block" }}>
-        Danger zone
-      </Typography>
-      <Button
-        variant="outlined"
-        color="error"
-        startIcon={<DeleteOutline />}
-        onClick={onDelete}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Delete reference
-      </Button>
     </Stack>
   );
 }

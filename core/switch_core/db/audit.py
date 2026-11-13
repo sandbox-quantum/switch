@@ -29,6 +29,7 @@ from switch_core.db.models import (
 class AuditAction(StrEnum):
     TENANT_CREATED = "tenant.created"
     TENANT_DELETED = "tenant.deleted"
+    TENANT_RENAMED = "tenant.renamed"
     INVITATION_CREATED = "invitation.created"
     INVITATION_REVOKED = "invitation.revoked"
     INVITATION_ACCEPTED = "invitation.accepted"
@@ -91,6 +92,7 @@ class AuditAction(StrEnum):
 class OrganizationAuditAction(StrEnum):
     ORGANIZATION_CREATED = "organization.created"
     WORKSPACE_CREATED = "organization.workspace_created"
+    WORKSPACE_RENAMED = "organization.workspace_renamed"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
     CONNECTOR_APP_SAVED = "organization.connector_app_saved"
