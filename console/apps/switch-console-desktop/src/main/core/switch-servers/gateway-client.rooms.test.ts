@@ -275,11 +275,15 @@ describe('what the server says the caller may do', () => {
 
 describe('room writes', () => {
   it('sends a visibility change in the server’s field names', async () => {
-    await updateRoom(SERVER, 'room-1', { readVisibility: 'private', writeVisibility: 'private' });
+    await updateRoom(SERVER, 'room-1', { readVisibility: 'private' });
+    // Private write too: an older server refuses private-read, public-write.
     expect(lastCall()).toMatchObject({
       method: 'PATCH',
       body: { read_visibility: 'private', write_visibility: 'private' },
     });
+
+    await updateRoom(SERVER, 'room-1', { readVisibility: 'public' });
+    expect(lastCall().body).toEqual({ read_visibility: 'public' });
     expect(lastCall().url).toMatch(/\/rooms\/room-1$/);
   });
 

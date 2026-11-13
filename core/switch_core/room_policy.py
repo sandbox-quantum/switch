@@ -48,6 +48,19 @@ from switch_core.authz import Principal
 # The channel types whose members their platform fixes.
 FIXED_MEMBERSHIP = ("direct", "group")
 
+# The channel types only their members can see on the platform.
+PRIVATE_CHANNELS = ("channel_private", "group", "direct")
+
+
+def visibility_for_channel(channel_type: str) -> Literal["public", "private"]:
+    """The read visibility a new room takes from its channel: private when
+    only the channel's members can see it, public otherwise.
+
+    Only at creation. Switching the channel on the platform afterwards does
+    not move the room; its owner or an admin changes the Switch side.
+    """
+    return "private" if channel_type in PRIVATE_CHANNELS else "public"
+
 
 class Tier(StrEnum):
     OWNER = "owner"

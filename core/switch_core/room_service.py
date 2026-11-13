@@ -26,10 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
 from switch_core.authz import (
+    VISIBILITIES,
     Principal,
     can,
     require_group_filing,
-    validate_visibility_pair,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
@@ -61,7 +61,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
-from switch_core.room_policy import FIXED_MEMBERSHIP
+from switch_core.room_policy import FIXED_MEMBERSHIP, visibility_for_channel
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import (
@@ -142,10 +142,12 @@ class RoomCreateConfig(BaseModel):
     # Authorization owner (the acting user, or an agent's owner for MCP-created
     # rooms). `created_by` is immutable audit; `owner_id` is what `can()` reads.
     owner_id: str | None = None
-    # Rooms are collaborative by default — public read & write. Set private to
-    # lock a room down to its owner (and admins).
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Who may see the room: "public" (everyone in the workspace) or "private"
+    # (those taking part, its owner and admins). Left unset, the room takes it
+    # from its channel: see `visibility_for_channel`. A room carries no write
+    # visibility of its own any more; changing a room is its owner's
+    # (`room_policy`), so every room is stored write-private.
+    read_visibility: str | None = None
     # Attachments applied after the room is provisioned. Reference/package
     # access is checked against ``acting_user_id`` using the same predicates
     # the gateway uses; ``acting_user_id`` is required when any of these are
@@ -902,6 +904,12 @@ class RoomService:
         if channel_type is None:
             channel_type = "channel_public"
 
+        read_visibility = config.read_visibility or visibility_for_channel(channel_type)
+        if read_visibility not in VISIBILITIES:
+            raise ValueError(
+                f"Invalid read_visibility '{read_visibility}' (expected public|private)"
+            )
+
         is_dm = (
             channel_type == "direct"
             and collaboration_core is not None
@@ -988,8 +996,8 @@ class RoomService:
                 kickoff_hash=config.kickoff_hash,
                 template_name=config.template_name,
                 owner_id=config.owner_id,
-                read_visibility=config.read_visibility,
-                write_visibility=config.write_visibility,
+                read_visibility=read_visibility,
+                write_visibility="private",
                 # Nothing else on the row can answer this afterwards.
                 metadata_={
                     "created_by_kind": config.created_by_kind,
@@ -1531,8 +1539,11 @@ class RoomService:
         instructions: str | None = None,
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
-        write_visibility: str | None = None,
     ) -> None:
+        if read_visibility is not None and read_visibility not in VISIBILITIES:
+            raise ValueError(
+                f"Invalid read_visibility '{read_visibility}' (expected public|private)"
+            )
         if name is not None:
             name = name.strip()
             if not name or len(name) > ROOM_NAME_MAX:
@@ -1541,18 +1552,6 @@ class RoomService:
                 )
         tenant_id = await self._room_tenant(room_id)
         async with tenant_session(self._session_factory, tenant_id) as session:
-            if read_visibility is not None or write_visibility is not None:
-                room = await self._room_store.get(session, room_id)
-                if room is None:
-                    raise ValueError(f"Room not found: {room_id}")
-                validate_visibility_pair(
-                    read_visibility
-                    if read_visibility is not None
-                    else room.read_visibility,
-                    write_visibility
-                    if write_visibility is not None
-                    else room.write_visibility,
-                )
             await self._room_store.update_fields(
                 session,
                 room_id,
@@ -1561,7 +1560,6 @@ class RoomService:
                 instructions=instructions,
                 admin_mode=admin_mode,
                 read_visibility=read_visibility,
-                write_visibility=write_visibility,
             )
             await session.commit()
         self.room_changed(tenant_id, room_id)

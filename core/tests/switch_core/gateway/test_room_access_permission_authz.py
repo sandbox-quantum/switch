@@ -112,7 +112,7 @@ class TestRoomAccessPermissionAuthz:
                 await _patch(
                     session,
                     room_id=room.id,
-                    req=RoomUpdateRequest(write_visibility="private"),
+                    req=RoomUpdateRequest(read_visibility="private"),
                     user=other,
                 )
 
@@ -154,7 +154,7 @@ class TestRoomAccessPermissionAuthz:
                 await _patch(
                     session,
                     room_id=room.id,
-                    req=RoomUpdateRequest(write_visibility="public"),
+                    req=RoomUpdateRequest(read_visibility="private"),
                     user=owner,
                 )
 

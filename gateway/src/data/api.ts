@@ -344,8 +344,9 @@ export interface CreateRoomInput {
   internal_only?: boolean;
   external_channel_id?: string | null;
   group_id?: string | null;
+  // Left out, the room takes it from its channel: a private channel makes a
+  // private room, anything else a public one.
   read_visibility?: "public" | "private";
-  write_visibility?: "public" | "private";
   roles?: RoomRoleSpec[];
 }
 
@@ -355,7 +356,6 @@ export interface UpdateRoomInput {
   instructions?: string | null;
   admin_mode?: boolean;
   read_visibility?: "public" | "private";
-  write_visibility?: "public" | "private";
 }
 
 /** A failed gateway call that keeps what the server said: the status, for

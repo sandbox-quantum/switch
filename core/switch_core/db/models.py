@@ -1248,8 +1248,11 @@ class Room(TenantScoped, Base):
     read_visibility: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="public"
     )
+    # Grants nothing on a room (changing one is its owner's, `room_policy`);
+    # kept so a room answers the same `Owned` shape as the other resources,
+    # and always "private".
     write_visibility: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="public"
+        Text, nullable=False, server_default="private"
     )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
