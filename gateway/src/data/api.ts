@@ -1577,11 +1577,10 @@ export async function login(email: string, password: string): Promise<UserInfo> 
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
+// Throws when the cookie wasn't cleared, so a failed sign-out never looks
+// like a signed-out browser that a reload would sign straight back in.
 export async function logout(): Promise<void> {
-  await fetch(`${BASE}/auth/logout`, {
-    method: "POST",
-    credentials: "include",
-  });
+  await jsonRequest("/auth/logout", "POST");
 }
 
 // Ends every session the account holds, this one included: a copied cookie or

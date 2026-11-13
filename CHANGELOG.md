@@ -535,6 +535,11 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **A sign-out that fails in the dashboard says so.** Signing out, or out of
+  every device, from the account menu or the screens before a workspace said
+  nothing when Switch didn't answer, and a failed sign-out of this browser
+  looked signed out until the next reload signed it back in. The dashboard
+  now stays signed in and shows what went wrong.
 - **Messaging apps says when a change is refused or the list fails to load.**
   Turning agent greetings or channel creation on or off said nothing when
   Switch refused it, and a list that failed to load showed "No messaging apps

@@ -250,6 +250,19 @@ describe("AppRoutes", () => {
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
   });
 
+  it("stays signed in, saying so, when signing out fails", async () => {
+    // An invitation to follow, so the screen is the one before a workspace.
+    storePendingInvite("abc");
+    mockFetch({
+      ...signedInAs("org_admin"),
+      "/auth/logout": [502, { detail: "Bad Gateway" }],
+    });
+    renderAt("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    expect(await screen.findByText("Could not sign out: Bad Gateway")).toBeTruthy();
+    expect(screen.queryByText("Switch Gateway")).toBeNull();
+  });
+
   it("says so when the session cannot be read, instead of showing sign-in", async () => {
     mockFetch({ "/auth/session": [500, { detail: "database unavailable" }] });
     renderAt("/rooms");
@@ -396,6 +409,20 @@ describe("today's layout", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Change password" }));
     expect(await screen.findByRole("dialog", { name: "Change password" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Your account" })).toBeNull();
+  });
+
+  it("stays signed in, saying so, when signing out of every device from the menu fails", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/sessions/revoke": [500, { detail: "Internal Server Error" }],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
+    expect(
+      await screen.findByText("Could not sign out of every device: Internal Server Error"),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
   });
 });
 

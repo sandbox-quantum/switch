@@ -9,7 +9,7 @@ vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 const auth = {
   logout: vi.fn(async () => {}),
   logoutEverywhere: vi.fn(async () => {}),
-  recheck: vi.fn(),
+  recheck: vi.fn(async () => {}),
 };
 
 function signedIn() {
@@ -126,15 +126,60 @@ describe("Your account", () => {
     expect(auth.recheck).not.toHaveBeenCalled();
   });
 
-  it("signs out of this browser, or of every device", async () => {
+  it("signs out of this browser, holding both buttons while it does", async () => {
     signedIn();
     answer({ "GET /auth/me": me() });
     render(<AccountPage />);
     const card = within(await screen.findByRole("region", { name: "Sign out" }));
     fireEvent.click(card.getByRole("button", { name: "Sign out" }));
     expect(auth.logout).toHaveBeenCalledTimes(1);
+    expect(
+      (card.getByRole("button", { name: "Sign out of all devices" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.click(card.getByRole("button", { name: "Sign out of all devices" }));
+    expect(auth.logoutEverywhere).not.toHaveBeenCalled();
+  });
+
+  it("signs out of every device", async () => {
+    signedIn();
+    answer({ "GET /auth/me": me() });
+    render(<AccountPage />);
+    const card = within(await screen.findByRole("region", { name: "Sign out" }));
     fireEvent.click(card.getByRole("button", { name: "Sign out of all devices" }));
     expect(auth.logoutEverywhere).toHaveBeenCalledTimes(1);
+    expect((card.getByRole("button", { name: "Sign out" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
+  it("says so when signing out of every device fails, and lets you try again", async () => {
+    signedIn();
+    auth.logoutEverywhere.mockRejectedValueOnce(new Error("Internal Server Error"));
+    answer({ "GET /auth/me": me() });
+    render(<AccountPage />);
+    const card = within(await screen.findByRole("region", { name: "Sign out" }));
+    fireEvent.click(card.getByRole("button", { name: "Sign out of all devices" }));
+    expect((await card.findByRole("alert")).textContent).toBe(
+      "Couldn't sign you out of every device: Internal Server Error",
+    );
+    const again = card.getByRole("button", { name: "Sign out of all devices" }) as HTMLButtonElement;
+    expect(again.disabled).toBe(false);
+    fireEvent.click(again);
+    expect(auth.logoutEverywhere).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(card.queryByRole("alert")).toBeNull());
+  });
+
+  it("says so when signing out of this browser fails", async () => {
+    signedIn();
+    auth.logout.mockRejectedValueOnce(new Error("Network down"));
+    answer({ "GET /auth/me": me() });
+    render(<AccountPage />);
+    const card = within(await screen.findByRole("region", { name: "Sign out" }));
+    fireEvent.click(card.getByRole("button", { name: "Sign out" }));
+    expect((await card.findByRole("alert")).textContent).toBe("Couldn't sign you out: Network down");
+    expect((card.getByRole("button", { name: "Sign out" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 });
 
@@ -206,7 +251,7 @@ describe("Deleting your account", () => {
     warn.mockRestore();
   });
 
-  it("keeps the dialog open with the reason when the deletion is refused after all", async () => {
+  it("shows a refusal from the deletion itself as it shows the check's, in place of the form", async () => {
     signedIn();
     const reason = "You're the only admin of Acme, which has other users. Make one of them an admin first.";
     answer({
@@ -221,8 +266,29 @@ describe("Deleting your account", () => {
     });
     fireEvent.click(dialog.getByRole("button", { name: "Delete account" }));
     expect(await dialog.findByText(reason)).toBeTruthy();
-    expect(dialog.getByRole("button", { name: "Delete account" })).toBeTruthy();
+    expect(dialog.getByText("You can't delete your account yet")).toBeTruthy();
+    expect(dialog.queryByRole("textbox")).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Delete account" })).toBeNull();
+    expect(dialog.getByRole("button", { name: "OK" })).toBeTruthy();
     expect(auth.logout).not.toHaveBeenCalled();
+  });
+
+  it("keeps the form, with the reason under it, when the deletion fails for another reason", async () => {
+    signedIn();
+    answer({
+      "GET /auth/me": me(),
+      "GET /auth/me/deletion": { refusal: null },
+      "DELETE /auth/me": [400, { detail: "That email doesn't match this account." }],
+    });
+    render(<AccountPage />);
+    const dialog = within(await openDelete());
+    fireEvent.change(await dialog.findByLabelText("Type ada@example.test to confirm"), {
+      target: { value: "ada@example.test" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "Delete account" }));
+    expect(await dialog.findByText("That email doesn't match this account.")).toBeTruthy();
+    expect(dialog.getByRole("textbox")).toBeTruthy();
+    expect(dialog.getByRole("button", { name: "Delete account" })).toBeTruthy();
   });
 
   it("still lets you go ahead when the check itself fails, saying it didn't run", async () => {

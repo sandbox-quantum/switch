@@ -16,7 +16,7 @@ import {
 } from "@mui/material";
 import { useEffect, useId, useRef, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
-import { accountDeletionRefusal, deleteMyAccount } from "../../data/api";
+import { ApiError, accountDeletionRefusal, deleteMyAccount } from "../../data/api";
 
 interface Props {
   open: boolean;
@@ -83,7 +83,13 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
       await deleteMyAccount(typed.trim());
       setDeleted(true);
     } catch (err) {
-      setError(messageOf(err));
+      // A refusal, something that changed since the dialog opened, takes the
+      // form's place as the check's would; anything else shows under it.
+      if (err instanceof ApiError && err.status === 409) {
+        setCheck({ state: "refused", reason: err.message });
+      } else {
+        setError(messageOf(err));
+      }
     } finally {
       setDeleting(false);
     }

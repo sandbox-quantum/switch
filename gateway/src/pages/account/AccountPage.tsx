@@ -56,14 +56,31 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
   // Kept after the message closes, so it still names them while it fades out.
   const [renamedTo, setRenamedTo] = useState("");
   const [noticeOpen, setNoticeOpen] = useState(false);
+  // Which sign-out is under way. Both buttons wait for it: a sign-out that
+  // fails says so here, and this browser stays signed in.
+  const [signingOut, setSigningOut] = useState<"here" | "everywhere" | null>(null);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
 
   // The session is read again for everywhere else the name shows.
   const rename = async (draft: string) => {
     const renamed = await changeMyName(draft);
     onRenamed(renamed);
-    recheck();
+    await recheck();
     setRenamedTo(renamed.name);
     setNoticeOpen(true);
+  };
+
+  // A sign-out that works leaves the page, so only a failure comes back here.
+  const signOut = async (which: "here" | "everywhere") => {
+    setSigningOut(which);
+    setSignOutError(null);
+    try {
+      await (which === "here" ? logout() : logoutEverywhere());
+    } catch (err) {
+      const what = which === "here" ? "sign you out" : "sign you out of every device";
+      setSignOutError(`Couldn't ${what}: ${err instanceof Error ? err.message : String(err)}`);
+      setSigningOut(null);
+    }
   };
 
   return (
@@ -98,6 +115,7 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
           <AccountCard
             title="Password"
             description="Change the password you sign in with. Other devices are signed out."
+            error={null}
           >
             <Button
               variant="outlined"
@@ -111,17 +129,30 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
         <AccountCard
           title="Sign out"
           description="Ends this browser session, or every session you have open. Your agents keep running."
+          error={signOutError}
         >
-          <Button variant="text" onClick={() => void logoutEverywhere()}>
+          <Button
+            variant="text"
+            onClick={() => void signOut("everywhere")}
+            disabled={signingOut !== null}
+            loading={signingOut === "everywhere"}
+          >
             Sign out of all devices
           </Button>
-          <Button variant="outlined" startIcon={<LogoutOutlined />} onClick={() => void logout()}>
+          <Button
+            variant="outlined"
+            startIcon={<LogoutOutlined />}
+            onClick={() => void signOut("here")}
+            disabled={signingOut !== null}
+            loading={signingOut === "here"}
+          >
             Sign out
           </Button>
         </AccountCard>
         <AccountCard
           title="Delete account"
           description="Removes you from every workspace you're in, and deletes the agents you own and the connector accounts you connected."
+          error={null}
         >
           <Button variant="outlined" color="error" onClick={() => setDeleteOpen(true)}>
             Delete account
@@ -150,14 +181,16 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
 }
 
 /** One thing to do with the account: what it is on the left, its buttons on
- * the right. */
+ * the right, and under them why the last attempt failed, if it did. */
 function AccountCard({
   title,
   description,
+  error,
   children,
 }: {
   title: string;
   description: string;
+  error: string | null;
   children: ReactNode;
 }) {
   return (
@@ -186,6 +219,11 @@ function AccountCard({
       <Stack direction="row" sx={{ gap: 1, flexShrink: 0 }}>
         {children}
       </Stack>
+      {error && (
+        <Alert severity="error" sx={{ flexBasis: "100%", overflowWrap: "anywhere" }}>
+          {error}
+        </Alert>
+      )}
     </Box>
   );
 }

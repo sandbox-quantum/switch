@@ -91,14 +91,25 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [switchError, setSwitchError] = useState<string | null>(null);
+  // What the menu last failed to do: switching workspace or signing out.
+  const [menuError, setMenuError] = useState<string | null>(null);
 
   const switchWorkspace = async (tenantId: string) => {
     setAnchor(null);
     try {
       await switchTo(tenantId);
     } catch (err) {
-      setSwitchError(err instanceof Error ? err.message : "Could not switch workspace");
+      setMenuError(err instanceof Error ? err.message : "Could not switch workspace");
+    }
+  };
+
+  // A sign-out that works leaves the dashboard; one that fails says so.
+  const signOut = async (action: () => Promise<void>, failure: string) => {
+    setAnchor(null);
+    try {
+      await action();
+    } catch (err) {
+      setMenuError(`${failure}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -311,11 +322,14 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
             Change password
           </MenuItem>
         )}
-        <MenuItem onClick={logout} sx={{ gap: 1 }}>
+        <MenuItem onClick={() => signOut(logout, "Could not sign out")} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
         </MenuItem>
-        <MenuItem onClick={logoutEverywhere} sx={{ gap: 1 }}>
+        <MenuItem
+          onClick={() => signOut(logoutEverywhere, "Could not sign out of every device")}
+          sx={{ gap: 1 }}
+        >
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out of all devices
         </MenuItem>
@@ -329,12 +343,12 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
       </Dialog>
 
       <Snackbar
-        open={switchError !== null}
-        onClose={() => setSwitchError(null)}
+        open={menuError !== null}
+        onClose={() => setMenuError(null)}
         anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
       >
-        <Alert severity="error" onClose={() => setSwitchError(null)}>
-          {switchError}
+        <Alert severity="error" onClose={() => setMenuError(null)}>
+          {menuError}
         </Alert>
       </Snackbar>
 
