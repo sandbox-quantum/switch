@@ -841,6 +841,7 @@ class TestThroughTheBroker:
     ) -> None:
         adapter, _ = _adapter(vendor)
         broker = ServiceBroker(
+            telemetry=None,
             session_factory=session_factory,
             keyring=TEST_KEYRING,
             catalog=pass_through_catalog(tmp_path / "catalog"),
@@ -923,6 +924,7 @@ class TestThroughTheBroker:
     ) -> None:
         adapter, _ = _adapter(vendor)
         broker = ServiceBroker(
+            telemetry=None,
             session_factory=session_factory,
             keyring=TEST_KEYRING,
             catalog=pass_through_catalog(tmp_path / "catalog"),

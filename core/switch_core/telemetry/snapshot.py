@@ -40,6 +40,7 @@ from sqlalchemy.orm import aliased
 from switch_core import messaging_platforms
 from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG, SENDER_IS_APP_MARKER
+from switch_core.connections.loader import CATALOG as SERVICE_CATALOG
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -56,6 +57,9 @@ from switch_core.db.models import (
     Reference,
     Room,
     RoomGroup,
+    ServiceConnection,
+    ServiceGrant,
+    ServiceTokenIssuance,
     Template,
     TemplateInstall,
     TemplateRunRecord,
@@ -65,7 +69,10 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.telemetry.catalogue import connector_count_property
+from switch_core.telemetry.catalogue import (
+    connector_count_property,
+    service_connection_count_property,
+)
 from switch_core.telemetry.deployment import CONNECTOR_ADDED_PREFIX, claims_named
 from switch_core.telemetry.internal import internal_email_condition
 
@@ -206,6 +213,20 @@ class UsageCounts:
     template_author_active_ids_7d: set[str] = field(default_factory=set)
     template_official_installer_ids: set[str] = field(default_factory=set)
     template_saved_installer_ids: set[str] = field(default_factory=set)
+    service_connection_count: int = 0
+    service_connection_needs_attention_count: int = 0
+    service_connected_workspace_count: int = 0
+    service_grant_count: int = 0
+    service_granted_agent_count: int = 0
+    service_agent_active_7d: int = 0
+    service_token_issued_7d: int = 0
+    # Accounts with a connection that works, counted from the ids once every
+    # tenant is in: one person may connect a service in several workspaces.
+    service_connected_account_ids: set[str] = field(default_factory=set)
+    # Every service in the catalog, so one nobody connected reports zero.
+    service_connection_counts: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(SERVICE_CATALOG, 0)
+    )
 
     def as_event_properties(self, *, session_live_count: int) -> dict[str, float]:
         """Flatten to exactly the properties `usage_snapshot` declares."""
@@ -274,9 +295,21 @@ class UsageCounts:
             ),
             "template_saved_installer_count": len(self.template_saved_installer_ids),
             "official_template_hidden_count": self.official_template_hidden_count,
+            "service_connection_count": self.service_connection_count,
+            "service_connection_needs_attention_count": (
+                self.service_connection_needs_attention_count
+            ),
+            "service_connected_account_count": len(self.service_connected_account_ids),
+            "service_connected_workspace_count": self.service_connected_workspace_count,
+            "service_grant_count": self.service_grant_count,
+            "service_granted_agent_count": self.service_granted_agent_count,
+            "service_agent_active_7d": self.service_agent_active_7d,
+            "service_token_issued_7d": self.service_token_issued_7d,
         }
         for platform, count in self.connector_counts.items():
             properties[connector_count_property(platform)] = count
+        for service, count in self.service_connection_counts.items():
+            properties[service_connection_count_property(service)] = count
         return properties
 
 
@@ -803,6 +836,7 @@ async def collect_tenant_counts(
 
     await _collect_resource_counts(session, tenant_id, counts)
     await _collect_template_counts(session, tenant_id, counts, week_ago)
+    await _collect_service_counts(session, tenant_id, counts, week_ago)
 
     (
         human_to_agent,
@@ -932,6 +966,56 @@ async def _collect_template_counts(
         select(func.count())
         .select_from(HiddenOfficialTemplate)
         .where(HiddenOfficialTemplate.tenant_id == tenant_id),
+    )
+
+
+async def _collect_service_counts(
+    session: AsyncSession, tenant_id: str, counts: UsageCounts, week_ago: datetime
+) -> None:
+    """Who connected a service, which agents may use one, and which did."""
+    connections = await session.execute(
+        select(
+            ServiceConnection.service,
+            ServiceConnection.status,
+            ServiceConnection.user_id,
+        ).where(ServiceConnection.tenant_id == tenant_id)
+    )
+    working = False
+    for service, status, user_id in connections:
+        counts.service_connection_count += 1
+        if service in counts.service_connection_counts:
+            counts.service_connection_counts[service] += 1
+        if status == "active":
+            working = True
+            counts.service_connected_account_ids.add(user_id)
+        else:
+            counts.service_connection_needs_attention_count += 1
+    counts.service_connected_workspace_count += int(working)
+    counts.service_grant_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(ServiceGrant)
+        .where(ServiceGrant.tenant_id == tenant_id),
+    )
+    counts.service_granted_agent_count += await _scalar(
+        session,
+        select(func.count(distinct(ServiceGrant.agent_id))).where(
+            ServiceGrant.tenant_id == tenant_id
+        ),
+    )
+    issued_this_week = (
+        ServiceTokenIssuance.tenant_id == tenant_id,
+        ServiceTokenIssuance.created_at >= week_ago,
+    )
+    counts.service_agent_active_7d += await _scalar(
+        session,
+        select(func.count(distinct(ServiceTokenIssuance.agent_id))).where(
+            *issued_this_week
+        ),
+    )
+    counts.service_token_issued_7d += await _scalar(
+        session,
+        select(func.count()).select_from(ServiceTokenIssuance).where(*issued_this_week),
     )
 
 
@@ -1115,6 +1199,8 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "template_author_active_ids_7d",
         "template_official_installer_ids",
         "template_saved_installer_ids",
+        "service_connected_account_ids",
+        "service_connection_counts",
     }
     for f in fields(UsageCounts):
         if f.name in skip:
@@ -1129,6 +1215,9 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
     total.template_saved_installer_ids |= tenant.template_saved_installer_ids
     for platform, count in tenant.connector_counts.items():
         total.connector_counts[platform] += count
+    total.service_connected_account_ids |= tenant.service_connected_account_ids
+    for service, count in tenant.service_connection_counts.items():
+        total.service_connection_counts[service] += count
 
 
 async def _internal_among(session: AsyncSession, user_ids: set[str]) -> int:

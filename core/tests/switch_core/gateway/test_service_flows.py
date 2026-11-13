@@ -110,6 +110,7 @@ def _world(
         scopes=["read:items", "write:items"],
     )
     broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=catalog,

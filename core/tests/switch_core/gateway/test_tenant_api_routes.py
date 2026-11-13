@@ -195,6 +195,7 @@ def _app(
     )
     app.state.sign_in_flows = SignInFlows(session_factory, _KEYRING)
     app.state.service_broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=_KEYRING,
         catalog=CATALOG,
@@ -1643,6 +1644,7 @@ class TestMemberRoutes:
         github = SimpleNamespace(revoke=AsyncMock())
         app.state.github_connections = github
         app.state.service_broker = ServiceBroker(
+            telemetry=None,
             session_factory=session_factory,
             keyring=_KEYRING,
             catalog=CATALOG,

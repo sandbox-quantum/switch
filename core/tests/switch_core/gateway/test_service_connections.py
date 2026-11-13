@@ -457,6 +457,7 @@ class TestMemberRemoval:
         await connect(bound_to(session_factory, TENANT_A), member_id)
         app = _app(session_factory)
         app.state.service_broker = ServiceBroker(
+            telemetry=None,
             session_factory=session_factory,
             keyring=TEST_KEYRING,
             catalog=CATALOG,

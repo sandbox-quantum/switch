@@ -225,6 +225,7 @@ class World:
         )
         await apps.load()
         broker = ServiceBroker(
+            telemetry=None,
             session_factory=self.session_factory,
             keyring=TEST_KEYRING,
             catalog=self.catalog,

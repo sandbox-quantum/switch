@@ -568,6 +568,7 @@ class TemplateAgents:
                     tool_mode=None,
                     tools=None,
                     resources=grant.resources,
+                    granted_by="template",
                 )
                 if warning:
                     logger.warning(

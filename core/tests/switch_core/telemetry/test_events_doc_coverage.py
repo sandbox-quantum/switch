@@ -13,8 +13,9 @@ Only what follows the platform registry is left out: the platform names
 `bridge_platform` accepts and the `connector_<platform>_count` snapshot keys,
 so adding a platform stays a change to that platform alone; the doc covers them
 generically. `bridge_platform`'s fixed values are checked like any other. The
-same goes for `official_slug`: the slugs follow the templates this release
-ships, and only its `none` is checked.
+same goes for `official_slug` and `service`: their slugs follow the templates
+and the connector catalog this release ships, and only their `none` and
+`unknown` are checked.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from switch_core.telemetry.catalogue import (
     _OneOf,
     _Optional,
     _RegisteredPlatform,
+    _Service,
 )
 
 DOC = Path(__file__).parents[4] / "docs" / "old" / "telemetry-events.md"
@@ -45,6 +47,8 @@ def _closed_values(spec: PropertyType) -> frozenset[str]:
         return spec.extra
     if isinstance(spec, _OfficialTemplateSlug):
         return frozenset({"none"})
+    if isinstance(spec, _Service):
+        return frozenset({"unknown"})
     if isinstance(spec, _Number | _Boolean):
         return frozenset()
     raise AssertionError(

@@ -36,12 +36,17 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.dependencies import current_telemetry, get_session
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
     GitHubError,
+)
+from switch_core.telemetry.services import (
+    refusal_failure,
+    sign_in_failed,
+    sign_in_started,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,6 +162,9 @@ async def start(
     try:
         await broker.require_workspace_enabled(session, "github")
     except ServiceError as error:
+        sign_in_failed(
+            current_telemetry(), "github", "start", refusal_failure(error.code)
+        )
         return service_refusal(error)
     tenant = await session.get(Tenant, require_tenant_id())
     if tenant is None:
@@ -176,13 +184,16 @@ async def start(
             completion_secret=body.completion_secret,
         )
     except FlowUsedError:
+        sign_in_failed(current_telemetry(), "github", "start", "interrupted")
         raise HTTPException(
             503, "This authorization has already been used. Connect again."
         ) from None
     except FlowsBusyError:
+        sign_in_failed(current_telemetry(), "github", "start", "error")
         raise HTTPException(
             503, "The GitHub connector is busy. Please try again shortly."
         ) from None
+    sign_in_started(current_telemetry(), "github", "github")
     return {
         "id": body.state,
         "url": github.origin
@@ -199,6 +210,7 @@ async def _failed_before_leaving(
     await flows.advance(
         flow, expect=("pending",), to="failed", changes={"error": message}
     )
+    sign_in_failed(current_telemetry(), "github", "vendor", "interrupted")
     return page(message, status)
 
 
@@ -276,6 +288,7 @@ async def callback(
                 to="failed",
                 changes={"error": "GitHub authorization was cancelled."},
             )
+            sign_in_failed(current_telemetry(), "github", "vendor", "cancelled")
             raise GitHubError("GitHub authorization was cancelled.")
         if (
             await flows.advance(
@@ -332,6 +345,7 @@ async def complete(
         await flows.advance(
             flow, expect=("delivered",), to="failed", changes={"error": APP_CHANGED}
         )
+        sign_in_failed(current_telemetry(), "github", "complete", "interrupted")
         raise HTTPException(400, APP_CHANGED)
     checking = await flows.advance(
         flow, expect=("delivered",), to="checking", changes={}
@@ -342,6 +356,16 @@ async def complete(
         credentials = await github.sign_in(body.code, flow.verifier)
     except (GitHubError, asyncio.CancelledError) as error:
         await _settled(flows, checking, "failed", error=str(error) or INTERRUPTED)
+        sign_in_failed(
+            current_telemetry(),
+            "github",
+            "complete",
+            "vendor_refused"
+            if isinstance(error, GitHubAuthorizationError)
+            else "vendor_error"
+            if isinstance(error, GitHubError)
+            else "interrupted",
+        )
         if isinstance(error, GitHubError):
             raise HTTPException(400, str(error)) from None
         raise
@@ -364,6 +388,9 @@ async def complete(
             "this workspace. Remove that link first."
         )
         await _settled(flows, checking, "failed", error=linked)
+        sign_in_failed(
+            current_telemetry(), "github", "complete", "account_linked_elsewhere"
+        )
         return JSONResponse(
             status_code=409,
             content={
@@ -386,6 +413,9 @@ async def complete(
         )
     except ServiceError as error:
         await _settled(flows, checking, "failed", error=error.message)
+        sign_in_failed(
+            current_telemetry(), "github", "complete", refusal_failure(error.code)
+        )
         return service_refusal(error)
     await _settled(
         flows,
