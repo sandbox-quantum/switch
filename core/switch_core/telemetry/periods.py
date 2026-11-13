@@ -1,4 +1,5 @@
-"""The calendar periods usage is counted over, for `usage_period`.
+"""The calendar periods usage is counted over, for `usage_day_counted`,
+`usage_week_counted` and `usage_month_counted`.
 
 The snapshot's `*_7d` counts are trailing windows sent every day, so a chart
 that adds them up over a week counts each room up to seven times. A finished
@@ -11,6 +12,11 @@ laptop that was off sends the periods it missed when it next runs, days late,
 and an event dated "now" would land in the wrong bucket; the middle is inside
 the same day, week and month in any timezone a chart is drawn in, where the
 start would fall on the previous day west of UTC.
+
+Never earlier than the deployment's install or the moment telemetry was last
+switched on, though (`Period.dated`). Amplitude counts a deployment as new
+from its earliest event, so a period dated before either would make it new
+before it existed or agreed to report.
 """
 
 from __future__ import annotations
@@ -30,6 +36,16 @@ _DAY = timedelta(days=1)
 _WEEK = timedelta(days=7)
 
 
+# The event each kind of period is reported as. Three events rather than one
+# with a `period` property: no chart can sum two kinds together correctly, so
+# none should have to remember to filter them apart.
+EVENT_NAMES = {
+    "day": "usage_day_counted",
+    "week": "usage_week_counted",
+    "month": "usage_month_counted",
+}
+
+
 @dataclass(frozen=True)
 class Period:
     kind: str
@@ -39,6 +55,27 @@ class Period:
     @property
     def midpoint(self) -> datetime:
         return self.start + (self.end - self.start) / 2
+
+    @property
+    def event(self) -> str:
+        return EVENT_NAMES[self.kind]
+
+    def dated(self, reporting_since: datetime | None) -> tuple[datetime, bool] | None:
+        """When to date this period's event, and whether the period is partial:
+        whether it began before `reporting_since`, the later of the install
+        and the moment telemetry was last switched on.
+
+        The middle, unless that is earlier than `reporting_since`, in which
+        case `reporting_since` itself, which is still inside the period, so
+        the event lands in the same bucket. None for a period that ended by
+        then: nothing of it was watched, and dating it later would put it
+        outside its own bucket.
+        """
+        if reporting_since is None or self.start >= reporting_since:
+            return self.midpoint, False
+        if self.end <= reporting_since:
+            return None
+        return max(self.midpoint, reporting_since), True
 
 
 def _day_start(moment: datetime) -> datetime:

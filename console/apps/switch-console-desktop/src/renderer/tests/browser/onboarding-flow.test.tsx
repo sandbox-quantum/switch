@@ -81,13 +81,16 @@ const localServer = vi.hoisted(() => ({
   isRunning: false,
   isTransitioning: false,
   phase: 'stopped',
+  runtime: 'native' as 'native' | 'docker' | null,
+  mattermost: true,
   message: null as string | null,
   error: null as string | null,
   errorDetail: null as string | null,
   logs: [] as string[],
   init: vi.fn(() => Promise.resolve()),
   checkDocker: vi.fn(() => Promise.resolve()),
-  start: vi.fn(),
+  start: vi.fn(() => Promise.resolve()),
+  reset: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('@renderer/features/switch-servers/local-server-store', () => ({
@@ -109,6 +112,7 @@ vi.mock('@renderer/lib/hooks/useTheme', () => ({
   useTheme: () => ({ effectiveTheme: 'emlight' }),
 }));
 
+import { LocalSetupProgress } from '@renderer/features/onboarding/local-setup-progress';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { ExternalServerStep } from '@renderer/features/switch-servers/AddServerModal';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
@@ -137,6 +141,8 @@ beforeEach(() => {
     isRunning: false,
     isTransitioning: false,
     phase: 'stopped',
+    runtime: 'native',
+    mattermost: true,
     message: null,
     error: null,
     errorDetail: null,
@@ -270,13 +276,101 @@ describe('the first-run flow', () => {
     expect(onboardingStore.page).toBe('welcome');
   });
 
-  it('starts the stack on this computer by default when there is no Cloud', async () => {
+  it('picks the stack on this computer by default when there is no Cloud', async () => {
     const el = await renderFlow();
     await act(async () => button(el, 'Get started').click());
 
     await act(async () => button(el, 'Continue').click());
 
     expect(onboardingStore.page).toBe('local');
+  });
+
+  it('sets the server up on this computer without a page asking to start it', async () => {
+    localServer.start.mockClear();
+    localServer.start.mockImplementationOnce(() => {
+      localServer.isTransitioning = true;
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(localServer.start).toHaveBeenCalledTimes(1);
+    expect(el.textContent).toContain('Setting things up…');
+    expect(el.textContent).not.toContain('Set up a server on this computer');
+  });
+
+  it('tells the setup as plain stages, not the steps it reports', async () => {
+    Object.assign(localServer, { isTransitioning: true, message: 'Starting PostgreSQL…' });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    const states = [...el.querySelectorAll('li[data-state]')].map(
+      (li) => `${li.textContent} ${li.getAttribute('data-state')}`
+    );
+    expect(states).toEqual([
+      'Getting what’s needed done',
+      'Preparing the database current',
+      'Starting Switch next',
+      'Signing you in next',
+    ]);
+    expect(el.textContent).not.toContain('PostgreSQL');
+  });
+
+  it('moves on by itself, with the server, once the server on this computer is up', async () => {
+    Object.assign(localServer, {
+      status: { serverId: 'local-1', version: '1.0.0' },
+      isRunning: true,
+      phase: 'running',
+    });
+    const onDone = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () =>
+      root!.render(<LocalSetupProgress onBack={() => {}} onDone={onDone} onRegistered={() => {}} />)
+    );
+
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onDone).toHaveBeenCalledWith('local-1');
+  });
+
+  it('waits for the start to finish, not just for the server to report running', async () => {
+    Object.assign(localServer, {
+      status: { serverId: 'local-1', version: '1.0.0' },
+      isRunning: true,
+      isTransitioning: true,
+      phase: 'running',
+    });
+    const onDone = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () =>
+      root!.render(<LocalSetupProgress onBack={() => {}} onDone={onDone} onRegistered={() => {}} />)
+    );
+
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('opens the full setup page, with the error and Retry, when the server could not start', async () => {
+    localServer.start.mockImplementationOnce(() => {
+      Object.assign(localServer, { phase: 'error', error: 'PostgreSQL did not start.' });
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(el.textContent).toContain('Set up a server on this computer');
+    expect(el.textContent).toContain('PostgreSQL did not start.');
+    expect(labels(el).some((l) => l?.startsWith('Retry'))).toBe(true);
   });
 
   it('asks for the one address, and not for a name, on the connect page', async () => {

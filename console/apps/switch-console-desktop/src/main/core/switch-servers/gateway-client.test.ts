@@ -107,6 +107,7 @@ const {
   fetchBridges,
   fetchMe,
   ownsOwnerAddressedAgent,
+  recordTemplateRun,
   registerKnownAgent,
   updateAgentDisplayName,
   renameAgent,
@@ -495,6 +496,39 @@ function bodyOf(call: unknown[]): Record<string, unknown> {
   return JSON.parse(init.body) as Record<string, unknown>;
 }
 
+describe('recordTemplateRun', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('counts a run of the template it names', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ template_id: 'official:switch-expert', run_count: 3 }) as never
+    );
+
+    await expect(recordTemplateRun(SERVER, 'official:switch-expert')).resolves.toBe(true);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toMatch(/\/templates\/official%3Aswitch-expert\/runs$/);
+    expect(init.method).toBe('POST');
+  });
+
+  it('says a run went uncounted on a server that does not count runs', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(recordTemplateRun(SERVER, 't-1')).resolves.toBe(false);
+  });
+
+  it('fails on anything else', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'boom') as never);
+    await expect(recordTemplateRun(SERVER, 't-1')).rejects.toMatchObject({ status: 500 });
+  });
+});
+
 describe('room creation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -543,6 +577,7 @@ describe('room creation', () => {
         channelIdsRefused: null,
         privateChannels: null,
         privateChannelNeedsLinkedAccount: false,
+        publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -566,6 +601,7 @@ describe('room creation', () => {
         channelIdsRefused: null,
         privateChannels: null,
         privateChannelNeedsLinkedAccount: false,
+        publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -631,6 +667,25 @@ describe('room creation', () => {
     expect(current.privateChannelNeedsLinkedAccount).toBe(true);
     expect(older.privateChannels).toBeNull();
     expect(older.privateChannelNeedsLinkedAccount).toBe(false);
+  });
+
+  it('carries whether a new public channel puts its creator in it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'slack',
+          display_name: 'Slack',
+          status: 'active',
+          public_channel_adds_creator: true,
+        },
+        { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Older', status: 'active' },
+      ]) as never
+    );
+
+    const [current, older] = await fetchBridges(SERVER);
+    expect(current.publicChannelAddsCreator).toBe(true);
+    expect(older.publicChannelAddsCreator).toBe(false);
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
@@ -1431,6 +1486,7 @@ describe('GitHub connection transport', () => {
               status: 'active',
               pass_through: true,
               token_lifetime: 7200,
+              agent_access_note: 'Agents have it for the hour after each sign-in.',
             },
           ],
         })
@@ -1451,6 +1507,7 @@ describe('GitHub connection transport', () => {
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: 'ada-gh',
@@ -1464,6 +1521,7 @@ describe('GitHub connection transport', () => {
         status: 'connected',
         pass_through: true,
         token_lifetime: 7200,
+        agent_access_note: 'Agents have it for the hour after each sign-in.',
       }),
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1525,6 +1583,7 @@ describe('GitHub connection transport', () => {
         unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
+        agent_access_note: null,
         loopback_ports: null,
         key: null,
         external_identity: null,
@@ -1628,6 +1687,21 @@ describe('GitHub connection transport', () => {
     // No workspace switch on this server: the page shows no workspace layer.
     fetchMock.mockResolvedValueOnce(new Response('{"detail":"Not Found"}', { status: 404 }));
     expect(await fetchWorkspaceServices(SERVER)).toBeNull();
+  });
+  it('reads the switches as a member sees them, without who each reaches', async () => {
+    const service = {
+      slug: 'example',
+      name: 'Example',
+      enabled: true,
+      updated_by_name: null,
+      updated_at: null,
+      connected_members: null,
+      granted_agents: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ can_change: false, services: [service] }))
+    );
+    expect(await fetchWorkspaceServices(SERVER)).toEqual([service]);
   });
   it('raises a refusal or a failure of the switches, never an empty list', async () => {
     fetchMock.mockResolvedValueOnce(
@@ -2085,6 +2159,7 @@ describe('sign-up support', () => {
       state: 'provisioning',
       desired_state: 'running',
       stop_reason: null,
+      stopped_by_admin: false,
       sleeping: false,
       revision: 1,
       instance_type: null,
@@ -2112,6 +2187,7 @@ describe('sign-up support', () => {
         state: 'ready',
         desired_state: 'running',
         stop_reason: null,
+        stopped_by_admin: false,
         sleeping: false,
         revision: 2,
         instance_type: 'c7i.large',
@@ -2136,6 +2212,7 @@ describe('sign-up support', () => {
       state: 'ready',
       desired_state: 'running',
       stop_reason: null,
+      stopped_by_admin: false,
       sleeping: false,
       revision: 2,
       instance_type: null,

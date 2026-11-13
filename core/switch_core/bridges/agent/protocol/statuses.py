@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.presence import agents_present_in
-from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.bridges.agent.protocol.types import AgentStatus, OverallStatus
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 
@@ -216,4 +218,39 @@ def controller_statuses(
             statuses[agent.id] = AgentStatus.LIVE
         else:
             statuses[agent.id] = AgentStatus.DISCONNECTED
+    return statuses
+
+
+async def overall_statuses(
+    session: AsyncSession,
+    connection_models: Mapping[str, str | None],
+    agent_session_store: AgentSessionStore,
+    connections: AgentConnectionRegistry,
+) -> dict[str, OverallStatus]:
+    """Whether each agent is up at all, keyed by agent id, for a list that
+    shows agents outside any one room. `connection_models` maps each agent to
+    its profile's `connection_model`, None where the profile names none.
+
+    `agent_statuses_by_room` with the room taken away:
+
+    - ``session_passive``, as an agent with no connection model reads, is
+      `not_tracked`: it holds nothing Switch can see between its polls.
+    - An agent run by an agent controller is `online` while its controller
+      says it is running, and nothing else is asked about it.
+    - Any other agent is `online` with a live connection or a fresh heartbeat,
+      room-agnostic or in any room, and `offline` otherwise.
+    """
+    tracked = [
+        agent_id
+        for agent_id, model in connection_models.items()
+        if (model or "session_passive") != "session_passive"
+    ]
+    controllers = connections.controllers
+    heartbeat = await agent_session_store.agent_ids_live_anywhere(
+        session, [aid for aid in tracked if not controllers.is_bound(aid)]
+    )
+    statuses: dict[str, OverallStatus] = dict.fromkeys(connection_models, "not_tracked")
+    for agent_id in tracked:
+        online = connections.is_live(agent_id) or agent_id in heartbeat
+        statuses[agent_id] = "online" if online else "offline"
     return statuses

@@ -1,5 +1,6 @@
 import {
   Alert,
+  Box,
   Button,
   CircularProgress,
   Dialog,
@@ -7,10 +8,11 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  Typography,
 } from "@mui/material";
 import { useState } from "react";
 import { type ConnectorApp, removeConnectorApp } from "../../data/api";
-import { removeWarning } from "./connectorApps";
+import { removeImpact } from "./connectorApps";
 import { useConnectorAppScope } from "./scope";
 
 export default function RemoveDialog({
@@ -25,6 +27,7 @@ export default function RemoveDialog({
   onRemoved: () => void;
 }) {
   const scope = useConnectorAppScope();
+  const impact = removeImpact(app, scope);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -45,7 +48,17 @@ export default function RemoveDialog({
     <Dialog open={open} onClose={busy ? undefined : onClose}>
       <DialogTitle>Remove {app.name}&apos;s app?</DialogTitle>
       <DialogContent>
-        <DialogContentText>{removeWarning(app)}</DialogContentText>
+        <DialogContentText>{impact.lead}</DialogContentText>
+        <Typography variant="overline" component="p" color="text.secondary" sx={{ mt: 2 }}>
+          What this affects
+        </Typography>
+        <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+          {impact.lines.map((line) => (
+            <Typography key={line} component="li" variant="body2" sx={{ mt: 0.5 }}>
+              {line}
+            </Typography>
+          ))}
+        </Box>
         {error && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {error}

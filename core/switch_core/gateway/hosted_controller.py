@@ -16,6 +16,7 @@ from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
     CloudMachineStore,
     WorkspaceOnMachine,
+    admin_stopped,
     bump_revision,
     ever_hosted,
     idle_sleeping,
@@ -119,7 +120,9 @@ def _errored_unclaimed(machine: CloudMachine, now: datetime, idle_minutes: int) 
 
 
 def _needs_sweep(machine: CloudMachine, now: datetime, idle_minutes: int) -> bool:
-    return (
+    """Whether Switch has a lifecycle change to make to the machine. Never for
+    one an administrator holds stopped: its disk stays until they release it."""
+    return not admin_stopped(machine) and (
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
         or _start_timed_out(machine, now)
@@ -143,6 +146,8 @@ async def _sweep(
     now: datetime,
 ) -> None:
     store = CloudMachineStore()
+    if admin_stopped(machine):
+        return
     if machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT:
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
@@ -183,10 +188,7 @@ async def _sweep(
         ):
             store.stop(machine, "idle", now)
             emit_after_commit(
-                session,
-                current_telemetry(),
-                "cloud_machine_stopped",
-                {"reason": "idle"},
+                session, current_telemetry(), "cloud_machine_idle_stopped", {}
             )
 
 

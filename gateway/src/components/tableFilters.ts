@@ -97,6 +97,45 @@ export function toggleQuickFilter(selection: FilterSelection, quick: QuickFilter
   return isQuickFilterOn(selection, quick) ? rest : { ...rest, [quick.field]: [quick.value] };
 }
 
+/** A dropdown above the table for one filterable column, as the design's
+ *  filter row has. It picks one value or every value, and sets the same
+ *  filter the header menu does, so the two never disagree. */
+export interface SelectFilter {
+  field: string;
+  /** The dropdown's own label, which may be shorter than the column's. */
+  label: string;
+  /** What it reads with nothing picked: "All types". */
+  allLabel: string;
+}
+
+/** What picking from a select filter does: `field` narrowed to `value`
+ *  alone, or cleared when `value` is null. */
+export function pickOnly(selection: FilterSelection, field: string, value: string | null): FilterSelection {
+  const rest = without(selection, field);
+  return value === null ? rest : { ...rest, [field]: [value] };
+}
+
+/** `selection` without the values no column offers any more. Rows holding
+ *  one can go (the parent a table was narrowed to is deleted), and a pick
+ *  that matches nothing would hide every row behind a chip naming a value
+ *  nobody can see. The same object when nothing is dropped. */
+export function pruneSelection<T>(
+  selection: FilterSelection,
+  columns: readonly FilterableColumn<T>[],
+  rows: readonly T[],
+): FilterSelection {
+  let changed = false;
+  const kept: Record<string, readonly string[]> = {};
+  for (const [field, picked] of Object.entries(selection)) {
+    const column = columns.find((c) => c.field === field && c.filter);
+    const offered = column ? new Set(filterOptions(column, rows).map((option) => option.value)) : new Set<string>();
+    const still = picked.filter((value) => offered.has(value));
+    if (still.length !== picked.length) changed = true;
+    if (still.length > 0) kept[field] = still;
+  }
+  return changed ? kept : selection;
+}
+
 /** "12 agents", or "3 of 12 agents" while anything narrows the table. */
 export function countLabel(shown: number, total: number, noun: TableNoun, narrowed: boolean): string {
   const word = total === 1 ? noun.one : noun.other;

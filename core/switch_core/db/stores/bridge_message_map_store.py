@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, null, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,6 +76,53 @@ class BridgeMessageMapStore:
                 BridgeMessageMap.transport_event_id == transport_event_id,
                 BridgeMessageMap.external_post_id.is_(None),
             )
+        )
+
+    async def answer_card(
+        self,
+        session: AsyncSession,
+        *,
+        bridge_id: str,
+        external_post_id: str,
+        answer: dict[str, str],
+    ) -> dict | None:
+        """Record `answer` as the answer to the card posted as
+        `external_post_id`, unless it has one. Returns the answer it already
+        had, or None when `answer` was recorded. One conditional UPDATE, so of
+        two presses at once only one is recorded."""
+        result = await session.execute(
+            update(BridgeMessageMap)
+            .where(
+                BridgeMessageMap.bridge_id == bridge_id,
+                BridgeMessageMap.external_post_id == external_post_id,
+                BridgeMessageMap.card_answer.is_(None),
+            )
+            .values(card_answer=answer)
+            .returning(BridgeMessageMap.id)
+        )
+        if result.scalar_one_or_none() is not None:
+            return None
+        mapping = await self.get_by_external_post_id(
+            session, bridge_id, external_post_id
+        )
+        if mapping is None or mapping.card_answer is None:
+            raise LookupError(
+                f"No message posted as {external_post_id} on bridge {bridge_id}"
+            )
+        return mapping.card_answer
+
+    async def clear_card_answer(
+        self, session: AsyncSession, *, bridge_id: str, external_post_id: str
+    ) -> None:
+        """Drop a recorded answer whose press was never delivered."""
+        await session.execute(
+            update(BridgeMessageMap)
+            .where(
+                BridgeMessageMap.bridge_id == bridge_id,
+                BridgeMessageMap.external_post_id == external_post_id,
+            )
+            # SQL NULL: a Python None would be stored as JSON null.
+            .values(card_answer=null())
         )
 
     async def create(

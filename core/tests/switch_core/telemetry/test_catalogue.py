@@ -49,6 +49,8 @@ FORBIDDEN_PROPERTIES = (
 def _one_valid_value(spec: object) -> object:
     """A value the property will accept, whatever kind it is."""
     kind = type(spec).__name__
+    if kind == "_Optional":
+        return _one_valid_value(spec.kind)  # type: ignore[attr-defined]
     if kind == "_Number":
         return 1
     if kind == "_Boolean":
@@ -58,6 +60,15 @@ def _one_valid_value(spec: object) -> object:
 
 def _valid_payload(event: str) -> dict[str, object]:
     return {name: _one_valid_value(spec) for name, spec in event_spec(event).items()}
+
+
+def _required(event: str) -> list[str]:
+    """The properties `event` must always carry, sorted."""
+    return sorted(
+        name
+        for name, spec in event_spec(event).items()
+        if type(spec).__name__ != "_Optional"
+    )
 
 
 class TestNothingIdentifyingCanBeSent:
@@ -103,7 +114,7 @@ class TestThePropertySetIsExact:
         validate(event, _valid_payload(event))  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
-        "event", sorted(event for event in CATALOGUE if CATALOGUE[event])
+        "event", sorted(event for event in CATALOGUE if _required(event))
     )
     def test_a_missing_property_is_refused(self, event: str) -> None:
         """Every event of a name carries the same keys every time.
@@ -112,9 +123,34 @@ class TestThePropertySetIsExact:
         absent cannot be grouped on, and the absence is invisible in the tool.
         """
         payload = _valid_payload(event)
-        payload.pop(sorted(payload)[0])
+        payload.pop(_required(event)[0])
         with pytest.raises(TelemetryCatalogueError, match="is missing"):
             validate(event, payload)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("event", sorted(CATALOGUE))
+    def test_a_required_property_may_not_be_none(self, event: str) -> None:
+        required = _required(event)
+        if not required:
+            return
+        payload = _valid_payload(event)
+        payload[required[0]] = None
+        with pytest.raises(TelemetryCatalogueError, match="required"):
+            validate(event, payload)  # type: ignore[arg-type]
+
+    def test_an_optional_property_may_be_left_out_or_none(self) -> None:
+        """An age that could not be read is absent on the wire, which every
+        aggregation skips, rather than a sentinel every chart must filter."""
+        payload = _valid_payload("room_archived")
+        payload.pop("age_days")
+        validate("room_archived", payload)  # type: ignore[arg-type]
+        payload["age_days"] = None
+        validate("room_archived", payload)  # type: ignore[arg-type]
+
+    def test_an_optional_property_still_checks_its_value(self) -> None:
+        payload = _valid_payload("room_archived")
+        payload["age_days"] = "old"
+        with pytest.raises(TelemetryCatalogueError, match="expected a number"):
+            validate("room_archived", payload)  # type: ignore[arg-type]
 
 
 class TestValuesAreClosed:
@@ -187,9 +223,9 @@ class TestAgentRuntimes:
     hand, and `unknown` there would be a bug hiding as a value."""
 
     def test_the_sent_event_may_say_its_runtime_is_unknown(self) -> None:
-        payload = _valid_payload("agent_message_sent")
+        payload = _valid_payload("message_sent")
         payload["known_agent_type"] = "unknown"
-        validate("agent_message_sent", payload)  # type: ignore[arg-type]
+        validate("message_sent", payload)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         "event", ["agent_message_received", "first_agent_registered"]

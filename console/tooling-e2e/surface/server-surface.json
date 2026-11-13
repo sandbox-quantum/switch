@@ -287,6 +287,13 @@
       ]
     },
     {
+      "route": "DELETE /gateway/service-connections/{service}/people/{user_id}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
       "route": "DELETE /gateway/templates/{template_id}",
       "auth": "session",
       "flags": []
@@ -909,6 +916,13 @@
       ]
     },
     {
+      "route": "GET /gateway/service-connections/{service}/workspace",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
       "route": "GET /gateway/template-runs",
       "auth": "session",
       "flags": []
@@ -1137,6 +1151,11 @@
     {
       "route": "POST /gateway/auth/logout",
       "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/me/reset-test-account",
+      "auth": "session",
       "flags": []
     },
     {
@@ -1520,6 +1539,11 @@
     },
     {
       "route": "POST /gateway/templates/validate",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/templates/{template_id}/runs",
       "auth": "session",
       "flags": []
     },

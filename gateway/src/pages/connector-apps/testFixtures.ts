@@ -25,10 +25,12 @@ export function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
     scopes: [],
     setup_blocked: null,
     install_url: null,
+    created_at: "2026-10-01T09:00:00Z",
     updated_by_name: "Ada",
     updated_at: "2026-10-15T10:00:00Z",
     connected_members: 12,
     workspaces: 3,
+    agent_grants: 5,
     stale_connections: 0,
     ...overrides,
   };

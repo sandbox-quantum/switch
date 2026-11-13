@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
@@ -253,27 +254,33 @@ class AgentSessionActivityService:
                 if kind == "turn"
                 else None
             )
-            moved = await self._activity.upsert(
-                db,
-                AgentSessionActivityItem(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    item_id=item_id,
-                    kind=kind,
-                    subagent=subagent,
-                    revision=revision,
-                    status=status,
-                    title=title,
-                    text=text,
-                    command_id=command_id,
-                    room_id=room_id,
-                    thread_id=thread_id,
-                    message_id=message_id,
-                    occurred_at=occurred_at,
-                ),
-            )
+            try:
+                moved = await self._activity.upsert(
+                    db,
+                    AgentSessionActivityItem(
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        item_id=item_id,
+                        kind=kind,
+                        subagent=subagent,
+                        revision=revision,
+                        status=status,
+                        title=title,
+                        text=text,
+                        command_id=command_id,
+                        room_id=room_id,
+                        thread_id=thread_id,
+                        message_id=message_id,
+                        occurred_at=occurred_at,
+                    ),
+                )
+            except IntegrityError:
+                if room_id is None:
+                    raise
+                # The room was deleted between the membership check and the insert.
+                raise SessionError("NOT_FOUND", f"Room not found: {room_id}") from None
             if moved and kind == "turn":
                 if prior_status is None:
                     await self._meter_turn(db, tenant_id, agent_id)

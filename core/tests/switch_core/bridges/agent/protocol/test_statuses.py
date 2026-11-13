@@ -12,8 +12,12 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     AgentConnectionRegistry,
     ClientDeclaration,
 )
+from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
-from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
+from switch_core.bridges.agent.protocol.statuses import (
+    compute_agent_statuses,
+    overall_statuses,
+)
 from switch_core.bridges.agent.protocol.types import AgentStatus
 
 
@@ -382,3 +386,118 @@ class TestSpawnCapableConnections:
         statuses = await compute_agent_statuses(db, agents, "room-1", store, registry)
 
         assert statuses == {"addr": AgentStatus.LIVE}
+
+
+class _FakeAnywhereStore:
+    """Stub of the any-slot heartbeat read: an agent id has a fresh beat iff it
+    is in `live_ids`. Records which ids it was asked about."""
+
+    def __init__(self, live_ids: set[str]) -> None:
+        self._live = live_ids
+        self.asked: set[str] = set()
+
+    async def agent_ids_live_anywhere(
+        self, _session: Any, agent_ids: list[str]
+    ) -> set[str]:
+        self.asked |= set(agent_ids)
+        return {aid for aid in agent_ids if aid in self._live}
+
+
+def _bind(registry: AgentConnectionRegistry, agent_id: str, *, running: bool) -> None:
+    registry.controllers.bind(
+        Binding(
+            agent_id=agent_id,
+            controller_id=f"device-{agent_id}",
+            tenant_id="t",
+            controller_name="Laptop",
+            running=running,
+        )
+    )
+
+
+class TestOverallStatuses:
+    """Whether an agent is up at all, for a list outside any one room: the
+    room-presence rules with the room taken away."""
+
+    async def test_an_agent_that_only_polls_is_not_tracked_whatever_it_holds(
+        self, db: AsyncSession
+    ) -> None:
+        store = _FakeAnywhereStore(live_ids={"passive"})
+        statuses = await overall_statuses(
+            db,
+            {"passive": "session_passive", "unprofiled": None},
+            store,  # type: ignore[arg-type]
+            _registry(agent_id="passive", scope="all"),
+        )
+
+        assert statuses == {"passive": "not_tracked", "unprofiled": "not_tracked"}
+        assert store.asked == set()
+
+    async def test_a_fresh_beat_in_any_slot_is_online_for_every_tracked_model(
+        self, db: AsyncSession
+    ) -> None:
+        """An auto_session agent with only its room-agnostic "watching" beat
+        is up: it starts a session when addressed."""
+        store = _FakeAnywhereStore(live_ids={"always", "addressable", "watching"})
+        statuses = await overall_statuses(
+            db,
+            {
+                "always": "always_on",
+                "addressable": "session_addressable",
+                "watching": "auto_session",
+                "idle": "session_addressable",
+            },
+            store,  # type: ignore[arg-type]
+            AgentConnectionRegistry(),
+        )
+
+        assert statuses == {
+            "always": "online",
+            "addressable": "online",
+            "watching": "online",
+            "idle": "offline",
+        }
+
+    async def test_a_live_connection_is_online_without_any_beat(
+        self, db: AsyncSession
+    ) -> None:
+        statuses = await overall_statuses(
+            db,
+            {"pushed": "session_addressable"},
+            _FakeAnywhereStore(live_ids=set()),  # type: ignore[arg-type]
+            _registry(agent_id="pushed", scope="all"),
+        )
+
+        assert statuses == {"pushed": "online"}
+
+    async def test_an_agent_run_by_a_device_answers_to_the_device_alone(
+        self, db: AsyncSession
+    ) -> None:
+        """Online while its device is connected and runs it; a fresh beat
+        says nothing about it, and it is not asked about."""
+        registry = AgentConnectionRegistry()
+        _bind(registry, "running", running=True)
+        _bind(registry, "stopped", running=False)
+        _bind(registry, "unreached", running=True)
+        # The devices of the first two are connected, to another process.
+        registry.controllers.held_elsewhere("device-running", "p2")
+        registry.controllers.held_elsewhere("device-stopped", "p2")
+        store = _FakeAnywhereStore(live_ids={"unreached"})
+
+        statuses = await overall_statuses(
+            db,
+            {
+                "running": "auto_session",
+                "stopped": "auto_session",
+                "unreached": "auto_session",
+            },
+            store,  # type: ignore[arg-type]
+            registry,
+        )
+
+        assert statuses == {
+            "running": "online",
+            "stopped": "offline",
+            "unreached": "offline",
+        }
+        assert store.asked == set()

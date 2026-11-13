@@ -33,12 +33,17 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     build_agent_summary,
     list_agent_summaries,
 )
+from switch_core.bridges.agent.protocol.statuses import overall_statuses
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
 )
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
 from switch_core.db.models import User, require_tenant_id
+from switch_core.db.stores.agent_definition_store import (
+    AgentDefinitionStore,
+    PlacedDevice,
+)
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -60,11 +65,13 @@ from switch_core.gateway.known_agents import known_agent, known_agents
 from switch_core.gateway.schemas import (
     AgentCapabilities,
     AgentDetail,
+    AgentDevice,
     AgentSummary,
     AvatarSettingsResponse,
     BulkRegisterResult,
     DeleteAgentResponse,
     GatewayAgentDetail,
+    GatewayAgentListEntry,
     GatewayAgentSummary,
     IconChoicesResponse,
     KnownAgentType,
@@ -88,6 +95,8 @@ from switch_core.request_validation import public_errors
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_DEFINITIONS = AgentDefinitionStore()
 
 
 def _has_known_spec(summary: AgentSummary) -> bool:
@@ -191,16 +200,63 @@ async def _detail_for_caller(
     )
 
 
+def _sees_device(placed: PlacedDevice, user: User, is_admin: bool) -> bool:
+    """A device is named to its owner, and to the workspace's admins, who see
+    every device in it."""
+    return is_admin or placed.owner_id == user.id
+
+
+def _device_for(
+    placed: PlacedDevice | None,
+    user: User,
+    is_admin: bool,
+    owner_names: dict[str, str],
+) -> AgentDevice | None:
+    if placed is None or not _sees_device(placed, user, is_admin):
+        return None
+    return AgentDevice(
+        id=placed.controller_id,
+        name=placed.name,
+        # The device's row names its owner, a user that exists, so this is found.
+        owner_name=owner_names[placed.owner_id],
+        removed=placed.revoked,
+    )
+
+
 @router.get("")
 async def list_agents(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> list[GatewayAgentSummary]:
+) -> list[GatewayAgentListEntry]:
     summaries = await list_agent_summaries(session, agent_store, user_store)
-    return await _summaries_for_caller(session, summaries, user, is_admin)
+    agents = await _summaries_for_caller(session, summaries, user, is_admin)
+    statuses = await overall_statuses(
+        session,
+        {agent.id: agent.connection_model for agent in agents},
+        protocol.agent_session_store,
+        protocol.connections,
+    )
+    devices = await _DEFINITIONS.devices(session, require_tenant_id())
+    device_owners = await user_store.names_by_id(
+        session,
+        {
+            placed.owner_id
+            for placed in devices.values()
+            if _sees_device(placed, user, is_admin)
+        },
+    )
+    return [
+        GatewayAgentListEntry(
+            **agent.model_dump(),
+            status=statuses[agent.id],
+            device=_device_for(devices.get(agent.id), user, is_admin, device_owners),
+        )
+        for agent in agents
+    ]
 
 
 @router.delete("/by-name/{agent_name}")

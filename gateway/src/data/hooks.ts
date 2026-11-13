@@ -91,16 +91,24 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
     let cancelled = false;
     setLoading(true);
 
-    fetcher().then((result) => {
-      if (cancelled) return;
-      if (result === null) {
-        setError("Failed to fetch data");
-      } else {
-        setData(result);
-        setError(null);
-      }
-      setLoading(false);
-    });
+    fetcher().then(
+      (result) => {
+        if (cancelled) return;
+        if (result === null) {
+          setError("Failed to fetch data");
+        } else {
+          setData(result);
+          setError(null);
+        }
+        setLoading(false);
+      },
+      // A fetcher that raises carries the server's own reason; show that.
+      (e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      },
+    );
 
     return () => {
       cancelled = true;

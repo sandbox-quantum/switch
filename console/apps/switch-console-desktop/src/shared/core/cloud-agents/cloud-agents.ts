@@ -28,6 +28,8 @@ export const cloudMachineSchema = z.object({
   ]),
   desired_state: z.enum(['running', 'stopped', 'retained', 'deleted']),
   stop_reason: z.enum(['idle', 'owner']).nullable(),
+  /** Absent from servers that predate the administrator's stop. */
+  stopped_by_admin: z.boolean().default(false),
   sleeping: z.boolean(),
   revision: z.number().int().positive(),
   instance_type: z.string().nullable(),
