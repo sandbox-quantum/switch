@@ -27,7 +27,7 @@
     "kwargs": {
       "channel": "C0GENERAL",
       "icon_url": null,
-      "text": "No lettered badge.",
+      "text": "Not an agent: no icon.",
       "thread_ts": null,
       "unfurl_links": false,
       "unfurl_media": false,

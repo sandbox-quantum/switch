@@ -25,6 +25,7 @@ from switch_core.db.models import (
     Room,
 )
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.events import CommandEvent
 from switch_core.transport import InboundMessage as TransportMessage
@@ -320,7 +321,9 @@ async def _fake_collab_core_full(
         _bridge_type="fake",
         _adapter=adapter,
         _human_user_ids=set(),
-        _not_human_user_ids=set(),
+        _agent_sender_ids=set(),
+        _not_agent_sender_ids=set(),
+        _client_store=ClientStore(),
         _session_factory=chats.factory,
         _bridge_tenant_id=bridge.tenant_id,
         _external_user_store=ExternalUserStore(),
@@ -349,137 +352,88 @@ async def _fake_collab_core_full(
 
 
 @pytest.mark.asyncio
-async def test_console_member_threaded_reply_roundtrip_through_bridge(
+async def test_console_member_messages_are_not_relayed_to_the_platform(
     chats: _Harness,
 ) -> None:
-    """Console member messages relay outbound with sender_name (not skipped),
-    inbound platform threaded replies arrive with threadRootId, and the
-    member's own post echo from the platform is not re-imported."""
+    """A person writing from Switch Console is not reposted on the platform,
+    in a thread or not: people live on the messaging app, and only agents'
+    messages are posted there. An agent's answer in that person's thread goes
+    out at the top level, since the thread has no post on the platform."""
     agent = await chats.agent("helper-threaded", owner=chats.alice)
     room_id, bridge, adapter = await _bridged_room(chats, agent)
     core = await _fake_collab_core_full(chats, room_id, bridge, adapter)
 
-    # Send root message from console member
     sent = await chats.send(chats.alice, room_id, "s1", "root message")
     assert sent.status_code == 200, sent.text
-    root_msg = sent.json()["messages"][0]
-    root_event_id = root_msg["messageId"]
+    root_event_id = sent.json()["messages"][0]["messageId"]
+    reply_sent = await chats.send(
+        chats.alice, room_id, "s2", "threaded reply", threadRootId=root_event_id
+    )
+    assert reply_sent.status_code == 200
+    reply_event_id = reply_sent.json()["messages"][0]["messageId"]
 
-    # Drive outbound relay
     async with chats.factory() as session:
         room = await session.get(Room, room_id)
         assert room is not None
         member = await chats.service.member_client(session, chats.alice.id)
         assert member is not None
+        agent_client = await session.get(Client, agent.client_id)
+        assert agent_client is not None
+        rows = {
+            row.transport_event_id: row
+            for row in (
+                await session.execute(
+                    select(Message).where(
+                        Message.transport_event_id.in_([root_event_id, reply_event_id])
+                    )
+                )
+            ).scalars()
+        }
 
-        msg_row = await session.execute(
-            select(Message).where(Message.transport_event_id == root_event_id)
+    for event_id, thread_root_id in [
+        (root_event_id, None),
+        (reply_event_id, root_event_id),
+    ]:
+        row = rows[event_id]
+        await CollaborationCore.handle_outbound_message(
+            core,
+            RoomRef(room.transport_room_id),
+            TransportMessage(
+                room_id=room.transport_room_id,
+                event_id=row.transport_event_id,
+                sender=member.transport_user_id,
+                timestamp=1700000000000,
+                content=row.content,
+                body=row.body,
+                sender_name=row.sender_name,
+                thread_root_id=thread_root_id,
+            ),
         )
-        msg = msg_row.scalar_one()
-
-        event = TransportMessage(
-            room_id=room.transport_room_id,
-            event_id=msg.transport_event_id,
-            sender=member.transport_user_id,
-            timestamp=1700000000000,
-            content=msg.content,
-            body=msg.body,
-            sender_name=msg.sender_name,
-            thread_root_id=None,
-        )
+    assert adapter.sent == []
 
     await CollaborationCore.handle_outbound_message(
-        core, RoomRef(room.transport_room_id), event
-    )
-
-    # Verify outbound relay: member's message relayed with sender_name, not skipped
-    assert len(adapter.sent) == 1
-    assert adapter.sent[0]["sender_name"] == "alice"
-    assert adapter.sent[0]["content"] == "root message"
-    assert adapter.sent[0]["thread_root_id"] is None
-
-    # Send threaded reply from console member
-    reply_sent = await chats.send(
-        chats.alice, room_id, "s2", "threaded reply", threadRootId=root_event_id
-    )
-    assert reply_sent.status_code == 200
-    reply_msg = reply_sent.json()["messages"][0]
-    assert reply_msg["threadRootId"] == root_event_id
-
-    # Drive outbound relay for the reply
-    async with chats.factory() as session:
-        reply_row = await session.execute(
-            select(Message).where(Message.transport_event_id == reply_msg["messageId"])
-        )
-        reply_db = reply_row.scalar_one()
-
-        reply_event = TransportMessage(
+        core,
+        RoomRef(room.transport_room_id),
+        TransportMessage(
             room_id=room.transport_room_id,
-            event_id=reply_db.transport_event_id,
-            sender=member.transport_user_id,
+            event_id="$answer",
+            sender=agent_client.transport_user_id,
             timestamp=1700000000000,
-            content=reply_db.content,
-            body=reply_db.body,
-            sender_name=reply_db.sender_name,
+            content={
+                "m.relates_to": {"rel_type": "m.thread", "event_id": root_event_id}
+            },
+            body="answer",
+            sender_name="helper-threaded",
             thread_root_id=root_event_id,
-        )
-
-    await CollaborationCore.handle_outbound_message(
-        core, RoomRef(room.transport_room_id), reply_event
+        ),
     )
-
-    # Verify threaded outbound: thread_root_id mapped to external post
-    assert len(adapter.sent) == 2
-    assert adapter.sent[1]["sender_name"] == "alice"
-    assert adapter.sent[1]["content"] == "threaded reply"
-    assert adapter.sent[1]["thread_root_id"] == "ext-1"
-
-    # Test inbound direction: platform user replies in thread to ext-1
-    inbound_reply = InboundMessage(
-        channel_id="fake-chan-1",
-        channel_type="channel_public",
-        sender_id="platform-user-123",
-        sender_name="bob",
-        content="platform threaded reply",
-        message_ref="ext-3",
-        root_id="ext-1",
-    )
-
-    await CollaborationCore._handle_inbound_message(core, inbound_reply)
-
-    # Verify inbound threaded reply arrives with threadRootId
-    page = await chats.client.get(
-        f"/chats/{room_id}/messages", headers=chats.as_user(chats.alice)
-    )
-    messages = page.json()["messages"]
-    platform_reply = [m for m in messages if m["body"] == "platform threaded reply"]
-    assert len(platform_reply) == 1, "Inbound threaded reply imported"
-    assert platform_reply[0]["threadRootId"] == root_event_id, (
-        "Thread root mapped from external post to room event"
-    )
-
-    # Test echo prevention: console member's own message won't echo inbound
-    # because member clients post natively in the room, not through the bridge
-    async with chats.factory() as session:
-        count_before = await session.scalar(
-            select(func.count()).select_from(Message).where(Message.room_id == room_id)
-        )
-
-    # Member posts again
-    member_post2 = await chats.send(chats.alice, room_id, "s3", "second message")
-    assert member_post2.status_code == 200
-
-    async with chats.factory() as session:
-        count_after = await session.scalar(
-            select(func.count()).select_from(Message).where(Message.room_id == room_id)
-        )
-
-    # Exactly one new message (the member's post), no echo imported
-    assert count_after == count_before + 1
+    [posted] = adapter.sent
+    assert (posted["sender_name"], posted["content"]) == ("helper-threaded", "answer")
+    assert posted["thread_root_id"] is None
 
 
 @pytest.mark.asyncio
-async def test_a_console_command_is_posted_and_its_reply_threads_under_it(
+async def test_a_console_command_is_not_posted_and_its_reply_goes_top_level(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
@@ -502,6 +456,8 @@ async def test_a_console_command_is_posted_and_its_reply_threads_under_it(
                 select(Message).where(Message.transport_event_id == command_id)
             )
         ).scalar_one()
+        agent_client = await session.get(Client, agent.client_id)
+        assert agent_client is not None
     transport_room = RoomRef(room.transport_room_id)
 
     async def on_command(room_ref: RoomRef, event: CommandEvent) -> None:
@@ -515,14 +471,13 @@ async def test_a_console_command_is_posted_and_its_reply_threads_under_it(
     inbound = to_inbound(row, [], transport_room_id=room.transport_room_id)
     await Consumer._handle_custom_event(consumer, transport_room, inbound)  # type: ignore[arg-type]
 
-    [posted] = adapter.sent
-    assert (posted["sender_name"], posted["content"]) == ("alice", "!reset @helper")
-    assert posted["thread_root_id"] is None
+    # A person's command stays in Switch, like anything else they write there.
+    assert adapter.sent == []
 
     ack = TransportMessage(
         room_id=room.transport_room_id,
         event_id="$ack",
-        sender="@helper:switch.test",
+        sender=agent_client.transport_user_id,
         timestamp=1700000000000,
         content={"m.relates_to": {"rel_type": "m.thread", "event_id": command_id}},
         body="Session reset.",
@@ -530,7 +485,9 @@ async def test_a_console_command_is_posted_and_its_reply_threads_under_it(
         thread_root_id=command_id,
     )
     await CollaborationCore.handle_outbound_message(core, transport_room, ack)
-    assert adapter.sent[1]["thread_root_id"] == "ext-1"
+    # The command has no post on the platform to thread under.
+    [posted] = adapter.sent
+    assert (posted["content"], posted["thread_root_id"]) == ("Session reset.", None)
 
     # A command typed on the platform is already there: it is not posted back.
     core._human_user_ids.add("@fake-platform-user:switch.test")
@@ -546,7 +503,7 @@ async def test_a_console_command_is_posted_and_its_reply_threads_under_it(
             thread_id="$typed",
         ),
     )
-    assert len(adapter.sent) == 2
+    assert len(adapter.sent) == 1
 
 
 @pytest.mark.asyncio

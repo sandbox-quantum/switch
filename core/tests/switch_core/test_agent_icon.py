@@ -14,7 +14,6 @@ from switch_core.agent_icon import (
     drop_third_party_avatar,
     generated_icon_choices,
     generated_icon_url,
-    initials_icon_url,
     is_third_party_avatar,
     normalise_icon_url,
     refuse_third_party_avatar,
@@ -230,12 +229,6 @@ def test_the_gaze_icon_is_left_alone() -> None:
     assert upgrade_legacy_icon_url(url) == url
 
 
-def test_initials_badge_reads_underscores_as_word_breaks() -> None:
-    # Two words, so the badge draws two letters for `switch_worker`.
-    assert "name=switch+worker&" in initials_icon_url("switch_worker")
-    assert initials_icon_url("worker") != initials_icon_url("manager")
-
-
 def test_generated_icon_escapes_the_seed() -> None:
     url = generated_icon_url("a&b=c d")
     assert "seed=a%26b%3Dc%20d&" in url
@@ -251,11 +244,14 @@ def test_generated_choices_lead_with_the_name_and_stay_put() -> None:
     assert not set(first) & set(second)
 
 
-def test_both_builders_are_recognised_as_third_party() -> None:
-    # The check and the builders share their hosts, so moving a builder to
-    # another host cannot leave the check behind.
+def test_generated_and_stored_badges_are_recognised_as_third_party() -> None:
+    # The check shares the builder's host, so moving the builder to another
+    # host cannot leave the check behind. A badge stored before Switch stopped
+    # building them is still caught.
     assert is_third_party_avatar(generated_icon_url("pm-agent"))
-    assert is_third_party_avatar(initials_icon_url("Jane Q. Doe"))
+    assert is_third_party_avatar(
+        "https://ui-avatars.com/api/?name=Jane+Q.+Doe&background=random&size=128"
+    )
 
 
 @pytest.mark.parametrize(

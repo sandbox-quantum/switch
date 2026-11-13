@@ -40,7 +40,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.actor import Actor, HumanActor
+from switch_core.clients.actor import Actor, AgentActor, HumanActor
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import (
@@ -365,6 +365,7 @@ async def _process(
         message_observer=IgnoreParticipantMessages(),
         router=router,
     )
+    factory.register("agent", AgentActor)
     factory.register("user", HumanActor)
     factory.register("bridge", Actor)
     provisioning = PostgresProvisioning(
@@ -464,7 +465,7 @@ def platform() -> AsyncIterator[_Platform] | Any:
 @pytest.fixture
 async def bridge(session_factory: async_sessionmaker[AsyncSession]) -> _Bridge:
     """A bridge on the fake platform carrying one room, bridged to `CHANNEL`,
-    and someone in the room whose messages the bridge relays out."""
+    and an agent in the room whose messages the bridge relays out."""
     suffix = uuid.uuid4().hex[:8]
     async with session_factory() as session:
         bridge_client = Client(
@@ -475,7 +476,7 @@ async def bridge(session_factory: async_sessionmaker[AsyncSession]) -> _Bridge:
         speaker = Client(
             transport_user_id=f"@speaker-{suffix}:test",
             display_name="speaker",
-            type="user",
+            type="agent",
         )
         session.add_all([bridge_client, speaker])
         await session.flush()

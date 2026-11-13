@@ -134,6 +134,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_AGENT_CLIENT_TYPE = "agent"
+
 # (bridge type, agent name, failure) of identity provisioning failures already
 # logged as a warning by this process; see `_sync_agent_identities`.
 _IDENTITY_FAILURES_SEEN: set[tuple[str, str, str]] = set()
@@ -349,11 +351,12 @@ class CollaborationCore:
         # message. One-way, so a cached answer cannot go stale — see
         # _repair_placeholder_username.
         self._names_known_good: set[str] = set()
-        # Senders known to be people on this bridge, and senders known not to
-        # be: a person first seen by another process is found in the database
-        # once (`_is_human_sender`), and an agent is asked about once.
+        # People on this bridge, known without asking: never relayed out.
         self._human_user_ids: set[str] = set()
-        self._not_human_user_ids: set[str] = set()
+        # Senders known to be agents, and known not to be, per tenant: each is
+        # read from the database once (`_is_agent_sender`).
+        self._agent_sender_ids: set[tuple[str, str]] = set()
+        self._not_agent_sender_ids: set[tuple[str, str]] = set()
         self._channel_locks: dict[str, asyncio.Lock] = {}
         self._human_actor_locks: dict[str, asyncio.Lock] = {}
         # Channels Switch is itself provisioning right now (outbound room
@@ -2902,11 +2905,6 @@ class CollaborationCore:
         if event.sender == self._workspace_consumer_transport_user_id:
             logger.debug("[BRIDGE-OUT] skipping bridge client message")
             return
-        if await self._is_human_sender(event.sender):
-            logger.debug(
-                "[BRIDGE-OUT] skipping human actor message from %s", event.sender
-            )
-            return
 
         channel_id = await self._channel_for_room(room.room_id)
         if channel_id is None:
@@ -2914,7 +2912,16 @@ class CollaborationCore:
             return
 
         room_id, _ = self._channel_to_room[channel_id]
-        with tenant_scope(await self._room_tenant(room_id)):
+        tenant_id = await self._room_tenant(room_id)
+        is_system = ADMIN_MARKER in event.content or PLATFORM_MARKER in event.content
+        if not is_system and not await self._is_agent_sender(tenant_id, event.sender):
+            logger.debug(
+                "[BRIDGE-OUT] not relaying a message from %s: only agents and "
+                "Switch's own notices are posted to the platform",
+                event.sender,
+            )
+            return
+        with tenant_scope(tenant_id):
             with self._counted_outbound("message"):
                 await self._relay_outbound_message(channel_id, event)
 
@@ -2922,8 +2929,9 @@ class CollaborationCore:
         """Post a room command as the text that types it, so the reply threaded
         under the command has a platform post to sit under.
 
-        A command typed on the platform names its human actor as `user_id`, so
-        `handle_outbound_message` drops it like any other message from there.
+        Only an agent's command is posted: a command a person typed, on the
+        platform or anywhere else, is dropped by `handle_outbound_message` like
+        any other message from a person.
         """
         assert event.message_id is not None and event.thread_id is not None
         threaded = event.thread_id != event.message_id
@@ -3099,8 +3107,8 @@ class CollaborationCore:
         """Relay a room media event (an agent-sent image/file) out to the
         external channel.
 
-        Mirrors handle_outbound_message: human actor media is skipped (it originated
-        on the platform), the caption convention is unpacked (a `filename` key
+        Mirrors handle_outbound_message: only an agent's media is relayed, never
+        a person's, wherever they posted it. The caption convention is unpacked (a `filename` key
         means the body is a caption), and the relayed post is recorded in the
         message map so replies thread both ways. Any file type relays natively
         via the adapter; a file whose bytes can't be fetched or that exceeds the
@@ -3119,8 +3127,6 @@ class CollaborationCore:
         )
         if event.sender == self._workspace_consumer_transport_user_id:
             return
-        if await self._is_human_sender(event.sender):
-            return
 
         channel_id = await self._channel_for_room(room.room_id)
         if channel_id is None:
@@ -3128,29 +3134,40 @@ class CollaborationCore:
             return
 
         room_id, _ = self._channel_to_room[channel_id]
-        with tenant_scope(await self._room_tenant(room_id)):
+        tenant_id = await self._room_tenant(room_id)
+        if not await self._is_agent_sender(tenant_id, event.sender):
+            logger.debug(
+                "[BRIDGE-OUT] not relaying media from %s: only agents' files are "
+                "posted to the platform",
+                event.sender,
+            )
+            return
+        with tenant_scope(tenant_id):
             with self._counted_outbound("media"):
                 await self._relay_outbound_media(room, channel_id, event, client)
 
-    async def _is_human_sender(self, sender: str) -> bool:
-        """Whether a room message was written by a person on this bridge, so
-        relaying it out would echo them back to themselves.
+    async def _is_agent_sender(self, tenant_id: str, sender: str) -> bool:
+        """Whether a room message was written by an agent, the only sender
+        whose messages are posted to the platform.
 
-        Kept in memory both ways, and read from the database on a miss: a
-        person whose actor another process minted is known there first.
+        People are expected to live on the messaging app: one who wrote there
+        already sees their message, and one who wrote elsewhere (Switch
+        Console, say) is not reposted under their name. A person on this
+        bridge is known without asking; anyone else is read from the
+        database once and remembered.
         """
         if sender in self._human_user_ids:
-            return True
-        if sender in self._not_human_user_ids:
             return False
-        async with tenant_session(
-            self._session_factory, self._bridge_tenant_id
-        ) as session:
-            human = await self._external_user_store.is_bridge_user(
-                session, self._bridge_id, sender
-            )
-        (self._human_user_ids if human else self._not_human_user_ids).add(sender)
-        return human
+        key = (tenant_id, sender)
+        if key in self._agent_sender_ids:
+            return True
+        if key in self._not_agent_sender_ids:
+            return False
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            client = await self._client_store.get_by_transport_user_id(session, sender)
+        agent = client is not None and client.type == _AGENT_CLIENT_TYPE
+        (self._agent_sender_ids if agent else self._not_agent_sender_ids).add(key)
+        return agent
 
     async def _relay_outbound_media(
         self,

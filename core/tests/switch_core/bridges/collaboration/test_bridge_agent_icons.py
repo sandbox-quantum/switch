@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from switch_core.agent_icon import generated_icon_url, initials_icon_url
+from switch_core.agent_icon import generated_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
@@ -158,7 +158,7 @@ class TestAdapterIconSelection:
 
         assert await adapter.agent_icon_url("worker") == _CUSTOM
         assert await adapter.agent_icon_url("plain") == generated_icon_url("plain")
-        assert await adapter.agent_icon_url("alice") == initials_icon_url("alice")
+        assert await adapter.agent_icon_url("alice") is None
 
 
 class TestThirdPartyAvatarsOff:
@@ -170,7 +170,10 @@ class TestThirdPartyAvatarsOff:
         [
             AgentPresentation(display_name=None, icon_url=None),
             AgentPresentation(display_name=None, icon_url=generated_icon_url("worker")),
-            AgentPresentation(display_name=None, icon_url=initials_icon_url("worker")),
+            AgentPresentation(
+                display_name=None,
+                icon_url="https://ui-avatars.com/api/?name=worker&background=random&size=128",
+            ),
             AgentPresentation(
                 display_name=None,
                 icon_url="https://api.dicebear.com./10.x/gaze/png?seed=worker",

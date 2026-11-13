@@ -6,12 +6,12 @@ created without one gets a generated icon (`generated_icon_url`), the same set
 every client offers, so it looks alike in the gateway, Console and every
 platform. An agent with no icon stored at all is drawn with the one its name
 generates, so it looks the same as one that was given it. A sender that is not
-an agent at all keeps a lettered badge (`initials_icon_url`), so a person never
-wears an agent's face.
+an agent gets no icon from Switch at all, so a person never wears an agent's
+face.
 
-Both are drawn by outside services that see the name in the URL. An operator
-who sets `THIRD_PARTY_AVATARS_ENABLED=false` gets neither: the bridges send no
-icon where one would be (`is_third_party_avatar`), and nothing new is generated.
+The generated icon is drawn by an outside service. An operator who sets
+`THIRD_PARTY_AVATARS_ENABLED=false` gets none: the bridges send no icon where
+one would be (`is_third_party_avatar`), and nothing new is generated.
 
 That makes the URL attacker-controlled input with two distinct consumers, and
 the rules below exist for the second one:
@@ -197,26 +197,13 @@ def prepare_icon_url(url: str) -> str:
     return validate_icon_url(upgrade_legacy_icon_url(url.strip()))
 
 
+# ui-avatars.com drew a lettered badge for senders that are not agents. Switch
+# builds none any more, but icons stored earlier, or chosen by hand, can name it.
 _INITIALS_ICON_SERVICE = "ui-avatars.com"
 
 
-def initials_icon_url(name: str) -> str:
-    """The lettered badge for a sender that is not an agent.
-
-    A person relayed from another platform, or a platform's own bot, is drawn
-    with initials rather than a generated face: the generated faces are what
-    agents wear, and a human drawn as one would read as an agent.
-    """
-    # Escape first, substitute second. The `+` stands in for a space so the
-    # badge draws two initials for `switch_worker`; percent-encoding it after
-    # the fact turns it back into a literal plus and the name renders with one
-    # initial instead.
-    escaped = quote(name).replace("_", "+")
-    return f"https://{_INITIALS_ICON_SERVICE}/api/?name={escaped}&background=random&size=128"
-
-
-# Every service the two builders above send a name to. Any host under them
-# counts, not just the one a builder uses, because a stored icon can name any.
+# Every avatar service that receives a name in the URL. Any host under them
+# counts, not just the one Switch builds for, because a stored icon can name any.
 _THIRD_PARTY_AVATAR_SERVICES = (_GENERATED_ICON_SERVICE, _INITIALS_ICON_SERVICE)
 
 

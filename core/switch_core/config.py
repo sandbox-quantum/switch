@@ -612,11 +612,9 @@ class SwitchConfig(BaseSettings):
     # separately by email domain whether or not this is set.
     telemetry_internal: bool = False
 
-    # Whether agents and people may be drawn by outside avatar services. An
-    # agent with no icon of its own wears a face from api.dicebear.com seeded
-    # with its name, and a person relayed from another platform a lettered
-    # badge from ui-avatars.com with their name in the URL, so the services
-    # see the name. Slack and Discord fetch the image on their own servers and
+    # Whether agents may be drawn by an outside avatar service. An agent with
+    # no icon of its own wears a face from api.dicebear.com seeded with its
+    # name, so the service sees the name. Slack and Discord fetch the image on their own servers and
     # serve their copy, Teams draws it inside each card (some Teams clients may
     # load it from the service directly), the Mattermost adapter fetches it
     # from this server, and Switch Console loads it on each user's machine.

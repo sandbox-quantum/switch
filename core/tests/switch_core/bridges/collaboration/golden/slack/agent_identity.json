@@ -38,8 +38,8 @@
   {
     "kwargs": {
       "channel": "C0GENERAL",
-      "icon_url": "https://ui-avatars.com/api/?name=jane&background=random&size=128",
-      "text": "Not an agent: lettered badge.",
+      "icon_url": null,
+      "text": "Not an agent: no icon.",
       "thread_ts": null,
       "unfurl_links": false,
       "unfurl_media": false,
