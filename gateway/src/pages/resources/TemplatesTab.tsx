@@ -72,7 +72,7 @@ export default function TemplatesTab({ refreshKey }: Props) {
       },
       {
         field: "kind",
-        headerName: "Kind",
+        headerName: "Type",
         width: 110,
         renderCell: ({ value }) => (
           <Chip size="small" variant="outlined" label={value as string} />
@@ -120,7 +120,7 @@ export default function TemplatesTab({ refreshKey }: Props) {
         typeFilter={kind}
         onTypeChange={setKind}
         types={kinds}
-        typeLabel="Kind"
+        typeLabel="Type"
         searchPlaceholder="Search by name or description…"
       />
 

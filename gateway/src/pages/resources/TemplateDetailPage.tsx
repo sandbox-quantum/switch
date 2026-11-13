@@ -363,7 +363,7 @@ function DocumentSection({
         helperText="Shown in the catalogue, and searched alongside the name."
       />
       <TextField
-        label="Kind"
+        label="Type"
         value={kind}
         onChange={(e) => setKind(e.target.value)}
         disabled={!canEdit || saving}
