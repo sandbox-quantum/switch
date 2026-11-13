@@ -23,6 +23,7 @@ import pytest
 from sqlalchemy import delete, func, select, update
 
 from switch_core.addressing import owner_only_policy
+from switch_core.agent_runs import TRACE_OPENING
 from switch_core.db.models import (
     Agent,
     AgentEventRow,
@@ -49,8 +50,11 @@ from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
 )
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.session_activity.listener import Change
+from switch_core.transport.observer import ParticipantMessage
 from tests.switch_core.gateway.conftest import _Harness, _Process
+from tests.telemetry_records import recording_telemetry
 
 
 def _code(response: httpx.Response) -> str:
@@ -517,6 +521,50 @@ async def test_a_send_that_failed_before_commit_posts_once_on_retry(
     assert len(groups) == 1
 
 
+async def test_an_observer_that_raises_does_not_fail_the_send(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post is committed before the observer hears of it, so a failure
+    there must not answer the send with an error: the retry would be told
+    nothing was sent. Counted instead."""
+
+    class _Broken:
+        def observe(self, message: ParticipantMessage) -> None:
+            raise RuntimeError("observer bug")
+
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    registry = MetricsRegistry()
+    install(registry)
+    monkeypatch.setattr(chats.service, "_message_observer", _Broken())
+    try:
+        sent = await chats.send(chats.alice, room_id, "s1", "still sent")
+        failures = next(
+            p
+            for p in registry.collect()
+            if p.name == "switch.messages.observer_failures"
+        )
+    finally:
+        uninstall()
+
+    assert sent.status_code == 200, sent.text
+    assert [m.body for m in await chats.message_rows(room_id)] == ["still sent"]
+    assert failures.numbers[0].value == 1.0
+
+
+async def test_a_chat_is_reported_as_a_console_chat_when_made(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    telemetry, sink = recording_telemetry()
+    monkeypatch.setattr(chats.room_service, "_telemetry", telemetry)
+    agent = await chats.agent("helper", owner=chats.alice)
+
+    await chats.new_chat(chats.alice, agent, "c1")
+
+    [created] = sink.events("room_created")
+    assert created["console_chat"] is True
+
+
 async def test_one_request_id_from_two_users_is_two_sends(chats: _Harness) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await chats.new_chat(chats.alice, agent, "c1")
@@ -653,6 +701,61 @@ async def test_uploads_are_idempotent_and_media_is_scoped_to_the_room(
         f"/chats/{room_id}/media", params={"uri": uri}, headers=chats.as_user(chats.bob)
     )
     assert stranger.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type", "data", "disposition"),
+    [
+        (
+            "report.html",
+            "text/html",
+            b"<html><script>alert(document.cookie)</script></html>",
+            "attachment",
+        ),
+        (
+            "logo.svg",
+            "image/svg+xml",
+            b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+            "attachment",
+        ),
+        ("shot.png", "image/png", b"\x89PNG\r\n\x1a\n", "inline"),
+    ],
+)
+async def test_chat_files_are_served_so_they_cannot_run_as_switch_web(
+    chats: _Harness, name: str, content_type: str, data: bytes, disposition: str
+) -> None:
+    """A file in a chat is on Switch's own origin. HTML and SVG are downloads,
+    never rendered inline; only safe images show inline. Every file gets
+    `nosniff` and a CSP with no script or origin. The bytes and declared type
+    are unchanged, because Console reads both."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    staged = await chats.client.post(
+        f"/chats/{room_id}/attachments",
+        data={"uploadId": "u1"},
+        files={"file": (name, data, content_type)},
+        headers=chats.as_user(chats.alice),
+    )
+    assert staged.status_code == 200, staged.text
+    uri = staged.json()["uri"]
+    assert (
+        await chats.send(chats.alice, room_id, "s1", "", uploadIds=["u1"])
+    ).status_code == 200
+
+    media = await chats.client.get(
+        f"/chats/{room_id}/media",
+        params={"uri": uri},
+        headers=chats.as_user(chats.alice),
+    )
+    assert media.status_code == 200
+    assert media.content == data
+    assert media.headers["content-type"].startswith(content_type)
+    assert media.headers["content-disposition"].startswith(
+        f'{disposition}; filename="{name}";'
+    )
+    assert media.headers["x-content-type-options"] == "nosniff"
+    assert media.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert media.headers["cache-control"] == "private, no-store"
 
 
 async def test_a_member_removed_after_a_failed_send_cannot_retry_it(
@@ -1586,14 +1689,20 @@ async def test_owner_membership_is_granted_once(chats: _Harness) -> None:
             .select_from(ClientRoom)
             .where(ClientRoom.client_id == client.id)
         )
-        arrivals = await session.scalar(
-            select(func.count())
-            .select_from(Message)
-            .where(
-                Message.room_id == room_id,
-                Message.sender_client_id == client.id,
-                Message.event_type == "m.room.member",
+        membership_rows = (
+            await session.scalars(
+                select(Message.content).where(
+                    Message.room_id == room_id,
+                    Message.sender_client_id == client.id,
+                    Message.event_type == "m.room.member",
+                )
             )
+        ).all()
+        # Departures are membership rows too; only arrivals are counted here.
+        arrivals = sum(
+            1
+            for content in membership_rows
+            if (content or {}).get("membership") != "leave"
         )
     # One arrival from starting the chat, one from the owner rejoin.
     assert (memberships, arrivals, await _grants(chats)) == (1, 2, 1)
@@ -2246,3 +2355,76 @@ async def test_a_step_reaches_the_activity_streams_of_every_process(
         name, item = await events.next()
         assert (name, item["roomId"], item["turnId"]) == ("activity", room_id, "t1")
         await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_a_kickoff_reads_back_as_the_agent_that_ran_the_template(
+    chats: _Harness,
+) -> None:
+    """Switch posts a template's kickoff for whoever ran it. Switch Console is
+    told whose it is, and gets the run history for the agents apart from the
+    request, so it can show the request as theirs and fold the history away."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    sent_ids = []
+    for txn, text in (("s1", "Kickoff from switch-buddy"), ("s2", "request")):
+        sent = await chats.send(chats.alice, room_id, txn, text)
+        assert sent.status_code == 200, sent.text
+        sent_ids.append(sent.json()["messages"][0]["messageId"])
+
+    buddy = await chats.agent("switch-buddy", owner=chats.alice)
+    async with chats.factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == buddy.id)
+            .values(
+                display_name="Switch Buddy", icon_url="https://example.test/buddy.png"
+            )
+        )
+        await session.commit()
+    on_behalf_of = {
+        "user_id": chats.alice.id,
+        "name": "switch-buddy",
+        "agent_id": buddy.id,
+    }
+    request = f"Sprint room is live.\n\n{TRACE_OPENING}Welcome. So far: ..."
+    async with chats.factory() as session:
+        rows = {
+            row.transport_event_id: row
+            for row in (
+                await session.execute(
+                    select(Message).where(Message.transport_event_id.in_(sent_ids))
+                )
+            ).scalars()
+        }
+        headline, kickoff = (rows[i] for i in sent_ids)
+        # As the platform posts them: no sender client, the marker in content.
+        headline.sender_client_id = None
+        headline.content = {"com.switch.platform": {"on_behalf_of": on_behalf_of}}
+        kickoff.sender_client_id = None
+        kickoff.body = request
+        kickoff.content = {
+            "com.switch.platform": {
+                "on_behalf_of": on_behalf_of,
+                "reply_in_channel": True,
+            }
+        }
+        await session.commit()
+
+    page = await chats.client.get(
+        f"/chats/{room_id}/messages", headers=chats.as_user(chats.alice)
+    )
+    by_id = {m["messageId"]: m for m in page.json()["messages"]}
+    first, second = (by_id[i] for i in sent_ids)
+    assert first["sender"]["kind"] == "system"
+    assert first["kickoff"] is None
+    assert second["sender"]["kind"] == "system"
+    assert second["body"] == "Sprint room is live."
+    assert second["kickoff"] == {
+        "name": "switch-buddy",
+        "agentId": buddy.id,
+        "userId": chats.alice.id,
+        "agentNote": f"{TRACE_OPENING}Welcome. So far: ...",
+        # Its own look, though it is not in the room.
+        "displayName": "Switch Buddy",
+        "iconUrl": "https://example.test/buddy.png",
+    }

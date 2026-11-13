@@ -80,6 +80,7 @@ def build_service_harness(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     harness.app.include_router(service_router, prefix="/agents")
     harness.gateway_app.include_router(service_connections_router)
@@ -87,7 +88,7 @@ def build_service_harness(
     harness.app.state.service_broker = broker
     harness.gateway_app.state.service_broker = broker
     harness.gateway_app.state.service_flows = ServiceFlows(
-        None, SignInFlows(session_factory, TEST_KEYRING)
+        None, {}, SignInFlows(session_factory, TEST_KEYRING)
     )
     return harness, broker
 
@@ -177,6 +178,8 @@ async def connect(
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 

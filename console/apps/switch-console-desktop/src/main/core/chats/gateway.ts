@@ -34,11 +34,7 @@ import {
   workspaceMemberSchema,
   agentCandidatesSchema,
 } from '@shared/core/chats/chats';
-import {
-  type RoomAccess,
-  type SwitchServer,
-  visibilityForAccess,
-} from '@shared/core/switch-servers/switch-servers';
+import { type RoomAccess, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 /**
  * The gateway's `/chats` routes, called as the signed-in person. Every answer
@@ -161,7 +157,12 @@ export async function createChat(
   if (input.description) body.description = input.description;
   if (input.instructions) body.instructions = input.instructions;
   if (input.groupId) body.groupId = input.groupId;
-  if (input.access) Object.assign(body, visibilityForAccess(input.access));
+  // Who may see it; changing it is its owner's and admins' either way, so it
+  // is stored write-private (the server wants both, or neither).
+  if (input.access) {
+    body.readVisibility = input.access;
+    body.writeVisibility = 'private';
+  }
   return (await json(server, '/chats', chatCreatedSchema, { method: 'POST', body })).chat;
 }
 

@@ -134,6 +134,10 @@ describe("ServiceAccessSection", () => {
       method: "PUT",
       body: { policy: OWNER_ONLY_POLICY },
     });
+    // The owner alone, as Switch Console asks for it.
+    expect(OWNER_ONLY_POLICY.rules).toEqual([
+      expect.objectContaining({ owner: true, owner_agents: false, users: [], agents: [] }),
+    ]);
   });
 
   it("says what removing a grant does, and does not, on the agent's own machine", async () => {
@@ -221,7 +225,12 @@ describe("ServiceAccessSection", () => {
     );
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText("helper reads and writes Example as you.")).toBeTruthy();
-    expect(screen.getByText(/stays valid at Example until it expires/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /may keep working at Example until it expires, up to 24 hours after it was handed out\./,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/you disconnect/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     fireEvent.click(screen.getByLabelText("Example for helper"));
     await waitFor(() =>
@@ -305,6 +314,79 @@ describe("ServiceAccessSection", () => {
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(broken)).toBeTruthy();
     expect(screen.queryByText(through)).toBeNull();
+  });
+
+  const SWITCHED_OFF = (name: string) =>
+    `${name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
+
+  it("says a service switched off in the workspace cannot be turned on, and still turns one off", async () => {
+    const calls = mockServer(
+      {
+        grants: [
+          {
+            service: "example",
+            name: "Example",
+            access: "read",
+            tool_mode: "allow",
+            tools: [],
+            effective_tools: [],
+            resources: {},
+            summary: "helper reads Example as you.",
+          },
+        ],
+        addressing_open: false,
+      },
+      [
+        onOff("active", { workspace_enabled: false }),
+        onOff("active", { slug: "other", name: "Other", workspace_enabled: false }),
+      ],
+    );
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    const other = await screen.findByLabelText("Other for helper");
+    expect((other as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText(SWITCHED_OFF("Other"))).toBeTruthy();
+    // On, it does nothing until the workspace switches it back on; it can be turned off.
+    expect(screen.getByText(SWITCHED_OFF("Example"))).toBeTruthy();
+    const example = screen.getByLabelText("Example for helper") as HTMLInputElement;
+    expect(example.disabled).toBe(false);
+    fireEvent.click(example);
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "/gateway/agents/a1/service-grants/example",
+        method: "DELETE",
+        body: null,
+      }),
+    );
+  });
+
+  it("says GitHub is switched off in the workspace instead of offering to grant it", async () => {
+    mockServer(NONE, [
+      onOff("active", {
+        slug: "github",
+        name: "GitHub",
+        pass_through: false,
+        workspace_enabled: false,
+      }),
+    ]);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(SWITCHED_OFF("GitHub"))).toBeTruthy();
+    expect(screen.queryByLabelText("GitHub account")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Grant" })).toBeNull();
+  });
+
+  it("offers no Change on a GitHub grant the workspace cannot use, and still removes it", async () => {
+    mockServer(GRANTED, [
+      onOff("active", {
+        slug: "github",
+        name: "GitHub",
+        pass_through: false,
+        workspace_enabled: false,
+      }),
+    ]);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(SWITCHED_OFF("GitHub"))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
   const NOT_SET_UP =
@@ -411,11 +493,54 @@ describe("ServiceAccessSection", () => {
       () => new Response(JSON.stringify({ detail: problem }), { status: 503 }),
     );
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
-    await waitFor(() =>
-      expect(
-        screen.getAllByRole("alert").some((alert) => alert.textContent?.includes(problem)),
-      ).toBe(true),
-    );
+    // Said once, where the GitHub form would be, in place of the form.
+    expect(await screen.findByText(problem)).toBeTruthy();
+    expect(screen.queryByLabelText("GitHub account")).toBeNull();
     expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  const READ_ONLY =
+    "Switch's GitHub App lets agents read only, so GitHub can't be granted for writing. Whoever runs Switch can change that in Switch Console, under Admin → Connector apps.";
+  const readOnlyGitHub = onOff("active", {
+    slug: "github",
+    name: "GitHub",
+    pass_through: false,
+    read_only_reason: READ_ONLY,
+  });
+
+  it("offers GitHub for reading only where the server's App can't write, saying why", async () => {
+    const calls = mockServer(NONE, [readOnlyGitHub]);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    await screen.findByLabelText("GitHub account");
+    expect(screen.getByText(READ_ONLY)).toBeTruthy();
+    const push = screen.getByLabelText("Read and push") as HTMLInputElement;
+    expect(push.disabled).toBe(true);
+    expect((screen.getByLabelText("Read") as HTMLInputElement).disabled).toBe(false);
+    fireEvent.mouseDown(screen.getByLabelText("GitHub account"));
+    fireEvent.click(await screen.findByText("example-org"));
+    fireEvent.mouseDown(screen.getByLabelText("Repositories"));
+    fireEvent.click(await screen.findByText("example-org/docs"));
+    fireEvent.click(screen.getByRole("button", { name: "Grant" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "/gateway/agents/a1/service-grants/github",
+        method: "PUT",
+        body: { access: "read", resources: { installation_id: 7, repository_ids: [71] } },
+      }),
+    );
+  });
+
+  it("says why a write grant made before gets nothing on such a server", async () => {
+    mockServer(GRANTED, [readOnlyGitHub]);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
+    expect(await screen.findByText(READ_ONLY)).toBeTruthy();
+  });
+
+  it("says nothing of it where the App can write", async () => {
+    mockServer(GRANTED, [{ ...readOnlyGitHub, read_only_reason: null }]);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
+    expect(screen.queryByText(READ_ONLY)).toBeNull();
   });
 });

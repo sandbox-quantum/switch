@@ -26,24 +26,32 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { type RoomRoleSpec, createRoom } from "../../data/api";
+import { type RoomRoleSpec, createRoom, invitableAgents } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
-import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
+import type { AccessLevel } from "../../data/visibility";
 import {
   useAgents,
   useBridges,
   useBridgeUsers,
+  useRoomAgentCandidates,
   useRoomGroups,
 } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { flattenTree } from "./groupTree";
-import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
+import {
+  ROOM_ACCESS_HELPERS,
+  ROOM_ACCESS_LEVELS,
+  ROOM_ACCESS_OPTION_LABELS,
+  type RoomAccessLevel,
+} from "./roomAccess";
 
 type ChannelSource = "existing" | "new";
 
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
   const { data: agents } = useAgents();
+  // Only the agents the server's invite rule lets the viewer put in a new room.
+  const { data: candidates } = useRoomAgentCandidates();
   const { data: bridges } = useBridges();
   const { data: groups } = useRoomGroups();
   // Only a workspace admin may put a room in a group.
@@ -61,11 +69,12 @@ export default function RoomCreateFormBody() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   // Per-agent opt-in: ids of selected agents whose subagents to also add.
   const [includeSubagentsFor, setIncludeSubagentsFor] = useState<string[]>([]);
-  // Per-agent opt-in: ids of selected agents that should receive room_join
+  // Per-agent opt-in: ids of selected agents that should receive room_join and room_leave
   // events in this room.
   const [joinEventListeners, setJoinEventListeners] = useState<string[]>([]);
   const [userNames, setUserNames] = useState<string[]>([]);
-  const [access, setAccess] = useState<AccessLevel>("public");
+  // Null until someone picks, for a room with no channel.
+  const [accessChoice, setAccessChoice] = useState<RoomAccessLevel | null>(null);
   const [groupId, setGroupId] = useState("");
   const [roles, setRoles] = useState<RoomRoleSpec[]>([]);
 
@@ -77,19 +86,25 @@ export default function RoomCreateFormBody() {
 
   const hasBridge = !!bridgeId;
 
+  // A room on a messaging app takes its access from its channel (the server
+  // asks the platform about an existing one), so only a room with no channel
+  // is asked; its owner or an admin can change it later in its settings.
+  const access: RoomAccessLevel = accessChoice ?? "public";
+
   const selectedBridge = useMemo(
     () => (bridges ?? []).find((b) => b.bridge_id === bridgeId),
     [bridges, bridgeId],
   );
 
-  // True when this connection cannot be used to create a new channel, either
-  // because the platform has no such capability or because an admin has
-  // turned it off for this connection.
+  // True when this connection cannot be used to create a new channel: the
+  // platform has no such capability, an admin has turned it off for this
+  // connection, or the connection lacks something it needs first.
   const channelCreationBlocked =
     !!selectedBridge &&
     !(
       selectedBridge.channel_creation_supported &&
-      selectedBridge.channel_creation_enabled
+      selectedBridge.channel_creation_enabled &&
+      !selectedBridge.channel_creation_blocker
     );
 
   // A connection whose chats arrive only one way takes no channel id either,
@@ -113,7 +128,10 @@ export default function RoomCreateFormBody() {
     if (!selectedBridge.channel_creation_supported) {
       return `${selectedBridge.display_name} cannot create channels from Switch. Create the channel on the platform, then add the app to it.`;
     }
-    return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
+    if (!selectedBridge.channel_creation_enabled) {
+      return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
+    }
+    return selectedBridge.channel_creation_blocker ?? null;
   }, [selectedBridge, channelCreationBlocked]);
 
   // If the user had "Create new channel" selected and then picks a bridge
@@ -142,7 +160,10 @@ export default function RoomCreateFormBody() {
     [],
   );
 
-  const eligibleAgents = useMemo(() => agents ?? [], [agents]);
+  const eligibleAgents = useMemo(
+    () => invitableAgents(agents ?? [], candidates?.agent_ids),
+    [agents, candidates],
+  );
 
   const agentNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -234,7 +255,7 @@ export default function RoomCreateFormBody() {
                   exclusive: r.exclusive,
                 }))
             : undefined,
-        ...fromAccessLevel(access),
+        ...(!hasBridge && accessChoice ? { read_visibility: accessChoice } : {}),
       });
       navigate(`/rooms/${room.id}`);
     } catch (err) {
@@ -255,7 +276,7 @@ export default function RoomCreateFormBody() {
     joinEventListeners,
     bridgeId,
     userNames,
-    access,
+    accessChoice,
     groupId,
     roles,
     navigate,
@@ -290,13 +311,16 @@ export default function RoomCreateFormBody() {
         helperText="Surfaced to agents on connect. Use this to set the room's purpose, rules, or expected outputs."
       />
 
-      <AccessSelect
-        value={access}
-        onChange={setAccess}
-        disabled={submitting}
-        helpers={ROOM_ACCESS_HELPERS}
-        optionLabels={ROOM_ACCESS_OPTION_LABELS}
-      />
+      {!hasBridge && (
+        <AccessSelect
+          value={access}
+          onChange={(level: AccessLevel) => setAccessChoice(level as RoomAccessLevel)}
+          disabled={submitting}
+          levels={ROOM_ACCESS_LEVELS}
+          helpers={ROOM_ACCESS_HELPERS}
+          optionLabels={ROOM_ACCESS_OPTION_LABELS}
+        />
+      )}
 
       {canAdminTenant && (groups ?? []).length > 0 && (
         <TextField
@@ -571,7 +595,7 @@ export default function RoomCreateFormBody() {
       {agentIds.length > 0 && (
         <Stack spacing={0.5} sx={{ pl: 1 }}>
           <Typography variant="caption" color="text.secondary">
-            Listen to join events
+            Listen to join and leave events
           </Typography>
           {agentIds.map((id) => (
             <FormControlLabel
@@ -591,7 +615,7 @@ export default function RoomCreateFormBody() {
               }
               label={`Notify ${
                 agentNameById.get(id) ?? id
-              } when someone joins the room`}
+              } when someone joins or leaves the room`}
             />
           ))}
         </Stack>

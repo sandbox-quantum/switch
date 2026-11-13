@@ -15,6 +15,7 @@ export function serviceConnection(overrides: Partial<ServiceConnection> = {}): S
     unavailable_code: null,
     server_setup_needed: false,
     app_source: "server",
+    read_only_reason: null,
     status: "not_connected",
     pass_through: true,
     token_lifetime: 3600,

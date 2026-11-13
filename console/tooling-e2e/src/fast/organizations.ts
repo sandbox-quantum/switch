@@ -5,10 +5,11 @@ import type { FastScenario } from './scenario.ts';
 /**
  * Anyone signed in creates an organization, and its admin adds workspaces to
  * it: a new user, in the default workspace, creates an organization and lands
- * in its first workspace, adds a second, and sees both, in an organization
- * listed beside those they were already in, with nothing left for its admin
- * to fix, and each new workspace counted with its one user and no agents. A
- * plain member of the default workspace may not add one there.
+ * in its first workspace, renames it, adds a second, and sees both, the first
+ * by its new name, in an organization listed beside those they were already
+ * in, with nothing left for its admin to fix, and each new workspace counted
+ * with its one user and no agents. A plain member of the default workspace
+ * may not add one there, or rename it.
  *
  * Users and workspaces cannot be deleted, so this runs only on a stack thrown
  * away after the run.
@@ -24,6 +25,7 @@ export const organizations: FastScenario = {
       'GET /gateway/organizations/current/workspaces',
       'POST /gateway/organizations/current/workspaces',
       'GET /gateway/tenants/counts',
+      'PATCH /gateway/tenants/{tenant_id}',
     ],
     lane: 'fast',
     environments: ['ephemeral'],
@@ -62,6 +64,14 @@ export const organizations: FastScenario = {
       expect(error.status, 'a member adding a workspace').toBe(403);
     }
 
+    try {
+      await member.renameTenant(defaultWorkspace, names.name('misnamed'));
+      throw new Error('a member renamed the workspace');
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      expect(error.status, 'a member renaming the workspace').toBe(403);
+    }
+
     const { organization, workspace } = await founder.createOrganization(names.name('org'));
     expect(organization.role).toBe('org_admin');
     expect(workspace).toMatchObject({
@@ -75,6 +85,12 @@ export const organizations: FastScenario = {
       role: 'org_admin',
     });
 
+    const renamed = names.name('renamed');
+    expect(
+      await founder.renameTenant(workspace.id, `  ${renamed}  `),
+      'the new name, trimmed'
+    ).toEqual({ id: workspace.id, name: renamed });
+
     const second = await founder.createOrganizationWorkspace(names.name('second'));
     expect(second.organization_id).toBe(organization.id);
     expect(await founder.tenantId(), 'still in the first workspace').toBe(workspace.id);
@@ -82,6 +98,10 @@ export const organizations: FastScenario = {
     const workspaces = await founder.organizationWorkspaces();
     expect(workspaces.map((row) => row.id).sort()).toEqual([workspace.id, second.id].sort());
     expect(workspaces.map((row) => row.id)).not.toContain(defaultWorkspace);
+    expect(
+      workspaces.find((row) => row.id === workspace.id)?.name,
+      'the organization lists it by its new name'
+    ).toBe(renamed);
 
     expect(await founder.organizationIssues(), 'nothing to fix in a new organization').toEqual([]);
 

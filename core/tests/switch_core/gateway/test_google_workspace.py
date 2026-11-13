@@ -115,6 +115,7 @@ def _world(
             keyring=TEST_KEYRING,
             public_url=PUBLIC,
             server_name="switch.example.com",
+            redirects={},
         ),
     )
     broker = ServiceBroker(
@@ -129,11 +130,12 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=PUBLIC,
+        allow_non_expiring_keys=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
     harness.gateway_app.state.service_flows = ServiceFlows(
-        PUBLIC, SignInFlows(harness.session_factory, TEST_KEYRING)
+        PUBLIC, {}, SignInFlows(harness.session_factory, TEST_KEYRING)
     )
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)
@@ -211,6 +213,7 @@ def _another_client(world: World, session_factory) -> OAuthAdapter:
             keyring=TEST_KEYRING,
             public_url=PUBLIC,
             server_name="switch.example.com",
+            redirects={},
         ),
     )[SERVICE]
     assert isinstance(adapter, OAuthAdapter)
@@ -526,6 +529,7 @@ class TestTheProfileChanging:
                 {SERVICE: connection},
                 [],
                 {},
+                set(),
             )
         [google] = [entry for entry in services if entry["slug"] == SERVICE]
         assert google["connection"] == "needs_reauthorization"
@@ -739,8 +743,8 @@ class TestAvailability:
             (
                 False,
                 {},
-                "Google Workspace is not set up here. Whoever runs Switch can set "
-                "it up in Switch Console, under Admin → Connector apps.",
+                "Google Workspace's connector app isn't set up on this server "
+                "yet. Whoever runs Switch can set it up.",
                 "app_not_set_up",
             ),
             (

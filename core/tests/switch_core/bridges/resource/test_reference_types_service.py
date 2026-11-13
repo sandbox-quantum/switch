@@ -288,6 +288,41 @@ class TestResolution:
         assert "alice_private" not in slugs
         assert {"google_drive", "confluence", "github", "jira"} <= slugs
 
+    async def test_management_list_holds_every_type_the_principal_may_read(
+        self,
+        service: ResourceService,
+        session_factory: async_sessionmaker[AsyncSession],
+        users: dict[str, str],
+    ) -> None:
+        """Another user's public type is listed, for reading or editing as its
+        visibility allows; their private one is not, except to an admin."""
+        async with session_factory() as session:
+            for slug, read in (
+                ("alice_public", "public"),
+                ("alice_private", "private"),
+            ):
+                await service.create_reference_type(
+                    session,
+                    owner_id=users["alice"],
+                    type=slug,
+                    display_name=slug,
+                    instructions="i",
+                    value_hint="h",
+                    read_visibility=read,
+                    write_visibility="private",
+                )
+            await session.commit()
+
+        async with session_factory() as session:
+            for_bob = await service.list_owned_reference_types(
+                session, user_id=users["bob"], is_admin=False
+            )
+            for_admin = await service.list_owned_reference_types(
+                session, user_id=users["admin"], is_admin=True
+            )
+        assert [r.row.type for r in for_bob] == ["alice_public"]
+        assert [r.row.type for r in for_admin] == ["alice_private", "alice_public"]
+
 
 class TestUnresolvableSlugs:
     async def test_resolve_display_names_omits_a_miss(

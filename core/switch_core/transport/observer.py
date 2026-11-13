@@ -1,15 +1,29 @@
 """What the transport tells the rest of Switch about a message once it is sent.
 
-The transport is the one place every participant's message passes through, so
-it is where "a message was said in a room" can be observed without each writer
-having to remember to report it. It knows nothing about who is listening: it
-hands over the facts it already holds, after the commit, and carries on.
+Nearly every participant's message passes through the transport, so it is
+where "a message was said in a room" can be observed without each writer
+having to remember to report it. The exception is a Switch Console chat
+message, which `ChatService.send` writes through the router and reports itself.
+
+The transport knows nothing about who is listening: it hands over the facts it
+already holds, after the commit, and carries on.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol
+
+from switch_core.observability.catalogue import OBSERVER_FAILURES
+from switch_core.observability.metrics import metrics
+from switch_core.observability.throttle import WarningThrottle
+
+logger = logging.getLogger(__name__)
+
+# One for the process rather than one per writer: every client has a
+# transport, and an observer that breaks breaks for all of them.
+_observer_failures = WarningThrottle(60.0)
 
 
 @dataclass(frozen=True)
@@ -51,3 +65,26 @@ class IgnoreParticipantMessages:
 
     def observe(self, message: ParticipantMessage) -> None:
         return None
+
+
+def observe_safely(
+    observer: ParticipantMessageObserver, message: ParticipantMessage
+) -> None:
+    """Tell `observer` about `message`, which is already committed.
+
+    Guarded because the row is already committed: an exception leaving the
+    send now would tell the sender that a message in the room was not sent,
+    and its retry would post it twice. Counted, because a guard that only logs
+    leaves nothing to alert on.
+    """
+    try:
+        observer.observe(message)
+    except Exception:
+        metrics().increment(OBSERVER_FAILURES, {"actor": message.sender_role})
+        if (failures := _observer_failures.note()) is not None:
+            logger.error(
+                "Message observer failed; the message itself was sent. %d "
+                "failure(s) since the last error.",
+                failures,
+                exc_info=True,
+            )

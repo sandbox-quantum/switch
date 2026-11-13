@@ -331,6 +331,39 @@ def test_logs_keep_no_message_text_room_rules_or_key(
     )
 
 
+def test_log_says_whether_the_conversation_context_was_used(make_client, caplog):
+    tc = make_client()
+    mid_exchange = dict(
+        BODY,
+        message={"sender": "sara", "text": SECRET_TEXT, "thread_id": "t1"},
+        thread=[
+            {
+                "sender": "sara",
+                "sender_kind": "person",
+                "text": f"first: {SECRET_TEXT}",
+                "addressed": ["deploy-bot"],
+            },
+            {
+                "sender": "deploy-bot",
+                "sender_kind": "agent",
+                "text": "on it",
+                "addressed": [],
+            },
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="switch_decision"):
+        assert tc.post("/decide", json=BODY).status_code == 200
+        assert tc.post("/decide", json=mid_exchange).status_code == 200
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.getMessage().startswith("decide ")
+    ]
+    assert lines[0].endswith("context=none") and lines[1].endswith("context=exchange")
+    text = _assert_clean(caplog)
+    assert "back-and-forth" not in text and "sara" not in text
+
+
 def test_failure_logs_keep_no_backend_error_body(make_client, caplog):
     tc = make_client(
         handler=lambda r: httpx.Response(500, text=f"context too long: {SECRET_TEXT}")

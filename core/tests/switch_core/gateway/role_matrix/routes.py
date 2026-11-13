@@ -96,6 +96,11 @@ ROUTES: dict[str, Case] = {
     "PATCH /gateway/agents/{agent_id}/options": patch(
         f"{G}/agents/{{console_agent}}/options", owner_or_admins(), json={"options": {}}
     ),
+    "PUT /gateway/agents/{agent_id}/mid-turn-delivery": put(
+        f"{G}/agents/{{agent}}/mid-turn-delivery",
+        owner_or_admins(),
+        json={"mid_turn_delivery": "queue"},
+    ),
     "PUT /gateway/agents/{agent_id}/icon": put(
         f"{G}/agents/{{agent}}/icon", owner_or_admins(), json={"icon_url": None}
     ),
@@ -217,6 +222,9 @@ ROUTES: dict[str, Case] = {
             "or the operator; let through, then refused while it isn't empty."
         ),
     ),
+    "PATCH /gateway/tenants/{tenant_id}": patch(
+        W, admins(), json={"name": "{tag}-renamed"}
+    ),
     "GET /gateway/tenants/{tenant_id}/retention": get(f"{W}/retention", admins()),
     "GET /gateway/tenants/{tenant_id}/retention/preview": get(
         f"{W}/retention/preview", admins(), days="30"
@@ -228,6 +236,20 @@ ROUTES: dict[str, Case] = {
         why="Deleting messages can't be undone: its admins by their own membership.",
     ),
     "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
+        f"{W}/private-channel-rooms", admins()
+    ),
+    "GET /gateway/tenants/{tenant_id}/private-channel-rooms/count": get(
+        f"{W}/private-channel-rooms/count", admins()
+    ),
+    "POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform": post(
+        f"{W}/private-channel-rooms/ask-platform", admins(), json={}
+    ),
+    "POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private": post(
+        f"{W}/private-channel-rooms/make-private",
+        admins(),
+        json={"room_ids": ["no-such-room"]},
+    ),
     "GET /gateway/tenants/{tenant_id}/people": get(
         f"{W}/people",
         admin_by_membership(),
@@ -456,6 +478,7 @@ ROUTES: dict[str, Case] = {
     # ── Rooms ────────────────────────────────────────────────────────────
     "GET /gateway/rooms": get(f"{G}/rooms", anyone()),
     "GET /gateway/rooms/template-schema": get(f"{G}/rooms/template-schema", anyone()),
+    "GET /gateway/rooms/agent-candidates": get(f"{G}/rooms/agent-candidates", anyone()),
     "POST /gateway/rooms": post(
         f"{G}/rooms",
         SELF,
@@ -497,6 +520,19 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/rooms/{room_id}/unarchive": post(
         f"{G}/rooms/{{room}}/unarchive", owner_or_admins()
     ),
+    "GET /gateway/rooms/{room_id}/admins": get(
+        f"{G}/rooms/{{room}}/admins", owner_or_admins()
+    ),
+    "PUT /gateway/rooms/{room_id}/admins/{target_user_id}": put(
+        f"{G}/rooms/{{room}}/admins/{{member_target}}",
+        owner_or_admins(ok=400),
+        why="Let through, then refused: the person isn't in the room.",
+    ),
+    "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}": delete(
+        f"{G}/rooms/{{room}}/admins/{{member_target}}",
+        owner_or_admins(),
+        why="Taking off someone who isn't a room admin changes nothing.",
+    ),
     "POST /gateway/rooms/{room_id}/sync-name": post(
         f"{G}/rooms/{{room}}/sync-name",
         owner_or_admins(ok=409),
@@ -530,7 +566,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room}}/auto-route",
         owner_or_admins(),
         json={"on": False},
-        why="Write access to the room; this room's write access is private.",
+        why="A room setting: the room's owner and admins (`room_policy`).",
     ),
     "GET /gateway/rooms/{room_id}/schedules": get(
         f"{G}/rooms/{{room}}/schedules", owner_or_admins()
@@ -591,6 +627,12 @@ ROUTES: dict[str, Case] = {
         owner_or_admins(ok=400),
         json={"user_names": []},
         why="Let through, then refused: people join through the room's platform channel, and it has none.",
+    ),
+    "POST /gateway/rooms/{room_id}/users/remove": post(
+        f"{G}/rooms/{{room}}/users/remove",
+        owner_or_admins(ok=400),
+        json={"user_names": ["nobody"]},
+        why="Removing a person is the owner's or an admin's; let through, then refused, as the room has no platform channel to take them out of.",
     ),
     "PUT /gateway/rooms/{room_id}/group": put(
         f"{G}/rooms/{{room}}/group",
@@ -1064,9 +1106,15 @@ ROUTES: dict[str, Case] = {
     ),
     "PUT /gateway/service-connections/{service}/key": put(
         f"{G}/service-connections/datadog/key",
-        anyone(ok=403),
+        anyone(ok=404),
         json={"fields": {"api_key": "matrix", "application_key": "matrix"}},
-        why="Your own connection; refused for anyone, Datadog keys never being handed to agents.",
+        why="Your own connection; Datadog signs in, so nobody connects it with a key here.",
+    ),
+    "PUT /gateway/service-connections/{service}/paste": put(
+        f"{G}/service-connections/atlassian/paste",
+        anyone(ok=404),
+        json={"method": "token", "fields": {"token": "matrix"}, "choices": {}},
+        why="Your own connection; Atlassian takes nothing pasted in place of its sign-in.",
     ),
     "DELETE /gateway/service-connections/{service}": delete(
         f"{G}/service-connections/github",
@@ -1098,6 +1146,16 @@ ROUTES: dict[str, Case] = {
         owner(ok=503, refused=410),
         json={"completion_secret": "{flow_secret}", "code": "matrix"},
         why="Its owner's; refused then, this server having no Atlassian app.",
+    ),
+    "POST /gateway/service-connections/{service}/flows/{flow_id}/fail": post(
+        f"{G}/service-connections/atlassian/flows/{{service_flow}}/fail",
+        owner(ok=400, refused=410),
+        json={
+            "completion_secret": "m" * 43,
+            "error": "access_denied",
+            "error_description": None,
+        },
+        why="Its owner's; refused then, the secret not being the one it was started with.",
     ),
     "GET /gateway/provider-connections/github": get(
         f"{G}/provider-connections/github", SELF

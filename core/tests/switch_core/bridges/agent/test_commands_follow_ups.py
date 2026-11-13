@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import owner_only_policy
+from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import (
     COMMANDS_BY_NAME,
     _cmd_assign_agent,
@@ -22,7 +23,19 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import FOLLOW_UPS_OFF_KEY, RoomStore
+from switch_core.room_policy import RoomDecision
 from switch_core.transport import RoomRef
+
+
+@pytest.fixture(autouse=True)
+def _room_policy_allows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Who may change a room is `test_commands_room_permissions`'s; these
+    test what the command does once it may."""
+
+    async def allowed(*_args: object, **_kwargs: object) -> RoomDecision:
+        return RoomDecision(True, None)
+
+    monkeypatch.setattr(commands, "_room_decision", allowed)
 
 
 async def _room(session_factory: async_sessionmaker[AsyncSession]) -> str:
