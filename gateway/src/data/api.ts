@@ -268,6 +268,20 @@ export interface BridgeDetail {
   // connection an install holds is refused at the time, with the reason.
   can_manage: boolean;
   can_delete: boolean;
+  // The app new rooms use when none is named.
+  is_default: boolean;
+  // Opens the app's workspace in the platform itself. Null when the bridge is
+  // not running or the platform has no such link.
+  home_url: string | null;
+  // Whether the platform delivers this app's events to an address of its
+  // own, and that address. Null where Switch's configuration has no public
+  // address to give it.
+  receives_webhooks: boolean;
+  webhook_url: string | null;
+  // Whether the platform's user directory can be searched. Where it cannot
+  // (Telegram), only people who have written in a connected chat can be
+  // found.
+  directory_search_supported: boolean;
 }
 
 export interface ExternalUserSummary {
@@ -1068,6 +1082,11 @@ export interface BridgeConfigSchema {
 
 export interface BridgeTypeInfo {
   key: string;
+  // How a person names the platform ("Microsoft Teams").
+  display_name: string;
+  // The platform's logo as SVG markup, or null where Switch ships none. Drawn
+  // as an image from a data: URL, never inlined into the page.
+  icon_svg: string | null;
   config_schema: BridgeConfigSchema;
   // Whether this platform can create channels at all. Fixed per platform.
   channel_creation_supported: boolean;
@@ -1150,15 +1169,207 @@ export interface BridgeUpdateInput {
   connection_config?: Record<string, unknown>;
 }
 
+// Throws with the server's reason, so a refused switch says why rather than
+// flicking back as if nothing had been asked.
 export async function updateBridge(
   bridgeId: string,
   update: BridgeUpdateInput,
-): Promise<BridgeDetail | null> {
-  return fetchJson<BridgeDetail>(`/collaborations/${bridgeId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(update),
+): Promise<BridgeDetail> {
+  return jsonRequest<BridgeDetail>(`/collaborations/${bridgeId}`, "PATCH", update);
+}
+
+// ── Your chat accounts ───────────────────────────────────────────────────────
+//
+// Which account in each messaging app is the signed-in person. A link waits
+// until the account itself confirms it, by posting a one-time code from it,
+// and counts for nothing before then. Every call here throws `ApiError` with
+// the server's words: they say what to do next (the app is not running, the
+// account is a bot nobody can link, the code has already been used).
+
+/** An account linked to the signed-in person, from `GET /auth/me/identities`. */
+export interface LinkedIdentity {
+  /** The account's row id, which the calls below take. */
+  id: string;
+  bridge_id: string;
+  bridge_display_name: string;
+  bridge_type: string;
+  external_user_id: string;
+  external_username: string;
+  /** False for a link made before links had to be confirmed: it counts, and
+   *  its owner is asked to confirm it. */
+  verified: boolean;
+  /** When the link started counting. */
+  linked_at: string;
+  /** For an older link: whether a request to confirm it is waiting for the
+   *  account. It ending while the link stays means the confirmation was
+   *  cancelled (a wrong number tapped, say), not the link. */
+  awaiting_confirmation: boolean;
+}
+
+/** An account waiting to confirm a link to the signed-in person. It counts
+ *  for nothing yet. */
+export interface PendingIdentity {
+  id: string;
+  bridge_id: string;
+  bridge_display_name: string;
+  bridge_type: string;
+  external_user_id: string;
+  external_username: string;
+  /** Who started it, when that was an admin rather than the person. */
+  requested_by_name: string | null;
+  /** When the last code stops working; null when none has been issued. */
+  code_expires_at: string | null;
+}
+
+/** A one-time code that confirms a link when posted from the account. The
+ *  server keeps no copy: asking again issues a new one and retires this. */
+export interface LinkCode {
+  code: string;
+  expires_at: string;
+  /** Its lifetime when issued, to count down on this machine's clock rather
+   *  than compare `expires_at` with a clock that may be wrong. */
+  expires_in_seconds: number;
+  /** How to post it on this platform, in Markdown whose only markup is the
+   *  command in backticks. */
+  instructions: string;
+  /** The message Switch sent the account with numbers to tap, the quicker way
+   *  to confirm; absent from a server that sends none. */
+  prompt?: LinkPrompt | null;
+}
+
+/** The direct message offering numbers to tap: tapping `number` confirms
+ *  the link, the same proof as posting the code. */
+export interface LinkPrompt {
+  number: number;
+  sent: boolean;
+  /** Why no message went out, when `sent` is false. */
+  unavailable_reason: string | null;
+  /** Opens the message on the platform, where it can link to one. */
+  link: string | null;
+}
+
+export interface IdentityClaimant {
+  user_id: string;
+  user_name: string;
+  verified: boolean;
+  can_unlink: boolean;
+}
+
+/** The account a claim was made on, with everyone recognised on it and, when
+ *  the link now waits for the account, the code that confirms it. */
+export interface ClaimedAccount extends ExternalUserSummary {
+  claimed_by: IdentityClaimant[];
+  link_request: { user_id: string; code: LinkCode | null } | null;
+}
+
+export interface DirectoryPerson {
+  /** The platform's own id for the account, which a claim names. */
+  external_user_id: string;
+  username: string;
+  display_name: string;
+  email: string | null;
+  /** The account's row id when Switch has seen it, else null. */
+  known_external_user_id: string | null;
+  claimed_by: IdentityClaimant[];
+}
+
+/** Who a search found. `known` means the platform has no directory and the
+ *  answer is only the accounts Switch has seen, which `note` explains. */
+export interface DirectorySearch {
+  source: "directory" | "known";
+  note: string | null;
+  users: DirectoryPerson[];
+}
+
+/** A link made before links had to be confirmed, as an admin reviews them. */
+export interface UnconfirmedLink {
+  id: string;
+  external_user_id: string;
+  external_username: string;
+  user_id: string;
+  user_name: string;
+}
+
+export async function fetchMyIdentities(): Promise<LinkedIdentity[]> {
+  return jsonRequest<LinkedIdentity[]>("/auth/me/identities", "GET");
+}
+
+export async function fetchMyPendingIdentities(): Promise<PendingIdentity[]> {
+  return jsonRequest<PendingIdentity[]>("/auth/me/identities/pending", "GET");
+}
+
+export async function searchBridgeDirectory(
+  bridgeId: string,
+  query: string,
+): Promise<DirectorySearch> {
+  return jsonRequest<DirectorySearch>(
+    `/collaborations/${bridgeId}/directory?query=${encodeURIComponent(query)}`,
+    "GET",
+  );
+}
+
+/** Start linking an account to the signed-in person. */
+export async function claimBridgeIdentity(
+  bridgeId: string,
+  person: { external_user_id: string; username: string },
+): Promise<ClaimedAccount> {
+  return jsonRequest<ClaimedAccount>(`/collaborations/${bridgeId}/identities`, "POST", {
+    external_user_id: person.external_user_id,
+    username: person.username,
+    expects_confirmation: true,
+    // Asks Switch to message the account a number to tap as well; a server
+    // that sends none ignores it and the code is the way.
+    wants_prompt: true,
   });
+}
+
+/** A fresh code for the signed-in person's link to this account, and a new
+ *  message to tap, replacing any issued before. */
+export async function issueLinkCode(bridgeId: string, identityId: string): Promise<LinkCode> {
+  return jsonRequest<LinkCode>(
+    `/collaborations/${bridgeId}/identities/${identityId}/code`,
+    "POST",
+    { wants_prompt: true },
+  );
+}
+
+/** Stop waiting for the account to confirm. Never unlinks: an older link
+ *  being confirmed keeps counting. */
+export async function cancelLinkRequest(bridgeId: string, identityId: string): Promise<void> {
+  await jsonRequest<ClaimedAccount>(
+    `/collaborations/${bridgeId}/identities/${identityId}/request`,
+    "DELETE",
+  );
+}
+
+/** Unlink the signed-in person from this account, and drop any link to it
+ *  still waiting. Anyone else linked to it stays linked. */
+export async function releaseBridgeIdentity(bridgeId: string, identityId: string): Promise<void> {
+  await jsonRequest<ClaimedAccount>(
+    `/collaborations/${bridgeId}/identities/${identityId}`,
+    "DELETE",
+  );
+}
+
+export async function fetchUnconfirmedLinks(bridgeId: string): Promise<UnconfirmedLink[]> {
+  return jsonRequest<UnconfirmedLink[]>(
+    `/collaborations/${bridgeId}/identities/unconfirmed`,
+    "GET",
+  );
+}
+
+/** Stop trusting these older links until each owner confirms theirs. Returns
+ *  how many stopped counting. */
+export async function requireLinkConfirmation(
+  bridgeId: string,
+  links: readonly UnconfirmedLink[],
+): Promise<number> {
+  const result = await jsonRequest<{ moved: number }>(
+    `/collaborations/${bridgeId}/identities/require-confirmation`,
+    "POST",
+    { links: links.map((link) => ({ id: link.id, user_id: link.user_id })) },
+  );
+  return result.moved;
 }
 
 /** Make a team the connection's default for new channels, which also turns

@@ -39,6 +39,7 @@ import CollaborationsPage from "../pages/collaborations/CollaborationsPage";
 import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "../pages/ecosystem/EcosystemGraphPage";
 import MachinesPage from "../pages/machines/MachinesPage";
+import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
 import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
 import ConnectorPage from "../pages/connectors/ConnectorPage";
 import OrganizationPage, {
@@ -237,7 +238,7 @@ export const ROUTES: readonly AppRoute[] = [
     "workspace",
     "Messaging apps",
     everyone,
-    <CollaborationsPage />,
+    <MessagingAppsPage />,
   ),
   redirect("/settings/messaging-apps", CURRENT, "/collaborations"),
   settingsPage(

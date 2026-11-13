@@ -2360,7 +2360,7 @@ class ExternalUserClaim(TenantScoped, Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     verified_at: Mapped[datetime | None] = mapped_column(

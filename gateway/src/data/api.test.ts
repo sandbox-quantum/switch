@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   addBridgeToTeam,
+  cancelLinkRequest,
+  claimBridgeIdentity,
   createApiKey,
   createUser,
   errorText,
   fetchSession,
   fetchTeamPlacements,
   fetchTeamsAppPackage,
+  issueLinkCode,
   removeBridgeFromTeam,
   setDefaultTeamsTeam,
   signOutEverywhere,
@@ -259,5 +262,51 @@ describe("createApiKey", () => {
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ label: "l", expires_in_days: lifetime });
+  });
+});
+
+describe("linking a chat account", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const capture = (body: unknown) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    return () => fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  };
+
+  it("claims expecting to confirm, and asks for a message to tap", async () => {
+    const call = capture({ id: "acct-1", claimed_by: [], link_request: null });
+
+    await claimBridgeIdentity("b1", { external_user_id: "U1", username: "ada" });
+
+    const [url, init] = call();
+    expect(url).toContain("/collaborations/b1/identities");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      external_user_id: "U1",
+      username: "ada",
+      expects_confirmation: true,
+      wants_prompt: true,
+    });
+  });
+
+  it("asks for a message to tap with every new code", async () => {
+    const call = capture({ code: "ABCD-EFGH" });
+
+    await issueLinkCode("b1", "acct-1");
+
+    const [url, init] = call();
+    expect(url).toContain("/collaborations/b1/identities/acct-1/code");
+    expect(JSON.parse(String(init.body))).toEqual({ wants_prompt: true });
+  });
+
+  it("cancels only the request waiting, never the link", async () => {
+    const call = capture({});
+
+    await cancelLinkRequest("b1", "acct-1");
+
+    const [url, init] = call();
+    expect(url).toMatch(/\/collaborations\/b1\/identities\/acct-1\/request$/);
+    expect(init.method).toBe("DELETE");
   });
 });

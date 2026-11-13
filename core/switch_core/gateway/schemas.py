@@ -1103,6 +1103,14 @@ class LinkedIdentity(BaseModel):
     # False for a link made before accounts had to confirm them: it works,
     # and Console asks its owner to confirm it.
     verified: bool
+    # When the link started counting. Confirming an older link later leaves
+    # this where it was: the link counted all along.
+    linked_at: datetime
+    # Whether a request to confirm this older link is waiting for the account:
+    # a code issued, and neither used nor cancelled. The pending list leaves
+    # such requests out, so this is how a client confirming one sees it end
+    # without the link ending too (a wrong number tapped, say).
+    awaiting_confirmation: bool
 
 
 class PendingIdentity(BaseModel):
