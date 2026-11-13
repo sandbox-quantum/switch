@@ -101,6 +101,7 @@ from switch_core.telemetry.service import (
     emit_safely,
 )
 from switch_core.telemetry.services import (
+    TOKEN_REFUSALS_HELD,
     TokenRefusals,
     auth_kind,
     service_slug,
@@ -534,7 +535,7 @@ class ServiceBroker:
         # owner, service), for callers that ask while it is.
         self._fetching: dict[tuple[str, str, str], asyncio.Task[AccessToken]] = {}
         self._telemetry = telemetry
-        self._token_refusals = TokenRefusals()
+        self._token_refusals = TokenRefusals(held=TOKEN_REFUSALS_HELD)
 
     def _entry(self, service: str) -> Connection:
         entry = self._catalog.get(service)
@@ -1215,11 +1216,12 @@ class ServiceBroker:
                     retryable=False,
                 )
             if _client_replaced(connection, adapter):
-                await self._store.mark_needs_reauthorization(
+                lost = await self._store.mark_needs_reauthorization(
                     session, owner_id, service, CLIENT_REPLACED
                 )
                 await session.commit()
-                self._report_lost(service, CLIENT_REPLACED)
+                if lost:
+                    self._report_lost(service, CLIENT_REPLACED)
                 raise self._revoked(
                     service,
                     ReauthorizationRequiredError(
@@ -1242,11 +1244,12 @@ class ServiceBroker:
             try:
                 renewed = await adapter.refresh(secret)
             except ReauthorizationRequiredError as error:
-                await self._store.mark_needs_reauthorization(
+                lost = await self._store.mark_needs_reauthorization(
                     session, owner_id, service, "refresh_refused"
                 )
                 await session.commit()
-                self._report_lost(service, "refresh_refused")
+                if lost:
+                    self._report_lost(service, "refresh_refused")
                 raise self._revoked(service, error) from None
             except ServiceUnavailableError as error:
                 raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
@@ -1290,15 +1293,16 @@ class ServiceBroker:
         """
         tenant_id = require_tenant_id()
 
-        async def mark() -> None:
+        async def mark() -> bool:
             async with tenant_session(self._session_factory, tenant_id) as session:
-                await self._store.mark_needs_reauthorization(
+                lost = await self._store.mark_needs_reauthorization(
                     session, owner_id, service, "sign_in_refused"
                 )
                 await session.commit()
+                return lost
 
-        await finish_shielded(mark())
-        self._report_lost(service, "sign_in_refused")
+        if await finish_shielded(mark()):
+            self._report_lost(service, "sign_in_refused")
         return self._revoked(service, error)
 
     def _report_lost(self, service: str, reason: str) -> None:
@@ -1910,7 +1914,7 @@ class ServiceBroker:
         except ServiceConnectionBusy as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         previous = await self._store.get_connection(session, user_id, service)
-        first_in_workspace = not await self._store.list_connections(session, user_id)
+        first_for_person = not await self._store.list_connections(session, user_id)
         replaced = None if previous is None else self._signed_in(previous)
         replaced_account = "" if previous is None else previous.account_id
         issued_on_it = (
@@ -1947,7 +1951,7 @@ class ServiceBroker:
                 "auth_kind": auth_kind(entry.definition.adapter),
                 "consent": consent,
                 "relinked": previous is not None,
-                "first_in_workspace": first_in_workspace,
+                "first_for_person": first_for_person,
             },
         )
 

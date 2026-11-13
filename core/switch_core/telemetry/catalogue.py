@@ -862,13 +862,14 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "auth_kind": SERVICE_AUTH_KIND,
     },
     # A person's account linked, or linked again (`relinked`).
-    # `first_in_workspace` is their first service connection in the workspace.
+    # `first_for_person` is the person's first service connection in the
+    # workspace, of any service.
     "service_connection_added": {
         "service": SERVICE,
         "auth_kind": SERVICE_AUTH_KIND,
         "consent": SERVICE_ACCESS,
         "relinked": BOOLEAN,
-        "first_in_workspace": BOOLEAN,
+        "first_for_person": BOOLEAN,
     },
     # A sign-in that ended without a connection, and where: before the
     # browser left (`start`), on the way to or back from the vendor

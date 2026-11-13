@@ -1042,9 +1042,9 @@ only when there was something to detach or remove.
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
 | `service_connection_started` | `service`; `auth_kind` (`oauth` \| `api_key` \| `github_app`) |
-| `service_connection_added` | `service`; `auth_kind`; `consent` (`read` \| `write`); `relinked` (boolean): the same person linking the service again; `first_in_workspace` (boolean): their first service connection in the workspace |
-| `service_connection_failed` | `service`; `stage` (`start` \| `vendor` \| `complete`); `reason` (`cancelled` \| `refused` \| `vendor_refused` \| `vendor_unavailable` \| `vendor_error` \| `scopes_missing` \| `account_linked_elsewhere` \| `invalid_key` \| `interrupted` \| `error`) |
-| `service_connection_lost` | `service`; `reason` (`refresh_refused` \| `sign_in_refused` \| `client_replaced`) |
+| `service_connection_added` | `service`; `auth_kind`; `consent` (`read` \| `write`); `relinked` (boolean): the same person linking the service again; `first_for_person` (boolean): the person's first service connection in the workspace, of any service |
+| `service_connection_failed` | `service`; `stage` (`start` \| `vendor` \| `complete`); `reason` (`cancelled` \| `refused` \| `vendor_refused` \| `vendor_unavailable` \| `vendor_error` \| `scopes_missing` \| `account_linked_elsewhere` \| `invalid_key` \| `interrupted` \| `error`). Only a sign-in that ended: a callback or completion that could not be verified (a reload, a replay, another browser) leaves the sign-in able to finish and is not reported |
+| `service_connection_lost` | `service`; `reason` (`refresh_refused` \| `sign_in_refused` \| `client_replaced`). Once per connection lost: not again while it waits for its owner to sign in again |
 | `service_connection_removed` | `service`; `removed_by` (`self` \| `admin` \| `membership_ended`); `age_days` (number) |
 | `service_grant_set` | `service`; `access` (`read` \| `write`); `tool_mode` (`allow` \| `deny`); `granted_by` (`person` \| `agent` \| `template`); `change` (`new` \| `updated`) |
 | `service_grant_removed` | `service`; `removed_by` (`person` \| `agent`) |

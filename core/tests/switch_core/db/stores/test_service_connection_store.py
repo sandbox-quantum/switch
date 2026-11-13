@@ -121,8 +121,16 @@ class TestConnections:
         async with session_factory() as session:
             owner = await _user(session, "ada")
             await _connect(session, owner.id)
-            await STORE.mark_needs_reauthorization(
+            assert await STORE.mark_needs_reauthorization(
                 session, owner.id, "github", "refresh_refused"
+            )
+            # Already marked: unchanged, and the first refusal's code stays.
+            assert not await STORE.mark_needs_reauthorization(
+                session, owner.id, "github", "sign_in_refused"
+            )
+            assert (
+                await session.scalar(select(ServiceConnection.error_code))
+                == "refresh_refused"
             )
             await _connect(session, owner.id, account_id="2002", consent="read")
             await session.commit()

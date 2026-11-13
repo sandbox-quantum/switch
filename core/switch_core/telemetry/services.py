@@ -8,14 +8,19 @@ messaging platforms rooms are bridged to are the `connector_*` events'.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import Literal
 
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, AdapterName
 from switch_core.telemetry.service import TelemetryService, emit_safely
 
 SignInStage = Literal["start", "vendor", "complete"]
 
-_AUTH_KINDS = {"github": "github_app", "api_key": "api_key", "oauth": "oauth"}
+AUTH_KINDS: Mapping[AdapterName, str] = {
+    "github": "github_app",
+    "api_key": "api_key",
+    "oauth": "oauth",
+}
 
 
 def service_slug(service: str) -> str:
@@ -23,9 +28,9 @@ def service_slug(service: str) -> str:
     return service if service in CATALOG else "unknown"
 
 
-def auth_kind(adapter: str | None) -> str:
+def auth_kind(adapter: AdapterName | None) -> str:
     """How a person signs in, from the catalog entry's adapter."""
-    return _AUTH_KINDS[adapter or "oauth"]
+    return AUTH_KINDS[adapter or "oauth"]
 
 
 def refusal_failure(code: str) -> str:
@@ -39,7 +44,7 @@ def refusal_failure(code: str) -> str:
 
 
 def sign_in_started(
-    telemetry: TelemetryService | None, service: str, adapter: str | None
+    telemetry: TelemetryService | None, service: str, adapter: AdapterName | None
 ) -> None:
     emit_safely(
         telemetry,
@@ -62,7 +67,7 @@ def sign_in_failed(
 
 
 TOKEN_REFUSAL_WINDOW_SECONDS = 3600.0
-_TOKEN_REFUSALS_HELD = 10_000
+TOKEN_REFUSALS_HELD = 10_000
 
 
 class TokenRefusals:
@@ -71,8 +76,12 @@ class TokenRefusals:
     hour says as much as sixty. Held in this process only, so each replica
     reports its own."""
 
-    def __init__(self) -> None:
+    def __init__(self, held: int) -> None:
+        # Oldest first: a key reported again is moved to the end, so the
+        # front is always the next to expire, and evicting from it costs
+        # nothing however many are held.
         self._reported: dict[tuple[str, str, str], float] = {}
+        self._held = held
 
     def first_in_window(self, agent_id: str, service: str, reason: str) -> bool:
         now = time.monotonic()
@@ -80,11 +89,14 @@ class TokenRefusals:
         last = self._reported.get(key)
         if last is not None and now - last < TOKEN_REFUSAL_WINDOW_SECONDS:
             return False
-        if len(self._reported) >= _TOKEN_REFUSALS_HELD:
-            self._reported = {
-                held: at
-                for held, at in self._reported.items()
-                if now - at < TOKEN_REFUSAL_WINDOW_SECONDS
-            }
+        self._reported.pop(key, None)
         self._reported[key] = now
+        while self._reported:
+            oldest, at = next(iter(self._reported.items()))
+            if (
+                len(self._reported) <= self._held
+                and now - at < TOKEN_REFUSAL_WINDOW_SECONDS
+            ):
+                break
+            del self._reported[oldest]
         return True

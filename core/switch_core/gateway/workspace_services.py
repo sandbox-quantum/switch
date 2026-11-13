@@ -59,6 +59,7 @@ from switch_core.gateway.auth import (
 from switch_core.gateway.connector_apps import organization_apps_on
 from switch_core.gateway.dependencies import current_telemetry, get_session
 from switch_core.telemetry.service import emit_safely
+from switch_core.telemetry.services import service_slug
 
 router = APIRouter(prefix="/workspace/services")
 STORE = WorkspaceServiceStore()
@@ -264,7 +265,7 @@ async def set_workspace_service(
             current_telemetry(),
             "service_switched",
             {
-                "service": service,
+                "service": service_slug(service),
                 "scope": "workspace",
                 "setting": "on" if body.enabled else "off",
                 "locked": False,
@@ -330,7 +331,7 @@ async def clear_workspace_service(
         current_telemetry(),
         "service_switched",
         {
-            "service": service,
+            "service": service_slug(service),
             "scope": "workspace",
             "setting": "default",
             "locked": False,

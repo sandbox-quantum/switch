@@ -170,13 +170,17 @@ class ServiceConnectionStore:
 
     async def mark_needs_reauthorization(
         self, session: AsyncSession, user_id: str, service: str, error_code: str
-    ) -> None:
-        await session.execute(
+    ) -> bool:
+        """Mark the connection as needing its owner to sign in again. True
+        when this changed it; false when it was already marked (it keeps the
+        first refusal's code) or is not there."""
+        result = await session.execute(
             update(ServiceConnection)
             .where(
                 ServiceConnection.tenant_id == require_tenant_id(),
                 ServiceConnection.user_id == user_id,
                 ServiceConnection.service == service,
+                ServiceConnection.status != "needs_reauthorization",
             )
             .values(
                 status="needs_reauthorization",
@@ -184,6 +188,7 @@ class ServiceConnectionStore:
                 updated_at=func.now(),
             )
         )
+        return bool(result.rowcount)  # type: ignore[attr-defined]
 
     async def delete_connection(
         self, session: AsyncSession, user_id: str, service: str

@@ -75,6 +75,7 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.organizations import require_organization_admin
 from switch_core.telemetry.service import emit_safely
+from switch_core.telemetry.services import service_slug
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +398,7 @@ async def set_organization_service(
         current_telemetry(),
         "service_switched",
         {
-            "service": service,
+            "service": service_slug(service),
             "scope": "organization",
             "setting": "on" if setting.enabled else "off",
             "locked": setting.locked,
@@ -441,7 +442,7 @@ async def clear_organization_service(
         current_telemetry(),
         "service_switched",
         {
-            "service": service,
+            "service": service_slug(service),
             "scope": "organization",
             "setting": "default",
             "locked": False,
