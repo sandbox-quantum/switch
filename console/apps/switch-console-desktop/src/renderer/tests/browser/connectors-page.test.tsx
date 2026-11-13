@@ -30,12 +30,13 @@ const modalHost = vi.hoisted(() => ({
     throw new Error('No modal host is mounted.');
   },
 }));
+const gatewayLayout = vi.hoisted(() => ({ v2: false }));
 const featureFlags = vi.hoisted(() => ({
   get: vi.fn(async () => ({
     success: true,
     data: {
       serverId: 'server',
-      flags: { service_connections: true },
+      flags: { service_connections: true, gateway_v2: gatewayLayout.v2 },
       fetchedAt: 1,
       error: null,
     },
@@ -211,6 +212,7 @@ beforeEach(() => {
   admin.operator = false;
   server.managed = false;
   server.servesGateway = false;
+  gatewayLayout.v2 = false;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
@@ -339,6 +341,7 @@ it("offers the server's operator to set up an app that is not set up, on the car
 it("opens the gateway's connector apps to set an app up on a server with a web gateway", async () => {
   admin.operator = true;
   server.servesGateway = true;
+  gatewayLayout.v2 = true;
   const page = await discover([NOT_SET_UP]);
   const connectorApps = {
     serverId: 'server',
@@ -357,6 +360,20 @@ it("opens the gateway's connector apps to set an app up on a server with a web g
   expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
   expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
   expect(navigation.view()).toBe('connectors');
+});
+
+it('opens connector apps at the path a gateway in the current layout serves', async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  const page = await discover([NOT_SET_UP]);
+
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith({
+    serverId: 'server',
+    url: 'https://switch.example.com/connectors',
+  });
 });
 
 it('tells anyone else who sets the app up, with no button to press', async () => {

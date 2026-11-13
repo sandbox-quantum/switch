@@ -50,6 +50,7 @@ export function ConnectorProfile({
   workspaceId,
   connection,
   viewer,
+  gatewayV2,
   justConnected,
   onBack,
 }: {
@@ -57,6 +58,8 @@ export function ConnectorProfile({
   workspaceId: string;
   connection: ConnectionCatalogEntry;
   viewer: ConnectorViewer;
+  /** The server's `gateway_v2` flag, which decides where the gateway sets apps up. */
+  gatewayV2: boolean;
   /** Set when the profile opens because the service was just connected, with the warning Switch gave. */
   justConnected: { warning: string | null } | null;
   onBack: () => void;
@@ -128,7 +131,11 @@ export function ConnectorProfile({
           </div>
           <div className="flex shrink-0 gap-2">
             {state.fix === 'set_up' && (
-              <Button onClick={() => openConnectorAppSetUp(serverId, connection.slug, navigate)}>
+              <Button
+                onClick={() =>
+                  openConnectorAppSetUp(serverId, connection.slug, gatewayV2, navigate)
+                }
+              >
                 {FIX_LABEL.set_up}
               </Button>
             )}

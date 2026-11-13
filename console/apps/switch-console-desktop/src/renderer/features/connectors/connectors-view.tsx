@@ -64,7 +64,9 @@ const DESCRIPTION = 'Connect external services for your agents. Connectors are e
 const ConnectorsPanel = observer(function ConnectorsPanel() {
   const serverId = useServerId();
   const { navigate } = useNavigate();
-  const access = connectorsPageAccess(useServerFeatureFlags(serverId));
+  const flags = useServerFeatureFlags(serverId);
+  const access = connectorsPageAccess(flags);
+  const gatewayV2 = flags?.flags.gateway_v2 === true;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const viewer: ConnectorViewer = {
@@ -84,7 +86,13 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
     );
   // Keyed so a workspace switch starts from the catalog, not another workspace's profile.
   return (
-    <Connectors key={workspaceId} serverId={serverId} workspaceId={workspaceId} viewer={viewer} />
+    <Connectors
+      key={workspaceId}
+      serverId={serverId}
+      workspaceId={workspaceId}
+      viewer={viewer}
+      gatewayV2={gatewayV2}
+    />
   );
 });
 
@@ -99,10 +107,12 @@ function Connectors({
   serverId,
   workspaceId,
   viewer,
+  gatewayV2,
 }: {
   serverId: string;
   workspaceId: string;
   viewer: ConnectorViewer;
+  gatewayV2: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
   const [tab, setTab] = useState<ConnectorsTab>('discover');
@@ -168,6 +178,7 @@ function Connectors({
               workspaceId={workspaceId}
               connection={opened}
               viewer={viewer}
+              gatewayV2={gatewayV2}
               justConnected={
                 justConnected?.slug === opened.slug ? { warning: justConnected.warning } : null
               }
@@ -229,7 +240,7 @@ function Connectors({
           viewer={viewer}
           turningOn={turningOn}
           onOpen={openProfile}
-          onSetUp={(entry) => openConnectorAppSetUp(serverId, entry.slug, navigate)}
+          onSetUp={(entry) => openConnectorAppSetUp(serverId, entry.slug, gatewayV2, navigate)}
           onTurnOn={(entry) => void turnOn(entry)}
           onConnect={(entry) =>
             connect(entry, 'connect', (warning) => {
