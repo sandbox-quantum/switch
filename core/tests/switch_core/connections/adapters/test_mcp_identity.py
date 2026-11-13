@@ -524,7 +524,9 @@ async def _identify_with(arguments: dict[str, str], tool: dict[str, Any], monkey
     _over_mock(monkeypatch, vendor)
     async with guarded_async_client(_NOTHING_ALLOWED) as http:
         try:
-            result = await _adapter(http, arguments).identify("example-bearer-value")
+            result = await _adapter(http, arguments).identify(
+                "example-bearer-value", {}
+            )
         except ServiceAdapterError as error:
             assert error.__context__ is None and error.__cause__ is None
             return error, vendor
