@@ -404,7 +404,10 @@ describe("LinkConfirmation", () => {
       await act(async () => vi.advanceTimersByTime(3100));
 
       expect(
-        await screen.findByText(/The confirmation was cancelled, perhaps from the message in Acme Slack/, SHOWN),
+        await screen.findByText(
+          /The confirmation was cancelled, perhaps by tapping a different number in the message in Acme Slack/,
+          SHOWN,
+        ),
       ).toBeTruthy();
       expect(screen.getByText(/The link to @ada still works/, SHOWN)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Send again" })).toBeTruthy();

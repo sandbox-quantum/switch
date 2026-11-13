@@ -297,7 +297,9 @@ export default function LinkConfirmation({
     target.kind === "unverified"
       ? `The link to ${handle} was removed${fromMessage}, so it no longer counts.`
       : `The link to ${handle} was cancelled${fromMessage}, so its code no longer works.`;
-  const droppedText = `The confirmation was cancelled${fromMessage}, perhaps by tapping a different number. The link to ${handle} still works. Send again to confirm it.`;
+  const droppedText = promptSent
+    ? `The confirmation was cancelled, perhaps by tapping a different number in the message in ${app.display_name}. The link to ${handle} still works. Send again to confirm it.`
+    : `The confirmation was cancelled. The link to ${handle} still works. Get a new code to confirm it.`;
   const appGoneText = `${app.display_name} is no longer connected to this workspace, so this link can't be finished.`;
   const announcement = confirmed
     ? linkedText
