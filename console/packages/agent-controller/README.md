@@ -139,11 +139,27 @@ switch-agent-controller update [--check]
   failures talking to Switch are retried inside the process and do not end
   it.
 
-Stopping the controller stops its agents and their sessions: nothing an agent runs
-outlives the controller. The next `run` starts them again from where each agent host
-left off: its journal is on disk, and the controller resumes each agent's events
-from the cursor it last confirmed. A session that was mid-turn is reported as
-interrupted, and the next message resumes its conversation.
+### Stopping the controller and its agents
+
+Stopping the controller does not always stop its agents. Their lifetime depends
+on how this machine runs them:
+
+| Agent runtime | When the controller stops |
+|---|---|
+| Shared agents in the controller's process (the default) | Their agent hosts and sessions stop with it. The next `run` starts them from their saved journals and resumes events from the last confirmed cursor. A session that was mid-turn is reported as interrupted; the next message resumes its conversation. |
+| Isolated agents in detached processes | Their agent hosts survive. The controller's hub and relay close; the hosts retry the hub and reconnect when the controller returns. Stopping the controller alone does not stop these processes. |
+| [Each agent as a Linux user of its own](#each-agent-as-a-linux-user-of-its-own) | The agents' systemd units survive, for both shared and isolated definitions. Stopping the controller service alone does not stop those units. |
+
+To stop an agent while keeping the controller enrolled, set the agent's desired
+state to `stopped` in Management and let the connected controller apply it before
+stopping the controller. Removing the agent from the machine's assignment also
+stops it and removes its relay access. These are agent changes, not controller
+shutdown: the controller must be running and connected to receive them.
+
+Revoking the controller is different again. When it receives the revocation, it
+turns every agent off, deletes their relay credentials and its own credential,
+and exits with code `3`. A controller that is offline cannot apply that change
+until it reconnects.
 
 An agent host that fails is started again on its own, after 2, 4 and 8 seconds; a fourth
 failure within ten minutes is recorded, and the agent stays down until a new
