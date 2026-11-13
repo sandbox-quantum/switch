@@ -55,6 +55,7 @@ export interface SecretField {
 
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
+const GITLAB = 'gitlab';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -442,6 +443,7 @@ const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
+  [GITLAB]: 'switchCore.gitlabClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */

@@ -432,6 +432,19 @@ describe('Airtable, and an app that sends people back to Switch Console', () => 
     );
   });
 
+  it("names GitLab's Helm value when moving off configuration", () => {
+    const gitlab = app({
+      ...AIRTABLE,
+      slug: 'gitlab',
+      name: 'GitLab',
+      source: 'configuration',
+      configuration_variables: ['GITLAB_CLIENT_CONFIG_PATH'],
+    });
+    expect(moveChecklist(gitlab)[1]!.text).toBe(
+      "Remove GITLAB_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.gitlabClientSecret."
+    );
+  });
+
   it('reads a server older than these fields as it always did', () => {
     const { redirect_uris, needs_public_url, scopes, ...older } = app();
     void redirect_uris;
