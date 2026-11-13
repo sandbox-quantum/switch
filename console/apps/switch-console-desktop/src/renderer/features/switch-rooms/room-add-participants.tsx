@@ -277,7 +277,7 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
         loadError={people.isError ? failureText(people.error, 'Could not list the people.') : null}
         candidates={addableBridgePeople(people.data ?? [], present).map((person) => ({
           ...person,
-          mark: <PersonMark name={person.name} size="sm" />,
+          mark: <PersonMark name={person.name} userId={null} size="sm" />,
         }))}
         footer={
           <p className="px-1 text-xs text-foreground-muted">
@@ -326,7 +326,7 @@ export function AddRoomAdminPanel({
       candidates={room.roomAdminCandidates.map((person) => ({
         id: person.userId,
         name: person.name,
-        mark: <PersonMark name={person.name} size="sm" />,
+        mark: <PersonMark name={person.name} userId={person.userId} size="sm" />,
         detail: '',
       }))}
       footer={

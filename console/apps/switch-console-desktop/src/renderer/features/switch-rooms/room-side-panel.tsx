@@ -355,6 +355,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
               <PersonRow
                 key={person.key}
                 name={person.name}
+                userId={person.userIds[0] ?? null}
                 fullName={person.fullName}
                 detail={standing?.isAdmin ? 'room admin' : person.detail}
                 actions={[
@@ -422,6 +423,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
                 <PersonRow
                   key={admin.userId}
                   name={name}
+                  userId={admin.userId}
                   fullName={null}
                   detail={admin.userId === viewerId ? 'you' : null}
                   actions={
@@ -640,12 +642,15 @@ type PersonAction = {
 
 function PersonRow({
   name,
+  userId,
   fullName,
   detail,
   actions,
   act,
 }: {
   name: string;
+  /** Their Switch user, when known, for their colour. */
+  userId: string | null;
   /** For a messaging-app username, the name of the Switch user who linked it, shown in brackets. */
   fullName: string | null;
   detail: string | null;
@@ -656,7 +661,7 @@ function PersonRow({
   const [busy, setBusy] = useState(false);
   return (
     <div className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--sel-soft)]">
-      <PersonMark name={name} size="sm" />
+      <PersonMark name={name} userId={userId} size="sm" />
       <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
         {name}
         {fullName !== null && <span className="text-foreground-muted"> ({fullName})</span>}
