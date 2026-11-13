@@ -469,6 +469,11 @@ version of their own to them without also giving them a release of their own.
   while no bridge is chosen.
 
 #### Security
+- **The OpenCode server-side connector is gone, and with it its blanket
+  approval.** It answered every permission request an OpenCode agent made with
+  `always`, so whatever the agent asked to do was allowed. Agents now connect
+  in through Switch Console or the agent bridge, where their own permission
+  settings apply.
 - **Only the people in a direct or group conversation decide who is in it.**
   The room routes and the agent tools added agents and people to one from
   outside it, though its platform fixes its members; a DM the bridge adopted
@@ -1525,6 +1530,15 @@ version of their own to them without also giving them a release of their own.
   uploaded again.
 
 #### Removed
+- **Server-side connectors.** switch-core no longer runs agents itself: the
+  OpenCode connector and the framework it plugged into are removed, with
+  `/gateway/connectors`, the Server Connectors choice in the gateway's Register
+  Agent dialog, the `connectors` health check, the `switch.connectors.running`
+  metric and the `server_connector_registered` and `server_connector_removed`
+  events. If you imported the Datadog monitor "a server-side connector is not
+  running" and its dashboard widgets, delete them there. Agents a connector
+  registered stop answering; the next release drops the connectors' table,
+  retires their keys and names those agents for you to delete.
 - **`package_created` no longer carries `created_by_kind`,** which was always
   `user`: only people create packages.
 - **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
