@@ -14,6 +14,7 @@ import { dirMode } from './host-permissions';
 import { materializeHostedProvider } from './hosted-provider';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { relayMcpOverStdio } from './mcp-relay';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
@@ -251,7 +252,13 @@ async function main(): Promise<void> {
           config.start.provider,
           config.execution?.binaryPath,
           config.execution?.skill ?? '',
-          grantedSkills(services.grants)
+          grantedSkills(services.grants),
+          {
+            transport: 'stdio',
+            command: process.execPath,
+            args: [process.argv[1]!, '--mcp-relay'],
+            env: { ELECTRON_RUN_AS_NODE: '1' },
+          }
         ),
         services,
         servicesChange,
@@ -292,8 +299,9 @@ async function main(): Promise<void> {
 
 /**
  * Git's credential helper and the `gh` wrapper a session with a GitHub grant
- * runs (`service-github.ts`): short-lived, run by the CLI, and never a host,
- * so a failure is told on stderr and recorded nowhere.
+ * runs (`service-github.ts`), and the MCP relay a session's agent may run
+ * (`mcp-relay.ts`): run by the CLI, and never a host, so a failure is told on
+ * stderr and recorded nowhere.
  */
 async function helper(): Promise<void> {
   try {
@@ -303,6 +311,8 @@ async function helper(): Promise<void> {
         stdout: process.stdout,
         env: process.env,
       });
+    else if (root === '--mcp-relay')
+      await relayMcpOverStdio({ stdin: process.stdin, stdout: process.stdout, env: process.env });
     else
       process.exitCode = await runGitHubCli(configPath ?? '', process.argv.slice(4), process.env);
   } catch (error) {
@@ -315,7 +325,8 @@ function isCliConversationMode(value: string): value is CliConversationMode {
   return (CLI_CONVERSATION_MODES as readonly string[]).includes(value);
 }
 
-if (root === '--git-credential' || root === '--github-cli') await helper();
+if (root === '--git-credential' || root === '--github-cli' || root === '--mcp-relay')
+  await helper();
 else
   try {
     await main();

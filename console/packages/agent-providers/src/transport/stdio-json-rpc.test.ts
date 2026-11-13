@@ -21,6 +21,23 @@ it('times out an unacknowledged startup request without resending it', async () 
   await vi.advanceTimersByTimeAsync(60000);
   await rejected;
 });
+it('refuses a message longer than the process reads in one line, writing none of it', async () => {
+  client = new StdioJsonRpcClient({
+    command: process.execPath,
+    args: ['-e', "process.stdin.on('data', (data) => process.stderr.write(data))"],
+    cwd: process.cwd(),
+    env: {},
+    logger: noopLogger,
+    onExit: () => {},
+    maxLineBytes: 100,
+  });
+  await expect(client.request('long', { text: 'x'.repeat(100) })).rejects.toThrow(
+    'more than the 100 bytes the provider reads in one line; it was not sent'
+  );
+  client.notify('short', {});
+  await vi.waitFor(() => expect(client?.stderr).toContain('short'));
+  expect(client.stderr).not.toContain('long');
+});
 it('rejects requests after the process exits', async () => {
   let exited: () => void = () => {};
   const done = new Promise<void>((resolve) => {

@@ -37,6 +37,7 @@ protocols. These adapters are the only Console session runtime.
 | `droid` | `droid exec --output-format acp` (Factory Droid), ACP over stdio, on the generic ACP adapter | Native sessions, resume, MCP registration, and approvals; the runtime modes map to Droid's autonomy levels. |
 | `cline` | `cline --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection and approvals. Its ACP mode ignores the MCP servers sent in `session/new`, so they go in a per-session settings file named by `CLINE_MCP_SETTINGS_PATH` (`mcpServersAtLaunch`). |
 | `junie` | `junie --acp=true`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration and approvals; its brave mode is set from the runtime mode. |
+| `openhands` | `openhands acp`, ACP over stdio, on the generic ACP adapter | Native sessions resumed through `--resume`, approvals through its confirmation modes, MCP servers relayed over stdio. It runs the model set in its own settings. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -88,26 +89,38 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | goose (ACP) | 1.57.0 | 9/10 (2026-11-04, Amazon Linux 2023) | `user-input` skipped: Goose uses ACP form elicitation, which the generic client does not advertise (`userInput: false`); without the skip the scenario times out at 180s waiting for `user-input.requested`. Real-CLI scenarios run one at a time with 65s spacing; full back-to-back suite can hit Gemini free-tier limits. |
 | cline (ACP) | 3.0.74 | 8/10 on Cline's free `nvidia/nemotron-3.5-lightning:free` (2026-11-06; 6/10 on the first of two runs). 4/10 on Groq's free tier (2026-11-05) | Signs in over ACP only with a Cline account, ClinePass or a ChatGPT subscription, or with `CLINE_API_KEY` (then `CLINE_PROVIDER` and `CLINE_MODEL` can pick another provider); a key saved for another provider with `cline auth` is not used. Sessions run in a hub daemon that reads `CLINE_MCP_SETTINGS_PATH` once, so each session gets a daemon of its own. No question tool over ACP, so `user-input` is skipped. Set `CLINE_TEST_MODEL` to pick the model for the suite; without it Cline uses its own default, which needs account credits. ACP model ids carry `:free` where the CLI's carry `-free`. With the free model, `file-write-full-access` and `mcp-registered` each failed once in two runs (`mcp-registered` passes alone). On Windows Cline runs commands in PowerShell 5.1, whose `>` writes UTF-16: `approval-required` fails there, because the model retries after reading the file and the suite answers only the first approval. On Groq, the `reasoning_content` Cline sends back after a tool call is refused, and the free tier's 8000 tokens a minute is about one Cline call. |
 | junie (ACP) | 26.11.3 (3959.5) | 8/10 (2026-11-07) | Run with `JUNIE_ANTHROPIC_API_KEY` and `JUNIE_LLM_PROVIDER=anthropic` (Claude Sonnet 5). `user-input` is skipped: Junie asks through ACP elicitation, which the generic adapter does not implement. `approval-declined` is skipped: told it may not be allowed to run the command, Junie in Safe mode answers "declined" without attempting it, so no approval is raised; declining is covered by the unit tests. A JetBrains account without a Junie licence (Junie's log: `NoLicense detected after login`) offers no model and refuses every prompt with `model_not_available`, and a Junie API key from such an account reports `api_key` with the full catalogue but every model call fails with `NO_LICENSE`; the sign-in check reports the former as unusable. |
+| openhands (ACP) | 1.16.0 | 9/10 (2026-11-06) | Run with `mistral/devstral-latest` set in its own settings. `user-input` is skipped: it has no question tool over ACP. It runs `llm.model` from `agent_settings.json` whatever `session/set_model` asks, so a session lists that model alone and refuses another (`fixedModel`). It asks one "Confirm Agent Actions" per step for every action announced before it (`confirmsAnnouncedToolCalls`); an MCP tool call doesn't name its server, so it counts as the session's own only when that is the one MCP server OpenHands has, with none of its own in `mcp.json` (`ownMcpServers`). It can't take an HTTP MCP server as ACP sends one (`httpMcpOverStdio`), its `session/load` drops the session's MCP servers (`resumeOnLaunch`), and its SDK fails every MCP tool of a session when one takes an argument named `kind` (`renamedToolArguments`). It stops reading its input at a line over 64 KiB, and Switch's context is longer, so a session's first turn is two model calls (`maxLineBytes`). It takes a `cancelled` permission answer as a rejection and runs on (`interruptPermissionWithError`). A cancel waits for the model call in flight. Every `session/new`, model listing included, saves a conversation under `~/.openhands/conversations`. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor, Antigravity, DeepSeek Harness, Kiro, Mistral Vibe, Qwen Code, Cline and Junie run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity, DeepSeek Harness, Kiro, Mistral Vibe, Qwen Code, Cline, Junie and OpenHands run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
 - resume uses `session/load` when the agent advertises `loadSession`, else
   `session/resume` when it advertises `sessionCapabilities.resume`, else asks
-  the host for a fresh conversation;
+  the host for a fresh conversation. Hooks with `resumeOnLaunch` resume
+  through `session/new` in a process launched with the conversation instead;
+- hooks with `httpMcpOverStdio` get each HTTP MCP server as a stdio relay to
+  it, which the session host runs as `--mcp-relay`. The relay offers the tool
+  arguments named in `renamedToolArguments` with a trailing underscore and
+  passes them on under their own names;
+- hooks with `maxLineBytes` get prompt text that would not fit in one line of
+  their input (the system context, say) in labelled parts, the model told to
+  answer all but the last with only "OK", which is not shown; any other
+  message over the limit is refused rather than written;
 - a `model` select in the session's config options is set with
   `session/set_config_option`; otherwise `session/set_model` is used against
-  the session's `models` list;
+  the session's `models` list. Hooks with `fixedModel` list the one model the
+  agent's own settings make it run, and refuse any other;
 - attachments go as `image`, `audio` or embedded `resource` blocks only where
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
 (`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
-`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`, `src/qwen/qwen-acp.ts`, `src/cline/cline-adapter.ts`, `src/junie/junie-adapter.ts`):
+`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`, `src/qwen/qwen-acp.ts`, `src/cline/cline-adapter.ts`, `src/junie/junie-adapter.ts`,
+`src/openhands/openhands-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -118,7 +131,11 @@ everything in `full-access` and edits in `auto-accept-edits`. Otherwise the
 person is offered allow once, allow for this session and reject; options
 whose name or id names a permanent or future policy are never offered. A request whose tool
 call names only its id is described and decided by the call the agent
-announced: its title, and whether it runs a command or edits a file.
+announced: its title, and whether it runs a command or edits a file. For hooks
+with `confirmsAnnouncedToolCalls`, a request about every unfinished tool call
+the turn announced is allowed without asking only when each of those calls
+would be, and otherwise names them. An interrupt answers a pending request
+`cancelled`, or with an error for hooks with `interruptPermissionWithError`.
 
 **Cursor** extensions: `cursor/ask_question` (several questions, multi-select),
 `cursor/create_plan` (an approval with the plan as its detail),

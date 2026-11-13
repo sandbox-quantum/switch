@@ -270,6 +270,18 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="WebSearch", description="Searches the web"),
         ),
     ),
+    AgentProvider(
+        id="openhands",
+        label="OpenHands",
+        sign_in_command="openhands login",
+        connector_type="OpenHands CLI",
+        tools=(
+            ToolSpec(name="terminal", description="Executes shell commands"),
+            ToolSpec(name="file_editor", description="Views, creates and edits files"),
+            ToolSpec(name="task_tracker", description="Tracks a task list"),
+            ToolSpec(name="task", description="Delegates to a subagent"),
+        ),
+    ),
 )
 
 

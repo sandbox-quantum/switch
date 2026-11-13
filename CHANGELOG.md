@@ -1076,6 +1076,9 @@ version of their own to them without also giving them a release of their own.
 - **Pi is a provider.** Agent definitions, the gateway's provider list and
   advanced configuration accept `pi`, whose owner is told to sign it in by
   running `pi`.
+- **OpenHands is a provider.** Agent definitions, the gateway's provider list
+  and advanced configuration accept `openhands`, whose owner is told to sign
+  it in with `openhands login`. switch-buddy tries it after the others.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -4000,6 +4003,9 @@ version of their own to them without also giving them a release of their own.
   managed-agent page have the **Steer messages sent while it works** setting
   (on by default) to keep room messages queueing instead. Built on #1445 by
   Xuefeng-Zhu, with parts of #1494, #1465, #1499, #1565 and #1055 (#801).
+- **OpenHands as an agent CLI.** Agents can run on the OpenHands CLI
+  (`openhands acp`) through the generic ACP adapter, on the model set in
+  OpenHands' own settings, with approvals and resumable conversations.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
