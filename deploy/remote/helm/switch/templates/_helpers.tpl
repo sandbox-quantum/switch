@@ -1077,8 +1077,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.telemetry.endpoint | quote }}
 - name: TELEMETRY_SNAPSHOT_INTERVAL_HOURS
   value: {{ .Values.switchCore.telemetry.snapshotIntervalHours | quote }}
+{{- with .Values.switchCore.telemetry.environment }}
 - name: TELEMETRY_ENVIRONMENT
-  value: {{ .Values.switchCore.telemetry.environment | quote }}
+  value: {{ . | quote }}
+{{- end }}
 - name: TELEMETRY_INTERNAL
   value: {{ .Values.switchCore.telemetry.internal | quote }}
 {{- end }}

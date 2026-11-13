@@ -105,9 +105,10 @@ export async function runningCore(layout: NativeLayout): Promise<CoreProcessReco
 }
 
 /**
- * Start switch-core in the background, detached from Switch Console so it keeps
- * serving after the app quits, with its output appended to a log file.
- * Migrations run inside it on boot, as in the container.
+ * Start switch-core detached from Switch Console, with its output appended to a
+ * log file. Detached so that nothing but an explicit stop ends it — Console
+ * stops it as it quits — and a Console that crashed leaves it running for the
+ * next launch to adopt. Migrations run inside it on boot, as in the container.
  */
 export async function startCore(
   layout: NativeLayout,

@@ -78,12 +78,28 @@ async def claim_both(factory, owner_id, capacity=2):
             now=datetime.now(UTC),
         )
         await session.commit()
-        return found
+        return found.machine, found.workspace
 
 
 async def claim(factory, owner_id, capacity=2):
     machine, _workspace = await claim_both(factory, owner_id, capacity)
     return machine
+
+
+async def claimed_change(factory, owner_id, tenant_id=TENANT_ZERO_ID):
+    """What a claim of the owner's machine, in `tenant_id`, says it changed."""
+    with tenant_scope(tenant_id):
+        async with factory() as session:
+            await lock_claims(session)
+            found = await CloudMachineStore().claim(
+                session,
+                factory,
+                owner_id=owner_id,
+                capacity=2,
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+            return found.change
 
 
 async def claim_in(factory, tenant_id, owner_id, capacity=2):
@@ -103,6 +119,26 @@ async def reload(factory, machine_id):
         machine = await CloudMachineStore().get(session, machine_id)
         assert machine is not None
         return machine
+
+
+async def test_a_claim_says_what_it_changed(factory):
+    """The first of these that applies, which `cloud_machine_requested`
+    reports; nothing for a machine already running here."""
+    assert await claimed_change(factory, "owner-a") == "new"
+    assert await claimed_change(factory, "owner-a") is None
+    machine, _ = await claim_both(factory, "owner-a")
+    async with factory() as session:
+        row = await CloudMachineStore().get(session, machine.id)
+        row.desired_state = "stopped"
+        row.stop_reason = "owner"
+        await session.commit()
+    assert await claimed_change(factory, "owner-a") == "restarted"
+    async with factory() as session:
+        row = await CloudMachineStore().get(session, machine.id)
+        row.desired_state = "retained"
+        await session.commit()
+    assert await claimed_change(factory, "owner-a", TENANT_B) == "joined_workspace"
+    assert await claimed_change(factory, "owner-a", TENANT_B) is None
 
 
 async def test_claim_creates_a_queued_machine(factory):

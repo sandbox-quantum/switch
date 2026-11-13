@@ -1,0 +1,139 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  new_hire:
+    type: string
+    label: New hire
+    description: The new hire's name
+    required: true
+  team:
+    type: string
+    label: Team
+    description: The team they're joining
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agent run every command and file change without asking anyone first. Unsafe; off by default, so it asks before anything risky.
+    default: false
+    input: advanced
+resources:
+  onboarding_guide:
+    type: agent
+    display_name: "{new_hire} Onboarding Guide"
+    description: Walks the new hire through their onboarding checklist, answers common questions, and connects them to relevant resources
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{onboarding_guide.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [onboarding_room]}
+    instructions: |-
+      You are the onboarding guide for {new_hire} joining {team}. You help make their first 90 days smooth and productive.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on what was posted since you last looked.
+
+      When the new hire asks a question:
+      - Answer directly if you can, based on the room's documents and references
+      - If you don't know, say so and suggest who they should ask (their buddy, their manager, IT, HR)
+      - Common first-week questions: how to set up their dev environment, where to find documentation, how to get access to tools, who to talk to about specific topics
+
+      Whenever you are addressed, also:
+      - During the first month, check the Onboarding Checklist and suggest which items to tackle this week
+      - If a checklist item has been unchecked for two weeks, gently mention it to the new hire and buddy
+      - Share relevant tips: 'Most people find it helpful to shadow an on-call shift in week 3 before they're on the rotation'
+      - Connect dots: if the new hire asks about a topic, suggest people on the team who know it well
+
+      Tone:
+      - Be warm and encouraging. Starting a new job is stressful.
+      - Normalize asking questions: 'Good question - everyone asks this in their first week'
+      - Never make the new hire feel they should already know something
+      - Celebrate milestones: first PR merged, first on-call shift, first sprint planning
+
+      When the buddy checks in:
+      - Summarize what the new hire has asked about and what they're working on
+      - Flag any onboarding gaps: things the new hire is struggling with that the checklist doesn't cover
+      - Suggest topics for the buddy to proactively bring up
+  onboarding_room:
+    type: room
+    name: "Onboarding - {new_hire}"
+    description: "Onboarding room for {new_hire} joining {team}. Questions, checklist tracking, and buddy support."
+    bridge: "{bridge}"
+    agents: [onboarding_guide]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room supports {new_hire}'s onboarding into {team}. It's a safe space for any question, no matter how basic. There are no stupid questions during onboarding.
+
+      For the new hire: ask anything here. Your buddy and the onboarding guide will help you find answers, connect you with the right people, and make sure nothing falls through the cracks. Mention {onboarding_guide.name} by name when you want the guide: it only sees messages that mention it.
+
+      For the buddy: check in regularly. Don't wait for questions - proactively share context about how the team works, unwritten norms, and who to talk to for what.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Onboarding Checklist (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: new-hire
+        exclusive: true
+        instructions: |-
+          Welcome to {team}! This room is yours for the first 90 days. Use it to:
+          - Ask any question, no matter how small
+          - Track your onboarding progress
+          - Get introductions to people you need to meet
+          - Surface anything confusing or frustrating about the onboarding process
+          - Share feedback on what's working and what isn't
+
+          You're expected to work through the onboarding checklist at your own pace. Your buddy is here to help, not to evaluate you.
+      - name: buddy
+        exclusive: true
+        instructions: |-
+          You're {new_hire}'s onboarding buddy for {team}. Your responsibilities:
+          - Check in daily for the first two weeks, then weekly
+          - Answer questions or find the right person who can
+          - Share unwritten team norms and context that isn't in any doc
+          - Help them navigate the org: who does what, how decisions get made
+          - Make introductions to key people they should know
+          - Flag any onboarding gaps to the team lead so we can improve the process
+    docs:
+      - name: Onboarding Checklist
+        description: 30/60/90 day onboarding milestones
+        instructions: Work through this together. Check items off as they're completed.
+        content: |-
+          # Onboarding Checklist - {new_hire}
+
+          ## Week 1: Get set up
+          - [ ] Laptop and accounts configured
+          - [ ] Added to all relevant Slack channels / rooms
+          - [ ] Access to code repositories and documentation
+          - [ ] Intro meetings with immediate team members
+          - [ ] Dev environment set up and first build running
+
+          ## Week 2-4: Learn the landscape
+          - [ ] Read team's top 5 docs (architecture, runbooks, on-call guide)
+          - [ ] Shadow an on-call shift
+          - [ ] Ship a starter task (small bug fix or improvement)
+          - [ ] 1:1 with manager to discuss 90-day goals
+          - [ ] Meet key cross-functional partners
+
+          ## Month 2: Build momentum
+          - [ ] Own and ship a medium-sized feature or project
+          - [ ] Participate in code review (both giving and receiving)
+          - [ ] Attend and contribute to a team planning session
+          - [ ] Start building relationships outside immediate team
+
+          ## Month 3: Hit your stride
+          - [ ] Lead a project from planning through delivery
+          - [ ] Contribute to on-call rotation
+          - [ ] Identify one process improvement and propose it
+          - [ ] 90-day check-in with manager
+    kickoff: "Welcome room is set up for {new_hire} joining {team}! @{onboarding_guide.name} is here to help with questions and checklist tracking. Buddy - start with a hello and walk them through the first week checklist. {new_hire} - ask anything, anytime, and mention the onboarding guide by name when you want its help."

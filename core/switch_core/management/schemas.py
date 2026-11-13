@@ -200,9 +200,9 @@ class StatusControllerInfo(_StatusBody):
     # replaces its bundle. Absent from a controller older than this field.
     updated_by: Literal["self", "console"] | None = None
     # When this controller process started, so a restart shows as a new start
-    # time (the controller-restart count, in the follow-up after the
-    # observability PR). Accepted and not read yet: declared now, with a strict
-    # type, so a controller that sends it works against this Core.
+    # time: a cloud machine's controller naming a new one is counted as a
+    # restart (`switch.hosted.controller_restarts`). Absent from a controller
+    # older than this field.
     started_at: datetime | None = None
 
 

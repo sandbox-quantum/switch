@@ -61,7 +61,7 @@ async def _claim(
 ) -> CloudMachine:
     async with factory() as session:
         await lock_claims(session)
-        machine, _workspace = await CloudMachineStore().claim(
+        claimed = await CloudMachineStore().claim(
             session,
             factory,
             owner_id=owner.id,
@@ -69,6 +69,7 @@ async def _claim(
             now=datetime.now(UTC),
             revoke=revoke,
         )
+        machine = claimed.machine
         await session.commit()
         return machine
 
@@ -172,6 +173,28 @@ async def test_a_paused_owner_revives_nothing(harness: Harness) -> None:
         assert machine is not None and machine.state == "deleted"
 
 
+async def test_a_revived_machine_is_claimed_as_new(harness: Harness) -> None:
+    """The owner had no live machine, so the claim reports `new`, as a new
+    row would, for telemetry and the machine events metric."""
+    factory = harness.session_factory
+    owner = await add_member(factory, "ada")
+    machine_id, _controller_id = await _enrolled_machine(harness, owner)
+    await _cleaned_up(factory, machine_id)
+    async with factory() as session:
+        await lock_claims(session)
+        claimed = await CloudMachineStore().claim(
+            session,
+            factory,
+            owner_id=owner.id,
+            capacity=5,
+            now=datetime.now(UTC),
+            revoke=revoke_machine_controller,
+        )
+        await session.commit()
+    assert claimed.machine.id == machine_id
+    assert claimed.change == "new"
+
+
 async def test_without_v0_a_new_row_is_made_as_before(harness: Harness) -> None:
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
@@ -238,7 +261,7 @@ async def test_a_v0_claim_marks_a_new_machine_as_a_box(harness: Harness) -> None
     owner = await add_member(factory, "ada")
     async with factory() as session:
         await lock_claims(session)
-        machine, _workspace = await CloudMachineStore().claim(
+        claimed = await CloudMachineStore().claim(
             session,
             factory,
             owner_id=owner.id,
@@ -247,6 +270,7 @@ async def test_a_v0_claim_marks_a_new_machine_as_a_box(harness: Harness) -> None
             revoke=revoke_machine_controller,
             backend="box",
         )
+        machine = claimed.machine
         await session.commit()
     assert machine.backend == "box"
     # Without box provisioning, a new machine is a v1 one, as every row before it.

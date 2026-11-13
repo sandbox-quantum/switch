@@ -1100,6 +1100,10 @@ class RoomService:
                 "from_template": config.from_template,
             },
         )
+        for spec in config.roles or []:
+            emit_safely(
+                self._telemetry, "room_role_defined", {"exclusive": spec.exclusive}
+            )
 
         # Only a room a person made counts as activation. Guarded like the
         # emit above it: this runs ahead of the invite, the agent adds and the
@@ -1473,7 +1477,9 @@ class RoomService:
             async with self._session_factory() as session:
                 for client_id in agent_clients:
                     await self._room_store.remove_client(session, client_id, room_id)
-                await self._room_store.remove_agents(session, room_id, agent_ids)
+                removed = await self._room_store.remove_agents(
+                    session, room_id, agent_ids
+                )
                 await session.commit()
 
             for transport_user_id in agent_clients.values():
@@ -1485,11 +1491,12 @@ class RoomService:
         await self.room_agents_changed(room.tenant_id, room.id)
         self.room_changed(room.tenant_id, room.id)
 
-        emit_safely(
-            self._telemetry,
-            "room_agents_removed",
-            {"agent_count": len(agent_ids), "removed_by_kind": removed_by_kind},
-        )
+        if removed:
+            emit_safely(
+                self._telemetry,
+                "room_agents_removed",
+                {"agent_count": removed, "removed_by_kind": removed_by_kind},
+            )
 
     async def _load_room(self, room_id: str) -> Room:
         """A room row, read on the caller's session.
@@ -1646,12 +1653,13 @@ class RoomService:
         """
         # The whole row: archiving reports its age and platform.
         room = await self._load_room(room_id)
+        was_archived = room.archived_at is not None
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.set_archived(session, room_id, archived)
             await session.commit()
         self.room_changed(room.tenant_id, room_id)
 
-        if not archived or self._telemetry is None:
+        if not archived or was_archived or self._telemetry is None:
             return
         emit_safely(
             self._telemetry,
@@ -1745,12 +1753,9 @@ class RoomService:
                 room_id,
                 unresolved,
             )
-        emit_safely(
-            self._telemetry,
-            # Resolved, not requested: an unknown name adds nobody.
-            "room_users_added",
-            {"user_count": max(len(user_names) - len(unresolved), 0)},
-        )
+        # Resolved, not requested: an unknown name adds nobody.
+        if added := max(len(user_names) - len(unresolved), 0):
+            emit_safely(self._telemetry, "room_users_added", {"user_count": added})
         return unresolved
 
     async def link_bridge_to_room(

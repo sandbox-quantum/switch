@@ -1984,7 +1984,7 @@ async def _provision_as_agent(
         # Without the owner's admin reach, which filing rooms in a group needs.
         require_group_filing(False)
     await rooms_yaml.check_entity_params(parsed, reader=reader)
-    await rooms_yaml.check_bridges(parsed)
+    await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
     room_specs = (
         [(r, r.kickoff) for r in parsed.spec.rooms]
         if isinstance(parsed.spec, GroupSpec)
@@ -2085,6 +2085,7 @@ def _agent_templates() -> AgentTemplates:
         max_bytes=protocol.config.template_max_bytes,
         agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
+        telemetry=protocol.telemetry,
     )
 
 
@@ -2109,11 +2110,14 @@ async def list_templates(
     query: str | None = None,
     kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List the templates saved on this workspace that you can use.
+    """List the templates on this workspace that you can use.
 
-    That is every shared template plus your owner's private ones. Each row
-    says who saved it (a person, or which agent) and ``can_edit``: whether
-    you may change or delete it, which is true only for templates you saved.
+    That is the templates that come with Switch (ids starting ``official:``,
+    saved by "Switch"), less any a workspace admin removed from the
+    workspace, then every shared template plus your owner's private ones.
+    Each row says who saved it (a person, or which agent) and ``can_edit``:
+    whether you may change or delete it, which is true only for templates
+    you saved.
 
     Args:
         query: Only templates whose name or description contains this.
@@ -2194,7 +2198,10 @@ async def run_template(
     Args:
         template_id: The id from ``list_templates``.
         inputs: Values for the template's params (see ``get_template``),
-            including a ``machine`` or ``provider`` param.
+            including a ``machine`` or ``provider`` param. A ``bridge`` param
+            also takes ``"Switch Console"``: the room is then on no messaging
+            app, with your owner in it as one of their Switch Console chats
+            (only where the server has group chats).
         agents: Existing agents to stand in for slots instead of creating
             them, ``{slot name: agent name}``, the slot named as
             ``get_template`` lists it or as it reads with your inputs. Only a
@@ -2216,13 +2223,27 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        return await _run_document(
+        result = await _run_document(
             content,
             inputs,
             agents or {},
             template_name=name,
             source=source_of(template),
         )
+        await _count_run(template.id)
+        return result
+
+
+async def _count_run(template_id: str) -> None:
+    """Count a run that has already made its agents and rooms. A failure here
+    is not the run's: it is logged, and the run goes uncounted rather than
+    reported as failed to an agent that might then run it again."""
+    try:
+        async with get_protocol().session_factory() as session:
+            await TemplateStore().record_run(session, template_id)
+            await session.commit()
+    except Exception:
+        logger.exception("Could not count a run of template %s", template_id)
 
 
 async def _run_document(

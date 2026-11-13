@@ -44,6 +44,7 @@ from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.observability.hosted import (
     box_summary,
     record_box_report,
+    record_controller_restart,
     record_machine_event,
     record_provisioned,
     reports_memory,
@@ -315,12 +316,21 @@ def _log_new_login_problems(
         )
 
 
+def _restarted(before: Any, started: str | None) -> bool:
+    """Whether this workspace's controller names a new start time: the same
+    seat reported one before, and this one differs. The first report with a
+    start time, or a report without one, is not a restart."""
+    previous = before.get("started_at") if isinstance(before, dict) else None
+    return previous is not None and started is not None and started != previous
+
+
 async def record_controller_status(
     session: AsyncSession,
     controller_id: str,
     machine_reading: dict[str, Any],
     agents: list[Any] | None = None,
     providers: list[Any] | None = None,
+    started_at: datetime | None = None,
 ) -> None:
     """A status report from a cloud machine's controller is its heartbeat: it
     records the machine's disk and memory, and makes a machine that started
@@ -342,10 +352,19 @@ async def record_controller_status(
         machine_reading, agents or [], providers or [], machine.backend
     )
     _log_new_login_problems(machine.id, before, summary)
+    started = None
+    if started_at is not None:
+        aware = started_at if started_at.tzinfo else started_at.replace(tzinfo=UTC)
+        started = aware.astimezone(UTC).isoformat()
+    if _restarted(before, started):
+        record_controller_restart()
     reports[workspace.id] = {
         "at": now.isoformat(),
         "sessions_running": sessions if isinstance(sessions, int) else None,
         "metrics": summary,
+        # Kept so the next report can tell a restart; a controller older
+        # than the field sends none, and then nothing is counted.
+        "started_at": started,
     }
     if reports_memory(reports, workspace.id, now):
         record_box_report(machine_reading, machine.backend)
@@ -371,10 +390,12 @@ async def record_controller_status(
         machine.error = None
         machine.error_code = None
         machine.updated_at = now
-        # Revision 1 is the machine as first claimed: anything since (a wake, a
-        # restart, a workspace joining) bumped it. Only the first is timed,
+        # New until it has first been ready, however many revisions that took
+        # (a retry after a failed start included). Only the first is timed,
         # since nothing records when a later start began.
-        new_machine = machine.revision == 1
+        new_machine = machine.first_ready_at is None
+        if new_machine:
+            machine.first_ready_at = now
         emit_after_commit(
             session,
             current_telemetry(),
@@ -384,7 +405,7 @@ async def record_controller_status(
                 "provisioning_seconds": (
                     max((now - machine.created_at).total_seconds(), 0.0)
                     if new_machine
-                    else -1
+                    else None
                 ),
             },
         )
@@ -427,7 +448,7 @@ async def wake_controller_machine(
                 session,
                 current_telemetry(),
                 "cloud_machine_woken",
-                {"trigger": trigger, "stopped_by": "idle"},
+                {"trigger": trigger},
             )
             record_machine_event(session, "woken", trigger, machine.backend)
         elif machine.desired_state == "running":
@@ -449,10 +470,7 @@ async def wake_controller_machine(
     if idle_sleeping(machine) or machine.stop_reason == "turned_off":
         store.start(machine, now)
         emit_after_commit(
-            session,
-            current_telemetry(),
-            "cloud_machine_woken",
-            {"trigger": trigger, "stopped_by": "idle"},
+            session, current_telemetry(), "cloud_machine_woken", {"trigger": trigger}
         )
         record_machine_event(session, "woken", trigger, machine.backend)
     elif machine.desired_state == "running":

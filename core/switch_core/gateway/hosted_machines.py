@@ -293,7 +293,6 @@ async def ensure_machine(
             )
         ):
             return existing, workspace
-    change = _claim_change(existing, workspace)
     claimed = await machines.claim(
         session,
         factory,
@@ -306,29 +305,17 @@ async def ensure_machine(
         # With box provisioning on, a new machine is a cluster box it makes; off, a v1 one.
         backend="box" if box_provisioning_on(config) else "vm",
     )
-    if change is not None:
+    if claimed.change is not None:
         emit_after_commit(
-            session, current_telemetry(), "cloud_machine_requested", {"change": change}
+            session,
+            current_telemetry(),
+            "cloud_machine_requested",
+            {"change": claimed.change},
         )
-        record_machine_event(session, "requested", change, claimed[0].backend)
-    return claimed
-
-
-def _claim_change(
-    existing: CloudMachine | None, workspace: MachineWorkspace | None
-) -> str | None:
-    """What claiming the owner's machine will change, as `claim` decides it,
-    or None when it only marks a running machine active. The first that
-    applies, when a claim does two of these at once."""
-    if existing is None:
-        return "new"
-    if workspace is None:
-        return "joined_workspace"
-    if existing.desired_state == "retained":
-        return "unretained"
-    if existing.desired_state == "stopped":
-        return "restarted"
-    return None
+        record_machine_event(
+            session, "requested", claimed.change, claimed.machine.backend
+        )
+    return claimed.machine, claimed.workspace
 
 
 async def _owned(
@@ -451,12 +438,7 @@ async def lifecycle(
     now = datetime.now(UTC)
     if body.action == "stop":
         if machine.desired_state != "stopped":
-            emit_after_commit(
-                session,
-                current_telemetry(),
-                "cloud_machine_stopped",
-                {"reason": "owner"},
-            )
+            emit_after_commit(session, current_telemetry(), "cloud_machine_stopped", {})
             record_machine_event(session, "stopped", "owner", machine.backend)
         machines.stop(machine, "owner", now)
     elif body.action == "start":
@@ -464,8 +446,8 @@ async def lifecycle(
             emit_after_commit(
                 session,
                 current_telemetry(),
-                "cloud_machine_woken",
-                {"trigger": "owner", "stopped_by": machine.stop_reason or "unknown"},
+                "cloud_machine_started",
+                {"stopped_by": machine.stop_reason or "unknown"},
             )
             record_machine_event(session, "woken", "owner", machine.backend)
         machines.start(machine, now)

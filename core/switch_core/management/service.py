@@ -674,6 +674,7 @@ class ManagementService:
                 report.machine.model_dump(mode="json"),
                 new_status.get("agents", []),
                 new_status.get("providers", []),
+                report.controller.started_at,
             )
         on_v2_box = controller.kind == "ec2" and await v2_box(
             session, principal.tenant_id, controller.id

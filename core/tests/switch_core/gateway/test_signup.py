@@ -664,7 +664,6 @@ async def test_the_owner_stopping_and_starting_their_machine_is_reported(
         )
         assert started.status_code == 200, started.text
 
-    assert reported.events("cloud_machine_stopped") == [{"reason": "owner"}]
-    assert reported.events("cloud_machine_woken") == [
-        {"trigger": "owner", "stopped_by": "owner"}
-    ]
+    assert reported.events("cloud_machine_stopped") == [{}]
+    assert reported.events("cloud_machine_started") == [{"stopped_by": "owner"}]
+    assert reported.events("cloud_machine_woken") == []

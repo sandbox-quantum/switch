@@ -181,17 +181,16 @@ describe('a session start that fails', () => {
     );
   });
 
-  it('reports a session it only adopted apart from one started here', async () => {
+  it('reports nothing when the poll fails to adopt a session, which nobody started', async () => {
+    // Nearly always the poll finding a session it already took on: counting
+    // that as a failed start would count a race no person was part of.
     failWith('already-exists');
 
     await sessionService.createSession({ ...PARAMS, startSource: 'adopted' });
 
     await settle();
 
-    expect(hoisted.trackEvent).toHaveBeenCalledWith(
-      'session_started',
-      expect.objectContaining({ start_source: 'adopted' })
-    );
+    expect(hoisted.trackEvent).not.toHaveBeenCalled();
   });
 
   it('reports nothing itself when the session starts', async () => {
@@ -260,16 +259,27 @@ describe('provisioning a session again', () => {
     expect(hoisted.trackEvent).not.toHaveBeenCalled();
   });
 
-  it('separates a retry someone asked for from one the view made on its own', async () => {
+  it('separates a retry someone asked for from one the app made on its own', async () => {
+    // Activity is counted per event name, so the app reopening a session by
+    // itself needs a name of its own; a click on the session stays a person's.
     await sessionService.provisionSession('s-1', 'retry_button');
+    await settle();
+    await sessionService.provisionSession('s-1', 'session_click');
     await settle();
     await sessionService.provisionSession('s-1', 'auto');
     await settle();
 
-    const triggers = hoisted.trackEvent.mock.calls
-      .filter(([name]) => name === 'session_provision_retried')
-      .map(([, p]) => (p as Record<string, unknown>).trigger);
-    expect(triggers).toEqual(['retry_button', 'auto']);
+    expect(hoisted.trackEvent.mock.calls).toEqual([
+      [
+        'session_provision_retried',
+        { agent_type: 'codex', location: 'local', trigger: 'retry_button', outcome: 'failure' },
+      ],
+      [
+        'session_provision_retried',
+        { agent_type: 'codex', location: 'local', trigger: 'session_click', outcome: 'failure' },
+      ],
+      ['session_reopened', { agent_type: 'codex', location: 'local', outcome: 'failure' }],
+    ]);
   });
 
   it('reports a retry that failed rather than throwing it away', async () => {

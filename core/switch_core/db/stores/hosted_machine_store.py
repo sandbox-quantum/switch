@@ -54,6 +54,23 @@ MACHINE_WORKSPACES_FULL = (
 )
 
 
+# What a claim changed, the first of these that applies when it does two at
+# once: a machine made for the owner, the owner's machine joining another
+# workspace, a machine kept after its agents left running again, or a stopped
+# machine started.
+ClaimChange = Literal["new", "joined_workspace", "unretained", "restarted"]
+
+
+@dataclass(frozen=True)
+class Claimed:
+    """The owner's machine as a claim left it, serving the bound workspace.
+    `change` is None when the claim only marked a running machine active."""
+
+    machine: CloudMachine
+    workspace: MachineWorkspace
+    change: ClaimChange | None
+
+
 class CloudMachineConflict(Exception):
     """A machine cannot take the requested change; the message is the 409 detail."""
 
@@ -272,9 +289,9 @@ class CloudMachineStore:
         now: datetime,
         revoke: RevokeController | None = None,
         backend: Literal["vm", "box"] = "vm",
-    ) -> tuple[CloudMachine, MachineWorkspace]:
+    ) -> Claimed:
         """The owner's machine, reused or newly claimed within `capacity`,
-        serving the bound workspace.
+        serving the bound workspace, and what the claim changed.
 
         With `revoke`, an owner whose machine was cleaned up gets that
         same row back, with the same id, rather than a new one: a user keeps
@@ -298,6 +315,7 @@ class CloudMachineStore:
                 raise CloudMachineConflict(conflict)
             workspace = await workspace_on(session, machine.id)
             joined = workspace is None
+            change: ClaimChange | None = "joined_workspace" if joined else None
             if joined:
                 serving = await tenants_of_cloud_machine(factory, machine.id)
                 if len(serving) >= MAX_MACHINE_WORKSPACES:
@@ -310,8 +328,10 @@ class CloudMachineStore:
                 machine.active_at = now
                 bump_revision(machine, now)
                 await_reconnect(machine)
+                change = change or "unretained"
             elif machine.desired_state == "stopped":
                 self.start(machine, now)
+                change = change or "restarted"
             else:
                 machine.active_at = now
                 if joined:
@@ -319,7 +339,7 @@ class CloudMachineStore:
                     await_reconnect(machine)
             assert workspace is not None
             await session.flush()
-            return machine, workspace
+            return Claimed(machine=machine, workspace=workspace, change=change)
 
         live = await session.scalar(
             select(func.count())
@@ -331,7 +351,9 @@ class CloudMachineStore:
         if revoke is not None:
             revived = await self._revive(session, factory, owner_id, revoke, now)
             if revived is not None:
-                return revived
+                # A new box for an owner with no live machine, as a new row is.
+                machine, workspace = revived
+                return Claimed(machine=machine, workspace=workspace, change="new")
         machine_id = str(uuid4())
         await lock_machine(session, machine_id)
         machine = CloudMachine(
@@ -348,7 +370,7 @@ class CloudMachineStore:
         await session.flush()
         workspace = self._add_workspace(session, machine, now)
         await session.flush()
-        return machine, workspace
+        return Claimed(machine=machine, workspace=workspace, change="new")
 
     async def _revive(
         self,

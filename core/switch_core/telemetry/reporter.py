@@ -10,8 +10,8 @@ same minute would otherwise both read "due" and both send the day's snapshot.
 
 The first pass sends the snapshot but not the room-activation events: with no
 watermark, "first interaction since then" means every room that ever went
-active, arriving at once and all dated today. Nor the finished periods
-(`periods.py`): with no watermark there is no telling which were sent before.
+active, arriving at once. Nor the finished periods (`periods.py`): with no
+watermark there is no telling which were sent before.
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TelemetrySnapshotWatermark
-from switch_core.telemetry.deployment import claim_milestone
 from switch_core.telemetry.periods import periods_ending_between
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.session_start import prune_session_start_claims
 from switch_core.telemetry.snapshot import (
+    UsageCounts,
     as_utc,
-    collect_period_counts,
+    collect_each_period_counts,
     collect_usage,
     newly_active_rooms,
     summarise,
@@ -49,6 +49,20 @@ _FIRST_PASS_DELAY_SECONDS = 60.0
 # itself, so a deployment that was down over its due time sends promptly on the
 # next start rather than waiting a further full period.
 _POLL_INTERVAL_SECONDS = 300.0
+
+
+async def read_watermark(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> datetime | None:
+    """When the last snapshot pass ran, or None before the first."""
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(TelemetrySnapshotWatermark).limit(1))
+        ).scalar_one_or_none()
+    if row is None:
+        return None
+    stamp = row.last_sent_at
+    return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp
 
 
 class SnapshotReporter:
@@ -95,13 +109,17 @@ class SnapshotReporter:
         if not await self._claim(now, last_sent):
             return False
         try:
-            await self.run_once(now=now, since=last_sent)
+            counts = await self._send_snapshot(now)
         except BaseException:
-            # Nothing was sent: `run_once` raises only before its emit. The
-            # claim is handed back so the next poll, here or in another
+            # Nothing was sent: `_send_snapshot` raises only before its emit.
+            # The claim is handed back so the next poll, here or in another
             # process, tries again rather than skipping the day.
             await self._release(now, last_sent)
             raise
+        # The snapshot is out, so nothing from here hands the claim back, a
+        # shutdown cancelling the pass included: the next pass would send the
+        # snapshot, and every room and period already reported, again.
+        await self._report_window(counts, now=now, since=last_sent)
         await self._prune(now)
         return True
 
@@ -120,39 +138,63 @@ class SnapshotReporter:
 
     async def run_once(self, *, now: datetime, since: datetime | None) -> None:
         """Collect and report one snapshot, plus any room that just went live."""
-        counts = await collect_usage(self._session_factory, now=now)
+        counts = await self._send_snapshot(now)
+        await self._report_window(counts, now=now, since=since)
 
-        # Emitted before the room half runs: per-tenant failures in either
-        # call are contained inside `snapshot.py`, and a broader failure there
-        # must not discard a snapshot that has already been collected.
+    async def _send_snapshot(self, now: datetime) -> UsageCounts:
+        """Collect and emit the snapshot. Raises only before the emit."""
+        counts = await collect_usage(self._session_factory, now=now)
         self._telemetry.emit(
             "usage_snapshot",
             **counts.as_event_properties(
                 session_live_count=int(self._live_session_count())
             ),
         )
+        return counts
 
-        # And nothing after that emit may raise out of this method. A raise
-        # hands the claimed watermark back, and the loop retries every poll
-        # interval, so a raise here would re-send the same snapshot
-        # every five minutes for as long as the condition lasted, turning one
-        # lost pass into hundreds of duplicates of a figure meant to be daily.
-        # The rooms are the part that is given up instead: the window has moved
-        # past them, which is the trade the docstring on `newly_active_rooms`
-        # already describes, and it keeps "no room is reported twice" true.
+    async def _report_window(
+        self, counts: UsageCounts, *, now: datetime, since: datetime | None
+    ) -> None:
+        """What happened since the last pass: rooms that went live, and the
+        periods that ended.
+
+        Run after the snapshot is emitted, and no exception leaves it: the
+        loop retries every poll interval, so a pass that failed here and ran
+        again would re-send the same snapshot every five minutes for as long
+        as the condition lasted, turning one lost pass into hundreds of
+        duplicates of a figure meant to be daily. The rooms are the part that
+        is given up instead: the window has moved past them, which is the
+        trade the docstring on `newly_active_rooms` already describes, and it
+        keeps "no room is reported twice" true.
+        """
         try:
             # Skipped entirely on the first pass — see the module docstring.
+            # Nor is a room that went live before reporting began: it was
+            # used while nothing was being reported, and dating it then would
+            # put an event before the deployment's install or opt-in.
+            reporting_since = self._telemetry.reporting_since
+            window_start = (
+                since
+                if since is None or reporting_since is None
+                else max(as_utc(since), reporting_since)
+            )
             active = (
-                await newly_active_rooms(self._session_factory, since=since, now=now)
-                if since is not None
+                await newly_active_rooms(
+                    self._session_factory, since=window_start, now=now
+                )
+                if window_start is not None
                 else []
             )
 
             logger.info("Usage snapshot: %s", summarise(counts, active))
 
+            # Dated when each room went live, not when this pass noticed: a
+            # pass runs up to a day later, and a funnel times its steps from
+            # the events' own times.
             for room in active:
-                self._telemetry.emit(
+                self._telemetry.emit_at(
                     "room_became_active",
+                    room.first_active_at,
                     seconds_since_room_created=room.seconds_since_room_created,
                     bridge_platform=room.bridge_platform,
                     channel_type=room.channel_type,
@@ -173,22 +215,48 @@ class SnapshotReporter:
             await self._report_periods(since=since, now=now)
 
     async def _report_periods(self, *, since: datetime, now: datetime) -> None:
-        """One `usage_period` for every day, week and month that ended in this
-        pass's window. Contained like the rooms above, for the same reason: a
-        raise would hand the watermark back and send the snapshot again. A
-        period that fails is not reported; the next window starts after it."""
-        for period in periods_ending_between(since, now):
+        """One period event for every day, week and month that ended in this
+        pass's window, other than one that ended before the deployment was
+        installed or telemetry was switched on (`Period.dated`). Each is
+        contained, so one that fails costs only itself; it is not reported,
+        and the next window starts after it."""
+        reporting_since = self._telemetry.reporting_since
+        periods = [
+            (period, dated)
+            for period in periods_ending_between(since, now)
+            if (dated := period.dated(reporting_since)) is not None
+        ]
+        if not periods:
+            return
+        try:
+            counted = await collect_each_period_counts(
+                self._session_factory,
+                [(period.start, period.end) for period, _ in periods],
+            )
+        except Exception:
+            logger.exception(
+                "Usage period: the %d period(s) that ended in this window could "
+                "not be counted, and are not reported.",
+                len(periods),
+            )
+            return
+        for (period, (at, partial)), counts in zip(periods, counted, strict=True):
+            if counts is None:
+                continue
             try:
-                counts = await collect_period_counts(
-                    self._session_factory, start=period.start, end=period.end
-                )
                 self._telemetry.emit_at(
-                    "usage_period",
-                    period.midpoint,
-                    period=period.kind,
+                    period.event,
+                    at,
                     room_active=counts.room_active,
                     person_identity_active=counts.person_identity_active,
+                    bot_identity_active=counts.bot_identity_active,
                     account_active=counts.account_active,
+                    agent_active=counts.agent_active,
+                    message_count=counts.message_count,
+                    turn_human_to_agent=counts.turn_human_to_agent,
+                    turn_agent_to_human=counts.turn_agent_to_human,
+                    turn_agent_to_agent=counts.turn_agent_to_agent,
+                    is_partial=partial,
                     tenant_failed_count=counts.tenant_failed_count,
                 )
             except Exception:
@@ -201,41 +269,36 @@ class SnapshotReporter:
     async def _report_first_room_active(self, active: list) -> None:
         """The activation milestone: the first room a person actually used.
 
-        Fires once, so all three of these are permanent if wrong. Measured from
-        the interaction, not from this pass, which is always late in the same
-        direction. The *earliest* room, not the quickest. And user-created
-        only, matching `first_room_created`.
+        Fires once, so all three of these are permanent if wrong. Measured and
+        dated from the interaction, not from this pass, which is always late
+        in the same direction. The *earliest* room, not the quickest. And
+        user-created only, matching `first_room_created`.
+
+        Not `emit_milestone`, because the elapsed time and the date come from
+        the room rather than from now. This pass runs only while telemetry is
+        on; a room first used while it was off is settled at the boot that
+        switches it on (`deployment.settle_from_evidence`).
         """
         by_a_person = [room for room in active if room.created_by_kind == "user"]
         if not by_a_person or self._installed_at is None:
-            return
-        # Not `emit_milestone`, because the elapsed time comes from the room
-        # rather than from now — so its enabled gate is applied here instead.
-        if not self._telemetry.enabled:
             return
 
         earliest = min(by_a_person, key=lambda room: room.first_active_at)
         elapsed = (
             earliest.first_active_at - as_utc(self._installed_at)
         ).total_seconds()
-        if not await claim_milestone(self._session_factory, "first_room_active"):
+        if not await self._telemetry.take_milestone("first_room_active"):
             return
-        self._telemetry.emit(
+        self._telemetry.emit_at(
             "first_room_active",
+            earliest.first_active_at,
             seconds_since_install=max(elapsed, 0.0),
             bridge_platform=earliest.bridge_platform,
             seconds_since_room_created=earliest.seconds_since_room_created,
         )
 
     async def _read_watermark(self) -> datetime | None:
-        async with self._session_factory() as session:
-            row = (
-                await session.execute(select(TelemetrySnapshotWatermark).limit(1))
-            ).scalar_one_or_none()
-        if row is None:
-            return None
-        stamp = row.last_sent_at
-        return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp
+        return await read_watermark(self._session_factory)
 
     async def _claim(self, now: datetime, last_sent: datetime | None) -> bool:
         """Move the watermark from `last_sent` to `now`, if no other process

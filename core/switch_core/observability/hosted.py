@@ -58,6 +58,9 @@ from switch_core.observability.catalogue import (
     HOSTED_BOXES_EXPECTED,
     HOSTED_BOXES_REPORTING,
     HOSTED_BOXES_VALVE_MEMORY,
+    HOSTED_CLOUD_ERRORS,
+    HOSTED_CONTROLLER_ERRORS,
+    HOSTED_CONTROLLER_RESTARTS,
     HOSTED_DISK_USED,
     HOSTED_GATEWAY,
     HOSTED_GUARD_STOPS,
@@ -138,9 +141,9 @@ REFUSAL_ROUTES = frozenset(
         "hosted_operator",
     }
 )
-# Cloud machine changes, each with its fixed words: the product telemetry
-# catalogue's values for the event of the same name (`cloud_machine_*`), and
-# `new` or `restart` for ready. Anything else is `other`.
+# Cloud machine changes, each with its fixed words: the claim's change, the
+# failure, what woke it, why it stopped, and `new` or `restart` for ready.
+# Anything else is `other`.
 MACHINE_EVENTS: dict[str, frozenset[str]] = {
     "requested": frozenset({"new", "joined_workspace", "unretained", "restarted"}),
     "ready": frozenset({"new", "restart"}),
@@ -341,6 +344,45 @@ def record_provisioned(seconds: float, backend: str = V1_BACKEND) -> None:
         )
 
 
+CLOUD_CALLS = ("launch", "start", "stop", "terminate", "volume", "describe", "other")
+CLOUD_ERROR_KINDS = ("capacity", "throttled", "permission", "other")
+CONTROLLER_ERROR_KINDS = ("cloud", "core_api", "state", "other")
+
+
+def record_cloud_error(
+    call: str, kind: str, count: int = 1, backend: str = V1_BACKEND
+) -> None:
+    """Failed cloud calls the hosted controller service reported, in its fixed
+    words (Core's schema has already capped the count)."""
+    if count > 0:
+        metrics().increment(
+            HOSTED_CLOUD_ERRORS,
+            {
+                "call": _word(call, CLOUD_CALLS, "other"),
+                "kind": _word(kind, CLOUD_ERROR_KINDS, "other"),
+                "backend": backend_of(backend),
+            },
+            count,
+        )
+
+
+def record_controller_errors(counts: Mapping[Any, int]) -> None:
+    """The hosted controller service's errors since it last reported, by kind
+    (Core's schema has already capped each count)."""
+    for kind, count in counts.items():
+        if count > 0:
+            metrics().increment(
+                HOSTED_CONTROLLER_ERRORS,
+                {"kind": _word(kind, CONTROLLER_ERROR_KINDS, "other")},
+                count,
+            )
+
+
+def record_controller_restart(backend: str = V1_BACKEND) -> None:
+    """A cloud machine's agent controller started again."""
+    metrics().increment(HOSTED_CONTROLLER_RESTARTS, {"backend": backend_of(backend)})
+
+
 def record_sample_failure(sampler: str) -> None:
     """One sample a background sampler couldn't take, by its fixed name. Its
     own warning never reaches Datadog (the observability package's logs are
@@ -393,13 +435,24 @@ def record_machine_event(
         "reason": machine_event_reason(event, reason),
         "backend": backend_of(backend),
     }
+    after_commit(
+        session, lambda: metrics().increment(HOSTED_MACHINE_EVENTS, attributes)
+    )
+
+
+def after_commit(session: AsyncSession, record: Callable[[], None]) -> None:
+    """Run `record` once `session` commits, and never if it rolls back, as
+    product telemetry's `emit_after_commit` does."""
     sync = session.sync_session
     committed = False
     decided = False
 
     def on_commit(_session: Session) -> None:
         nonlocal committed
-        committed = True
+        # A savepoint's commit fires this too, with the savepoint still
+        # current; only the outermost commit makes the change durable.
+        if not _session.in_nested_transaction():
+            committed = True
 
     def on_end(_session: Session, transaction: SessionTransaction) -> None:
         nonlocal decided
@@ -410,7 +463,7 @@ def record_machine_event(
             return
         decided = True
         if committed:
-            metrics().increment(HOSTED_MACHINE_EVENTS, attributes)
+            record()
 
     sa_event.listen(sync, "after_commit", on_commit)
     sa_event.listen(sync, "after_transaction_end", on_end)

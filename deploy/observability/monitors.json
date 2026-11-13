@@ -721,6 +721,75 @@
     "priority": 2
   },
   {
+    "name": "[Switch REPLACE-WITH-ENV] Cloud calls failing for hosted machines",
+    "type": "query alert",
+    "query": "sum(last_15m):default_zero(sum:switch.hosted.cloud_errors{service:REPLACE-WITH-SERVICE,!kind:capacity}.as_count()) >= 5",
+    "message": "{{#is_alert}}The hosted controller service saw {{value}} cloud calls fail in 15 minutes (capacity shortages aside). Machines may not start, stop or wake.\n\n**Check:** the failures by call and kind on the dashboard. `permission` points at the service's cloud role, `throttled` at too many calls, `other` at the reconciler's own logs.{{/is_alert}}{{#is_recovery}}Recovered: cloud calls for hosted machines are working again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 5
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Cloud capacity short for hosted machines",
+    "type": "query alert",
+    "query": "sum(last_15m):default_zero(sum:switch.hosted.cloud_errors{service:REPLACE-WITH-SERVICE,kind:capacity}.as_count()) >= 5",
+    "message": "{{#is_alert}}{{value}} cloud calls failed for lack of capacity in 15 minutes: the cloud had no room for the instance type, or the installation reached its machine limit. New and woken machines wait until there's room.\n\n**Check:** the failures by call on the dashboard, and the installation's machine limit and instance types.{{/is_alert}}{{#is_recovery}}Recovered: hosted machines are getting capacity again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 5
+      }
+    },
+    "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted controller service hitting errors",
+    "type": "query alert",
+    "query": "sum(last_15m):default_zero(sum:switch.hosted.controller_errors{service:REPLACE-WITH-SERVICE}.as_count()) >= 10",
+    "message": "{{#is_alert}}The hosted controller service reported {{value}} errors in 15 minutes while it kept running.\n\n**Check:** the errors by kind on the dashboard: `cloud` (its cloud calls), `core_api` (calling Core), `state` (its own state store) or `other`, then the service's own logs.{{/is_alert}}{{#is_recovery}}Recovered: the hosted controller service's errors are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 10
+      }
+    },
+    "priority": 4
+  },
+  {
     "name": "[Switch REPLACE-WITH-ENV] Hosted boxes: memory guard stopping agents",
     "type": "query alert",
     "query": "sum(last_30m):default_zero(sum:switch.hosted.guard_stops{service:REPLACE-WITH-SERVICE}.as_count()) >= 3",

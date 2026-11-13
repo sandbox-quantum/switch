@@ -1502,13 +1502,14 @@ async def test_recently_errored_empty_machine_is_left_alone(controller_app):
 async def _claim(factory, owner_id: str) -> CloudMachine:
     async with factory() as session:
         await lock_claims(session)
-        machine, _workspace = await CloudMachineStore().claim(
+        claimed = await CloudMachineStore().claim(
             session,
             factory,
             owner_id=owner_id,
             capacity=2,
             now=datetime.now(UTC),
         )
+        machine = claimed.machine
         await session.commit()
         return machine
 
@@ -2098,12 +2099,11 @@ async def test_an_error_while_stopping_counts_as_stop_failed(
         ({"reconciler_errors": {"free text": 1}}, False),
     ],
 )
-async def test_the_follow_ups_fields_are_accepted_strictly_and_ignored(
+async def test_the_reconcilers_error_fields_are_strict_and_never_stored(
     controller_app, extra, accepted
 ):
-    """For the follow-up (AWS and reconciler errors): declared now with strict
-    types, so a reconciler that sends them works against this Core, and a
-    value outside them is refused. Nothing reads or stores them yet."""
+    """The reconciler's error fields have strict types: a value outside them
+    is refused. They're counted (below), never stored on the machine."""
     app = controller_app
     await update_machine(app.factory, app.machine_id, state="provisioning")
     before = await machine_of(app.factory, app.machine_id)
@@ -2119,3 +2119,131 @@ async def test_the_follow_ups_fields_are_accepted_strictly_and_ignored(
         before.error,
         before.heartbeat,
     )
+
+
+def _counted(registry, name: str) -> dict[tuple[tuple[str, str], ...], float]:
+    return {
+        tuple(sorted(dict(point.attributes).items())): point.value
+        for payload in registry.collect()
+        if payload.name == name
+        for point in payload.numbers
+    }
+
+
+async def test_the_reconcilers_errors_are_counted_from_the_shared_fixture(
+    controller_app, machine_metrics
+):
+    """The observation the reconciler sends (the same fixture its
+    own tests build) counts its cloud error by call and kind, and its own
+    errors by kind."""
+    app = controller_app
+    body = fixture("controller_observation_with_errors.json")
+    await update_machine(
+        app.factory, app.machine_id, state="provisioning", revision=body["revision"]
+    )
+    await observe(app.client, app.machine_id, **body)
+    collected = list(machine_metrics.collect())
+
+    def points(name: str) -> dict:
+        return {
+            tuple(sorted(dict(point.attributes).items())): point.value
+            for payload in collected
+            if payload.name == name
+            for point in payload.numbers
+        }
+
+    assert points("switch.hosted.cloud_errors") == {
+        (("backend", "vm"), ("call", "describe"), ("kind", "throttled")): 1.0,
+        (("backend", "vm"), ("call", "launch"), ("kind", "capacity")): 1.0,
+    }
+    assert points("switch.hosted.controller_errors") == {
+        (("kind", "cloud"),): 2.0,
+        (("kind", "core_api"),): 1.0,
+    }
+    saved = await machine_of(app.factory, app.machine_id)
+    assert "cloud_errors" not in (saved.heartbeat or {})
+
+
+async def test_a_stale_observation_still_counts_its_errors(
+    controller_app, machine_metrics
+):
+    """Core answers 200 to an observation for an old revision, so the
+    reconciler forgets what it sent: those errors count too, once."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning", revision=3)
+    await observe(
+        app.client,
+        app.machine_id,
+        state="provisioning",
+        revision=2,
+        cloud_errors=[{"call": "stop", "kind": "throttled", "count": 3}],
+    )
+    assert _counted(machine_metrics, "switch.hosted.cloud_errors") == {
+        (("backend", "vm"), ("call", "stop"), ("kind", "throttled")): 3.0
+    }
+
+
+@pytest.mark.parametrize(
+    ("state", "observed"), [("deleted", "running"), ("error", "provisioning")]
+)
+async def test_an_observation_core_ignores_still_counts_its_errors(
+    controller_app, machine_metrics, state, observed
+):
+    """Core answers 200 and changes nothing for a deleted machine, or one in
+    error that the observation can't replace. The reconciler forgets what it
+    sent, so the answer still commits, and the errors count once."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state=state)
+    await observe(
+        app.client,
+        app.machine_id,
+        state=observed,
+        revision=1,
+        reconciler_errors={"cloud": 2},
+    )
+    assert _counted(machine_metrics, "switch.hosted.controller_errors") == {
+        (("kind", "cloud"),): 2.0
+    }
+
+
+async def test_an_observation_that_fails_before_its_commit_counts_nothing(
+    controller_app, machine_metrics, monkeypatch
+):
+    """The answer isn't a 200, so the reconciler keeps the batch and sends it
+    again: counting it here as well would count it twice."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning")
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("fails before the commit")
+
+    monkeypatch.setattr(hosted_controller, "_report_failure", broken)
+    try:
+        response = await app.client.post(
+            f"/hosted-controller/machines/{app.machine_id}/observation",
+            headers=HEADERS,
+            json={"state": "error", "revision": 1, "reconciler_errors": {"cloud": 2}},
+        )
+    except RuntimeError:
+        pass
+    else:
+        assert response.status_code >= 500
+    assert _counted(machine_metrics, "switch.hosted.controller_errors") == {}
+
+
+async def test_errors_for_an_unknown_machine_are_not_counted(
+    controller_app, machine_metrics
+):
+    """Refused with a 404, so the reconciler keeps them and sends them again:
+    counting them here would count them twice."""
+    response = await controller_app.client.post(
+        "/hosted-controller/machines/00000000-0000-4000-8000-00000000dead/observation",
+        headers=HEADERS,
+        json={
+            "state": "provisioning",
+            "revision": 1,
+            "reconciler_errors": {"cloud": 4},
+        },
+    )
+    assert response.status_code == 404, response.text
+    assert _counted(machine_metrics, "switch.hosted.controller_errors") == {}

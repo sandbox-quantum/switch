@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_runs import AgentOrigin
 from switch_core.authz import Principal
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import SystemActor
@@ -56,6 +57,8 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
+    CONSOLE_ROOM,
+    ConsoleRooms,
     ExistingPackageById,
     ExistingPackageByName,
     ExistingReferenceById,
@@ -66,6 +69,7 @@ from switch_core.rooms_yaml import (
     interpolate,
     resolve_params,
 )
+from tests.telemetry_records import recording_telemetry
 
 
 class _AnyStr:
@@ -97,6 +101,11 @@ class FakeRoomService:
         #: username → external id, the people a bridge would resolve.
         self.bridge_users: dict[str, str] = {}
         self.bridge_user_lookups: list[tuple[str, list[str]]] = []
+        self.configs: list[RoomCreateConfig] = []
+        self.deleted: list[str] = []
+
+    async def delete_room(self, room_id: str, *, retire_channel: bool) -> None:
+        self.deleted.append(room_id)
 
     async def resolve_bridge_users(
         self, bridge_id: str, names: list[str]
@@ -105,6 +114,7 @@ class FakeRoomService:
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+        self.configs.append(config)
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:
@@ -155,6 +165,32 @@ class FakeRoomService:
             return RoomCreateResult(room=room, failed_attachments=[])
 
 
+class FakeConsoleRooms:
+    """The chat service's member calls, recorded; ``refuse`` makes them fail."""
+
+    def __init__(self) -> None:
+        self.added: list[tuple[str, str]] = []
+        self.refuse: str | None = None
+
+    async def add_member(
+        self, tenant_id: str, actor: User, room_id: str, target_user_id: str
+    ) -> Room:
+        if self.refuse:
+            raise ValueError(self.refuse)
+        self.added.append((room_id, target_user_id))
+        return Room()
+
+    async def require_can_join(self, tenant_id: str, user_id: str) -> None:
+        return None
+
+    def wiring(self, enabled: bool) -> ConsoleRooms:
+        return ConsoleRooms(
+            enabled=enabled,
+            add_member=self.add_member,
+            require_can_join=self.require_can_join,
+        )
+
+
 async def _make_agent(session: AsyncSession, name: str, user_id: str) -> Agent:
     api_key = ApiKey(
         user_id=user_id,
@@ -197,6 +233,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
     )
     agent_store = AgentStore()
     fake_rooms = FakeRoomService(session_factory, agent_store)
+    console = FakeConsoleRooms()
     svc = RoomYamlService(
         room_service=fake_rooms,  # type: ignore[arg-type]
         resource_service=resource_service,
@@ -207,6 +244,8 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_role_store=RoomRoleStore(),
         session_factory=session_factory,
         room_group_store=RoomGroupStore(),
+        telemetry=None,
+        console_rooms=console.wiring(enabled=True),
     )
 
     async with session_factory() as session:
@@ -221,6 +260,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
     return {
         "svc": svc,
         "rooms": fake_rooms,
+        "console": console,
         "resource_service": resource_service,
         "session_factory": session_factory,
         "user_id": user_id,
@@ -396,6 +436,69 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     assert result.failed_attachments == []
 
 
+@pytest.mark.parametrize(
+    ("ran_by_an_agent", "room_kind", "reference_kind"),
+    [(False, "user", "system"), (True, "agent", "agent")],
+)
+async def test_who_ran_a_template_is_who_made_its_room_references_and_docs(
+    env, monkeypatch: pytest.MonkeyPatch, ran_by_an_agent, room_kind, reference_kind
+):
+    """A person running a template asked for the room, not for each reference
+    or document in it; an agent running one made all of them."""
+    telemetry, sink = recording_telemetry()
+    env["resource_service"]._telemetry = telemetry
+    configs: list[RoomCreateConfig] = []
+    create_room = env["rooms"].create_room
+
+    async def recording(config: RoomCreateConfig) -> RoomCreateResult:
+        configs.append(config)
+        return await create_room(config)
+
+    monkeypatch.setattr(env["rooms"], "create_room", recording)
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Pilot"
+          description: "pilot room"
+          references:
+            - type: github
+              name: "Switch repo"
+              description: "the repo"
+              instructions: "use it"
+              value: { urls: ["https://github.com/example-org/switch"] }
+          docs:
+            - name: "Runbook"
+              description: "how we work"
+              instructions: "read before shipping"
+              content: "Ship small."
+        """
+    )
+    origin = (
+        AgentOrigin(
+            agent_id="agent-id",
+            agent_name="claude-code.alice",
+            owner_id=env["user_id"],
+            owner_name="alice",
+            parent_room_id=None,
+            run_id=None,
+        )
+        if ran_by_an_agent
+        else None
+    )
+
+    await _svc(env).provision(
+        spec, user_id=env["user_id"], is_admin=False, origin=origin
+    )
+
+    assert [config.created_by_kind for config in configs] == [room_kind]
+    assert [event["created_by_kind"] for event in sink.events("reference_created")] == [
+        reference_kind
+    ]
+    assert [event["created_by_kind"] for event in sink.events("document_created")] == [
+        reference_kind
+    ]
+
+
 @pytest.mark.asyncio
 async def test_provision_no_agents_or_users(env):
     spec, _ = _svc(env).parse(
@@ -511,6 +614,7 @@ async def test_provision_attach_reference_by_name(env):
     async with env["session_factory"]() as session:
         ref = await env["resource_service"].create_reference(
             session,
+            created_by_kind="user",
             owner_id=env["user_id"],
             is_admin=False,
             read_visibility="private",
@@ -559,6 +663,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
         for _ in range(2):
             await env["resource_service"].create_reference(
                 session,
+                created_by_kind="user",
                 owner_id=env["user_id"],
                 is_admin=False,
                 read_visibility="private",
@@ -2316,6 +2421,17 @@ async def test_provision_group_two_rooms_linked(env):
         assert link.label == "workroom"
 
 
+async def test_a_template_group_is_reported(env):
+    """`room_group_created` counted only the gateway's before."""
+    svc = _svc(env)
+    svc._telemetry, sink = recording_telemetry()
+    spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
+
+    await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
+
+    assert sink.events("room_group_created") == [{"has_parent": False}]
+
+
 @pytest.mark.asyncio
 async def test_provision_group_needs_a_workspace_admin(env):
     svc = _svc(env)
@@ -2650,3 +2766,103 @@ async def test_an_agent_may_name_a_private_room_it_is_in(env):
     await svc.check_entity_params(
         parsed, reader=RoomReader(Principal(env["user_id"], False), agent_id=agent.id)
     )
+
+
+# ── Switch Console rooms ─────────────────────────────────────────────────────
+
+CONSOLE_TEXT = (
+    "params:\n  bridge:\n    type: bridge\n    required: false\n"
+    'room:\n  name: Console room\n  description: d\n  bridge: "{bridge}"\n'
+    '  agents: ["claude-code.alice"]\n'
+)
+
+
+def _without_console(env) -> RoomYamlService:
+    svc = _svc(env)
+    svc._console_rooms = env["console"].wiring(enabled=False)
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_a_switch_console_room_is_internal_with_its_runner_in_it(env):
+    svc = _svc(env)
+    parsed = svc.parse_template(CONSOLE_TEXT, inputs={"bridge": CONSOLE_ROOM})
+    await svc.check_entity_params(parsed, reader=_reader(env))
+    await svc.check_bridges(parsed, creator="alice")
+
+    result = await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
+
+    (config,) = env["rooms"].configs
+    assert (config.internal_only, config.bridge_id) == (True, None)
+    assert env["console"].added == [(result.room_id, env["user_id"])]
+
+
+@pytest.mark.asyncio
+async def test_switch_console_is_offered_last_only_with_group_chats(env):
+    reader = _reader(env)
+    async with env["session_factory"]() as session:
+        offered = await _svc(env)._names_of(session, "bridge", reader)
+        withheld = await _without_console(env)._names_of(session, "bridge", reader)
+    assert offered[-1] == CONSOLE_ROOM
+    assert CONSOLE_ROOM not in withheld
+
+
+@pytest.mark.asyncio
+async def test_switch_console_is_refused_without_group_chats(env):
+    svc = _without_console(env)
+    parsed = svc.parse_template(CONSOLE_TEXT, inputs={"bridge": CONSOLE_ROOM})
+    with pytest.raises(ValueError, match="param 'bridge'.*group_chats"):
+        await svc.check_entity_params(parsed, reader=_reader(env))
+    with pytest.raises(ValueError, match="group_chats"):
+        await svc.check_bridges(parsed, creator="alice")
+    with pytest.raises(ValueError, match="group_chats"):
+        await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
+    assert env["rooms"].configs == []
+
+
+@pytest.mark.asyncio
+async def test_a_switch_console_room_names_no_users_but_its_runner(env):
+    """The official room templates name ``{$creator}`` whenever a bridge is
+    set; in a Switch Console room that person is a member anyway."""
+    svc = _svc(env)
+    text = (
+        "params:\n  bridge:\n    type: bridge\n    required: false\n"
+        'room:\n  name: r\n  description: d\n  bridge: "{bridge}"\n'
+        '  users: ["{$creator}"]\n'
+    )
+    parsed = svc.parse_template(
+        text, inputs={"bridge": CONSOLE_ROOM}, builtins={"$creator": "alice"}
+    )
+    await svc.check_bridges(parsed, creator="alice")
+    await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
+    (config,) = env["rooms"].configs
+    assert config.user_names is None
+
+    other, _ = svc.parse(
+        "room:\n  name: r\n  description: d\n"
+        f"  bridge: {CONSOLE_ROOM}\n  users: [alice, someone]\n"
+    )
+    with pytest.raises(ValueError, match="leave out someone"):
+        await svc.provision(other, user_id=env["user_id"], is_admin=False)
+    with pytest.raises(ValueError, match="leave out someone"):
+        await svc.check_bridges(
+            svc.parse_template(
+                "room:\n  name: r\n  description: d\n"
+                f"  bridge: {CONSOLE_ROOM}\n  users: [alice, someone]\n"
+            ),
+            creator="alice",
+        )
+    assert len(env["rooms"].configs) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_switch_console_room_its_runner_cannot_join_is_deleted(env):
+    env["console"].refuse = "not a member of this workspace"
+    svc = _svc(env)
+    parsed = svc.parse_template(CONSOLE_TEXT, inputs={"bridge": CONSOLE_ROOM})
+
+    with pytest.raises(ValueError, match="could not be added.*not a member"):
+        await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
+
+    assert len(env["rooms"].configs) == 1
+    assert len(env["rooms"].deleted) == 1

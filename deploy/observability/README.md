@@ -361,8 +361,8 @@ machine: `vm` for a v1 machine, `box` for a hosted agents v2 box.
   idleness, and boxes paused or turned off, are not expected, so they don't
   set it off.
 - `switch.hosted.machine_events` counts cloud machine changes once committed,
-  at the same points as the product telemetry events of the same names, so it
-  counts whether or not product telemetry is on.
+  at the points where product telemetry reports the same change, so it counts
+  whether or not product telemetry is on.
   An idle machine with no agents left is released with its disk kept rather
   than stopped, and counts as `event:stopped` with `reason:retained`.
   A machine an operator holds stopped (`switch-cloud-machine stop`) counts as
@@ -391,6 +391,20 @@ machine: `vm` for a v1 machine, `box` for a hosted agents v2 box.
 - `switch.observability.sample_failures` counts samples the hosted sampler
   couldn't take: its own warnings never reach Datadog, since the observability
   package's logs are kept out of the export.
+- `switch.hosted.cloud_errors` counts cloud calls the hosted controller
+  service saw fail, by `call` (`launch`, `start`, `stop`,
+  `terminate`, `volume`, `describe`, `other`) and `kind` (`capacity`,
+  `throttled`, `permission`, `other`), never the cloud's own code or message.
+  5 or more in 15 minutes pages, capacity aside; 5 or more capacity errors is
+  low urgency. The service sends its counts since it last reported with its
+  next observation that Core accepts.
+- `switch.hosted.controller_errors` counts the hosted controller service's own
+  errors by `kind` (`cloud`, `core_api`, `state`, `other`), sent with its next
+  observation that Core accepts. 10 or more in 15 minutes is low urgency.
+- `switch.hosted.controller_restarts` counts agent controllers on cloud
+  machines that report a new start time (`controller.started_at`, ISO-8601
+  with an offset). Other controllers send it too, and Core ignores it from
+  them. A dashboard panel only, no alert.
 - `switch.auth.sign_in_failures` counts password sign-ins refused for a wrong
   password or an unknown email, with no attributes at all. Its alert fires
   above 20 in 10 minutes, at low urgency.

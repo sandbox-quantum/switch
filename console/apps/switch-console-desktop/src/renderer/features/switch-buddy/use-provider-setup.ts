@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { agentProviders } from '@shared/core/providers/agent-provider-registry';
-import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
@@ -37,14 +36,12 @@ export type SetupBusy = 'install' | 'check' | 'create' | null;
 export function useProviderSetup({
   serverId,
   workspaceId,
-  entryPoint,
   onCreated,
   computer,
   recheck,
 }: {
   serverId: string;
   workspaceId: string;
-  entryPoint: UiEntryPoint;
   onCreated: (agent: { agentId: string; name: string }) => void;
   computer: ThisComputer;
   /** Has this computer check its providers again; a line when nothing new was found. */
@@ -63,7 +60,7 @@ export function useProviderSetup({
 
   const [working, setWorking] = useState<'install' | 'check' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const started = useStartBuddy({ serverId, workspaceId, computer, entryPoint, onCreated });
+  const started = useStartBuddy({ serverId, workspaceId, computer, onCreated });
   const busy = working ?? (started.starting !== null ? 'create' : null);
   // One error at a time, as each action clears what the last one said.
   const error = actionError ?? started.error;

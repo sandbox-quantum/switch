@@ -55,7 +55,7 @@ function installationOf(
 }
 
 /** The repositories a GitHub grant names, by full name where the person can still see them. */
-function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
+export function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
   const installation = installationOf(github, grant.resources);
   return repositoryIds(grant.resources).map((id) => {
     const repository = installation?.repositories.find((r) => r.id === id);
@@ -107,20 +107,25 @@ export default function ServiceAccessSection({
     }
   }, [agent.id]);
 
-  const loadServices = useCallback(async () => {
+  const loadServices = useCallback(async (): Promise<ServiceConnection[] | null> => {
     try {
-      setServices(await fetchServiceConnections());
+      const list = await fetchServiceConnections();
+      setServices(list);
+      return list;
     } catch (err) {
       setServicesError(errorText(err));
+      return null;
     }
   }, []);
 
   // The viewer's own connections are read only once the grants show this is
-  // their agent.
+  // their agent. GitHub's only while it is set up here: until then the server
+  // has no connection to answer with, and the form says it is not set up.
   useEffect(() => {
-    void load().then((own) => {
+    void load().then(async (own) => {
       if (!own) return;
-      void loadServices();
+      const list = await loadServices();
+      if (list?.find((service) => service.slug === "github")?.server_setup_needed) return;
       fetchGitHubConnection().then(setGitHub, (err: unknown) => setGitHubError(errorText(err)));
     });
   }, [load, loadServices]);
@@ -384,7 +389,7 @@ function OnOffGrant({
   );
 }
 
-function GitHubGrantForm({
+export function GitHubGrantForm({
   github,
   githubError,
   notSetUp,

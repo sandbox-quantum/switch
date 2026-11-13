@@ -91,6 +91,7 @@ async def test_any_agent_maintains_a_document_the_template_created(
             description="the plan",
             instructions="",
             content="v1",
+            created_by_kind="system",
         )
         await session.commit()
 
