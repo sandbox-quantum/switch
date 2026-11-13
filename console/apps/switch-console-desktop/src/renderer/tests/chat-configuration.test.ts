@@ -1,3 +1,4 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -12,7 +13,6 @@ import {
 } from '@renderer/features/switch-rooms/room-add-participants';
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
 import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 const chat = vi.hoisted(() => ({ current: null as ChatSummary | null }));

@@ -1,6 +1,6 @@
+import { chatMessageSchema } from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it, vi } from 'vitest';
 import { gatewayFetch } from '@main/core/switch-servers/gateway-client';
-import { chatMessageSchema } from '@shared/core/chats/chats';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   addChatAgent,

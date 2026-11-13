@@ -1,9 +1,10 @@
+import { type ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { chatFailure } from '@renderer/features/chats/chat-errors';
 import { workspaceRosterQuery } from '@renderer/features/chats/chat-people';
-import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -30,7 +31,6 @@ import {
   InputGroupInput,
 } from '@renderer/lib/ui/input-group';
 import { cn } from '@renderer/utils/utils';
-import { type ChatSummary } from '@shared/core/chats/chats';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';

@@ -1,8 +1,11 @@
 import { sharedSessionRoot } from '@switch-console/agent-providers';
+import {
+  reasoningListSchema,
+  type ReasoningList,
+} from '@switch-console/chat-ui/contracts/reasoning';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { log } from '@main/lib/logger';
-import { reasoningListSchema, type ReasoningList } from '@shared/core/sessions/reasoning';
 import { localSessionLinks } from './local-host';
 import { sidecarControl } from './sidecar-control';
 

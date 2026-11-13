@@ -1,5 +1,9 @@
+import type {
+  ChatMessage,
+  ChatStreamState,
+  ChatSummary,
+} from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it, vi } from 'vitest';
-import type { ChatMessage, ChatStreamState, ChatSummary } from '@shared/core/chats/chats';
 import { ChatStream, type ChatStreamDeps, sseFrames } from './chat-stream';
 
 const warn = vi.hoisted(() => vi.fn());

@@ -1,3 +1,4 @@
+import type { ChatStreamState } from '@switch-console/chat-ui/contracts/chats';
 import { GatewayError, gatewayRequest } from '@main/core/switch-servers/gateway-client';
 import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
@@ -14,7 +15,6 @@ import {
   chatStreamStateChannel,
   chatSummaryChannel,
 } from '@shared/core/chats/chatEvents';
-import type { ChatStreamState } from '@shared/core/chats/chats';
 import { ChatActivityStream } from './activity-stream';
 import { ChatStream, defaultBackoffMs } from './chat-stream';
 import { listChats } from './gateway';

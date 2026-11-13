@@ -1,3 +1,13 @@
+import { ChatTimelineView } from '@switch-console/chat-ui/components/chat-timeline';
+import type { ChatActivityItem, ChatApproval } from '@switch-console/chat-ui/contracts/activity';
+import type { ChatMessage } from '@switch-console/chat-ui/contracts/chats';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import {
+  type ActivityApi,
+  AgentActivities,
+} from '@switch-console/chat-ui/stores/chat-activity-store';
+import { ChatTimeline, type TimelineApi } from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 /**
  * An agent's question form reads after the text its turn posted before it,
  * not above it under the person's message that started the turn.
@@ -6,19 +16,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
-import {
-  type ActivityApi,
-  AgentActivities,
-} from '@renderer/features/chats/stores/chat-activity-store';
-import {
-  ChatTimeline,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
-import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
-import type { ChatMessage } from '@shared/core/chats/chats';
-
-vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: { userId: 'me' } }));
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -145,14 +142,16 @@ it('shows the question form after the text the turn posted, in reading order', a
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatTimelineView
-          serverId="server"
-          timeline={timeline}
-          agents={[]}
-          people={[]}
-          activities={[activity]}
-          onReply={() => {}}
-        />
+        <ChatHostProvider host={stubChatHost()}>
+          <ChatTimelineView
+            serverId="server"
+            timeline={timeline}
+            agents={[]}
+            people={[]}
+            activities={[activity]}
+            onReply={() => {}}
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

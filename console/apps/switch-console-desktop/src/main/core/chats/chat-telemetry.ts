@@ -1,3 +1,4 @@
+import type { ChatSendInput } from '@switch-console/chat-ui/contracts/chats';
 import { GatewayError } from '@main/core/switch-servers/gateway-client';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
 import type {
@@ -7,7 +8,6 @@ import type {
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
 import { log } from '@main/lib/logger';
-import type { ChatSendInput } from '@shared/core/chats/chats';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { ChatApiError } from './gateway';
 

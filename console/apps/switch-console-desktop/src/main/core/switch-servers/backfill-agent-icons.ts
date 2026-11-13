@@ -1,6 +1,6 @@
+import { agentAvatarUrlForName } from '@switch-console/chat-ui/model/agent-avatar';
 import { getAgents } from '@main/core/agents/getAgents';
 import { log } from '@main/lib/logger';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentIconBackfill, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { fetchAgents, fetchAvatarSettings, GatewayError, updateAgentIcon } from './gateway-client';
 

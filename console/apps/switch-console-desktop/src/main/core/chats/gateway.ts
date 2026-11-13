@@ -1,6 +1,3 @@
-import type { z } from 'zod';
-import { GatewayError, gatewayFetch } from '@main/core/switch-servers/gateway-client';
-import { log } from '@main/lib/logger';
 import {
   type ChatApproval,
   type ChatApprovalAnswer,
@@ -9,7 +6,7 @@ import {
   type ChatControlCommand,
   type RoomActivity,
   roomActivitySchema,
-} from '@shared/core/chats/activity';
+} from '@switch-console/chat-ui/contracts/activity';
 import {
   type ChatMentionSpan,
   type ChatMessage,
@@ -33,7 +30,10 @@ import {
   type WorkspaceMember,
   workspaceMemberSchema,
   agentCandidatesSchema,
-} from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/contracts/chats';
+import type { z } from 'zod';
+import { GatewayError, gatewayFetch } from '@main/core/switch-servers/gateway-client';
+import { log } from '@main/lib/logger';
 import { type RoomAccess, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 /**

@@ -1,3 +1,4 @@
+import { type ConsoleLink, parseConsoleLink } from '@switch-console/chat-ui/model/console-links';
 import { when } from 'mobx';
 import { toast } from 'sonner';
 import type { AdminSection } from '@renderer/features/admin/admin-sections';
@@ -10,7 +11,6 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { rpc } from '@renderer/lib/ipc';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { type ConsoleLink, parseConsoleLink } from '@shared/core/deeplinks/console-links';
 
 /**
  * Open the page a `switchdash://open/…` link points at: from a click in the

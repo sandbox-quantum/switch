@@ -1,3 +1,4 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it } from 'vitest';
 import {
   applyContextAffinity,
@@ -12,7 +13,6 @@ import {
   sectionResults,
   withoutLegacy,
 } from '@renderer/features/command-palette/search-utils';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { SearchItem } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@main/lib/logger', () => ({ log: { warn: () => {} } }));
 
 const { ChatActivityStream } = await import('./activity-stream');
-const { SERVER_TOO_OLD_FOR_ACTIVITY } = await import('@shared/core/chats/activity');
+const { SERVER_TOO_OLD_FOR_ACTIVITY } = await import('@switch-console/chat-ui/contracts/activity');
 
 const item = {
   agentId: 'a',

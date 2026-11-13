@@ -1,4 +1,4 @@
-import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
+import { ChatMarkdown } from '@switch-console/chat-ui/ui/chat-markdown';
 import { BuddyAvatar } from './buddy-avatar';
 import { buddyWelcomeMessage } from './buddy-welcome-message';
 

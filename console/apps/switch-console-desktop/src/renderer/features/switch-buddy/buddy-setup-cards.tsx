@@ -1,3 +1,4 @@
+import { consoleLink } from '@switch-console/chat-ui/model/console-links';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -15,7 +16,6 @@ import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
-import { consoleLink } from '@shared/core/deeplinks/console-links';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import {
   type BuddyPlatform,

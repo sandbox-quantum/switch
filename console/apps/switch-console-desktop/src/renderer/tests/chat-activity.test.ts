@@ -1,4 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import {
+  chatActivityItemSchema,
+  type ChatActivityItem,
+  type ChatApproval,
+  type RoomActivity,
+  SERVER_TOO_OLD_FOR_ACTIVITY,
+} from '@switch-console/chat-ui/contracts/activity';
+import type { ChatMessage } from '@switch-console/chat-ui/contracts/chats';
 import {
   bindTurns,
   foldTurnEndNotices,
@@ -12,23 +19,21 @@ import {
   toolState,
   type TurnActivity,
   turnTools,
-} from '@renderer/features/chats/activity-join';
+} from '@switch-console/chat-ui/model/activity-join';
+import { configureFailures } from '@switch-console/chat-ui/model/failures';
 import {
   type ActivityApi,
   AgentActivities,
-} from '@renderer/features/chats/stores/chat-activity-store';
-import {
-  chatActivityItemSchema,
-  type ChatActivityItem,
-  type ChatApproval,
-  type RoomActivity,
-  SERVER_TOO_OLD_FOR_ACTIVITY,
-} from '@shared/core/chats/activity';
-import type { ChatMessage } from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/stores/chat-activity-store';
+import { describe, expect, it, vi } from 'vitest';
+import { consoleFailures } from '@renderer/features/chats/chat-errors';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 const warn = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/utils/logger', () => ({ log: { warn } }));
+
+// Console's own failures, as its chats are wired with them.
+configureFailures(consoleFailures);
 
 let clock = 0;
 

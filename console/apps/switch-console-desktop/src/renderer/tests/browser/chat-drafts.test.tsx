@@ -9,27 +9,20 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const scope = vi.hoisted(() => ({ userId: 'user-a' as string | null, workspaceId: 'ws-1' }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
-  useFeatureFlags: () => ({ group_chats: true }),
-}));
-vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { statusFor: () => ({ user: { id: scope.userId } }) },
-}));
-vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { idOnServerInScope: () => scope.workspaceId },
-}));
 
-import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
+import { ChatComposer } from '@switch-console/chat-ui/components/chat-composer';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
 import {
   chatDraftKey,
   moveChatDraft,
   readChatDraft,
-} from '@renderer/features/chats/stores/chat-drafts';
+} from '@switch-console/chat-ui/stores/chat-drafts';
 import {
   ChatTimeline,
   ChatTimelines,
   type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
+} from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 
 const agent = {
   id: 'a2',
@@ -74,17 +67,23 @@ async function mount(timeline: ChatTimeline): Promise<HTMLTextAreaElement> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatComposer
-          serverId="srv"
-          timeline={timeline}
-          agents={[agent]}
-          people={[]}
-          groupName="Ship review"
-          activities={[]}
-          replyTo={null}
-          onClearReply={() => {}}
-          disabled={null}
-        />
+        <ChatHostProvider
+          host={stubChatHost({
+            draftOwner: () => ({ userId: scope.userId, workspaceId: scope.workspaceId }),
+          })}
+        >
+          <ChatComposer
+            serverId="srv"
+            timeline={timeline}
+            agents={[agent]}
+            people={[]}
+            groupName="Ship review"
+            activities={[]}
+            replyTo={null}
+            onClearReply={() => {}}
+            disabled={null}
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

@@ -1,3 +1,5 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { chatRemovalNavigation } from '@switch-console/chat-ui/model/chat-removal';
 import { Archive, ArchiveRestore, LogOut, Pencil, Trash2 } from 'lucide-react';
 import { Fragment, type ReactNode } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -5,9 +7,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@renderer/lib/ui/dropdown-menu';
-import type { ChatSummary } from '@shared/core/chats/chats';
-import { chatRemovalNavigation } from '../chat-removal';
-import { chatFailure } from '../stores/chat-errors';
+import { chatFailure } from '../chat-errors';
 import { chatsStore } from '../stores/chats';
 
 export type ChatAction = {

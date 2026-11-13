@@ -92,22 +92,22 @@ vi.mock('@renderer/lib/stores/use-avatar-settings', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useAvatarSettings: () => ({ thirdPartyAvatarsEnabled: null, error: null, retry: () => {} }),
 }));
-vi.mock('@renderer/features/chats/components/chat-panel', async (importOriginal) => ({
+vi.mock('@switch-console/chat-ui/components/chat-panel', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   ChatPanel: () => null,
 }));
 
 import '@renderer/index.css';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { chatDraftKey, unsavedChatKey } from '@switch-console/chat-ui/stores/chat-drafts';
 import { runInAction } from 'mobx';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
-import { chatDraftKey, unsavedChatKey } from '@renderer/features/chats/stores/chat-drafts';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { AgentChats, openAgentChat } from '@renderer/features/managed-agents/agent-chats';
 import { roomEmbedSlotStore } from '@renderer/features/switch-rooms/room-embed-slot';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { appState } from '@renderer/lib/stores/app-state';
-import type { ChatSummary } from '@shared/core/chats/chats';
 
 const AGENT: ManagedAgentView = {
   serverId: 'server-1',

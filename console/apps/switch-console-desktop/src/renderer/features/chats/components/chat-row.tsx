@@ -1,3 +1,5 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { UNSAVED_CHAT_NAME } from '@switch-console/chat-ui/stores/direct-chat-starter';
 import { Loader2, MessageSquare, MoreHorizontal } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
@@ -8,10 +10,8 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { RelativeTime } from '@renderer/lib/ui/relative-time';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { agentActivities } from '../stores/activities';
 import { chatsStore } from '../stores/chats';
-import { UNSAVED_CHAT_NAME } from '../stores/direct-chat-starter';
 import { ChatActionItems, chatActions } from './chat-actions';
 import { UnreadBadge } from './unread-badge';
 

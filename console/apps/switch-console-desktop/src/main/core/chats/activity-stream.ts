@@ -1,12 +1,12 @@
-import { log } from '@main/lib/logger';
 import {
   type ChatActivityItem,
   chatActivityItemSchema,
   type ChatApproval,
   chatApprovalSchema,
   SERVER_TOO_OLD_FOR_ACTIVITY,
-} from '@shared/core/chats/activity';
-import type { ChatStreamState } from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/contracts/activity';
+import type { ChatStreamState } from '@switch-console/chat-ui/contracts/chats';
+import { log } from '@main/lib/logger';
 import { sseFrames, STALL_MS } from './chat-stream';
 
 /**

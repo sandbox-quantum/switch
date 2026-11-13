@@ -1,11 +1,11 @@
-import { focusComposerWhenOpened } from '@renderer/features/chats/components/chat-composer';
+import { focusComposerWhenOpened } from '@switch-console/chat-ui/components/chat-composer';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { chatsStore, chatTitler } from '@renderer/features/chats/stores/chats';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { firstNameOf } from './buddy-identity';

@@ -1,6 +1,6 @@
+import { agentAvatarUrlForName } from '@switch-console/chat-ui/model/agent-avatar';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 const inspectRemoteDir = vi.hoisted(() => vi.fn());

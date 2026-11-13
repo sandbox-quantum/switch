@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import {
+  agentAvatarUrlForName,
+  isThirdPartyAvatarUrl,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import type { PluginFs, RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { eq } from 'drizzle-orm';
 import { locationManager } from '@main/core/locations/location-manager';
@@ -17,7 +21,6 @@ import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-stor
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
 import { log } from '@main/lib/logger';
-import { agentAvatarUrlForName, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';

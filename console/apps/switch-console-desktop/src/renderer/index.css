@@ -4,6 +4,8 @@
 
 /* Streamdown's built-in renderers carry Tailwind classes from its dist (pnpm hoists it). */
 @source '../../../../node_modules/streamdown/dist/*.js';
+/* The chat UI lives in its own package, outside this app's directory. */
+@source '../../../../packages/chat-ui/src';
 
 @custom-variant dark (&:is(.dark *));
 @custom-variant dark-black (&:is(.dark-black *));

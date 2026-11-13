@@ -1,3 +1,8 @@
+import { ChatPanel, useAgentActivities } from '@switch-console/chat-ui/components/chat-panel';
+import {
+  UNSAVED_CHAT_NAME,
+  UNSAVED_CHAT_PREFIX,
+} from '@switch-console/chat-ui/stores/direct-chat-starter';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -7,12 +12,10 @@ import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { ChatHeaderControls, ChatHeaderTitle } from './components/chat-header';
-import { ChatPanel, useAgentActivities } from './components/chat-panel';
 import { useOpenGroupAsRoom } from './console-chat-redirect';
 import { directChats } from './start-direct-chat';
 import { agentChatsFlag } from './stores/agent-chats-flag';
 import { chatsStore } from './stores/chats';
-import { UNSAVED_CHAT_NAME, UNSAVED_CHAT_PREFIX } from './stores/direct-chat-starter';
 
 type ChatParams = { serverId: string; roomId: string; agentId: string | null };
 

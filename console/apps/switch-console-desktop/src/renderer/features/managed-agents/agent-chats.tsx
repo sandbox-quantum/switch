@@ -1,9 +1,10 @@
+import { ChatPanel } from '@switch-console/chat-ui/components/chat-panel';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
 import { ArchivedFold } from '@renderer/features/chats/components/archived-fold';
-import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import { ChatRow, UnsavedChatRow } from '@renderer/features/chats/components/chat-row';
 import { useOpenGroupAsRoom } from '@renderer/features/chats/console-chat-redirect';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
@@ -27,7 +28,6 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
 import { AgentProfile, managedAgentMachineLine } from './agent-profile';

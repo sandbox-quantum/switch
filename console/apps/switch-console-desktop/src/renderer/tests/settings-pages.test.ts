@@ -1,3 +1,4 @@
+import { parseConsoleLink } from '@switch-console/chat-ui/model/console-links';
 import { describe, expect, it } from 'vitest';
 import {
   describeCreatedKeyExpiry,
@@ -11,7 +12,6 @@ import {
   settingsSections,
   shownSettingsTab,
 } from '@renderer/features/settings/settings-tabs';
-import { parseConsoleLink } from '@shared/core/deeplinks/console-links';
 import { type SwitchApiKey } from '@shared/core/switch-servers/switch-servers';
 
 const everyone: SettingsAudience = {

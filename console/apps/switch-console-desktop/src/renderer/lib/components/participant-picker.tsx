@@ -1,9 +1,9 @@
+import { agentInitials } from '@switch-console/chat-ui/model/agent-avatar';
 import { Loader2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useAgentAccent } from '@renderer/lib/components/agent-accent';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials } from '@shared/core/agents/agent-avatar';
 import { type Participant, pickerKey, searchParticipants } from './participant-search';
 
 /** A person's initials disc, as the chat timeline draws people. */

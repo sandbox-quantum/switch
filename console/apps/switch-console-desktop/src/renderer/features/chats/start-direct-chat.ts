@@ -1,16 +1,21 @@
+import { focusComposerWhenOpened } from '@switch-console/chat-ui/components/chat-composer';
+import {
+  chatDraftKey,
+  moveChatDraft,
+  readChatDraft,
+  unsavedChatKey,
+} from '@switch-console/chat-ui/stores/chat-drafts';
+import {
+  type ChatScope,
+  DirectChatStarter,
+  UNSAVED_CHAT_PREFIX,
+} from '@switch-console/chat-ui/stores/direct-chat-starter';
 import { runInAction } from 'mobx';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
-import { focusComposerWhenOpened } from './components/chat-composer';
-import { chatDraftKey, moveChatDraft, readChatDraft, unsavedChatKey } from './stores/chat-drafts';
 import { chatsStore, chatTitler } from './stores/chats';
-import {
-  type ChatScope,
-  DirectChatStarter,
-  UNSAVED_CHAT_PREFIX,
-} from './stores/direct-chat-starter';
 
 function scope(serverId: string): ChatScope {
   return {

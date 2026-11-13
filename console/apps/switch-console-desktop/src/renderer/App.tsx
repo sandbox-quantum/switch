@@ -4,6 +4,7 @@ import { AgentCrudEvents } from './app/agent-crud-events';
 import { AppMenuEvents } from './app/app-menu-events';
 import { HostSetupEvents } from './app/host-setup-events';
 import { Workspace } from './app/workspace';
+import { ConsoleChatHost } from './features/chats/console-chat-host';
 import { ConsoleLinkListener } from './features/deeplinks/console-link-listener';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
 import { BridgePlatformsLoader } from './features/switch-servers/bridge-platforms-loader';
@@ -31,10 +32,12 @@ function AppContent() {
           <LocalMattermostListener />
           <RightSidebarProvider>
             <ThemeProvider>
-              <ModalRenderer />
-              {/* The first-run pages say it themselves when they are on. */}
-              {!BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
-              <Workspace />
+              <ConsoleChatHost>
+                <ModalRenderer />
+                {/* The first-run pages say it themselves when they are on. */}
+                {!BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
+                <Workspace />
+              </ConsoleChatHost>
             </ThemeProvider>
           </RightSidebarProvider>
         </WorkspaceViewProvider>

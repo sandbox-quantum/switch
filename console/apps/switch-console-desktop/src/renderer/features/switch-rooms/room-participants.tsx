@@ -1,10 +1,10 @@
+import { agentInitials } from '@switch-console/chat-ui/model/agent-avatar';
 import { useQuery } from '@tanstack/react-query';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { rpc } from '@renderer/lib/ipc';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials } from '@shared/core/agents/agent-avatar';
 import {
   knownAgentTypeDisplayName,
   providerDisplayName,

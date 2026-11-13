@@ -1,3 +1,7 @@
+import {
+  ChatTimelines,
+  type TimelineApi,
+} from '@switch-console/chat-ui/stores/chat-timeline-store';
 /**
  * A view that opens a chat's timeline while it renders (the chat panel) must
  * not change what another view on screen observes (a chat row peeking at it):
@@ -7,10 +11,6 @@ import { observer } from 'mobx-react-lite';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
-import {
-  ChatTimelines,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
 
 it('opens a timeline while rendering without updating a view that peeks at it', async () => {
   const timelines = new ChatTimelines(() => ({}) as TimelineApi);

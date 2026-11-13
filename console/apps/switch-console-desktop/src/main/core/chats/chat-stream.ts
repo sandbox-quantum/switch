@@ -1,4 +1,3 @@
-import { log } from '@main/lib/logger';
 import {
   type ChatMessage,
   chatMessageSchema,
@@ -7,7 +6,8 @@ import {
   type ChatStreamState,
   type ChatSummary,
   chatSummarySchema,
-} from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/contracts/chats';
+import { log } from '@main/lib/logger';
 
 /**
  * One live feed of a person's chats on one server and tenant.
