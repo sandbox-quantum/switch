@@ -236,24 +236,27 @@ function grid(page: HTMLElement): HTMLElement | null {
   );
 }
 
-it("shows the workspace's catalog, what the person has on Yours and everything on Discover", async () => {
+it("shows the workspace's catalog, everything on Discover and what the person has on Yours", async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
 
   await vi.waitFor(() => expect(grid(page)).not.toBeNull());
   expect(workspaces.getServiceConnections).toHaveBeenCalledWith('workspace');
-  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
-  expect(button(/^Example/, grid(page)!)).toBeUndefined();
-  expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
-
-  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Discover"]')!.click());
-  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeDefined());
+  expect(page.querySelector('button[aria-label="Discover"]')?.getAttribute('aria-pressed')).toBe(
+    'true'
+  );
+  expect(button(/^Example/, grid(page)!)).toBeDefined();
   expect(page.querySelector('button[aria-label="Connect Example"]')).not.toBeNull();
   expect(button(/^Linear/, grid(page)!)?.disabled).toBe(true);
   expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeUndefined());
+  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
+  expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
 });
 
-it('opens on Discover when nothing is connected yet, and stays on the tab the person picks', async () => {
+it('stays on the tab the person picks', async () => {
   const unconnected = CATALOG.map((item) =>
     item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item
   );

@@ -19,7 +19,6 @@ import {
   connectedAsLine,
   connectorsInTab,
   connectorsPageAccess,
-  defaultConnectorsTab,
   keyAccessText,
   profileConnectAction,
   signInLabel,
@@ -330,15 +329,6 @@ describe('the Yours and Discover tabs', () => {
       'Linear',
       'Notion',
     ]);
-  });
-
-  it('opens on Yours once the person has a connection, working or not, and on Discover before', () => {
-    expect(defaultConnectorsTab(catalog)).toBe('yours');
-    expect(defaultConnectorsTab([entry({ status: 'needs_reauthorization' })])).toBe('yours');
-    expect(
-      defaultConnectorsTab([entry({ status: 'not_connected' }), entry({ status: 'coming_soon' })])
-    ).toBe('discover');
-    expect(defaultConnectorsTab([])).toBe('discover');
   });
 
   it('searches within the tab by name, category or description', () => {

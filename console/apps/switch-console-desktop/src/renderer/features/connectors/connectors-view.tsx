@@ -36,7 +36,6 @@ import {
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
-  defaultConnectorsTab,
 } from './connectors-catalog';
 import {
   useConnectorCatalog,
@@ -105,13 +104,7 @@ function Connectors({
   viewer: ConnectorViewer;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  // Null until the person picks a tab or the catalog first arrives; from then
-  // on it stays put, so a connection made on Discover does not move them.
-  const [chosenTab, setTab] = useState<ConnectorsTab | null>(null);
-  const tab = chosenTab ?? (catalog.data ? defaultConnectorsTab(catalog.data) : 'yours');
-  useEffect(() => {
-    if (chosenTab === null && catalog.data) setTab(defaultConnectorsTab(catalog.data));
-  }, [chosenTab, catalog.data]);
+  const [tab, setTab] = useState<ConnectorsTab>('discover');
   const [query, setQuery] = useState('');
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
@@ -204,7 +197,7 @@ function Connectors({
         )
       }
     >
-      {/* Which tab opens depends on the catalog, so the tabs wait for it rather than flick over. */}
+      {/* The tabs and the search wait for the catalog: until it arrives they have nothing to narrow. */}
       {catalog.data && (
         <ListToolbar
           scope={
