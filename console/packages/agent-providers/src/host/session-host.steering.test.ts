@@ -181,7 +181,7 @@ describe('mid-turn steering', () => {
     expect((await host.command(message('first', 'queue'))).status).toBe('applied');
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
 
-    const steered = await host.command(message('correction', 'steer'), { expectedTurnId: 'first' });
+    const steered = await host.command(message('correction', 'steer'));
 
     expect(steered.status).toBe('applied');
     // The provider was handed the message while 'first' was still open, and
@@ -198,20 +198,6 @@ describe('mid-turn steering', () => {
     // Finishing the turn does not send the steered message again as a turn.
     expect(sent).toEqual(['first', 'correction']);
     expect(host.snapshot().turns).toHaveLength(1);
-  });
-
-  it('queues a steer when its authorized turn is no longer active', async () => {
-    const { host, sent, complete } = await start({ steering: true });
-    await host.command(message('first', 'queue'));
-    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-    const stale = message('correction', 'steer');
-    await host.command(stale, { expectedTurnId: 'previous-turn' });
-    expect(sent).toHaveLength(1);
-    expect(host.snapshot().turns.find((turn) => turn.turnId === 'correction')?.status).toBe(
-      'queued'
-    );
-    complete('first');
-    await until(() => expect(sent).toHaveLength(2));
   });
 
   it('runs a steered message as the next turn when no turn is running', async () => {
@@ -234,7 +220,7 @@ describe('mid-turn steering', () => {
     await host.command(message('first', 'queue'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
 
-    const refused = await host.command(message('correction', 'steer'), { expectedTurnId: 'first' });
+    const refused = await host.command(message('correction', 'steer'));
 
     expect(refused.status).toBe('applied');
     expect(host.snapshot().notices.some((notice) => notice.code === 'STEERING_FALLBACK')).toBe(
@@ -258,7 +244,7 @@ describe('mid-turn steering', () => {
     const { host, sent, complete } = await start({ steering: true, steerMode: 'unknown' });
     await host.command(message('first', 'queue'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-    const result = await host.command(message('correction', 'steer'), { expectedTurnId: 'first' });
+    const result = await host.command(message('correction', 'steer'));
     expect(result.status).toBe('unknown');
     expect(host.snapshot().turns.find((turn) => turn.turnId === 'correction')).toBeUndefined();
     // Still shown, in the turn it was meant for, rather than vanishing.
@@ -277,7 +263,7 @@ describe('mid-turn steering', () => {
     await host.command(message('first', 'queue'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
 
-    const result = await host.command(message('correction', 'steer'), { expectedTurnId: 'first' });
+    const result = await host.command(message('correction', 'steer'));
 
     expect(result.status).toBe('unknown');
     const item = host.snapshot().items.find((entry) => entry.itemId === 'user-correction');
@@ -294,9 +280,9 @@ describe('mid-turn steering', () => {
     await host.command(message('first', 'queue'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
 
-    await expect(
-      host.command(message('correction', 'steer'), { expectedTurnId: 'first' })
-    ).rejects.toThrow('UNSUPPORTED_CAPABILITY: the selected provider cannot steer a running turn.');
+    await expect(host.command(message('correction', 'steer'))).rejects.toThrow(
+      'UNSUPPORTED_CAPABILITY: the selected provider cannot steer a running turn.'
+    );
     expect(sent).toEqual(['first']);
     expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['first']);
   });
@@ -322,7 +308,7 @@ describe('mid-turn steering', () => {
     const { root, host, sent } = await start({ steering: true });
     await host.command(message('first', 'queue'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-    await host.command(message('correction', 'steer'), { expectedTurnId: 'first' });
+    await host.command(message('correction', 'steer'));
     expect(sent).toEqual(['first', 'correction']);
     await host.shutdown();
     hosts.splice(hosts.indexOf(host), 1);
@@ -371,7 +357,7 @@ describe('mid-turn steering', () => {
       ];
     await host.command(first);
     // 'first' is the active turn but still staging its attachment.
-    const early = await host.command(message('correction', 'steer'), { expectedTurnId: 'first' });
+    const early = await host.command(message('correction', 'steer'));
     expect(early.status).toBe('applied');
     expect(sent).toEqual([]);
     expect(host.snapshot().turns.find((turn) => turn.turnId === 'correction')?.status).toBe(
@@ -383,22 +369,11 @@ describe('mid-turn steering', () => {
     await until(() => expect(sent).toEqual(['first', 'correction']));
   });
 
-  it('queues a steer that names no turn', async () => {
-    const { host, sent } = await start({ steering: true });
-    await host.command(message('first', 'queue'));
-    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-    await host.command(message('correction', 'steer'));
-    expect(sent).toEqual(['first']);
-    expect(host.snapshot().turns.find((turn) => turn.turnId === 'correction')?.status).toBe(
-      'queued'
-    );
-  });
-
   it('does not report a refused steer as uncertain after a restart', async () => {
     const { root, host } = await start({ steering: true, steerMode: 'refuse' });
     await host.command(message('first', 'queue'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-    await host.command(message('correction', 'steer'), { expectedTurnId: 'first' });
+    await host.command(message('correction', 'steer'));
     await host.shutdown();
     hosts.splice(hosts.indexOf(host), 1);
 
@@ -433,20 +408,17 @@ describe('mid-turn steering', () => {
       expect(host.snapshot().turns.find((turn) => turn.turnId === 'later')?.status).toBe('running')
     );
 
-    await host.command(
-      {
-        ...message('again', 'queue'),
-        origin: {
-          actorId: 'user',
-          surface: 'switch-web',
-          roomId: 'room',
-          threadId: null,
-          messageId: null,
-        },
-        body: { type: 'message.retry', messageId: 'm1' },
+    await host.command({
+      ...message('again', 'queue'),
+      origin: {
+        actorId: 'user',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: null,
+        messageId: null,
       },
-      { expectedTurnId: 'later' }
-    );
+      body: { type: 'message.retry', messageId: 'm1' },
+    });
 
     expect(sent).toEqual(['failed', 'later']);
     expect(host.snapshot().turns.find((turn) => turn.turnId === 'again')?.status).toBe('queued');
@@ -477,7 +449,7 @@ describe('mid-turn steering', () => {
     host.unaskedRoomTurn('first');
     await host.command(roomMessage('first', 'm1'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-    await host.command(roomMessage('correction', 'm2'), { expectedTurnId: 'first' });
+    await host.command(roomMessage('correction', 'm2'));
 
     complete('first');
     await until(() => expect(replies).toHaveLength(1));
@@ -507,7 +479,7 @@ describe('mid-turn steering', () => {
     host.unaskedRoomTurn('correction');
     await host.command(roomMessage('first', 'm1'));
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-    await host.command(roomMessage('correction', 'm2'), { expectedTurnId: 'first' });
+    await host.command(roomMessage('correction', 'm2'));
 
     complete('first');
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
@@ -528,33 +500,8 @@ describe('mid-turn steering', () => {
     });
     await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
 
-    expect(
-      (await host.command(message('correction', 'steer'), { expectedTurnId: 'first' })).status
-    ).toBe('applied');
+    expect((await host.command(message('correction', 'steer'))).status).toBe('applied');
 
     expect(host.snapshot().requests[0]?.state).toBe('open');
-  });
-
-  it('names the running turn and who started it as the steer target', async () => {
-    const { host } = await start({ steering: true });
-    expect(host.steerTarget()).toBeNull();
-    const asked: Command = {
-      ...message('first', 'queue'),
-      origin: {
-        actorId: '@mo:test',
-        surface: 'switch-web',
-        roomId: 'room',
-        threadId: null,
-        messageId: 'm1',
-      },
-    };
-    await host.command(asked, { steeringActor: 'mo' });
-    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-
-    expect(host.steerTarget()).toEqual({
-      turnId: 'first',
-      origin: asked.origin,
-      steeringActor: 'mo',
-    });
   });
 });

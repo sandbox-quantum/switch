@@ -1402,13 +1402,7 @@ export async function runAgentHost(
             roomId: event.room_id,
             messageId,
             // The session builds its prompt from this; nothing else keeps it.
-            event: {
-              type: event.type,
-              payload: event.payload,
-              missed: event.missed ?? null,
-              // Whether the room is direct, where every message is one conversation.
-              channel_type: event.channel_type ?? null,
-            },
+            event: { type: event.type, payload: event.payload, missed: event.missed ?? null },
           };
           // The connection is this agent's reachability; starting a session is
           // a separate permission it may not have. Without it a session that

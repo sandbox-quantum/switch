@@ -10,9 +10,7 @@ from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.delivery.recipient import (
     _STARTING_SESSION_MESSAGE,
     AUTO_REPLY_FLAG,
-    NOBODY,
     AgentRecipient,
-    SenderFacts,
     _GateOutcome,
 )
 from switch_core.transport import InboundMessage, RoomRef
@@ -74,10 +72,10 @@ def _fake_self(
     ) -> str:
         return unavailable_reply
 
-    async def _sender_facts(
+    async def _sender_role(
         _session: object, _sender: str, _content: object
-    ) -> SenderFacts:
-        return NOBODY
+    ) -> str | None:
+        return None
 
     async def _no_notice(_session: object) -> None:
         return None
@@ -95,7 +93,7 @@ def _fake_self(
         _compute_addressed=_compute_addressed,
         _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
-        _sender_facts=_sender_facts,
+        _sender_role=_sender_role,
         _mid_turn_delivery=lambda: "steer",
         _switch_notice=_no_notice,
         _is_available=_is_available,

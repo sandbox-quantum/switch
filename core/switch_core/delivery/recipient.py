@@ -79,7 +79,6 @@ from switch_core.delivery.addressing import (
     AddressingDecision,
     AddressingResolver,
     IncomingMessage,
-    SenderPrincipal,
 )
 from switch_core.delivery.conversation import ConversationRoute
 from switch_core.events import (
@@ -641,10 +640,10 @@ class AgentRecipient:
                 addressed = gate.addressed
                 refusal = gate.refusal
 
-        sender = (
-            await self._sender_facts(session, event.sender, event.content)
+        sender_role = (
+            await self._sender_role(session, event.sender, event.content)
             if addressed
-            else NOBODY
+            else None
         )
         notice = await self._switch_notice(session) if addressed else None
         own_event = _message_own_event(
@@ -652,7 +651,7 @@ class AgentRecipient:
             event,
             thread_id,
             self.agent.id,
-            sender,
+            sender_role,
             notice,
             mid_turn_delivery=self._mid_turn_delivery(),
             routed_reason=None,
@@ -702,7 +701,7 @@ class AgentRecipient:
             assert isinstance(row, InboundMessage)
             await self._after_follow_up(row, has_attachment=False)
 
-        sender = await self._sender_facts(session, event.sender, event.content)
+        sender_role = await self._sender_role(session, event.sender, event.content)
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
@@ -710,7 +709,7 @@ class AgentRecipient:
                 event,
                 event.thread_root_id,
                 self.agent.id,
-                sender,
+                sender_role,
                 notice,
                 mid_turn_delivery=self._mid_turn_delivery(),
                 routed_reason=None,
@@ -798,7 +797,7 @@ class AgentRecipient:
             assert isinstance(row, InboundMessage)
             await self._after_follow_up(row, has_attachment=False)
 
-        sender = await self._sender_facts(session, event.sender, event.content)
+        sender_role = await self._sender_role(session, event.sender, event.content)
         notice = await self._switch_notice(session)
         return Delivery(
             own_event=_message_own_event(
@@ -806,7 +805,7 @@ class AgentRecipient:
                 event,
                 event.thread_root_id,
                 self.agent.id,
-                sender,
+                sender_role,
                 notice,
                 mid_turn_delivery=self._mid_turn_delivery(),
                 routed_reason=reason,
@@ -998,13 +997,12 @@ class AgentRecipient:
 
         # Read now: the event is built after the row commits, from the rows alone.
         opening = opening_message_for(meta, self.agent.id)
-        sender = (
-            await self._sender_facts(session, anchor.sender, anchor.content)
+        sender_role = (
+            await self._sender_role(session, anchor.sender, anchor.content)
             if delivered
-            else NOBODY
+            else None
         )
         switch_notice = await self._switch_notice(session) if delivered else None
-        mid_turn_delivery = self._mid_turn_delivery()
 
         def own_event(row: InboundEvent) -> OwnEvent:
             parts = written(row)
@@ -1030,10 +1028,8 @@ class AgentRecipient:
                     attachment_ref(part) for part in sorted(parts, key=file_index)
                 ],
                 opening_message=opening,
-                sender_role=sender.role,
-                sender_person=sender.person,
-                sender_owns_agent=sender.owns_agent,
-                mid_turn_delivery=mid_turn_delivery,
+                sender_role=sender_role,
+                mid_turn_delivery=self._mid_turn_delivery(),
                 switch_notice=switch_notice,
                 follow_up=follow_up,
             )
@@ -1912,31 +1908,21 @@ class AgentRecipient:
         return await self._notices.switch_notice(session, self.agent.id)
 
     def _mid_turn_delivery(self) -> Literal["steer", "queue"]:
+        """The agent's setting for messages sent while it works, sent with
+        every message so a change applies to the next one."""
         return "queue" if self.agent.mid_turn_delivery == "queue" else "steer"
 
-    async def _sender_facts(
+    async def _sender_role(
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
-    ) -> SenderFacts:
-        """What the agent is told about who sent a message, read as it arrives.
+    ) -> str | None:
+        """The sending person's role in this workspace, read as the message
+        arrives: "admin" or "member". None for an agent, the
+        platform, or a person no Switch user has claimed.
 
         Read fresh for every message, so an agent can rely on it over what it
-        was told earlier: a role, or who owns the agent, can change between
-        two messages.
+        was told earlier: a role can change between two messages.
         """
         principal = await self._addressing.resolve_sender(session, sender, content)
-        person, owns_agent = steering_identity(principal, self.agent.owner_id)
-        return SenderFacts(
-            role=await self._sender_role(session, principal),
-            person=person,
-            owns_agent=owns_agent,
-        )
-
-    async def _sender_role(
-        self, session: AsyncSession, principal: SenderPrincipal | None
-    ) -> str | None:
-        """The sending person's role in this workspace: "admin" or "member".
-        None for an agent, the platform, or a person no Switch user has claimed.
-        """
         if principal is None or principal.kind != "user" or not principal.user_ids:
             return None
         tenant_id = self.tenant_id
@@ -2001,39 +1987,6 @@ def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
     return written.get("body")
 
 
-@dataclass(frozen=True)
-class SenderFacts:
-    """Who sent a message, as the receiving agent is told."""
-
-    role: str | None
-    person: str | None
-    owns_agent: bool
-
-
-NOBODY = SenderFacts(role=None, person=None, owns_agent=False)
-
-
-def steering_identity(
-    principal: SenderPrincipal | None, owner_id: str | None
-) -> tuple[str | None, bool]:
-    """Who a sender is for steering a running turn, and whether they own it.
-
-    Only a person has an identity here. It is the Switch user behind them
-    when exactly one has claimed their chat account, so the same person is
-    recognised from every platform and from Switch Console, and their chat
-    account otherwise. An agent, the platform and a message the platform
-    carries for someone (a schedule, a kickoff) have none, so none of them
-    steer. Owning the agent means being that one Switch user: a chat account
-    claimed by several people speaks for none of them in particular.
-    """
-    if principal is None or principal.kind != "user":
-        return None, False
-    claimants = principal.user_ids
-    person = claimants[0] if len(claimants) == 1 else principal.id
-    owns_agent = owner_id is not None and claimants == [owner_id]
-    return person, owns_agent
-
-
 _FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
     ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
     ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
@@ -2053,7 +2006,7 @@ def _message_own_event(
     event: InboundMessage,
     thread_id: str | None,
     agent_id: str,
-    sender: SenderFacts,
+    sender_role: str | None,
     switch_notice: str | None,
     *,
     mid_turn_delivery: Literal["steer", "queue"],
@@ -2084,9 +2037,7 @@ def _message_own_event(
             body=row.body,
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
-            sender_role=sender.role,
-            sender_person=sender.person,
-            sender_owns_agent=sender.owns_agent,
+            sender_role=sender_role,
             mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
             routed_reason=routed_reason,

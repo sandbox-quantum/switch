@@ -526,7 +526,6 @@ async function settled(root: string): Promise<boolean> {
 const addressed = (sequence: number, roomId: string): AgentBridgeEvent => ({
   type: 'message',
   room_id: roomId,
-  channel_type: 'direct',
   sequence,
   payload: {
     addressed: true,
@@ -1428,11 +1427,7 @@ it('keeps a held event, content and all, across a controller restart', async () 
   expect(hosts.to(join(root, assigned!.session.sessionId))).toMatchObject([
     {
       type: 'room',
-      handoff: {
-        messageId: 'message-1',
-        // The room's kind travels with the message: a direct room is one conversation.
-        event: { payload: { body: 'Run the check' }, channel_type: 'direct' },
-      },
+      handoff: { messageId: 'message-1', event: { payload: { body: 'Run the check' } } },
     },
   ]);
 });

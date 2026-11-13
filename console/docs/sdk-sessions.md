@@ -36,44 +36,37 @@ its initial prompt is not automatically sent again.
 ### Messages sent while the agent is working
 
 On a provider that can steer a running turn (Claude Code, Codex and OpenCode),
-a message sent while the agent is working can reach that turn instead of
-waiting for it to end. It does when all of these hold:
+a message sent while the agent is working reaches that turn instead of waiting
+for it to end. Any message that reaches the agent does: from the person who
+started the turn or anyone else who can talk to the agent, from another agent,
+or a schedule or kickoff; in any thread, at the top level of a channel, in a
+direct room, or typed in the session's own view in Switch Console. Who can
+reach the agent at all is still its addressing policy's choice. Each message
+tells the agent who sent it and from which room and thread, so it can handle
+several at once.
 
-- the agent's setting **Steer messages sent while it works** is on, which it
-  is by default;
-- Switch identified the sender as a person: an agent's message, a schedule, a
-  template kickoff or anything else the platform posts always queues;
-- the message is in the running turn's conversation: a reply in that turn's
-  thread in a channel, or anywhere in a direct room (a DM or a Console chat).
-  A new top-level message in a channel is a new request and queues;
-- the sender started the running turn, or owns the agent. Switch compares
-  people by the Switch user behind their chat account, so the same person
-  writing from Slack and from Switch Console is one person. An owner whose
-  chat account is not linked to their Switch user is not recognised as the
-  owner there, and their message queues unless they started the turn.
-
-Anything else queues, as it always has. A provider reads a steered message at
-its next step, not mid-sentence: Claude Code reads it after the tool call in
-progress, or after the answer it is writing. If the turn ends just as the
-message arrives, or the provider declines it (Codex sometimes does), the
-message runs as the next turn instead, with a notice in the transcript; it is
-never lost or sent twice, and a message whose delivery is uncertain is shown
-as such and not resent. Running a failed message again always queues. A steer
-never answers or cancels an open approval: answer the request, or interrupt
-the turn.
+A provider reads a steered message at its next step, not mid-sentence: Claude
+Code reads it after the tool call in progress, or after the answer it is
+writing. If the turn ends just as the message arrives, or the provider declines
+it (Codex sometimes does), the message runs as the next turn instead, with a
+notice in the transcript; it is never lost or sent twice, and a message whose
+delivery is uncertain is shown as such and not resent. Running a failed message
+again always queues. A steer never answers or cancels an open approval: answer
+the request, or interrupt the turn.
 
 Room activity cards on every platform say how many messages were steered into
-a turn, with a line for each, and a turn waiting behind another says so. A
-steered message carries the working reaction while its turn runs. The Console
-transcript labels each mid-turn message as steered or queued.
+a turn, with a line for each in its sender's words, and a turn waiting behind
+another says so. A steered message carries the working reaction while its turn
+runs. The Console transcript labels each mid-turn message as steered or queued.
 
-The setting lives on the agent in Switch, so it survives the agent
-re-registering and applies to the next message without a restart. Change it in
-Switch Console's agent settings, on the agent's page in the web dashboard
-(its owner or a workspace admin), or with the `update_agent_detail` tool
-(`mid_turn_delivery`). Messages typed in a session's own transcript view, outside
-a room, always queue. Providers that cannot steer always queue, whatever the
-setting says.
+An agent's **Steer messages sent while it works** setting turns this off for
+the messages Switch delivers from rooms: with it off, every one waits for the
+turn to end, as before. It is on by default, lives on the agent in Switch (so it
+survives the agent re-registering), and applies to the next message without a
+restart. Change it in Switch Console's agent settings, on the agent's page in
+the web dashboard (its owner or a workspace admin), or with the
+`update_agent_detail` tool (`mid_turn_delivery`). Providers that cannot steer
+always queue.
 
 ## Server isolation
 

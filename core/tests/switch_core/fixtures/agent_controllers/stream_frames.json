@@ -59,8 +59,6 @@
           "attachments": [],
           "opening_message": null,
           "sender_role": null,
-          "sender_person": null,
-          "sender_owns_agent": false,
           "mid_turn_delivery": "steer",
           "switch_notice": null,
           "routed": false,

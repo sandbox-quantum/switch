@@ -6,7 +6,7 @@ import { SettingRow } from './setting-row';
 
 export const MID_TURN_TITLE = 'Steer messages sent while it works';
 export const MID_TURN_DESCRIPTION =
-  'A message from whoever started the turn, or from you, in that turn’s thread (anywhere in a direct chat) reaches the running turn instead of waiting for it to end. The agent reads it at its next step: Claude Code after the tool call or answer in progress. Other people’s messages, and agents that cannot steer, always queue. Off: every message waits for the turn to end.';
+  'A message sent while the agent is working reaches the running turn instead of waiting for it to end, whoever sent it and from wherever. The agent reads it at its next step: Claude Code after the tool call or answer in progress. Agents that cannot steer always queue. Off: messages from rooms wait for the turn to end.';
 
 export function MidTurnDeliverySection({
   locationId,

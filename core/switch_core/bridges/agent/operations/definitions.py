@@ -2602,11 +2602,10 @@ async def update_agent_detail(
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
         mid_turn_delivery: What a message sent while it is working does:
-            "steer" (the default) hands it to the running turn when it comes
-            from the person who started that turn, or the agent's owner, in
-            that turn's thread (anywhere in a direct room); "queue" always
-            runs it as a turn of its own once the running one ends. Providers
-            that cannot steer always queue.
+            "steer" (the default) hands it to the running turn, whoever sent
+            it and from wherever; "queue" always runs it as a turn of its own
+            once the running one ends. Providers that cannot steer always
+            queue.
 
     A managed agent (one `list_managed_agents` shows) only, and only with the
     "can manage agents" capability:

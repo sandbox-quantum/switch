@@ -57,13 +57,10 @@ version of their own to them without also giving them a release of their own.
   agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
   kept on the agent so re-registering leaves it alone, changed on the agent's
   page in the dashboard, with `PUT /gateway/agents/{id}/mid-turn-delivery`, or
-  with `update_agent_detail`. Messages tell the agent's host who sent them
-  (`sender_person`: the Switch user behind a person, else their chat account;
-  none for agents and platform messages) and whether they own the agent, so it
-  steers only for the turn's starter or owner. Activity cards on every
-  platform say how many messages were steered into a turn, with a line for
-  each; a turn waiting behind another says so; and a steered message carries
-  the working reaction while its turn runs (#801).
+  with `update_agent_detail`, and sent with every message. Activity cards on
+  every platform say how many messages were steered into a turn, with a line
+  for each in its sender's words; a turn waiting behind another says so; and
+  a steered message carries the working reaction while its turn runs (#801).
 - **Monitoring for hosted agents' cloud machines.** With `OTLP_ENDPOINT` set,
   Core reports hosted machine metrics to Datadog: machines expected against
   machines reporting, agents and sessions, memory and disk peaks, how long a
@@ -3500,18 +3497,17 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
-- **A correction sent while an agent works reaches the running turn.** On
-  Claude Code, Codex and OpenCode, a room message from whoever started the
-  turn, or from the agent's owner, in that turn's thread (anywhere in a direct
-  chat) is delivered into the running turn instead of waiting for it to end.
-  Other people's messages, other threads and agents' messages queue as
-  before, and so does everything on a provider that cannot steer. The agent
-  reads it at its next step (Claude Code after the tool call or answer in
-  progress). A steer the turn can no longer take runs as the next turn, with
-  a notice; nothing is lost or sent twice, and a retry always queues. The
-  transcript and chat work log label each mid-turn message steered or queued,
-  and the agent settings and managed-agent page have the **Steer messages
-  sent while it works** setting (on by default). Built on #1445 by
+- **A message sent while an agent works reaches the running turn.** On
+  Claude Code, Codex and OpenCode, any message that reaches the agent while it
+  is working is delivered into the running turn instead of waiting for it to
+  end: from anyone who can talk to the agent, in any thread or room, or typed
+  in the session's own view. The agent reads it at its next step (Claude Code
+  after the tool call or answer in progress). A steer the turn can no longer
+  take runs as the next turn, with a notice; nothing is lost or sent twice,
+  and a retry always queues. The transcript and chat work log label each
+  mid-turn message steered or queued, and the agent settings and
+  managed-agent page have the **Steer messages sent while it works** setting
+  (on by default) to keep room messages queueing instead. Built on #1445 by
   Xuefeng-Zhu, with parts of #1494, #1465, #1499, #1565 and #1055 (#801).
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the

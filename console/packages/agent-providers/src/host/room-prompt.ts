@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { Attachment, Command, Origin, Surface } from '@switch-console/shared/session-v1';
+import type { Attachment, Command, Surface } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES } from './attachments';
 
@@ -15,8 +15,6 @@ const MAX_ATTACHMENTS = 8;
 /** The part of a room message event a prompt is built from. */
 export const roomMessageSchema = z.object({
   type: z.literal('message'),
-  // "direct" for a one-to-one room, where every message is one conversation.
-  channel_type: z.string().nullish(),
   payload: z.object({
     sender: z.string().min(1),
     sender_name: z.string(),
@@ -39,12 +37,8 @@ export const roomMessageSchema = z.object({
       .enum(['admin', 'member', 'owner'])
       .nullish()
       .transform((role) => (role === 'owner' ? 'admin' : role)),
-    // Who the sender is for steering a running turn, as Switch read them: the
-    // Switch user behind a person, or their chat account. Absent for an agent,
-    // the platform, or a server from before steering, none of whom steer.
-    sender_person: z.string().min(1).nullish(),
-    sender_owns_agent: z.boolean().nullish(),
-    // The agent's setting; a value a newer server adds is read as queue.
+    // The agent's setting for messages sent while it works: absent (a server
+    // from before steering) or a value a newer server adds reads as queue.
     mid_turn_delivery: z.enum(['steer', 'queue']).nullish().catch('queue'),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
@@ -217,10 +211,12 @@ export function roomCommand(input: {
    */
   firstOfConversation: boolean;
   /**
-   * How the message is delivered: steered into a running turn, or queued
-   * behind it. `roomMessageSteerTarget` decides; absent means queued.
+   * The session's provider can take a message into its running turn. With
+   * the agent's setting at "steer", the message asks to be steered: it joins
+   * whatever turn is running when the session takes it, whoever sent it and
+   * from wherever.
    */
-  delivery?: 'queue' | 'steer';
+  canSteer: boolean;
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -298,7 +294,7 @@ export function roomCommand(input: {
       type: 'message.send',
       text,
       attachments,
-      delivery: input.delivery ?? 'queue',
+      delivery: input.canSteer && payload.mid_turn_delivery === 'steer' ? 'steer' : 'queue',
     },
   };
 }
@@ -312,49 +308,4 @@ export function roomMessageWords(text: string): string | null {
   const found =
     /BEGIN SWITCH MESSAGE ([0-9a-f]{16})\n([\s\S]*?)\nEND SWITCH MESSAGE \1(?:\n|$)/.exec(text);
   return found ? found[2]! : null;
-}
-
-/** The turn a message could be steered into, as its session holds it. */
-export type SteerTarget = {
-  turnId: string;
-  /** Where the turn was asked: the room, thread and message that started it. */
-  origin: Origin;
-  /** Who started it, as Switch identified them (`sender_person`); null if unknown. */
-  steeringActor: string | null;
-};
-
-/**
- * The running turn this room message may be steered into, or undefined to
- * queue it. It may when all of these hold, and only Switch's own account of
- * the message (the agent's authenticated event) is read for them:
- *
- * - the session's provider can steer, and the agent's setting allows it;
- * - Switch identified the sender as a person (`sender_person`), so no agent,
- *   schedule or other platform message ever steers;
- * - the message is in the turn's conversation: its thread in a channel, the
- *   whole room in a direct room;
- * - the sender started the turn, or owns the agent.
- *
- * Anything a server from before steering leaves out reads as "queue".
- */
-export function roomMessageSteerTarget(input: {
-  canSteer: boolean;
-  roomId: string;
-  message: RoomMessage;
-  running: SteerTarget | null;
-}): string | undefined {
-  const { payload } = input.message;
-  const { running } = input;
-  if (!input.canSteer || payload.mid_turn_delivery !== 'steer') return;
-  const sender = payload.sender_person ?? null;
-  if (sender === null || running === null) return;
-  const { origin } = running;
-  if (origin.roomId !== input.roomId || !origin.messageId) return;
-  if (input.message.channel_type !== 'direct') {
-    const incoming = payload.thread_id ?? payload.message_id;
-    const asked = origin.threadId ?? origin.messageId;
-    if (incoming !== asked) return;
-  }
-  if (sender !== running.steeringActor && payload.sender_owns_agent !== true) return;
-  return running.turnId;
 }

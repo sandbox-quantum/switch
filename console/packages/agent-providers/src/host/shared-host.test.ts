@@ -444,7 +444,7 @@ const roomMessage = (sequence: number, body: string, attachments: unknown[] = []
   },
 });
 
-/** A room message as Switch sends it once it tells the host who may steer. */
+/** A room message as Switch sends it with the agent's mid-turn setting. */
 const steeringMessage = (
   sequence: number,
   body: string,
@@ -455,20 +455,13 @@ const steeringMessage = (
     ...message,
     event: {
       ...message.event,
-      channel_type: 'channel_public',
-      payload: {
-        ...message.event.payload,
-        sender_person: 'mo',
-        sender_owns_agent: false,
-        mid_turn_delivery: 'steer',
-        ...payload,
-      },
+      payload: { ...message.event.payload, mid_turn_delivery: 'steer', ...payload },
     },
   } as ReturnType<typeof roomMessage>;
 };
 
 it.each([false, true])(
-  'steers a correction in the running turn’s thread into it (older Core=%s)',
+  'steers a message from anyone, in any thread, into the running turn (older Core=%s)',
   async (olderCore) => {
     const host = await start({ rooms: true, steering: true });
     host.switchCore.state.refusesDelivery = olderCore;
@@ -481,56 +474,37 @@ it.each([false, true])(
       await until(() => expect(host.turns).toHaveLength(1));
       const asked = host.turns[0]!.turnId;
 
-      // Mo replies in the thread of his own message while the turn runs.
+      // The starter in the thread, a colleague in another thread, and a new
+      // top-level message: all join the running turn.
       await host.parent.ask({
         type: 'room',
         handoff: steeringMessage(2, 'No, use docs/README.md', { thread_id: 'message-1' }),
       });
-      await until(() => expect(host.steered).toHaveLength(1));
-      expect(host.steered[0]).toMatchObject({ into: asked });
-      expect(host.steered[0]!.text).toContain('No, use docs/README.md');
-      expect(host.turns).toHaveLength(1);
-
-      // A colleague's reply in the same thread waits for the turn.
       await host.parent.ask({
         type: 'room',
         handoff: steeringMessage(3, 'Also bump the version', {
           sender: '@ana:test',
-          sender_person: 'ana',
-          thread_id: 'message-1',
+          thread_id: 'elsewhere',
         }),
       });
-      await until(() =>
-        expect(
-          activity().some((row) => row.message_id === 'message-3' && row.kind === 'user-message')
-        ).toBe(true)
-      );
-      expect(host.steered).toHaveLength(1);
+      await host.parent.ask({ type: 'room', handoff: steeringMessage(4, 'And tag it') });
+      await until(() => expect(host.steered).toHaveLength(3));
+      expect(host.steered.map((entry) => entry.into)).toEqual([asked, asked, asked]);
       expect(host.turns).toHaveLength(1);
 
       await until(() =>
-        expect(activity().some((row) => row.message_id === 'message-2')).toBe(true)
+        expect(
+          activity().some((row) => row.message_id === 'message-4' && row.kind === 'user-message')
+        ).toBe(true)
       );
-      const correction = activity().filter((row) => row.message_id === 'message-2');
-      const queued = activity().filter((row) => row.message_id === 'message-3');
-      if (olderCore) {
-        // Refused with the label, then taken without it.
-        expect(correction.at(-1)).not.toHaveProperty('delivery');
-        expect(correction.at(-1)).toMatchObject({ turn_id: asked, kind: 'user-message' });
-      } else {
+      const correction = activity().filter((row) => row.message_id === 'message-3');
+      if (olderCore) expect(correction.at(-1)).not.toHaveProperty('delivery');
+      else
         expect(correction.at(-1)).toMatchObject({
           turn_id: asked,
           kind: 'user-message',
           delivery: 'steered',
         });
-        expect(queued.find((row) => row.kind === 'user-message')).toMatchObject({
-          delivery: 'queued',
-        });
-      }
-
-      host.emit({ type: 'turn.completed', turnId: asked, outcome: 'completed', usage: [] });
-      await until(() => expect(host.turns).toHaveLength(2));
-      expect(host.turns[1]!.text).toContain('Also bump the version');
     } finally {
       await host.stop();
     }
@@ -538,16 +512,16 @@ it.each([false, true])(
   20000
 );
 
-it('queues a message whose sender Switch did not identify as a person', async () => {
+it('queues a message sent while it works when the agent is set to always queue', async () => {
   const host = await start({ rooms: true, steering: true });
   try {
     await host.parent.ask({ type: 'room', handoff: steeringMessage(1, 'Update the README') });
     await until(() => expect(host.turns).toHaveLength(1));
     await host.parent.ask({
       type: 'room',
-      handoff: steeringMessage(2, 'Scheduled check-in', {
+      handoff: steeringMessage(2, 'No, use docs/README.md', {
         thread_id: 'message-1',
-        sender_person: null,
+        mid_turn_delivery: 'queue',
       }),
     });
     host.emit({
@@ -558,6 +532,7 @@ it('queues a message whose sender Switch did not identify as a person', async ()
     });
     await until(() => expect(host.turns).toHaveLength(2));
     expect(host.steered).toEqual([]);
+    expect(host.turns[1]!.text).toContain('No, use docs/README.md');
   } finally {
     await host.stop();
   }
@@ -624,19 +599,22 @@ it('names itself to its parent, which makes its tool calls, before the provider 
   }
 });
 
-it('queues a direct command that asks to steer without room authorization', async () => {
-  const host = await start();
+it('steers a command typed in the session itself from Console into the running turn', async () => {
+  const host = await start({ rooms: true, steering: true });
   try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Update the README') });
+    await until(() => expect(host.turns).toHaveLength(1));
     const epoch = await host.snapshotEpoch();
     const command = relayed(epoch, 'direct-steer', {
       type: 'message.send',
       delivery: 'steer',
-      text: 'hello',
+      text: 'Use docs/README.md instead',
       attachments: [],
     });
     const result = await host.parent.ask({ type: 'command', command, requesterName: null });
     expect(result).toMatchObject({ ok: true, value: { status: 'applied' } });
-    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.steered).toMatchObject([{ into: host.turns[0]!.turnId }]);
+    expect(host.turns).toHaveLength(1);
   } finally {
     expect(await host.stop()).toBeNull();
   }

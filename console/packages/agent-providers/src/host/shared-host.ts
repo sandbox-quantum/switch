@@ -22,7 +22,6 @@ import {
   planAttachments,
   roomCommand,
   roomFreshStartCommandId,
-  roomMessageSteerTarget,
   roomMessageSchema,
   type RoomAttachmentSource,
 } from './room-prompt';
@@ -708,7 +707,8 @@ export async function runSharedHost(
             delivery: 'queue',
           },
         },
-        null
+        null,
+        false
       );
     };
     /** Tells the parent whenever the session's busy state changes. */
@@ -808,11 +808,7 @@ export async function runSharedHost(
     const run = async (
       value: unknown,
       requesterName: string | null,
-      {
-        direct = false,
-        expectedTurnId,
-        steeringActor,
-      }: { direct?: boolean; expectedTurnId?: string; steeringActor?: string | null } = {}
+      direct: boolean
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -821,11 +817,7 @@ export async function runSharedHost(
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
         return `The command is not readable: ${parsed.error.message}`;
       }
-      const received = parsed.data;
-      // Only the authenticated room-event path can establish steering eligibility.
-      if (expectedTurnId === undefined && received.body.type === 'message.send')
-        received.body = { ...received.body, delivery: 'queue' };
-      const command = current(received);
+      const command = current(parsed.data);
       if (!command) return 'There is no turn running to interrupt.';
       if (command.sessionId !== options.session.sessionId) {
         console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
@@ -842,7 +834,7 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
-        await host!.command(command, { expectedTurnId, steeringActor });
+        await host!.command(command);
       } catch (error) {
         await host!.reject(command, error);
       }
@@ -930,12 +922,6 @@ export async function runSharedHost(
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
         const snapshot = host!.snapshot();
-        const expectedTurnId = roomMessageSteerTarget({
-          canSteer: snapshot.session.capabilities.input === 'steer',
-          roomId: event.roomId,
-          message: message.data,
-          running: host!.steerTarget(),
-        });
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
@@ -946,17 +932,14 @@ export async function runSharedHost(
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
-          delivery: expectedTurnId ? 'steer' : 'queue',
+          canSteer: snapshot.session.capabilities.input === 'steer',
         });
         if (message.data.payload.routed || message.data.payload.follow_up)
           host!.unaskedRoomTurn(command.commandId);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null, {
-          expectedTurnId,
-          steeringActor: message.data.payload.sender_person ?? null,
-        });
+        const outcome = await run(command, null, false);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -990,7 +973,8 @@ export async function runSharedHost(
           },
           body: { type: 'session.reset' },
         },
-        null
+        null,
+        false
       );
       if (typeof outcome === 'string')
         throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
@@ -1008,7 +992,7 @@ export async function runSharedHost(
       // Busy is announced before the reply, so a parent that has the reply has
       // already heard any change the command made.
       command: async ({ command, requesterName, direct }) => {
-        const outcome = await run(command, requesterName, { direct: direct === true });
+        const outcome = await run(command, requesterName, direct === true);
         announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;

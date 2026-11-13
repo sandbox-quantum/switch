@@ -215,9 +215,6 @@ export async function startHostServer(
               messageId: null,
             },
           });
-          // A local Console command has no verified room or thread origin.
-          if (command.body.type === 'message.send')
-            command.body = { ...command.body, delivery: 'queue' };
           if (command.sessionId !== session.config.session.sessionId)
             throw new Error('Session identity mismatch.');
           result = await session.command(command as Command);

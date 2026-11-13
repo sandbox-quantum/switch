@@ -63,12 +63,11 @@ export default function MidTurnDeliverySection({
           label="Steer into the running turn"
         />
         <Typography variant="body2" color="text.secondary">
-          A message from whoever started the turn, or from the agent's owner, in
-          that turn's thread (anywhere in a direct chat) reaches the running
-          turn instead of waiting for it to end. The agent reads it at its next
-          step: Claude Code after the tool call or answer in progress. Other
-          people's messages, and agents whose CLI cannot steer, always queue.
-          Off: every message waits for the turn to end.
+          A message sent while the agent is working reaches the running
+          turn instead of waiting for it to end, whoever sent it and from
+          wherever. The agent reads it at its next step: Claude Code after the
+          tool call or answer in progress. Agents whose CLI cannot steer always
+          queue. Off: messages from rooms wait for the turn to end.
           {!canEdit &&
             " Only the agent's owner or a workspace admin can change this."}
         </Typography>

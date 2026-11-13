@@ -1,10 +1,9 @@
-"""What an agent is told about a sender for steering a running turn, and the
-per-agent setting that says whether it may.
+"""The per-agent setting for messages sent while the agent works.
 
-A host steers a message into the running turn only for the person who started
-that turn or the agent's owner (`console/docs/sdk-sessions.md`), so Switch
-tells it who the sender is (`sender_person`), whether they own the agent
-(`sender_owns_agent`), and the agent's setting (`mid_turn_delivery`).
+Any message that reaches a working agent steers into its running turn unless
+the agent's setting says to queue (`console/docs/sdk-sessions.md`). Switch
+sends the setting with every message (`mid_turn_delivery`), so a change applies
+to the next one.
 """
 
 from __future__ import annotations
@@ -17,8 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.message_events import message_event
-from switch_core.delivery.addressing import SenderPrincipal
-from switch_core.delivery.recipient import AgentRecipient, steering_identity
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.gateway.agents import update_mid_turn_delivery
 from switch_core.gateway.schemas import UpdateAgentMidTurnDeliveryRequest
 from switch_core.transport.types import InboundMessage
@@ -29,44 +27,6 @@ from tests.switch_core.bridges.agent.protocol.registration_harness import (
 )
 
 
-@pytest.mark.parametrize(
-    ("principal", "person", "owns"),
-    [
-        # A person whose chat account one Switch user claimed is that user,
-        # from every platform and from Switch Console.
-        (SenderPrincipal("user", "ext-ada", ["ada"], None), "ada", False),
-        (SenderPrincipal("user", "ext-mo", ["mo"], None), "mo", True),
-        # A person nobody claimed is their chat account: they can still steer
-        # a turn they started, but are never taken for the owner.
-        (SenderPrincipal("user", "ext-anon", [], None), "ext-anon", False),
-        # An account several people claimed speaks for none of them.
-        (
-            SenderPrincipal("user", "ext-shared", ["mo", "ada"], None),
-            "ext-shared",
-            False,
-        ),
-        # Agents, the platform, and what the platform carries for someone
-        # (the owner's schedule, a kickoff) never steer.
-        (SenderPrincipal("agent", "agent-1", [], "mo"), None, False),
-        (
-            SenderPrincipal("platform", "admin", [], None, on_behalf_of="mo"),
-            None,
-            False,
-        ),
-        (None, None, False),
-    ],
-)
-def test_who_a_sender_is_for_steering(
-    principal: SenderPrincipal | None, person: str | None, owns: bool
-) -> None:
-    assert steering_identity(principal, "mo") == (person, owns)
-
-
-def test_an_agent_with_no_owner_is_owned_by_nobody() -> None:
-    principal = SenderPrincipal("user", "ext-mo", ["mo"], None)
-    assert steering_identity(principal, None) == ("mo", False)
-
-
 def test_the_setting_is_read_from_the_agent() -> None:
     recipient = SimpleNamespace(agent=SimpleNamespace(mid_turn_delivery="steer"))
     assert AgentRecipient._mid_turn_delivery(recipient) == "steer"  # type: ignore[arg-type]
@@ -74,7 +34,7 @@ def test_the_setting_is_read_from_the_agent() -> None:
     assert AgentRecipient._mid_turn_delivery(recipient) == "queue"  # type: ignore[arg-type]
 
 
-def test_the_facts_ride_on_the_message() -> None:
+def test_the_setting_rides_on_the_message() -> None:
     event = message_event(
         room_id="room-1",
         bridge_id=None,
@@ -91,14 +51,9 @@ def test_the_facts_ride_on_the_message() -> None:
         sender_name="mo",
         body="no, use the other file",
         thread_id=None,
-        sender_person="mo",
-        sender_owns_agent=True,
         mid_turn_delivery="queue",
     )
-    payload = event.payload
-    assert payload.sender_person == "mo"  # type: ignore[union-attr]
-    assert payload.sender_owns_agent is True  # type: ignore[union-attr]
-    assert payload.mid_turn_delivery == "queue"  # type: ignore[union-attr]
+    assert event.payload.mid_turn_delivery == "queue"  # type: ignore[union-attr]
     assert event.channel_type == "direct"
 
 

@@ -225,16 +225,16 @@ Two annotations tell you when that matters:
 
 ### Messages sent while you are working
 
-On Claude Code, Codex and OpenCode, a message can reach you **during** a turn
-rather than after it ends: a correction ("no, use the other file") arrives as
-a new `[Switch]` line in the middle of your work. Read it at your next step and
-change course; you are still in the same turn, so one reply covers both the
-original request and the correction. It comes only from the person who started
-the turn, or your owner, in that turn's thread (anywhere in a direct room).
-Everyone else's messages, other threads, and agents' messages wait for the turn
-to end, as before. A steered message never answers an approval you are waiting
-on: the person answers the request itself. Your owner can turn this off with
-the `mid_turn_delivery` setting, and then every message waits.
+On Claude Code, Codex and OpenCode, messages can reach you **during** a turn
+rather than after it ends: a new `[Switch]` line arrives in the middle of your
+work. It can come from anyone who can talk to you, from any thread or room,
+and each line names its sender, room and thread. Read it at your next step and
+decide what it means for the work in hand: change course for a correction,
+take on or note a separate request, and reply to each where it was asked. You
+are still in the same turn, so one turn can answer several messages. A message
+never answers an approval you are waiting on: the person answers the request
+itself. Your owner can turn this off with the `mid_turn_delivery` setting, and
+then every message waits for the turn to end.
 
 ## When to call `read_context` again
 

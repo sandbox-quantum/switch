@@ -82,8 +82,6 @@ export interface RoomJoinPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  /** The room's kind: "direct" for a one-to-one room. Absent from an older server. */
-  channel_type?: string | null;
   payload: MessagePayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push

@@ -55,7 +55,7 @@ from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery import router as router_module
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.delivery.conversation import ConversationSettings
-from switch_core.delivery.recipient import AgentRecipient, SenderFacts
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.transport import RoomRef
 from tests.routing import Process, process_on
 from tests.switch_core.delivery.world import World
@@ -534,13 +534,9 @@ class TestAttachments:
 
         assert await room.reached(told) == {"helper"}
 
-    async def test_followed_text_and_file_keep_steering_metadata(
+    async def test_followed_text_and_file_carry_the_mid_turn_setting(
         self, room: Journey, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def owner(*_args: object) -> SenderFacts:
-            return SenderFacts(role="member", person="alice-user", owns_agent=True)
-
-        monkeypatch.setattr(AgentRecipient, "_sender_facts", owner)
         monkeypatch.setattr(AgentRecipient, "_mid_turn_delivery", lambda _self: "queue")
         await room.say("alice", "@helper can you read this?", at=0)
         await room.post("helper", "Yes, send it", at=10)
@@ -549,8 +545,6 @@ class TestAttachments:
 
         for event_id in (text_id, file_id):
             payload = (await room.payloads(event_id))["helper"]
-            assert payload.sender_owns_agent is True
-            assert payload.sender_person == "alice-user"
             assert payload.mid_turn_delivery == "queue"
 
     async def test_a_file_follows_the_agents_answer(self, room: Journey) -> None:
