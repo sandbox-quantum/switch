@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, request, type Server } from 'node:http';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { focusMainWindow } from '@main/app/window';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
@@ -160,6 +160,21 @@ it('takes back a code as long as a vendor issues, and nothing absurdly long', as
     long,
     input.completion_secret
   );
+});
+
+it('refuses a request whose Host is not 127.0.0.1, as a rebound DNS name sends', async () => {
+  const { id, input, url } = await start();
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    request(url + `?state=${id}&code=SYNTHETIC`, { headers: { Host: `localhost:${input.port}` } })
+      .on('response', (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      })
+      .on('error', reject)
+      .end();
+  });
+  expect(status).toBe(400);
+  expect(completeServiceConnection).not.toHaveBeenCalled();
 });
 
 it('keys each flow by its service', async () => {

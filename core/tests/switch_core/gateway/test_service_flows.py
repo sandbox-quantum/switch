@@ -360,6 +360,35 @@ class TestLoopback:
             intruder.state = second.state
             assert (await intruder.status()).status_code == 410
 
+    async def test_another_person_cannot_complete_a_flow_with_its_state_and_secret(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            owner = Console(client, ada)
+            code = await _loopback_code(world, owner)
+            intruder = Console(client, grace)
+            intruder.state, intruder.secret = owner.state, owner.secret
+            assert (await intruder.complete(code)).status_code == 410
+        assert world.vendor.token_requests == []
+
+    async def test_a_code_from_another_flow_is_refused(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            first = Console(client, ada)
+            await _loopback_code(world, first)
+            graces_code = await _loopback_code(world, Console(client, grace))
+            # The vendor refuses the code, because Ada's verifier is not Grace's.
+            assert (await first.complete(graces_code)).status_code == 400
+            assert (await first.status()).json()["status"] == "failed"
+        assert await _connection(session_factory, ada.id) is None
+
     async def test_too_many_flows_at_once_are_refused(
         self, session_factory, tmp_path
     ) -> None:
@@ -913,6 +942,25 @@ class TestCoreCallback:
             back = urlsplit(world.vendor.authorize(left.headers["location"]))
             code = parse_qs(back.query)["code"][0]
             assert (await console.complete(code)).status_code == 400
+
+    async def test_a_wrong_cookie_cannot_bring_the_code_back(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            back = urlsplit(world.vendor.authorize(left.headers["location"]))
+            returned = await client.get(
+                f"{back.path}?{back.query}",
+                cookies={f"switch_service_{console.state}": secrets.token_urlsafe(32)},
+            )
+            assert returned.status_code == 400
+        assert (await _flow_row(session_factory, console.state)).status == "authorizing"
 
     async def test_core_mode_needs_a_public_address(
         self, session_factory, tmp_path
