@@ -10,6 +10,7 @@ service with none cannot be issued.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -60,10 +61,12 @@ class ConnectionSecret:
 
 @dataclass(frozen=True)
 class AccessToken:
-    """The owner's access token for a connection, fresh, and when it expires."""
+    """The owner's access token for a connection, fresh, and when it expires:
+    None for a credential the owner pasted, which its vendor ends on a date
+    Switch is not told."""
 
     token: str = field(repr=False)
-    expires_at: datetime
+    expires_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -80,7 +83,8 @@ class IssueRequest:
 @dataclass(frozen=True)
 class IssuedToken:
     token: str = field(repr=False)
-    expires_at: datetime
+    # None for a credential the owner pasted, handed out as it is.
+    expires_at: datetime | None
     resources: dict[str, Any]
     # Whether the vendor can revoke this one token. Only then is it kept,
     # encrypted, until it expires.
@@ -97,10 +101,11 @@ class ServiceAdapter(Protocol):
     # write grant, and a token for one made before.
     read_only: bool
 
-    def current_client_id(self) -> str | None:
-        """The vendor client this adapter signs in through, where it knows it
-        without asking anyone; None for a service with no client, or one not
-        yet known. A connection signed in through another must reconnect."""
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
+        """The vendor client this adapter signs in through for a connection
+        made with `choices` (a vendor's site), where it knows it without
+        asking anyone; None for a service with no client, or one not yet
+        known. A connection signed in through another must reconnect."""
         ...
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
@@ -123,7 +128,14 @@ class ServiceAdapter(Protocol):
 
     async def revoke_issued(self, token: str) -> None: ...
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None: ...
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
+        """Revoke the connection's credential at the vendor, where it can be.
+        `method` is how the connection was made (`oauth`, `token` or `keys`),
+        as its row says: what the secret holds follows from it. True where
+        the vendor ended a credential it knew; False where there was none to
+        end, or the vendor no longer knew it.
+        `ConnectionNotRevocable` says what the person must do instead."""
+        ...
 
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]

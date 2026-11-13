@@ -4,7 +4,9 @@
  * catalog that cannot be read shows the real error with a way to retry
  * rather than an empty grid. A profile shows the truth after a disconnect,
  * made in the page's workspace: the page is re-read before the dialog
- * closes, and a re-read that fails says so on the profile.
+ * closes, and a re-read that fails says so on the profile. A connection made
+ * with a pasted token says what the token reaches in place of a level, and
+ * one the vendor refused offers to paste a new one.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, useEffect, useState } from 'react';
@@ -20,6 +22,7 @@ const workspaces = vi.hoisted(() => ({
   getGitHubConnection: vi.fn(),
   setServiceGrant: vi.fn(),
   setWorkspaceService: vi.fn(),
+  connectServiceWithPaste: vi.fn(),
 }));
 const switchServers = vi.hoisted(() => ({
   openGitHubInstallation: vi.fn(),
@@ -132,6 +135,10 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
+import {
+  type ConnectStart,
+  ConnectServiceModal,
+} from '@renderer/features/connectors/connect-service-modal';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
 import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
@@ -142,14 +149,47 @@ type DisconnectArgs = {
   onSuccess?: (result: unknown) => void;
 };
 
-/** Stands in for the modal renderer: shows the disconnect dialog once the profile asks for it. */
+type ConnectArgs = {
+  serverId: string;
+  workspaceId: string;
+  connection: ConnectionCatalogEntry;
+  startAt: ConnectStart;
+  onConnected: (warning: string | null) => void;
+  onClose: () => void;
+};
+
+/**
+ * Stands in for the modal renderer: shows the disconnect dialog, or the
+ * connect dialog, once the profile asks for it.
+ */
 function ModalHost() {
-  const [shown, setShown] = useState<{ id: string; args: DisconnectArgs } | null>(null);
+  const [shown, setShown] = useState<{ id: string; args: unknown } | null>(null);
   useEffect(() => {
-    modalHost.show = (id, args) => setShown({ id, args: args as DisconnectArgs });
+    modalHost.show = (id, args) => setShown({ id, args });
   }, []);
+  if (shown?.id === 'connectServiceModal') {
+    const connect = shown.args as ConnectArgs;
+    return (
+      <Dialog open>
+        <DialogContent>
+          <ConnectServiceModal
+            serverId={connect.serverId}
+            workspaceId={connect.workspaceId}
+            connection={connect.connection}
+            startAt={connect.startAt}
+            onConnected={connect.onConnected}
+            onSuccess={() => {}}
+            onClose={() => {
+              setShown(null);
+              connect.onClose();
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+    );
+  }
   if (shown?.id !== 'disconnectServiceModal') return null;
-  const { args } = shown;
+  const args = shown.args as DisconnectArgs;
   return (
     <Dialog open>
       <DialogContent>
@@ -185,7 +225,14 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     agent_access_note: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: true,
     organization_locked: false,
@@ -743,4 +790,138 @@ it('offers an admin the way to the workspace switches, and nobody else', async (
   await act(async () => button(/Manage in Admin/, page)!.click());
   expect(navigation.view()).toBe('admin');
   expect(navigation.params()).toEqual({ serverId: 'server', section: 'connectors' });
+});
+
+const PASTED_TOKEN = {
+  method: 'token' as const,
+  label: 'Personal access token',
+  fields: [
+    { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+  ],
+  help_url: null,
+  expires: 'vendor' as const,
+  access_note: 'Reaches what your token allows.',
+};
+const PASTED = entry({
+  slug: 'datadog',
+  name: 'Datadog',
+  status: 'connected',
+  sign_in_choices: [
+    {
+      name: 'site',
+      label: 'Datadog site',
+      secret: false,
+      help: null,
+      choices: ['datadoghq.com', 'datadoghq.eu'],
+    },
+  ],
+  paste: [PASTED_TOKEN],
+  method: 'token',
+  access_note: 'Reaches what your token allows.',
+  external_identity: 'ada@example.test',
+  choices: { site: 'datadoghq.eu' },
+  consent: 'write',
+});
+
+async function openDatadog(catalog: ConnectionCatalogEntry[]): Promise<HTMLElement> {
+  workspaces.getServiceConnections.mockResolvedValue(catalog);
+  const page = await render();
+  await vi.waitFor(() => expect(button(/^Datadog/, grid(page)!)).toBeDefined());
+  await act(async () => button(/^Datadog/, grid(page)!)!.click());
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Datadog'));
+  return page;
+}
+
+it('says what a pasted token reaches and how long it lasts, in place of its level', async () => {
+  const page = await openDatadog([PASTED]);
+
+  const header = page.querySelector('header')!;
+  expect(header.textContent).toContain('Connected with ada@example.test · datadoghq.eu');
+  expect(header.textContent).toContain(
+    'Reaches what your token allows. Expires: on the date you set in Datadog.'
+  );
+  expect(header.textContent).not.toMatch(/Read and write|· Read/);
+  expect(page.textContent).toContain('Personal access token');
+});
+
+it('says why Datadog refused a pasted token, and pastes a new one at the same site', async () => {
+  workspaces.connectServiceWithPaste.mockResolvedValue({
+    warning: null,
+    external_identity: 'ada@example.test',
+    method: 'token',
+    choices: { site: 'datadoghq.eu' },
+  });
+  const refused = {
+    ...PASTED,
+    status: 'needs_reauthorization' as const,
+    reconnect_code: 'token_refused',
+    reconnect_reason: 'Datadog refused the pasted token. Paste a new one.',
+  };
+  workspaces.getServiceConnections.mockResolvedValue([refused]);
+  const page = await render();
+  await vi.waitFor(() => expect(button(/^Datadog/, grid(page)!)).toBeDefined());
+  expect(button(/^Datadog/, grid(page)!)!.textContent).toContain(
+    'Datadog refused the pasted token. Paste a new one.'
+  );
+  await act(async () => button(/^Datadog/, grid(page)!)!.click());
+  await vi.waitFor(() => expect(button(/^Paste a new one$/, page)).toBeDefined());
+  expect(button(/^Reconnect$/, page)).toBeUndefined();
+
+  await act(async () => button(/^Paste a new one$/, page)!.click());
+  const dialog = () => document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!;
+  await vi.waitFor(() => expect(dialog().querySelector('input[type="password"]')).not.toBeNull());
+  expect(dialog().querySelector('[aria-label="Datadog site"]')?.textContent).toContain(
+    'datadoghq.eu'
+  );
+  const field = dialog().querySelector<HTMLInputElement>('input[type="password"]')!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(field, 'SYNTHETIC-NEW-TOKEN');
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => button(/^Connect Datadog/, dialog())!.click());
+
+  expect(workspaces.connectServiceWithPaste).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    service: 'datadog',
+    method: 'token',
+    fields: { pat: 'SYNTHETIC-NEW-TOKEN' },
+    choices: { site: 'datadoghq.eu' },
+  });
+});
+
+it('asks for a connection made before Datadog asked for a site to be made again', async () => {
+  const page = await openDatadog([
+    {
+      ...PASTED,
+      status: 'needs_reauthorization',
+      method: 'keys',
+      access_note: 'Reaches what your keys allow.',
+      choices: {},
+      external_identity: 'Datadog key · datadoghq.eu',
+      reconnect_code: 'choices_missing',
+      reconnect_reason: 'Datadog was connected before it asked for a site. Connect it again.',
+    },
+  ]);
+
+  expect(page.textContent).toContain(
+    'Datadog was connected before it asked for a site. Connect it again.'
+  );
+  expect(button(/^Reconnect$/, page)).toBeDefined();
+  expect(button(/^Paste a new one$/, page)).toBeUndefined();
+});
+
+it('says what a pasted token reaches only while it works', async () => {
+  const page = await openDatadog([
+    {
+      ...PASTED,
+      status: 'needs_reauthorization',
+      reconnect_code: 'token_refused',
+      reconnect_reason: 'Datadog refused the pasted token. Paste a new one.',
+    },
+  ]);
+
+  expect(page.querySelector('header')!.textContent).not.toContain(
+    'Reaches what your token allows.'
+  );
 });

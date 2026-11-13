@@ -1731,6 +1731,13 @@
       ]
     },
     {
+      "route": "PUT /gateway/service-connections/{service}/paste",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
       "route": "PUT /gateway/tenants/{tenant_id}/budgets/{budget_id}",
       "auth": "session",
       "flags": []

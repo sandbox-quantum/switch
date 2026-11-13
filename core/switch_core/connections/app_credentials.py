@@ -58,7 +58,11 @@ from switch_core.connections.adapters.github import (
     permissions_short,
 )
 from switch_core.connections.adapters.oauth import OAuthClientCredentials
-from switch_core.connections.loader import Connection, ConnectionDefinition
+from switch_core.connections.loader import (
+    Connection,
+    ConnectionDefinition,
+    RedirectMode,
+)
 from switch_core.connections.registry import (
     ClientRegistration,
     build_adapter,
@@ -160,9 +164,9 @@ def reads_only(name: str, *, organization: bool) -> str:
             "that under Organization, Connectors."
         )
     return (
-        f"This server's {name} App lets agents read only, so {name} can't be "
-        "granted for writing. Whoever runs your Switch server can change that "
-        "in Switch Console, under Admin → Connector apps."
+        f"Switch's {name} App lets agents read only, so {name} can't be "
+        "granted for writing. Whoever runs Switch can change that in Switch "
+        "Console, under Admin → Connector apps."
     )
 
 
@@ -393,6 +397,11 @@ class ConnectorApps:
     @property
     def public_url(self) -> str | None:
         return self._config.gateway_public_url
+
+    def named_redirect(self, service: str) -> RedirectMode | None:
+        """The way back the server names for `service`'s sign-ins
+        (`SERVICE_SIGN_IN_REDIRECT`), if it names one."""
+        return self._config.service_sign_in_redirect.get(service)
 
     @property
     def http(self) -> httpx.AsyncClient:

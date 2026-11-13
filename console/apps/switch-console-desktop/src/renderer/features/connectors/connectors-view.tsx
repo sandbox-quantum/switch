@@ -83,7 +83,7 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
 
   if (access === 'unreadable')
     return (
-      <ServerPage width={880} title="Connectors" description={DESCRIPTION}>
+      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
         <FlagsUnreadable flags={flags} />
       </ServerPage>
     );

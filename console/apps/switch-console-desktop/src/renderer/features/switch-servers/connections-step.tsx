@@ -194,6 +194,7 @@ export function ConnectionsStep({
         calls={serverServiceCalls(serverId)}
         connection={opened}
         reconnecting={false}
+        startOn={null}
         onBack={back}
       />
     );

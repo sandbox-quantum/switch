@@ -1,10 +1,16 @@
 import { ExternalLink } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import {
+  allowListHint,
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  initialSignInChoices,
+  pasteLinks,
+  pasteReady,
   SIGN_IN_HINT_AFTER_MS,
+  safetyLine,
+  signInChoicesReady,
   signInHint,
   signInProgress,
 } from '@renderer/features/connectors/connect-flow';
@@ -18,20 +24,41 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type {
+  ConnectionCatalogEntry,
+  PasteMethodName,
+  ServiceKeyField,
+} from '@shared/core/switch-servers/connection-catalog';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import type { ServiceCalls } from './service-calls';
+import { ServiceKeyFields } from './service-key-step';
 
 /**
  * Connecting a service through Switch's generic sign-in: the browser signs in
  * at the vendor, this Console takes the result back, and Switch keeps the
  * account as soon as it has it. The dialog follows the sign-in and shows the
- * account connected, or why it was not. GitHub has its own step.
+ * account connected, or why it was not. A service whose sign-in asks for a
+ * choice first (a vendor's site) is picked above the button, and the sign-in
+ * starts only once each is. GitHub has its own step.
+ *
+ * A service that also takes a credential pasted in place of the sign-in (a
+ * token, or keys) offers each under the sign-in; its paste step asks for the
+ * same choices, and Switch checks what is pasted at the vendor before keeping
+ * it. Each way says in one line how long what Switch keeps lasts.
  */
 export function ServiceConnectStep({
   calls,
   connection,
   reconnecting,
+  startOn,
   onBack,
   onConnected,
 }: {
@@ -39,18 +66,35 @@ export function ServiceConnectStep({
   connection: ConnectionCatalogEntry;
   /** Opened to sign in again, so it offers a new sign-in even while one is connected. */
   reconnecting: boolean;
+  /** The paste step to open on, to paste a new credential the way it was; null for the sign-in. */
+  startOn: PasteMethodName | null;
   onBack: () => void;
   /** Moves on once the account is connected, with the warning Switch gave. */
   onConnected?: (warning: string | null) => void;
 }) {
   const service = connection.slug;
+  const name = connection.name;
   const [state, dispatch] = useReducer(
     connectFlowReducer,
-    connection.status === 'connected' && !reconnecting,
+    { connected: connection.status === 'connected' && !reconnecting, pasting: startOn },
     initialConnectFlow
   );
-  const { connected, flowId, flow, busy, warning, error } = state;
+  const { connected, pasting, flowId, flow, busy, warning, error } = state;
   const closable = canCloseConnectFlow(state);
+  const allowHint = allowListHint(state, name);
+  const [picked, setPicked] = useState(() => initialSignInChoices(connection));
+  const choices = signInChoicesReady(connection.sign_in_choices, picked);
+  const pasteMethod =
+    pasting === null ? null : (connection.paste.find((way) => way.method === pasting) ?? null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const ready = pasteMethod === null ? null : pasteReady(pasteMethod, values, choices);
+  // What a connection pasted here, or before, reaches; null for a sign-in.
+  const [pastedReach, setPastedReach] = useState(
+    connection.status === 'connected' && connection.method !== 'oauth'
+      ? connection.access_note
+      : null
+  );
+  const offersConnect = !connected || error !== null;
   useCloseGuard(!closable);
   // Callers build their calls as they render; polling follows the flow, not them.
   const callsRef = useRef(calls);
@@ -73,6 +117,7 @@ export function ServiceConnectStep({
         const result = await callsRef.current.getSignIn(service, flowId);
         if (!alive) return;
         if (result.status === 'connected') {
+          setPastedReach(null);
           onConnectedRef.current?.(result.warning);
           dispatch({ type: 'connected', warning: result.warning });
           return;
@@ -80,14 +125,14 @@ export function ServiceConnectStep({
         dispatch({
           type: 'polled',
           flow: result,
-          failure: `Signing in to ${connection.name} failed. Cancel and try again.`,
+          failure: `Signing in to ${name} failed. Cancel and try again.`,
         });
         if (result.status !== 'failed') timer = setTimeout(() => void poll(), 2000);
       } catch (cause) {
         if (alive)
           dispatch({
             type: 'poll_failed',
-            error: failureText(cause, `Could not check the ${connection.name} sign-in.`),
+            error: failureText(cause, `Could not check the ${name} sign-in.`),
           });
       }
     };
@@ -96,17 +141,28 @@ export function ServiceConnectStep({
       alive = false;
       clearTimeout(timer);
     };
-  }, [service, flowId, connection.name]);
-  const fallback = `Could not update the ${connection.name} connection.`;
-  const start = async () => {
+  }, [service, flowId, name]);
+  const fallback = `Could not update the ${name} connection.`;
+  const start = async (startWith: Record<string, string>) => {
     dispatch({ type: 'act' });
     try {
-      dispatch({
-        type: 'started',
-        flowId: await calls.startSignIn(service),
-      });
+      const started = await calls.startSignIn(service, startWith);
+      dispatch({ type: 'started', flowId: started.id, callbackUrl: started.callbackUrl });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
+    }
+  };
+  const paste = async (body: ServicePaste, reach: string) => {
+    dispatch({ type: 'act' });
+    // What was pasted is never kept here once it is sent.
+    setValues({});
+    try {
+      const result = await calls.connectWithPaste(service, body);
+      setPastedReach(reach);
+      onConnectedRef.current?.(result.warning);
+      dispatch({ type: 'connected', warning: result.warning });
+    } catch (cause) {
+      dispatch({ type: 'failed', error: failureText(cause, `Could not connect ${name}.`) });
     }
   };
   const cancel = async (id: string) => {
@@ -122,6 +178,7 @@ export function ServiceConnectStep({
     dispatch({ type: 'act' });
     try {
       const result = await calls.disconnect(service);
+      setPastedReach(null);
       dispatch({ type: 'disconnected', warning: result.warning });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
@@ -130,12 +187,21 @@ export function ServiceConnectStep({
   const progress = signInProgress(flow, connection.name);
   const hint = flowId && slowFlowId === flowId ? signInHint(flow, connection.name) : null;
   const needsReconnect = connection.status === 'needs_reauthorization';
+  const pickers = (
+    <SignInChoicePickers
+      service={service}
+      fields={connection.sign_in_choices}
+      picked={picked}
+      busy={busy}
+      onPick={(field, value) => setPicked((current) => ({ ...current, [field]: value }))}
+    />
+  );
+  const signInLine = connection.paste.length > 0 ? safetyLine(connection, 'sign_in') : null;
+  const showsPaste = offersConnect && !flowId && pasteMethod !== null;
   return (
     <>
       <DialogHeader showCloseButton={closable}>
-        <DialogTitle>
-          {connected && !flowId ? `${connection.name} connected` : `Connect ${connection.name}`}
-        </DialogTitle>
+        <DialogTitle>{connected && !flowId ? `${name} connected` : `Connect ${name}`}</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         {flowId ? (
@@ -145,9 +211,41 @@ export function ServiceConnectStep({
                 <Spinner />
                 {progress}
               </p>
+              {allowHint && (
+                <p className="text-xs text-foreground-muted">
+                  {allowHint.text}{' '}
+                  <span className="font-mono break-all select-all">{allowHint.url}</span>
+                </p>
+              )}
               {hint && <p className="text-sm text-foreground-muted">{hint}</p>}
             </>
           )
+        ) : showsPaste && pasteMethod ? (
+          <>
+            <p className="text-sm text-foreground-muted">
+              {pasteMethod.method === 'token'
+                ? `Paste a token you made in ${name}. Switch checks it at ${name}, stores it encrypted, and never shows it again.`
+                : `Paste keys you made in ${name}. Switch checks them at ${name}, stores them encrypted, and never shows them again.`}
+            </p>
+            {pickers}
+            <ServiceKeyFields
+              service={service}
+              name={name}
+              label={`${name} ${pasteMethod.label}`}
+              fields={pasteMethod.fields}
+              values={values}
+              busy={busy}
+              helpUrl={pasteMethod.help_url}
+              helpText={
+                pasteMethod.method === 'token'
+                  ? `How to make a token in ${name}`
+                  : `How to make keys in ${name}`
+              }
+              onChange={(field, next) => setValues((current) => ({ ...current, [field]: next }))}
+            />
+            <p className="text-xs text-foreground-muted">{pasteMethod.access_note}</p>
+            <p className="text-xs text-foreground-muted">{safetyLine(connection, pasteMethod)}</p>
+          </>
         ) : (
           <>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
@@ -156,12 +254,15 @@ export function ServiceConnectStep({
             )}
             <p className="text-sm text-foreground-muted">
               {connected
-                ? `Agents you turn ${connection.name} on for act as you there, with what you allowed when you signed in.`
-                : `You sign in at ${connection.name}, and allow what Switch asks for. Agents you then turn ${connection.name} on for act as you there.`}
+                ? pastedReach
+                  ? `Agents you turn ${name} on for use what you pasted. ${pastedReach}`
+                  : `Agents you turn ${name} on for act as you there, with what you allowed when you signed in.`
+                : `You sign in at ${name}, and allow what Switch asks for. Agents you then turn ${name} on for act as you there.`}
             </p>
             {needsReconnect && !connected && (
               <p className="text-sm text-destructive">
-                Switch can no longer use your {connection.name} sign-in. Connect again.
+                {connection.reconnect_reason ??
+                  `Switch can no longer use your ${name} sign-in. Connect again.`}
               </p>
             )}
             {reconnecting && !connected && (
@@ -169,9 +270,32 @@ export function ServiceConnectStep({
             )}
             {connected && (
               <p className="text-xs text-foreground-muted">
-                Disconnecting removes the sign-in Switch keeps, and every agent's access to{' '}
-                {connection.name}.
+                {pastedReach
+                  ? `Disconnecting removes what you pasted from Switch, and every agent's access to ${name}.`
+                  : `Disconnecting removes the sign-in Switch keeps, and every agent's access to ${name}.`}
               </p>
+            )}
+            {offersConnect && pickers}
+            {offersConnect && signInLine && (
+              <p className="text-xs text-foreground-muted">{signInLine}</p>
+            )}
+            {offersConnect && connection.paste.length > 0 && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {pasteLinks(connection.paste).map((link) => (
+                  <button
+                    key={link.method}
+                    type="button"
+                    disabled={busy}
+                    className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-not-allowed"
+                    onClick={() => {
+                      setValues({});
+                      dispatch({ type: 'paste', method: link.method });
+                    }}
+                  >
+                    {link.text}
+                  </button>
+                ))}
+              </div>
             )}
           </>
         )}
@@ -194,6 +318,27 @@ export function ServiceConnectStep({
           <Button variant="outline" disabled={busy} onClick={() => void cancel(flowId)}>
             Cancel
           </Button>
+        ) : showsPaste && pasteMethod ? (
+          <>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                setValues({});
+                dispatch({ type: 'paste', method: null });
+              }}
+            >
+              Back
+            </Button>
+            <Button
+              disabled={busy || !connection.connectable || ready === null}
+              onClick={() => {
+                if (ready !== null) void paste(ready, pasteMethod.access_note);
+              }}
+            >
+              Connect {name}
+            </Button>
+          </>
         ) : (
           <>
             <Button variant="outline" onClick={onBack} disabled={busy}>
@@ -204,9 +349,14 @@ export function ServiceConnectStep({
                 Disconnect
               </Button>
             )}
-            {(!connected || error) && (
-              <Button disabled={busy || !connection.connectable} onClick={() => void start()}>
-                Connect {connection.name} <ExternalLink className="size-4" />
+            {offersConnect && (
+              <Button
+                disabled={busy || !connection.connectable || choices === null}
+                onClick={() => {
+                  if (choices !== null) void start(choices);
+                }}
+              >
+                Connect {name} <ExternalLink className="size-4" />
               </Button>
             )}
           </>
@@ -214,4 +364,53 @@ export function ServiceConnectStep({
       </DialogFooter>
     </>
   );
+}
+
+/**
+ * What a sign-in asks the person to pick first (a vendor's site), each from
+ * its list; a credential pasted in its place is pasted for the same picks.
+ */
+function SignInChoicePickers({
+  service,
+  fields,
+  picked,
+  busy,
+  onPick,
+}: {
+  service: string;
+  fields: ServiceKeyField[] | null;
+  picked: Record<string, string>;
+  busy: boolean;
+  onPick: (field: string, value: string) => void;
+}) {
+  return (fields ?? []).map((field) => {
+    const id = `service-sign-in-${service}-${field.name}`;
+    const value = picked[field.name] ?? '';
+    return (
+      <div key={field.name} className="space-y-1">
+        <label htmlFor={id} className="block text-sm font-medium">
+          {field.label}
+        </label>
+        <Select
+          value={value || null}
+          disabled={busy}
+          onValueChange={(next) => onPick(field.name, next ?? '')}
+        >
+          <SelectTrigger id={id} aria-label={field.label} className="w-full">
+            <SelectValue placeholder={`Choose a ${field.label.toLowerCase()}`}>
+              {value || undefined}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {(field.choices ?? []).map((choice) => (
+              <SelectItem key={choice} value={choice}>
+                {choice}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {field.help && <p className="text-xs text-foreground-muted">{field.help}</p>}
+      </div>
+    );
+  });
 }

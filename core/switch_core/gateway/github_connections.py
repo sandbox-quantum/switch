@@ -388,6 +388,7 @@ async def complete(
                 secret=secret,
                 oauth_client_id=github.client_id,
                 account_id=account_id,
+                choices={},
             )
         except Exception:
             # The refusal must still reach the person and end the flow.
@@ -415,6 +416,8 @@ async def complete(
             external_identity=credentials["login"],
             secret=secret,
             oauth_client_id=github.client_id,
+            method="oauth",
+            choices={},
         )
     except ServiceError as error:
         await _settled(flows, checking, "failed", error=error.message)

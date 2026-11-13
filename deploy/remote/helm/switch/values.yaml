@@ -529,6 +529,26 @@ switchCore:
   # people must reconnect. An unknown service or profile stops switch-core at
   # startup. Empty: full scopes.
   serviceAccessProfiles: {}
+  # Where a connector's sign-ins come back, for one that can come back either
+  # way (Atlassian, Datadog) (SERVICE_SIGN_IN_REDIRECT), e.g. {"atlassian":
+  # "core"}. "loopback" is Switch Console on the person's computer, and the
+  # default; "core" is <GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback,
+  # which the vendor's admin must allow-list first. Changing it registers a new
+  # client at the vendor, so everyone reconnects that service once. A service
+  # or way the catalog does not list stops switch-core at startup. Restart all
+  # replicas together to change it. With more than one replica, a chart
+  # upgrade is a rolling update, so upgrade with replicaCount 0, then upgrade
+  # again with your count; otherwise people may have to reconnect more than
+  # once.
+  serviceSignInRedirect: {}
+  # Whether a connector that takes a credential pasted in place of its sign-in
+  # also offers one that never expires, such as API and application keys, and
+  # hands it to agents (ALLOW_NON_EXPIRING_KEYS). Off, such keys are not
+  # offered, and a connection made with one while this was on must be
+  # reconnected another way. A never-expiring key can only be revoked at the
+  # vendor: disconnecting it or removing a grant forgets it in Switch but
+  # leaves it working.
+  allowNonExpiringKeys: false
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the

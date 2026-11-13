@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from sqlalchemy import select, update
 
 from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
-from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.broker import SWITCHED_OFF, ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.organization_apps import OrganizationApp
 from switch_core.connections.sign_in_flows import SignInFlows
@@ -129,6 +129,7 @@ def _process(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
@@ -159,6 +160,7 @@ def _rebroker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=public_url,
+        allow_non_expiring_keys=False,
     )
 
 
@@ -285,7 +287,7 @@ async def test_a_connection_through_a_replaced_app_tells_its_owner_to_reconnect(
         assert response.status_code == 422
         assert response.json()["detail"] == (
             "GitHub was connected through an app Switch no longer uses. "
-            "Reconnect GitHub from Connectors in Switch Console."
+            "Reconnect GitHub in Switch Console, under Connectors."
         )
 
 
@@ -903,7 +905,7 @@ async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_
 
 
 SERVER_REFUSAL = {
-    "detail": "Switched off on this server.",
+    "detail": SWITCHED_OFF,
     "code": "forbidden",
     "retryable": False,
 }

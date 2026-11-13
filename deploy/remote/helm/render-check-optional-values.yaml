@@ -19,6 +19,9 @@ switchCore:
     datadog: "Not offered on this server."
   serviceAccessProfiles:
     google-workspace: drive-file
+  serviceSignInRedirect:
+    atlassian: core
+  allowNonExpiringKeys: true
   # Reporting on, so the OTLP settings switch-core and the decision service
   # share are rendered too.
   observability:
