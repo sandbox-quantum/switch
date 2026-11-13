@@ -3,6 +3,11 @@ import { serveMcpOverHttp } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { HttpMcpServerSpec } from '../adapter';
 import type { ParentChannel } from './session-channel';
+import {
+  compactSwitchTools,
+  dispatchCompactedToolCall,
+  type SessionToolDefinition,
+} from './switch-tool-compaction';
 
 const toolsSchema = z.array(
   z.object({
@@ -28,13 +33,36 @@ const toolResultSchema = z.object({
  * thing that talks to Switch. `spec` is what the CLI is given.
  */
 export async function startSessionMcp(
-  parent: ParentChannel
+  parent: ParentChannel,
+  options: { compactTools?: boolean } = {}
 ): Promise<{ spec: HttpMcpServerSpec; close: () => Promise<void> }> {
   const token = randomBytes(32).toString('hex');
+  let rawToolsPromise: Promise<SessionToolDefinition[]> | null = null;
+  const fetchRawTools = (): Promise<SessionToolDefinition[]> => {
+    const request = parent
+      .ask({ type: 'tools' })
+      .then((raw) => toolsSchema.parse(raw))
+      .catch((error: unknown) => {
+        if (rawToolsPromise === request) rawToolsPromise = null;
+        throw error;
+      });
+    rawToolsPromise = request;
+    return request;
+  };
+  const forwardToolCall = async (name: string, args: Record<string, unknown>) =>
+    toolResultSchema.parse(await parent.ask({ type: 'tool', name, arguments: args }));
   const server = await serveMcpOverHttp(token, {
-    listTools: async () => toolsSchema.parse(await parent.ask({ type: 'tools' })),
+    listTools: async () => {
+      const tools = await fetchRawTools();
+      return options.compactTools ? compactSwitchTools(tools) : tools;
+    },
     callTool: async (name, args) =>
-      toolResultSchema.parse(await parent.ask({ type: 'tool', name, arguments: args })),
+      options.compactTools
+        ? dispatchCompactedToolCall(name, args, forwardToolCall, async () => {
+            const tools = await (rawToolsPromise ?? fetchRawTools());
+            return new Map(tools.map((tool) => [tool.name, tool]));
+          })
+        : forwardToolCall(name, args),
   });
   return {
     spec: { transport: 'http', url: server.url, headers: { Authorization: `Bearer ${token}` } },
