@@ -124,6 +124,7 @@ async def _save(
 
 def _broker(session_factory: async_sessionmaker[AsyncSession]) -> ServiceBroker:
     return ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,

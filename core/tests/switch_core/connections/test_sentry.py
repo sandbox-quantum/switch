@@ -207,6 +207,7 @@ async def _signed_in(session_factory, *, expires_in: float):
     # person's 30-day Sentry token has left.
     vendor.refreshed_lifetime = timedelta(days=29, hours=23)
     broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,

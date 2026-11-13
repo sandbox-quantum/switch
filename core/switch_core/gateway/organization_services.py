@@ -67,12 +67,14 @@ from switch_core.db.stores.workspace_service_store import (
 )
 from switch_core.gateway.auth import get_current_user, organization_workspaces
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_organization_store,
     get_session,
     get_session_factory,
     get_user_store,
 )
 from switch_core.gateway.organizations import require_organization_admin
+from switch_core.telemetry.service import emit_safely
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +393,16 @@ async def set_organization_service(
         previous,
         setting,
     )
+    emit_safely(
+        current_telemetry(),
+        "service_switched",
+        {
+            "service": service,
+            "scope": "organization",
+            "setting": "on" if setting.enabled else "off",
+            "locked": setting.locked,
+        },
+    )
     return {"slug": service, "setting": _setting_body(setting), "warning": warning}
 
 
@@ -424,5 +436,15 @@ async def clear_organization_service(
         service,
         _setting_of(row),
         None,
+    )
+    emit_safely(
+        current_telemetry(),
+        "service_switched",
+        {
+            "service": service,
+            "scope": "organization",
+            "setting": "default",
+            "locked": False,
+        },
     )
     return {"slug": service, "setting": None, "warning": warning}

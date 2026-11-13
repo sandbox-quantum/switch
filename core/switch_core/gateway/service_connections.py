@@ -39,8 +39,13 @@ from switch_core.db.models import (
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway.auth import get_current_user, require_tenant_admin
-from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.dependencies import current_telemetry, get_session
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.telemetry.services import (
+    refusal_failure,
+    sign_in_failed,
+    sign_in_started,
+)
 
 router = APIRouter()
 STORE = ServiceConnectionStore()
@@ -388,8 +393,12 @@ async def connect_with_key(
     try:
         await broker.require_workspace_enabled(session, service)
         await session.commit()
+        sign_in_started(current_telemetry(), service, "api_key")
         checked = await broker.check_key(service, body.fields)
     except ServiceError as error:
+        sign_in_failed(
+            current_telemetry(), service, "complete", refusal_failure(error.code)
+        )
         return service_refusal(error)
     name = CATALOG[service].definition.name
     await session.execute(
@@ -405,6 +414,9 @@ async def connect_with_key(
         )
     )
     if taken is not None:
+        sign_in_failed(
+            current_telemetry(), service, "complete", "account_linked_elsewhere"
+        )
         return JSONResponse(
             status_code=409,
             content={
@@ -429,6 +441,9 @@ async def connect_with_key(
             oauth_client_id=None,
         )
     except ServiceError as error:
+        sign_in_failed(
+            current_telemetry(), service, "complete", refusal_failure(error.code)
+        )
         return service_refusal(error)
     return {"warning": warning, "external_identity": checked.label}
 
@@ -516,6 +531,7 @@ async def set_service_grant(
             tool_mode=body.tool_mode,
             tools=body.tools,
             resources=body.resources,
+            granted_by="person",
         )
     except ServiceError as error:
         return service_refusal(error)
@@ -539,7 +555,9 @@ async def remove_service_grant(
     if grant is None:
         raise HTTPException(status_code=404, detail="No such grant.")
     try:
-        warning = await broker.revoke_grant(session, grant, user.id)
+        warning = await broker.revoke_grant(
+            session, grant, user.id, removed_by="person"
+        )
     except ServiceError as error:
         return service_refusal(error)
     return {"warning": warning}

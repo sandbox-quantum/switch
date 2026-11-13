@@ -170,6 +170,7 @@ class _Server:
     async def start(self) -> ServiceBroker:
         await self.apps.load()
         return ServiceBroker(
+            telemetry=None,
             session_factory=self._session_factory,
             keyring=TEST_KEYRING,
             catalog=self._catalog,

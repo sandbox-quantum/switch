@@ -68,6 +68,7 @@ def _revocation(session_factory: async_sessionmaker[AsyncSession]) -> AccessRevo
         agent_store=AgentStore(),
         api_key_store=ApiKeyStore(),
         broker=ServiceBroker(
+            telemetry=None,
             session_factory=session_factory,
             keyring=_KEYRING,
             catalog=CATALOG,

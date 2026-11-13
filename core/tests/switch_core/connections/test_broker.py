@@ -78,6 +78,7 @@ def broker(
     session_factory: async_sessionmaker[AsyncSession], vendor: FakeVendor
 ) -> ServiceBroker:
     return ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,
@@ -424,7 +425,9 @@ class TestIssue:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
             assert grant is not None
-            await broker.revoke_grant(session, grant, world.owner.id)
+            await broker.revoke_grant(
+                session, grant, world.owner.id, removed_by="person"
+            )
 
         secrets = [
             token.token,
@@ -453,6 +456,7 @@ class TestChecks:
         self, session_factory
     ) -> None:
         broker = ServiceBroker(
+            telemetry=None,
             session_factory=session_factory,
             keyring=TEST_KEYRING,
             catalog=CATALOG,
@@ -583,7 +587,9 @@ class TestRevocation:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
             assert grant is not None
-            warning = await broker.revoke_grant(session, grant, world.owner.id)
+            warning = await broker.revoke_grant(
+                session, grant, world.owner.id, removed_by="person"
+            )
 
         assert warning is None
         assert sorted(vendor.revoked) == sorted(tokens)
@@ -596,7 +602,12 @@ class TestRevocation:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
             assert grant is not None
-            assert await broker.revoke_grant(session, grant, world.owner.id) is None
+            assert (
+                await broker.revoke_grant(
+                    session, grant, world.owner.id, removed_by="person"
+                )
+                is None
+            )
 
         assert vendor.revoked == [token.token]
         [record] = await _issuances(session_factory)
@@ -633,7 +644,9 @@ class TestRevocation:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
             assert grant is not None
-            warning = await broker.revoke_grant(session, grant, world.owner.id)
+            warning = await broker.revoke_grant(
+                session, grant, world.owner.id, removed_by="person"
+            )
         assert warning is not None and "1 hour" in warning
         [record] = await _issuances(session_factory)
         assert record.revoke_requested and record.encrypted_token is not None
@@ -744,6 +757,7 @@ class TestConnectOnly:
         vendor = FakeVendor()
         vendor.can_issue = False
         broker = ServiceBroker(
+            telemetry=None,
             session_factory=session_factory,
             keyring=TEST_KEYRING,
             catalog=CATALOG,
@@ -785,6 +799,7 @@ class TestConnectOnly:
                     tool_mode=None,
                     tools=None,
                     resources=RESOURCES,
+                    granted_by="person",
                 )
             assert (caught.value.status_code, caught.value.message) == (422, reason)
             token = await broker.connection_access_token(
@@ -822,6 +837,7 @@ def _switched_off(
     disabled: dict[str, str],
 ) -> ServiceBroker:
     return ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,
@@ -869,6 +885,7 @@ class TestSwitchedOff:
                     tool_mode=None,
                     tools=None,
                     resources=RESOURCES,
+                    granted_by="person",
                 )
             assert (caught.value.status_code, caught.value.message) == (422, reason)
             with pytest.raises(ServiceError) as caught:
@@ -940,6 +957,7 @@ async def _pass_through(
     vendor.revocable = False
     vendor.refreshed_lifetime = timedelta(hours=1)
     broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=pass_through_catalog(root, max_lifetime=max_lifetime, entry=entry),
@@ -1174,6 +1192,7 @@ class TestPassThrough:
                 tool_mode=None,
                 tools=None,
                 resources={},
+                granted_by="person",
             )
         assert (grant.access, grant.resources, warning) == ("write", {}, None)
 
@@ -1189,6 +1208,7 @@ class TestPassThrough:
                         tool_mode=None,
                         tools=tools,
                         resources={},
+                        granted_by="person",
                     )
                 assert caught.value.status_code == 422
                 assert "on or off" in caught.value.message
@@ -1221,7 +1241,9 @@ class TestPassThrough:
         async with session_factory() as session:
             grant = await STORE.get_grant(session, pt.world.agent.id, "example")
             assert grant is not None
-            warning = await pt.broker.revoke_grant(session, grant, pt.world.owner.id)
+            warning = await pt.broker.revoke_grant(
+                session, grant, pt.world.owner.id, removed_by="person"
+            )
         await maintain_once(session_factory, pt.broker, prune=False)
         assert pt.vendor.revoked == []
         assert pt.vendor.connections_revoked == []
@@ -1354,6 +1376,7 @@ async def _gated(
     example.pass_through = True
     example.revocable = False
     broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=pass_through_catalog(root),
@@ -1442,6 +1465,7 @@ async def _set_grant_github(g: Gated, session_factory) -> None:
             tool_mode=None,
             tools=None,
             resources=RESOURCES,
+            granted_by="person",
         )
 
 

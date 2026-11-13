@@ -97,6 +97,7 @@ async def set_agent_service(
                 tool_mode=None,
                 tools=None,
                 resources=resources or {},
+                granted_by="agent",
             )
         except ServiceError as error:
             raise ValueError(error.message) from error
@@ -137,7 +138,9 @@ async def remove_agent_service(agent_name: str, service: str) -> dict[str, Any]:
         if grant is None:
             raise ValueError(f"{agent.name} has no access to {service!r} to take away.")
         try:
-            warning = await broker.revoke_grant(session, grant, permitted.owner.id)
+            warning = await broker.revoke_grant(
+                session, grant, permitted.owner.id, removed_by="agent"
+            )
         except ServiceError as error:
             raise ValueError(error.message) from error
     return {"agent": agent.name, "service": service, "warning": warning}

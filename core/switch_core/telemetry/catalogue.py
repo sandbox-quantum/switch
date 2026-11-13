@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from switch_core import messaging_platforms
+from switch_core.connections.loader import CATALOG as SERVICE_CATALOG
 
 # The wire prefix. One Amplitude project holds several products, so every event
 # is namespaced by the one that sent it — the Console sends `switch_console.*`
@@ -207,6 +208,80 @@ VISIBILITY = one_of("private", "public")
 # product itself uses, and anything an operator invents reports as `other`.
 TEMPLATE_KIND = one_of("room", "group", "agent", "other")
 
+
+@dataclass(frozen=True)
+class _Service(PropertyType):
+    """A service connector this build ships (`connections/catalog/<slug>`),
+    by its slug, or `unknown` for one no longer in the catalog.
+
+    Closed like `one_of`, read from the catalog, so a new connector reports
+    without an edit here. A slug is a directory name in this repository —
+    `github`, `google-workspace` — never anything a person typed. Not to be
+    confused with `bridge_platform`: these are the services agents use, not
+    the messaging platforms a room is bridged to.
+    """
+
+    @property
+    def values(self) -> frozenset[str]:
+        return frozenset(SERVICE_CATALOG) | {"unknown"}
+
+    def check(self, value: object) -> str | None:
+        if not isinstance(value, str):
+            return f"expected a service slug, got {type(value).__name__}"
+        if value not in self.values:
+            return f"expected a service slug or 'unknown', got {value!r}"
+        return None
+
+
+SERVICE = _Service()
+
+
+def service_connection_count_property(service: str) -> str:
+    """The `usage_snapshot` property counting one service's connections."""
+    return f"service_{service.replace('-', '_')}_connection_count"
+
+
+# How a person signs in to a service: through its OAuth app, by pasting a key,
+# or through Switch's GitHub App.
+SERVICE_AUTH_KIND = one_of("oauth", "api_key", "github_app")
+
+SERVICE_ACCESS = one_of("read", "write")
+
+# Why a sign-in to a service ended without a connection. `refused` is Switch
+# saying no (the service switched off on the server or in the workspace);
+# the `vendor_*` values are the vendor's side; `scopes_missing` a person who
+# granted less than Switch needs to read; `interrupted` a flow that expired,
+# was used twice or could not be verified.
+SERVICE_SIGN_IN_FAILURE = one_of(
+    "cancelled",
+    "refused",
+    "vendor_refused",
+    "vendor_unavailable",
+    "vendor_error",
+    "scopes_missing",
+    "account_linked_elsewhere",
+    "invalid_key",
+    "interrupted",
+    "error",
+)
+
+# Who gave or took an agent's access to a service: a person in Switch
+# Console or the dashboard, the agent through its own tool, or a template run.
+SERVICE_GRANT_ACTOR = one_of("person", "agent", "template")
+
+# Why a session host was refused a token: the broker's own reason codes
+# (`connections/broker.py`), which the agent host is told too.
+SERVICE_TOKEN_REFUSAL = one_of(
+    "grant_missing",
+    "grant_account_changed",
+    "connector_not_connected",
+    "connector_revoked",
+    "forbidden",
+    "not_found",
+    "internal",
+    "validation_error",
+)
+
 # Shared by the connect and disconnect events: one classifier feeds both, so a
 # value only one of them declares fails validation when a bridge drops.
 BRIDGE_FAILURE_REASON = one_of(
@@ -330,6 +405,22 @@ _SNAPSHOT_COUNTS = (
     "package_count",
     "room_group_count",
     "api_key_count",
+    # Service connectors (GitHub, Google Workspace, …), not messaging bridges.
+    # Connections are a person's link to their account at a service; one
+    # needing attention is one the vendor refused or Switch can no longer use.
+    # Accounts are distinct across the deployment. Plus one
+    # `service_<slug>_connection_count` per service; see `event_spec`.
+    "service_connection_count",
+    "service_connection_needs_attention_count",
+    "service_connected_account_count",
+    "service_connected_workspace_count",
+    # Grants are an agent's access to its owner's connection.
+    "service_grant_count",
+    "service_granted_agent_count",
+    # Agents a session host fetched a service token for, and the tokens, in
+    # the last 7 days: an agent actually using a service.
+    "service_agent_active_7d",
+    "service_token_issued_7d",
 )
 
 # What each period event counts (`snapshot.PeriodCounts`), read from the
@@ -758,6 +849,79 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "is_preconfigured": BOOLEAN,
     },
+    # ── Service connectors ───────────────────────────────────────────────────
+    # The services agents use through a person's own account — GitHub, Google
+    # Workspace, Sentry and the rest — as against the messaging platforms the
+    # `connector_*` events above count.
+    #
+    # A person starting to sign in to a service. Set against
+    # `service_connection_added`, this is the sign-in's completion rate,
+    # abandoned sign-ins included: one never finished sends no failure.
+    "service_connection_started": {
+        "service": SERVICE,
+        "auth_kind": SERVICE_AUTH_KIND,
+    },
+    # A person's account linked, or linked again (`relinked`).
+    # `first_in_workspace` is their first service connection in the workspace.
+    "service_connection_added": {
+        "service": SERVICE,
+        "auth_kind": SERVICE_AUTH_KIND,
+        "consent": SERVICE_ACCESS,
+        "relinked": BOOLEAN,
+        "first_in_workspace": BOOLEAN,
+    },
+    # A sign-in that ended without a connection, and where: before the
+    # browser left (`start`), on the way to or back from the vendor
+    # (`vendor`), or while Switch exchanged and stored it (`complete`).
+    "service_connection_failed": {
+        "service": SERVICE,
+        "stage": one_of("start", "vendor", "complete"),
+        "reason": SERVICE_SIGN_IN_FAILURE,
+    },
+    # A connection the vendor stopped honouring, which now needs the person
+    # to sign in again: a refused refresh, a refused sign-in, or one made
+    # through an app Switch no longer uses.
+    "service_connection_lost": {
+        "service": SERVICE,
+        "reason": one_of("refresh_refused", "sign_in_refused", "client_replaced"),
+    },
+    # A connection ended: by the person, by a workspace admin, or with the
+    # person's membership of the workspace.
+    "service_connection_removed": {
+        "service": SERVICE,
+        "removed_by": one_of("self", "admin", "membership_ended"),
+        "age_days": optional(NUMBER),
+    },
+    # An agent given access to its owner's connection, or its access changed.
+    "service_grant_set": {
+        "service": SERVICE,
+        "access": SERVICE_ACCESS,
+        "tool_mode": one_of("allow", "deny"),
+        "granted_by": SERVICE_GRANT_ACTOR,
+        "change": one_of("new", "updated"),
+    },
+    "service_grant_removed": {
+        "service": SERVICE,
+        "removed_by": one_of("person", "agent"),
+    },
+    # A workspace or organization admin switching a service on or off, or
+    # back to the default (`default`). `locked` is an organization's setting
+    # its workspaces cannot change; always false for a workspace's.
+    "service_switched": {
+        "service": SERVICE,
+        "scope": one_of("workspace", "organization"),
+        "setting": one_of("on", "off", "default"),
+        "locked": BOOLEAN,
+    },
+    # A session host refused a token for an agent: the failure side of
+    # `service_token_issued_7d`. Sent once per agent, service and reason an
+    # hour, since a host asks again on its own.
+    "service_token_refused": {
+        "service": SERVICE,
+        "reason": SERVICE_TOKEN_REFUSAL,
+        "retryable": BOOLEAN,
+        "principal": one_of("controller", "agent_key"),
+    },
     "invitation_sent": {
         "delivery": one_of("sent", "not_configured", "failed", "not_requested")
     },
@@ -804,6 +968,10 @@ def event_spec(event: str) -> Mapping[str, PropertyType] | None:
         **{
             connector_count_property(platform): NUMBER
             for platform in messaging_platforms.keys()
+        },
+        **{
+            service_connection_count_property(service): NUMBER
+            for service in SERVICE_CATALOG
         },
     }
 

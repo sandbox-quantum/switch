@@ -34,12 +34,22 @@ from switch_core.connections.flows import (
     FlowError,
     ServiceFlow,
     ServiceFlows,
+    SignInEnded,
 )
 from switch_core.db.models import ServiceConnection, Tenant, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_session, get_session_factory
+from switch_core.gateway.dependencies import (
+    current_telemetry,
+    get_session,
+    get_session_factory,
+)
 from switch_core.gateway.service_connections import service_refusal
+from switch_core.telemetry.services import (
+    refusal_failure,
+    sign_in_failed,
+    sign_in_started,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +133,9 @@ async def start(
         await broker.require_workspace_enabled(session, service)
         definition, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
+        sign_in_failed(
+            current_telemetry(), service, "start", refusal_failure(error.code)
+        )
         return service_refusal(error)
     tenant = await session.get(Tenant, require_tenant_id())
     if tenant is None:
@@ -138,6 +151,7 @@ async def start(
             owner_label=f"{user.name} ({user.email}) in {tenant.name}",
         )
     except FlowError as error:
+        sign_in_failed(current_telemetry(), service, "start", "interrupted")
         raise HTTPException(409, str(error)) from None
     if flow.mode == "core":
         url = flows.authorize_url(service, body.state)
@@ -145,9 +159,12 @@ async def start(
         try:
             url, _ = await flows.vendor_url(flow, adapter)
         except ServiceUnavailableError as error:
+            sign_in_failed(current_telemetry(), service, "start", "vendor_unavailable")
             raise HTTPException(503, str(error)) from None
         except ServiceAdapterError as error:
+            sign_in_failed(current_telemetry(), service, "start", "vendor_error")
             raise HTTPException(502, str(error)) from None
+    sign_in_started(current_telemetry(), service, definition.adapter)
     return {"id": body.state, "url": url, "mode": flow.mode}
 
 
@@ -196,10 +213,14 @@ async def authorize(
             refusal = None
     if refusal is not None:
         await flows.refused(flow, refusal.message)
+        sign_in_failed(
+            current_telemetry(), service, "vendor", refusal_failure(refusal.code)
+        )
         return _page("Connections", escape(refusal.message), refusal.status_code)
     try:
         url, nonce = await flows.vendor_url(flow, adapter)
     except (FlowError, ServiceAdapterError):
+        sign_in_failed(current_telemetry(), service, "vendor", "interrupted")
         return _page(definition.name, INTERRUPTED, 400)
     response = RedirectResponse(
         url, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
@@ -233,7 +254,13 @@ async def callback(
         target = await flows.deliver(
             flow, code, request.cookies.get(_cookie(state), "")
         )
-    except FlowError:
+    except FlowError as error:
+        sign_in_failed(
+            current_telemetry(),
+            service,
+            "vendor",
+            error.reason if isinstance(error, SignInEnded) else "interrupted",
+        )
         return _page("Connections", INTERRUPTED, 400)
     response = RedirectResponse(
         target,
@@ -263,9 +290,11 @@ async def complete(
     """Console hands back the code its listener received, with its secret:
     Core exchanges it, reads the account and writes the connection."""
     flow = await _owned(flows, service, flow_id, user)
+    telemetry = current_telemetry()
     try:
         _, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
+        sign_in_failed(telemetry, service, "complete", refusal_failure(error.code))
         return service_refusal(error)
     try:
         exchange = await flows.complete(
@@ -275,13 +304,21 @@ async def complete(
             adapter=adapter,
         )
     except FlowError as error:
+        sign_in_failed(
+            telemetry,
+            service,
+            "complete",
+            error.reason if isinstance(error, SignInEnded) else "interrupted",
+        )
         raise HTTPException(400, str(error)) from None
     except ServiceUnavailableError as error:
+        sign_in_failed(telemetry, service, "complete", "vendor_unavailable")
         raise HTTPException(503, str(error)) from None
     try:
         consent = flows.consent(exchange)
-    except FlowError as error:
+    except SignInEnded as error:
         await flows.failed(exchange.flow, str(error))
+        sign_in_failed(telemetry, service, "complete", error.reason)
         raise HTTPException(400, str(error)) from None
     account, signed_in = exchange.account, exchange.signed_in
     await session.execute(
@@ -302,6 +339,7 @@ async def complete(
             "user in this workspace. Remove that link first."
         )
         await flows.failed(exchange.flow, linked)
+        sign_in_failed(telemetry, service, "complete", "account_linked_elsewhere")
         return JSONResponse(
             status_code=409,
             content={
@@ -324,6 +362,7 @@ async def complete(
         )
     except ServiceError as error:
         await flows.failed(exchange.flow, error.message)
+        sign_in_failed(telemetry, service, "complete", refusal_failure(error.code))
         return service_refusal(error)
     await flows.connected(exchange, warning)
     logger.info(

@@ -227,6 +227,7 @@ def _broker(
     catalog: dict, session_factory, adapters: dict, public_url: str | None
 ) -> ServiceBroker:
     return ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=catalog,
