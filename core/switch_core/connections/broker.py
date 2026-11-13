@@ -1902,6 +1902,8 @@ class ServiceBroker:
         await session.commit()
 
         warnings = []
+        # Whether revoking the old sign-in also ended the tokens agents hold.
+        ended: frozenset[str] = frozenset()
         if (
             replaced is not None
             and replaced.secret.access_token != secret.access_token
@@ -1919,6 +1921,10 @@ class ServiceBroker:
                 )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(replaced.secret)
+                if self._revocation_ends_tokens(service) and _holds_token(
+                    replaced.secret
+                ):
+                    ended = frozenset({service})
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:
@@ -1931,7 +1937,7 @@ class ServiceBroker:
                     f"{name} could not revoke the old sign-in. Revoke it in your "
                     f"{name} settings."
                 )
-        withdrawn = await self.revoke_withdrawn(session, issued_on_it)
+        withdrawn = await self.revoke_withdrawn(session, issued_on_it, ended=ended)
         if withdrawn is not None:
             warnings.append(withdrawn)
         return " ".join(warnings) or None
