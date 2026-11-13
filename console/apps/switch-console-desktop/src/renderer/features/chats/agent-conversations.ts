@@ -14,7 +14,7 @@ export function agentConversations(
   agentRooms: readonly RemoteAgentRoom[],
   removed: ReadonlySet<string>,
   /** When a room was last active (see `roomActivityAt`); by name alone without it. */
-  activityAt: (roomId: string) => string = () => ''
+  activityAt: (roomId: string) => number = () => 0
 ): { direct: ChatSummary[]; rooms: Pick<RemoteAgentRoom, 'roomId' | 'roomName'>[] } {
   const direct = agentChats.filter(isConsoleDirectChatSummary);
   const directIds = new Set(direct.map((chat) => chat.roomId));

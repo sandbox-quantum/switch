@@ -381,6 +381,12 @@ export type RemoteRoomSummary = {
   peopleAreMembers?: boolean;
   archived: boolean;
   createdAt: string;
+  /**
+   * When the room last had a message, from any platform, as ISO 8601: what
+   * room lists order by. Null when it has had none; absent from an older
+   * server.
+   */
+  lastMessageAt?: string | null;
   /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
   writeVisibility?: RoomVisibility;
   /**

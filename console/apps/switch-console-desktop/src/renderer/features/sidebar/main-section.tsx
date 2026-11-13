@@ -1,6 +1,6 @@
 import { DoorOpen, MessageCircle, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
@@ -9,7 +9,11 @@ import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
-import { byActivity, roomActivityAt } from '@renderer/features/switch-servers/room-order';
+import {
+  byActivity,
+  holdingOpenRoom,
+  roomActivityAt,
+} from '@renderer/features/switch-servers/room-order';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
@@ -120,9 +124,36 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
 function sidebarOrder(rooms: RemoteRoomSummary[]): RemoteRoomSummary[] {
   return byActivity(rooms, (room) => ({
     name: room.name,
-    activityAt: roomActivityAt(chatsStore.chat(room.id), room.createdAt),
+    activityAt: roomActivityAt(chatsStore.chat(room.id), room),
     unread: chatsStore.unread(room.id) > 0,
   }));
+}
+
+/**
+ * Where the open room sat in the list on screen when it was opened, kept while
+ * it stays open; null when none is open or it was not on screen. `remember`
+ * takes the order shown, for the next room opened.
+ */
+function useHeldPlace(openId: string | null): {
+  place: number | null;
+  remember: (shown: string[]) => void;
+} {
+  const held = useRef<{ id: string | null; place: number | null; shown: string[] }>({
+    id: null,
+    place: null,
+    shown: [],
+  });
+  if (held.current.id !== openId) {
+    // From the order on screen when it was clicked, not the one the click makes.
+    const place = openId === null ? -1 : held.current.shown.indexOf(openId);
+    held.current = { ...held.current, id: openId, place: place >= 0 ? place : null };
+  }
+  return {
+    place: held.current.place,
+    remember: (shown) => {
+      held.current.shown = shown;
+    },
+  };
 }
 
 /**
@@ -131,7 +162,11 @@ function sidebarOrder(rooms: RemoteRoomSummary[]): RemoteRoomSummary[] {
  */
 const RoomList = observer(function RoomList({ rooms: listed }: { rooms: RemoteRoomSummary[] }) {
   const showCreateRoomModal = useShowModal('createRoomModal');
-  const rooms = sidebarOrder(listed);
+  const ordered = sidebarOrder(listed);
+  const openId = ordered.find((room) => isRoomViewActive(room.id))?.id ?? null;
+  const { place, remember } = useHeldPlace(openId);
+  const rooms = holdingOpenRoom(ordered, openId, place);
+  remember(rooms.map((room) => room.id));
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
       <NewRoomRow onCreate={() => showCreateRoomModal({})} />

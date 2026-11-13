@@ -137,7 +137,7 @@ function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
     ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed, (roomId) =>
       roomActivityAt(
         ownServer ? chatsStore.chat(roomId) : undefined,
-        switchRoomsStore.roomSummaryById(roomId)?.createdAt
+        switchRoomsStore.roomSummaryById(roomId)
       )
     ),
   };

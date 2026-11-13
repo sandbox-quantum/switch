@@ -64,7 +64,7 @@ describe('agentConversations', () => {
       [],
       [room('quiet', 'aardvark'), room('busy', 'zebra'), room('unknown', 'mid')],
       new Set(),
-      (roomId) => activity[roomId] ?? ''
+      (roomId) => (activity[roomId] ? Date.parse(activity[roomId]) : 0)
     );
     expect(split.rooms.map((each) => each.roomId)).toEqual(['busy', 'quiet', 'unknown']);
   });
