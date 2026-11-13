@@ -1,10 +1,10 @@
 """The v1/v2 switch's route walk: every route
-Core serves that upstream main `cc661e536` doesn't is v2's, so each must carry
+Core serves that upstream main `abd523076` doesn't is v2's, so each must carry
 the switch's gate. Walked from `app.routes` itself, not the OpenAPI document, so
 a route hidden from the schema can't slip through. Upstream's routes, walked the
-same way on main's own tree, are `fixtures/upstream-cc661e536-routes.json`
+same way on main's own tree, are `fixtures/upstream-abd523076-routes.json`
 (refreshed each time main is merged in: `0f7f96732`, `807a1f94d`, `233649fff`,
-`1a0d5002f`, `3eb5ae0eb`, now `cc661e536`)."""
+`1a0d5002f`, `3eb5ae0eb`, `cc661e536`, now `abd523076`)."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from tests.switch_core.gateway.test_app_route_mounting import _app
 from tests.switch_core.test_ingress_agent_api_paths import _config as _bridge_config
 
 UPSTREAM = json.loads(
-    (Path(__file__).parent / "fixtures/upstream-cc661e536-routes.json").read_text()
+    (Path(__file__).parent / "fixtures/upstream-abd523076-routes.json").read_text()
 )
 GATES = {require_hosted_v2, require_hosted_v2_here}
 # The new routes there are today: 17 on the gateway, 3 notice routes for
