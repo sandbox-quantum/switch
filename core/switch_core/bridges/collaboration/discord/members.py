@@ -28,7 +28,7 @@ import asyncio
 import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,12 @@ class GuildChangeBatcher:
     def add(self, change: GuildMemberChange) -> None:
         """Note a change. Synchronous, so the Gateway's parser can call it."""
         pending = self._pending.setdefault(change.guild_id, _PendingGuild())
+        earlier = pending.changes.get(change.user_id)
+        if earlier is not None and earlier.kind == "join" and change.kind == "update":
+            # Someone who joined and then had a role set (a welcome bot, within
+            # the wait) is still arriving: kept a join, so their arrival stays
+            # quiet, with what they can see now.
+            change = replace(change, kind="join")
         pending.changes[change.user_id] = change
         if len(pending.changes) >= self._max_batch:
             self._start(change.guild_id, delay=0.0)
@@ -200,6 +206,13 @@ class PermissionChangeBatcher:
         finally:
             if self._tasks.get(guild_id) is asyncio.current_task():
                 del self._tasks[guild_id]
+                # A change that arrived while this one was being acted on
+                # found a task already there and started none: start it now,
+                # or it would wait for the next change to be acted on.
+                if guild_id in self._pending:
+                    self._tasks[guild_id] = asyncio.get_running_loop().create_task(
+                        self._run(guild_id)
+                    )
 
     async def drain(self) -> None:
         """Hand on everything gathered now (tests, and shutting down)."""

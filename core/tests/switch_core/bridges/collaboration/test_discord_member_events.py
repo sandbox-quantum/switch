@@ -237,6 +237,35 @@ async def test_a_flood_of_newcomers_is_capped_per_batch(
     assert bridge.leaves == [("10", "9")]
 
 
+async def test_past_the_cap_people_who_lost_access_still_leave(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role that showed a private channel taken from many people at once:
+    every one of them leaves its room, cap or not."""
+    monkeypatch.setattr(adapter_module, "_LIVE_JOINS_MAX", 2)
+    people = [_Member(i, f"p{i}") for i in range(1, 6)]
+    guild = _Guild([_Channel(10, set())], people)
+    adapter, bridge = _adapter(guild, {"10"})
+
+    await adapter.dispatch_member_changes([_change("update", p) for p in people])
+
+    assert sorted(bridge.leaves) == [("10", str(p.id)) for p in people]
+
+
+async def test_the_cap_warns_only_when_someone_was_skipped(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(adapter_module, "_LIVE_JOINS_MAX", 2)
+    people = [_Member(i, f"p{i}") for i in range(1, 3)]
+    guild = _Guild([_Channel(10, {p.id for p in people})], people)
+    adapter, _ = _adapter(guild, {"10"})
+
+    with caplog.at_level("WARNING"):
+        await adapter.dispatch_member_changes([_change("join", p) for p in people])
+
+    assert "at once" not in caplog.text
+
+
 async def test_another_guilds_changes_are_ignored() -> None:
     ann = _Member(1, "ann")
     guild = _Guild([_Channel(10, {1})], [ann])
@@ -439,6 +468,44 @@ async def test_a_burst_of_member_changes_is_handed_on_once() -> None:
     guild_id, changes = flushed[0]
     assert guild_id == GUILD_ID
     assert sorted((c.user_id, c.kind) for c in changes) == [(1, "leave"), (2, "join")]
+
+
+async def test_a_join_then_a_role_stays_a_quiet_join() -> None:
+    """A welcome bot giving a newcomer a role within the wait must not turn
+    their quiet arrival into an announced one."""
+    flushed: list[GuildMemberChange] = []
+
+    async def flush(guild_id: int, changes: list[GuildMemberChange]) -> None:
+        flushed.extend(changes)
+
+    batcher = GuildChangeBatcher(flush, delay=0.01)
+    ann = _Member(1, "ann")
+    batcher.add(_change("join", ann))
+    batcher.add(_change("update", ann))
+    await asyncio.sleep(0.05)
+
+    assert [(c.user_id, c.kind) for c in flushed] == [(1, "join")]
+
+
+async def test_a_permission_change_during_a_flush_is_acted_on() -> None:
+    """One arriving while the guild's last batch is being acted on found a
+    task already there; it still gets one of its own once that finishes."""
+    flushed: list[set[int] | None] = []
+    release = asyncio.Event()
+
+    async def flush(guild_id: int, channel_ids: set[int] | None) -> None:
+        flushed.append(channel_ids)
+        if len(flushed) == 1:
+            await release.wait()
+
+    batcher = PermissionChangeBatcher(flush, delay=0.01)
+    batcher.add(GUILD_ID, [10])
+    await asyncio.sleep(0.03)  # the first flush is now waiting
+    batcher.add(GUILD_ID, [11])
+    release.set()
+    await asyncio.sleep(0.05)
+
+    assert flushed == [{10}, {11}]
 
 
 async def test_permission_changes_are_gathered_per_guild() -> None:

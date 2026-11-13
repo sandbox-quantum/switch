@@ -1078,7 +1078,7 @@ class DiscordAdapter(PlatformAdapter):
         as the start-up sync's are. A role change that lets someone see a
         channel is announced, as someone being added to it. At most
         `_LIVE_JOINS_MAX` people join rooms per batch; the rest join when
-        they first post or at the next sync.
+        they first post or at the next sync. Removals are never capped.
         """
         changes = [c for c in changes if c.guild_id == self._guild_id]
         if not changes:
@@ -1093,15 +1093,24 @@ class DiscordAdapter(PlatformAdapter):
             return
         on_user_joined = self._on_user_joined
         joining = 0
+        skipped = 0
         for change in changes:
-            if change.kind != "leave":
+            # The cap is on putting people in rooms only: taking out someone
+            # who lost access always happens, or they would keep reading a
+            # private room until the next sync.
+            adds = False
+            if change.kind != "leave" and any(
+                self._can_see(channel, change.member) for channel in channels
+            ):
                 if joining >= _LIVE_JOINS_MAX:
-                    continue
-                joining += 1
+                    skipped += 1
+                else:
+                    joining += 1
+                    adds = True
             for channel in channels:
                 try:
                     if change.kind != "leave" and self._can_see(channel, change.member):
-                        if on_user_joined is None:
+                        if not adds or on_user_joined is None:
                             continue
                         await on_user_joined(
                             InboundUserJoin(
@@ -1128,12 +1137,14 @@ class DiscordAdapter(PlatformAdapter):
                         change.kind,
                         channel.id,
                     )
-        if joining >= _LIVE_JOINS_MAX:
+        if skipped:
             logger.warning(
-                "Discord guild %s had more than %d people join or change roles "
-                "at once; the rest join rooms when they post or at the next sync",
+                "Discord guild %s had more than %d people gain access to bridged "
+                "channels at once; %d more join rooms when they post or at the "
+                "next sync",
                 self._guild_id,
                 _LIVE_JOINS_MAX,
+                skipped,
             )
 
     def _note_member_changes(
