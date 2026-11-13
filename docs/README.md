@@ -37,6 +37,9 @@ the one users act on.
 
 ## Reference pages at this level
 
+- [`contributing/quickstart.md`](contributing/quickstart.md): a step-by-step
+  introduction to setting up a local development environment.
+
 - [`TEMPLATES.md`](TEMPLATES.md): the template language, the one YAML
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)
