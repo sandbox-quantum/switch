@@ -471,8 +471,23 @@ async def _finish_on_web(
         except (FlowError, ServiceAdapterError):
             # The flow failed with why, for the page to say.
             return back
-        await _connect(session, broker, flows, flow, exchange, flow.user_id)
+        try:
+            await _connect(session, broker, flows, flow, exchange, flow.user_id)
+        except Exception:
+            # The browser goes back to the page all the same, which says the
+            # sign-in failed, rather than to an error page with no way on.
+            logger.exception(
+                "Writing a %s connection from the web failed: tenant=%s user=%s",
+                flow.service,
+                flow.tenant_id,
+                flow.user_id,
+            )
+            await flows.failed(exchange.flow, not_saved(flow.name))
     return back
+
+
+def not_saved(name: str) -> str:
+    return f"Switch couldn't save your {name} connection. Connect again."
 
 
 @router.post("/{flow_id}/complete", response_model=None)

@@ -1394,6 +1394,37 @@ class TestWeb:
         assert world.vendor.token_requests == []
         assert await _connection(session_factory, ada.id) is None
 
+    async def test_a_sign_in_that_fails_unexpectedly_still_returns_to_the_page(
+        self, session_factory, tmp_path, caplog, monkeypatch
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("synthetic failure")
+
+        monkeypatch.setattr(world.broker, "connect", broken)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            browser = Browser(client, ada)
+            started = await browser.start()
+            state = started.json()["id"]
+            left = await browser.leave(started.json()["url"])
+            returned = await browser.back(
+                world.vendor.authorize(left.headers["location"])
+            )
+            _returned_to_page(returned, state)
+            status = await _web_status(browser, state)
+        assert (status["status"], status["error"]) == (
+            "failed",
+            "Switch couldn't save your Example connection. Connect again.",
+        )
+        assert any(
+            record.levelname == "ERROR" and "from the web failed" in record.message
+            for record in caplog.records
+        )
+
     async def test_a_cancelled_sign_in_says_so_on_the_page(
         self, session_factory, tmp_path
     ) -> None:

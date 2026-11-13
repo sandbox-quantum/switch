@@ -52,6 +52,7 @@ from switch_core.gateway.service_flows import (
     LOST,
     NOT_YOURS,
     connector_page,
+    not_saved,
     opened_elsewhere,
     refused_browser,
 )
@@ -519,9 +520,19 @@ async def _finish_on_web(
         )
         if checking is None:
             return back
-        await _sign_in_and_link(
-            session, broker, flows, checking, github, code, flow.user_id
-        )
+        try:
+            await _sign_in_and_link(
+                session, broker, flows, checking, github, code, flow.user_id
+            )
+        except Exception:
+            # The browser goes back to the page all the same, which says the
+            # sign-in failed, rather than to an error page with no way on.
+            logger.exception(
+                "Writing a GitHub connection from the web failed: tenant=%s user=%s",
+                flow.tenant_id,
+                flow.user_id,
+            )
+            await _settled(flows, checking, "failed", error=not_saved("GitHub"))
     return back
 
 

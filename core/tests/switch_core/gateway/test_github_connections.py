@@ -355,6 +355,67 @@ async def test_a_web_sign_in_finishes_only_in_its_owners_browser(github_app):
     assert (await client.get(BASE + f"/flows/{state}")).json()["status"] == "connected"
 
 
+async def _web_sign_in(client) -> tuple[str, httpx.Response]:
+    """Start a sign-in from the web, leave through Core, and come back from
+    GitHub with a code: the flow's id and where the browser was sent."""
+    started = await client.post(BASE + "/flows/web")
+    assert started.status_code == 200, started.text
+    state = started.json()["id"]
+    assert (await client.get(started.json()["url"])).status_code == 307
+    returned = await client.get(
+        BASE + "/callback", params={"state": state, "code": "SYNTHETIC-CODE"}
+    )
+    assert returned.headers["location"] == f"/connectors/github?sign_in={state}"
+    return state, returned
+
+
+async def test_a_web_sign_in_linked_elsewhere_says_why_and_is_revoked(github_app):
+    client, github, identity, factory = github_app
+    first = await authorize(client)
+    await relay(client, first)
+    assert (await complete(client, first)).status_code == 200
+    async with factory() as session:
+        other = User(
+            id="other-github-user",
+            name="Other",
+            email="other@example.com",
+            role="user",
+            password_hash="unused",
+        )
+        session.add(other)
+        await session.commit()
+    identity["user"] = other
+    github.exchange.return_value = {
+        **github.exchange.return_value,
+        "access_token": "SYNTHETIC-SECOND-ACCESS",
+    }
+    client.cookies.set("switch_auth", await _signed_in(factory, other))
+    state, _ = await _web_sign_in(client)
+    status = (await client.get(BASE + f"/flows/{state}")).json()
+    assert status["status"] == "failed"
+    assert "already linked to another Switch user" in status["error"]
+    github.revoke.assert_awaited_once_with("SYNTHETIC-SECOND-ACCESS")
+
+
+async def test_a_web_sign_in_that_fails_unexpectedly_still_returns_to_the_page(
+    github_app, caplog
+):
+    client, github, identity, factory = github_app
+    client.cookies.set("switch_auth", await _signed_in(factory, identity["user"]))
+    github.request.side_effect = RuntimeError("synthetic failure")
+    state, returned = await _web_sign_in(client)
+    assert returned.status_code == 303
+    status = (await client.get(BASE + f"/flows/{state}")).json()
+    assert (status["status"], status["error"]) == (
+        "failed",
+        "Switch couldn't save your GitHub connection. Connect again.",
+    )
+    assert any(
+        record.levelname == "ERROR" and "from the web failed" in record.message
+        for record in caplog.records
+    )
+
+
 async def test_a_cancelled_web_sign_in_says_so_on_the_page(github_app):
     client, github, identity, factory = github_app
     client.cookies.set("switch_auth", await _signed_in(factory, identity["user"]))
