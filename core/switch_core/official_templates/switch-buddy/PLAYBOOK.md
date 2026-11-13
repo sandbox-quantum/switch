@@ -10,7 +10,7 @@ Bots can't create chats on Telegram. They make a group with the bot and send
 `/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it (the bot
 sees only commands and replies to its messages, due to privacy mode). If
 `your_account_link` is `none`, they link from
-[the server's home](switchdash://open/home) and send `/link_account CODE` in that
+[Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) and send `/link_account CODE` in that
 group; until then owner-only agents ignore them. Then they reply to the bot's
 message, mentioning the agent's name.
 
@@ -56,6 +56,7 @@ them pick.
 
 | Page | Link |
 |---|---|
+| The server's home: the workspace at a glance (not where accounts or guardrails are) | `switchdash://open/home` |
 | This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it | `switchdash://open/server` |
 | Every room | `switchdash://open/rooms` |
 | A room | `switchdash://open/room/<room-id>` |
@@ -83,14 +84,14 @@ When `messaging_apps.how_to_add` is `own_app`, they create an app on the platfor
 
 - **Slack:** Switch Console walks them through it. Link
   [Connect a messaging app](switchdash://open/messaging-apps/connect) and tell
-  them to choose "Use your own app instead", then Slack, and follow the steps.
+  them to pick Slack under Messaging app and follow the steps.
   The app comes pre-filled, the tokens are checked as they paste them, and the
   workspace is filled in for them.
 - **Other platforms:** fetch the platform's page in the docs,
   `https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/<platform>.md`
   (`microsoft-teams` for Teams), and walk them through
-  it in order. Then link the same page and tell them to choose "Use your own
-  app instead" and paste the values.
+  it in order. Then link the same page and tell them to pick the platform under
+  Messaging app and paste the values.
 - Never ask them to paste a token into this chat.
 
 ## Linking their chat account
@@ -98,15 +99,15 @@ When `messaging_apps.how_to_add` is `own_app`, they create an app on the platfor
 Read `your_account_link` for the app:
 
 - `none`: agents that answer only their owner won't recognise them there. Link
-  [the server's home](switchdash://open/home), where Messaging apps lets them
-  link their account.
+  [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps),
+  where they link their account.
 - `pending`: waiting for the account to confirm it, so it doesn't count yet
   (they started linking, or an admin required confirming an older link). Switch
   Console showed them a code to post from that account (for example
   `!link-account 7KQ2-M9XD`); tell them to post it, or get a new one from
-  [the server's home](switchdash://open/home) if it expired.
+  [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) if it expired.
 - `unverified`: it works, but was linked before links needed confirming. Suggest
-  confirming it from [the server's home](switchdash://open/home), which gives
+  confirming it from [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps), which gives
   them a code to post from that account.
 - `verified`: nothing to do.
 
@@ -124,7 +125,7 @@ person is left out.
   `get_my_context` (`messaging_apps.connected`, matched to the room's `bridge_id` by `id`).
   When the list is empty their account is not linked there yet, or the link is still
   waiting for its code (see `your_account_link`): ask for their username on that app, and link
-  [the server's home](switchdash://open/home) so they can link it.
+  [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) so they can link it.
 - **Anyone else:** ask for their username on that app, or the e-mail address they use
   there. Never guess one from a first name.
 - **Check the result.** `add_users_to_room` returns `unresolved` (who it could not add);

@@ -388,3 +388,43 @@ def test_switch_buddy_always_tells_telegram_users_to_reply_to_the_bot():
         "reply to a Switch bot message with the agent's exact name and their request"
         in text
     )
+
+
+def test_switch_buddy_links_pages_that_still_have_what_it_sends_people_for():
+    """Account linking and guardrails left the server's home for Settings and
+    Admin; a link to home leaves the person with nothing to click."""
+    texts = [
+        (_PACKAGED / "switch-buddy" / "AGENT.md").read_text(),
+        _PLAYBOOK.read_text(),
+    ]
+    for text in texts:
+        for line in text.splitlines():
+            if "switchdash://open/home" in line:
+                assert "the workspace at a glance" in line, line
+    joined = " ".join(" ".join(texts).split())
+    assert "switchdash://open/settings?tab=messaging-apps" in joined
+    assert "switchdash://open/admin?tab=switch-trust" in joined
+
+
+def test_switch_buddy_names_only_choices_the_connect_dialog_offers():
+    """The connect dialog shows "Use your own app instead" only beside an
+    official app to install; where people bring their own app, the form opens
+    straight away, so buddy must not send them looking for it."""
+    playbook = " ".join(_PLAYBOOK.read_text().split())
+    assert "Use your own app instead" not in playbook
+    assert "pick Slack under Messaging app" in playbook
+
+
+def test_switch_buddy_joins_and_links_the_room_a_template_makes():
+    """A template's room does not include buddy, so it adds itself before
+    asking the first question, and always hands the person a link."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "add yourself with `invite_agent_to_room`" in text
+    assert "switchdash://open/room/<room-id>" in text
+    assert 'Never end the turn on "creating it now"' in text
+
+
+def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "Always end the options with **Something else**" in text
+    assert "ask for one line (what it is, who it's for)" in text
