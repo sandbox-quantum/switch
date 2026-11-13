@@ -22,7 +22,7 @@ export const SystemStatusSettingsPage = observer(function SystemStatusSettingsPa
       <PageHeader
         sticky
         title="System status"
-        description="The Switch your agents and rooms run on, and this Console."
+        description="Health and status of your Switch Server and Console."
       />
       {server?.managed ? (
         <ManagedServerPage server={server} embedded />

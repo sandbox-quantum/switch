@@ -116,8 +116,8 @@ OPERATION_LIST_LIMIT = 200
 
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
 
-# What a Switch cloud machine's controller is called, whatever enrolled it.
-CLOUD_MACHINE_NAME = "Switch cloud"
+# What a Switch Cloud machine's controller is called, whatever enrolled it.
+CLOUD_MACHINE_NAME = "Switch Cloud"
 
 
 @dataclass(frozen=True)
@@ -265,7 +265,7 @@ class ManagementService:
     async def machine_enrollment_code(
         self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
     ) -> str:
-        """A code for a Switch cloud machine's controller in the bound workspace
+        """A code for a Switch Cloud machine's controller in the bound workspace
         to enroll with: the owner's, valid long enough for the machine to boot,
         and binding what enrolls with it to the workspace's row on the machine.
         The caller commits."""
@@ -339,7 +339,7 @@ class ManagementService:
             owner_id=consumed.owner_id,
             name=CLOUD_MACHINE_NAME if machine is not None else description.name,
             description=description.description,
-            # A Switch cloud machine's controller is the cloud's, whatever the
+            # A Switch Cloud machine's controller is the cloud's, whatever the
             # program that enrolled says it is.
             kind="ec2" if machine is not None else description.kind,
             platform=description.platform.model_dump(),
@@ -1238,7 +1238,7 @@ class ManagementService:
             session, tenant_id, owner_id, controller_id
         )
         if check_placement:
-            # Placing an agent on a sleeping Switch cloud machine wakes it.
+            # Placing an agent on a sleeping Switch Cloud machine wakes it.
             machine = (
                 await wake_controller_machine(
                     session, controller.id, self.now(), "agent_placed"
