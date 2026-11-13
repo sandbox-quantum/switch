@@ -1,6 +1,6 @@
 {
-  "comment": "Git blob ids of every file in the four upstream agent packages at upstream main 3eb5ae0eb, plus the controller's started_at in agent-controller's schemas.ts and status.ts from #1911, which main does not have yet. The desktop app and v1 machines build from these packages, so they must stay byte for byte upstream; hosted agents v2's versions live in the -box packages. Regenerate only when re-syncing with upstream: git ls-tree -r <commit> console/packages/{agent-controller,agent-providers,switch-agent-runtime,shared}.",
-  "upstream": "3eb5ae0ebe5d52cbebd8aad24b5633c31a90d3a9",
+  "comment": "Git blob ids of every file in the four upstream agent packages at upstream main cc661e536. The desktop app and v1 machines build from these packages, so they must stay byte for byte upstream; hosted agents v2's versions live in the -box packages. Regenerate only when re-syncing with upstream: git ls-tree -r <commit> console/packages/{agent-controller,agent-providers,switch-agent-runtime,shared}.",
+  "upstream": "cc661e536db0ffef414799ee6177dc4fba36d1bb",
   "packages": ["agent-controller", "agent-providers", "switch-agent-runtime", "shared"],
   "files": {
     "agent-controller/README.md": "132ac489750602cfb7bc87a4e330a7bb7d057721",
