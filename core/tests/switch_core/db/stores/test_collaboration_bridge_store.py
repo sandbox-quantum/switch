@@ -491,3 +491,94 @@ async def test_an_edit_merges_into_what_the_bridge_learned_since_it_was_read(
         assert bridge.connection_config["channel_teams"] == {
             "19:a@thread.tacv2": "team-1"
         }
+
+
+@pytest.mark.asyncio
+async def test_replace_team_stores_a_first_default_team(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.set_service_url(session, bridge_id, "https://smba.example")
+
+        stored = await store.replace_team(
+            session, bridge_id, expected=None, team_id="team-1"
+        )
+        await session.commit()
+
+    assert stored is not None
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] == "team-1"
+        assert bridge.connection_config["service_url"] == "https://smba.example"
+
+
+@pytest.mark.asyncio
+async def test_replace_team_keeps_a_default_team_already_chosen(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.merge_connection_config(session, bridge_id, {"team_id": "chosen"})
+
+        stored = await store.replace_team(
+            session, bridge_id, expected=None, team_id="team-1"
+        )
+        await session.commit()
+
+    assert stored is None
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] == "chosen"
+
+
+@pytest.mark.asyncio
+async def test_replace_team_clears_only_the_team_it_was_told_of(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.merge_connection_config(session, bridge_id, {"team_id": "team-2"})
+
+        assert (
+            await store.replace_team(
+                session, bridge_id, expected="team-1", team_id=None
+            )
+            is None
+        )
+        assert (
+            await store.replace_team(
+                session, bridge_id, expected="team-2", team_id=None
+            )
+            is not None
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_replace_team_treats_a_cleared_default_as_none(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Leaving the default team stores None rather than dropping the key, and
+    an empty string is no team either."""
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.merge_connection_config(session, bridge_id, {"team_id": ""})
+
+        stored = await store.replace_team(
+            session, bridge_id, expected=None, team_id="team-1"
+        )
+        await session.commit()
+
+    assert stored is not None

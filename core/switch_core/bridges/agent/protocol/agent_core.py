@@ -102,6 +102,7 @@ from switch_core.db.models import (
     AgentRuntimeState,
     ApiKey,
     Client,
+    CollaborationBridge,
     Message,
     MessageAttachment,
     Model,
@@ -3179,12 +3180,14 @@ class AgentCore:
                 "display_name": b.display_name,
                 "status": b.status,
                 "is_default": b.is_default,
-                # The platform's ceiling and the operator's switch, ANDed: an
+                # The platform's ceiling, the operator's switch and what the
+                # connection still lacks (a Teams default team), ANDed: an
                 # agent asking "can I make a room here?" wants one answer, and
                 # gets it before spending a create_room call to find out.
                 "can_create_channels": (
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_channel_creation(b.type)
+                    and self._channel_creation_unblocked(b)
                 ),
                 # Whether create_room may ask for channel_private here, and
                 # whether that needs the room's owner to have linked their
@@ -3193,6 +3196,7 @@ class AgentCore:
                 "can_create_private_channels": (
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_private_channels(b.type)
+                    and self._channel_creation_unblocked(b)
                 ),
                 "private_channel_needs_linked_account": (
                     self.collab_lifecycle.supports_private_channels(b.type)
@@ -3200,6 +3204,14 @@ class AgentCore:
             }
             for b in bridges
         ]
+
+    def _channel_creation_unblocked(self, bridge: CollaborationBridge) -> bool:
+        return (
+            self.collab_lifecycle.channel_creation_blocker(
+                bridge.type, bridge.connection_config or {}
+            )
+            is None
+        )
 
     async def create_moderation_room(
         self,

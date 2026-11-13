@@ -98,6 +98,68 @@ describe("TeamsPlacementDialog", () => {
     });
   });
 
+  it("waits for the first team Switch joins to show as the default", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const team = (has_switch: boolean, is_default: boolean) => ({
+      team_id: "t2",
+      name: "Sales",
+      has_switch,
+      is_default,
+    });
+    const reads = [
+      placements({ teams: [team(false, false)], default_team_id: null }),
+      // Added, but the copy holding the connection has not stored the
+      // default yet.
+      placements({ teams: [team(true, false)], default_team_id: null }),
+      placements({ teams: [team(true, true)], default_team_id: "t2" }),
+    ];
+    let read = 0;
+    mockFetch((_url, init) => {
+      if (init?.method === "POST") return new Response(null, { status: 204 });
+      const body = reads[Math.min(read, reads.length - 1)];
+      read += 1;
+      return jsonResponse(200, body);
+    });
+    render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+
+    await screen.findByText("Sales");
+    fireEvent.click(screen.getByRole("switch"));
+    await waitFor(() => expect(read).toBe(2));
+    expect((screen.getByRole("radio") as HTMLInputElement).checked).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1500);
+
+    await waitFor(() => {
+      expect((screen.getByRole("radio") as HTMLInputElement).checked).toBe(true);
+    });
+    await vi.advanceTimersByTimeAsync(1500 * 6);
+    expect(read).toBe(3);
+    vi.useRealTimers();
+  });
+
+  it("does not wait for a default when one is already set", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let reads = 0;
+    mockFetch((_url, init) => {
+      if (init?.method === "POST") return new Response(null, { status: 204 });
+      reads += 1;
+      return jsonResponse(200, placements());
+    });
+    render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+
+    await screen.findByText("Sales");
+    fireEvent.click(screen.getAllByRole("switch")[1]);
+    await waitFor(() => expect(reads).toBe(2));
+    await vi.advanceTimersByTimeAsync(1500 * 6);
+
+    expect(reads).toBe(2);
+    vi.useRealTimers();
+  });
+
   it("removes Switch from a team the switch is flipped off for", async () => {
     const fetchMock = mockFetch((_url, init) =>
       init?.method === "DELETE"

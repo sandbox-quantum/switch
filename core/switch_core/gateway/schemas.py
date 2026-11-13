@@ -858,6 +858,9 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Why a new channel cannot be made here yet even so — a Teams connection
+    # with no default team — or None; said where a room would make one.
+    channel_creation_blocker: str | None = None
     # Whether a new room here can have a private channel, and whether that
     # channel needs the person asking to have linked their account on the
     # platform, through which Switch puts them in it (on Teams, as its owner).

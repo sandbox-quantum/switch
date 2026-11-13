@@ -185,6 +185,23 @@ def test_a_public_channel_puts_its_creator_in_except_on_teams() -> None:
     assert service.adds_creator_to_public_channel("telegram") is False
 
 
+def test_a_teams_connection_with_no_default_team_cannot_create_a_channel_yet() -> None:
+    """Asked of the stored config, so a stopped bridge and every process answer
+    alike."""
+    service = _service()
+    service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+    service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+
+    shared = {"event_delivery": "shared", "tenant_id": "org"}
+    assert service.channel_creation_blocker("teams", shared) is not None
+    assert (
+        service.channel_creation_blocker("teams", {**shared, "team_id": "team-1"})
+        is None
+    )
+    assert service.channel_creation_blocker("slack", {}) is None
+    assert service.channel_creation_blocker("nonexistent", {}) is None
+
+
 def test_an_unregistered_type_is_not_reported_as_incapable() -> None:
     # Registration rejects an unknown type by name, which is a better error than
     # a capability claim about a platform Switch does not have.
