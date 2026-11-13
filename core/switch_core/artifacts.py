@@ -22,10 +22,12 @@ class ContractRange(NamedTuple):
 ARTIFACT_VERSIONS: Final[dict[str, str]] = {
     "switch-core": "0.31.0",
     "switch-console": "0.40.1",
-    "agent-runtime": "0.8.0",
+    "agent-runtime": "0.8.3",
     "sidecar": "1.9.12",
     "gateway": "0.31.0",
     "setup": "0.31.0",
+    "switch-decision": "0.31.0",
+    "switch-decision-strands": "0.31.0",
     "helm-chart": "0.31.0",
     "hosted-controller": "0.31.0",
     "hosted-controller-chart": "0.31.0",
@@ -35,13 +37,13 @@ ARTIFACT_VERSIONS: Final[dict[str, str]] = {
 CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     # The wire protocol between switch-core's agent bridge and an agent runtime: the event stream, its frame shapes, the resume cursor, and the tool-call channel.
     "agent-protocol": {
-        "switch-core": ContractRange(speaks=9, accepts=1),
-        "agent-runtime": ContractRange(speaks=9, accepts=1),
+        "switch-core": ContractRange(speaks=9, accepts=8),
+        "agent-runtime": ContractRange(speaks=9, accepts=8),
     },
     # The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
     "gateway-api": {
-        "switch-core": ContractRange(speaks=1, accepts=1),
-        "switch-console": ContractRange(speaks=1, accepts=1),
+        "switch-core": ContractRange(speaks=3, accepts=2),
+        "switch-console": ContractRange(speaks=3, accepts=1),
     },
     # The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
     "stack-compose": {

@@ -1,7 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RoomGroupDetail, RoomSummary } from "../../data/api";
+import * as api from "../../data/api";
+import { ALL_OFF } from "../../data/featureFlags";
 import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import type { UseQueryResult } from "../../data/hooks";
@@ -13,8 +15,12 @@ vi.mock("../../data/AuthContext", () => ({
 
 vi.mock("../../data/hooks", () => ({
   useRoomGroups: vi.fn(),
-  useRooms: vi.fn(),
 }));
+
+vi.mock("../../data/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../data/api")>();
+  return { ...actual, loadRooms: vi.fn(), deleteRoomGroup: vi.fn() };
+});
 
 function authState(canAdminTenant: boolean) {
   return {
@@ -24,6 +30,17 @@ function authState(canAdminTenant: boolean) {
     loadError: null,
     isOperator: false,
     canAdminTenant,
+    capabilities: {
+      isOperator: false,
+      administersWorkspace: canAdminTenant,
+      administersOrganization: false,
+      inOrganization: false,
+      canDeleteWorkspace: false,
+      canManageDataProtection: false,
+      features: ALL_OFF,
+    },
+    staleError: null,
+    recheck: vi.fn(),
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
@@ -53,7 +70,7 @@ function room(id: string, name: string, groupId: string | null, canWrite: boolea
 function renderAs(isAdmin: boolean, rooms: RoomSummary[] = []) {
   vi.mocked(useAuth).mockReturnValue(authState(isAdmin));
   vi.mocked(hooks.useRoomGroups).mockReturnValue(queryResult([group]));
-  vi.mocked(hooks.useRooms).mockReturnValue(queryResult(rooms));
+  vi.mocked(api.loadRooms).mockResolvedValue(rooms);
   render(
     <MemoryRouter>
       <GroupsPage />
@@ -88,15 +105,52 @@ describe("GroupsPage", () => {
     ];
     renderAs(false, rooms);
     fireEvent.click(screen.getByText("Customers"));
-    screen.getByRole("button", { name: "Remove planning from group" });
+    await screen.findByRole("button", { name: "Remove planning from group" });
     expect(screen.queryByRole("button", { name: "Remove leadership from group" })).toBeNull();
     expect(screen.queryByRole("button", { name: /add rooms/i })).toBeNull();
     cleanup();
 
     renderAs(true, rooms);
     fireEvent.click(screen.getByText("Customers"));
+    await screen.findByRole("button", { name: "Remove planning from group" });
     fireEvent.click(screen.getByRole("button", { name: "Add rooms" }));
     await screen.findByText("retro");
     expect(screen.queryByText("board")).toBeNull();
+  });
+
+  it("keeps the delete dialog open with the server's reason when deleting fails", async () => {
+    vi.mocked(api.deleteRoomGroup).mockRejectedValue(new Error("Group not found"));
+    renderAs(true);
+    fireEvent.click(screen.getByLabelText("Delete Customers"));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Customers?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete group" }));
+
+    await waitFor(() => expect(api.deleteRoomGroup).toHaveBeenCalledWith("g1"));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Group not found");
+  });
+
+  it("says when the groups could not be loaded, rather than that there are none", () => {
+    vi.mocked(useAuth).mockReturnValue(authState(true));
+    vi.mocked(hooks.useRoomGroups).mockReturnValue({ ...queryResult(null), error: "Failed to fetch data" });
+    vi.mocked(api.loadRooms).mockResolvedValue([]);
+    render(
+      <MemoryRouter>
+        <GroupsPage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Couldn't load the room groups.")).toBeTruthy();
+    expect(screen.queryByText(/No groups yet/)).toBeNull();
+  });
+
+  it("says when the rooms could not be loaded", async () => {
+    vi.mocked(api.loadRooms).mockRejectedValue(new Error("Service unavailable"));
+    vi.mocked(useAuth).mockReturnValue(authState(true));
+    vi.mocked(hooks.useRoomGroups).mockReturnValue(queryResult([group]));
+    render(
+      <MemoryRouter>
+        <GroupsPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("Couldn't load the rooms: Service unavailable")).toBeTruthy();
   });
 });

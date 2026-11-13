@@ -2,12 +2,12 @@ import { Alert, Box, Chip, CircularProgress } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { AccessChip } from "../../components/AccessControls";
 import type { ReferenceDetail } from "../../data/api";
 import { useReferences, useReferenceTypes } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;
@@ -113,6 +113,15 @@ export default function ReferencesTab({ refreshKey }: Props) {
           rows={filtered}
           columns={columns}
           fillHeight
+          emptyState={
+            search || ownerId || typeFilter ? (
+              <TableEmptyState title="No references match these filters">
+                Clear the search or filters to see them all.
+              </TableEmptyState>
+            ) : (
+              <TableEmptyState title="No references yet">Create one to point agents at a page or repository elsewhere.</TableEmptyState>
+            )
+          }
           onRowClick={(params) =>
             navigate(`/resources/references/${params.id}`)
           }

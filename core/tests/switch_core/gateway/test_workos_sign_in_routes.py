@@ -329,7 +329,7 @@ class TestChangingMembers:
         assert refused.status_code == 409
         assert "workspaces first" in refused.json()["detail"]
 
-    async def test_a_token_refused_after_access_was_ended_says_so(
+    async def test_a_token_not_accepted_after_access_was_ended_says_so(
         self, session_factory
     ) -> None:
         ada, cy = _name("ada"), _name("cy")
@@ -346,11 +346,11 @@ class TestChangingMembers:
                 f"/organizations/current/members/{cy}", json={"role": "member"}
             )
 
-        assert refused.status_code == 403
+        # The token has not run out, so signing in again would not help.
+        assert refused.status_code == 503
         detail = refused.json()["detail"]
-        assert detail["error"] == "directory_sign_in_required"
-        assert detail["access_ended"] is True
-        assert "already been taken away" in detail["message"]
+        assert "doesn't accept member changes from Switch" in detail
+        assert "already been taken away" in detail
         assert await _role(session_factory, organization_id, cy) == "org_admin"
 
 

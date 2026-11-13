@@ -1,0 +1,241 @@
+{
+  "revision": 3,
+  "bodies": {
+    "switch_core.gateway.agent_sessions.AnswerBody": [
+      "answer",
+      "answers"
+    ],
+    "switch_core.gateway.agent_sessions.AnswerIn": [
+      "custom_text",
+      "question_id",
+      "selected_option_ids"
+    ],
+    "switch_core.gateway.agent_sessions.AnswerView": [
+      "custom_text",
+      "question_id",
+      "selected_option_ids"
+    ],
+    "switch_core.gateway.agent_sessions.ApprovalRequestView": [
+      "agent_id",
+      "answer",
+      "answered_at",
+      "answered_by",
+      "answers",
+      "detail",
+      "expires_at",
+      "kind",
+      "options",
+      "questions",
+      "request_id",
+      "room_id",
+      "session_id",
+      "state",
+      "thread_id",
+      "title",
+      "turn_id"
+    ],
+    "switch_core.gateway.agent_sessions.OptionView": [
+      "decision",
+      "id",
+      "label"
+    ],
+    "switch_core.gateway.agent_sessions.QuestionOptionView": [
+      "description",
+      "id",
+      "label"
+    ],
+    "switch_core.gateway.agent_sessions.QuestionView": [
+      "allow_custom_answer",
+      "id",
+      "multi_select",
+      "options",
+      "prompt",
+      "title"
+    ],
+    "switch_core.gateway.connector_apps.SaveApp": [
+      "client_id",
+      "client_secret",
+      "private_key",
+      "replace"
+    ],
+    "switch_core.gateway.github_connections.CompleteFlow": [
+      "code",
+      "completion_secret"
+    ],
+    "switch_core.gateway.github_connections.FlowSecret": [
+      "completion_secret"
+    ],
+    "switch_core.gateway.github_connections.StartFlow": [
+      "completion_secret",
+      "port",
+      "state"
+    ],
+    "switch_core.gateway.hosted_machines.MachineLifecycleRequest": [
+      "action",
+      "revision"
+    ],
+    "switch_core.gateway.organization_services.SettingBody": [
+      "enabled",
+      "locked"
+    ],
+    "switch_core.gateway.rooms.TemplateAgentBody": [
+      "addressing",
+      "advanced_config",
+      "auto_approve",
+      "auto_mode",
+      "can_manage_agents",
+      "connections",
+      "description",
+      "directory",
+      "display_name",
+      "instructions",
+      "isolation",
+      "machine",
+      "model",
+      "name",
+      "provider",
+      "slot"
+    ],
+    "switch_core.gateway.rooms.TemplateConnectionBody": [
+      "access",
+      "repos",
+      "service"
+    ],
+    "switch_core.gateway.rooms.TemplateDocumentRunBody": [
+      "filled",
+      "inputs",
+      "template",
+      "template_id",
+      "template_name"
+    ],
+    "switch_core.gateway.rooms.TemplateRunBody": [
+      "agents",
+      "inputs",
+      "template_name",
+      "yaml"
+    ],
+    "switch_core.gateway.schemas.ReferenceTypeUpdateRequest": [
+      "display_name",
+      "instructions",
+      "read_visibility",
+      "value_hint",
+      "write_visibility"
+    ],
+    "switch_core.gateway.schemas.SignupRequest": [
+      "display_name",
+      "email",
+      "password"
+    ],
+    "switch_core.gateway.schemas.TemplateCreateRequest": [
+      "content",
+      "description",
+      "kind",
+      "name",
+      "read_visibility",
+      "write_visibility"
+    ],
+    "switch_core.gateway.schemas.TemplateUpdateRequest": [
+      "content",
+      "description",
+      "kind",
+      "name",
+      "read_visibility",
+      "write_visibility"
+    ],
+    "switch_core.gateway.schemas.TemplateValidateRequest": [
+      "content"
+    ],
+    "switch_core.gateway.schemas.UpdateAgentCanManageAgentsRequest": [
+      "enabled"
+    ],
+    "switch_core.gateway.schemas.UpdateMeRequest": [
+      "name"
+    ],
+    "switch_core.gateway.service_connections.GrantBody": [
+      "access",
+      "resources",
+      "tool_mode",
+      "tools"
+    ],
+    "switch_core.gateway.service_connections.KeyBody": [
+      "fields"
+    ],
+    "switch_core.gateway.service_flows.CompleteFlow": [
+      "code",
+      "completion_secret"
+    ],
+    "switch_core.gateway.service_flows.FlowSecret": [
+      "completion_secret"
+    ],
+    "switch_core.gateway.service_flows.StartFlow": [
+      "access",
+      "completion_secret",
+      "port",
+      "state"
+    ],
+    "switch_core.gateway.workspace_services.SwitchBody": [
+      "enabled"
+    ],
+    "switch_core.management.schemas.ConsoleControllerRequest": [
+      "description",
+      "kind",
+      "name",
+      "platform",
+      "public_key",
+      "version"
+    ],
+    "switch_core.management.schemas.CreateManagedAgentRequest": [
+      "controller_id",
+      "definition",
+      "description",
+      "desired_state",
+      "display_name",
+      "icon_url",
+      "name"
+    ],
+    "switch_core.management.schemas.CreateOperationRequest": [
+      "agent_id",
+      "controller_id",
+      "kind",
+      "params"
+    ],
+    "switch_core.management.schemas.DefinitionV1": [
+      "advanced_config",
+      "auto_approve",
+      "auto_mode",
+      "directory",
+      "instructions",
+      "isolation",
+      "model",
+      "provider"
+    ],
+    "switch_core.management.schemas.PatchManagedAgentRequest": [
+      "controller_id",
+      "definition",
+      "desired_state"
+    ],
+    "switch_core.management.schemas.PutManagedAgentRequest": [
+      "controller_id",
+      "definition",
+      "desired_state"
+    ],
+    "switch_core.management.schemas.UpdateControllerRequest": [
+      "description",
+      "name"
+    ],
+    "switch_core.management.sealed_logins.PublicKey": [
+      "alg",
+      "key"
+    ],
+    "switch_core.management.sealed_logins.PutSealedLoginRequest": [
+      "sealed"
+    ],
+    "switch_core.management.sealed_logins.SealedLogin": [
+      "alg",
+      "ciphertext",
+      "ephemeral_key",
+      "key_id",
+      "nonce"
+    ]
+  }
+}

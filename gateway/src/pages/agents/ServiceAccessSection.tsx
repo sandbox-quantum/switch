@@ -55,7 +55,7 @@ function installationOf(
 }
 
 /** The repositories a GitHub grant names, by full name where the person can still see them. */
-function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
+export function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): string[] {
   const installation = installationOf(github, grant.resources);
   return repositoryIds(grant.resources).map((id) => {
     const repository = installation?.repositories.find((r) => r.id === id);
@@ -73,9 +73,13 @@ function repositoryNames(github: GitHubConnection | null, grant: ServiceGrant): 
  */
 export default function ServiceAccessSection({
   agent,
+  canGrant,
   onAgentUpdated,
 }: {
   agent: AgentDetail;
+  // Granting it more: refused for an agent not run from a known agent type.
+  // The grants it has can be seen and removed regardless.
+  canGrant: boolean;
   onAgentUpdated: () => void;
 }) {
   const [grants, setGrants] = useState<ServiceGrants | null>(null);
@@ -90,28 +94,40 @@ export default function ServiceAccessSection({
   const [busy, setBusy] = useState(false);
   const { isOperator } = useAuth();
 
-  const load = useCallback(async () => {
+  // Whether the grants could be read: they cannot for someone else's agent,
+  // whose grants are its owner's business, and the section then hides.
+  const load = useCallback(async (): Promise<boolean> => {
     try {
       setGrants(await fetchServiceGrants(agent.id));
+      return true;
     } catch (err) {
-      // Someone else's agent: its grants are its owner's business.
       if (err instanceof ApiError && err.status === 404) setHidden(true);
       else setError(errorText(err));
+      return false;
     }
   }, [agent.id]);
 
-  const loadServices = useCallback(async () => {
+  const loadServices = useCallback(async (): Promise<ServiceConnection[] | null> => {
     try {
-      setServices(await fetchServiceConnections());
+      const list = await fetchServiceConnections();
+      setServices(list);
+      return list;
     } catch (err) {
       setServicesError(errorText(err));
+      return null;
     }
   }, []);
 
+  // The viewer's own connections are read only once the grants show this is
+  // their agent. GitHub's only while it is set up here: until then the server
+  // has no connection to answer with, and the form says it is not set up.
   useEffect(() => {
-    void load();
-    void loadServices();
-    fetchGitHubConnection().then(setGitHub, (err: unknown) => setGitHubError(errorText(err)));
+    void load().then(async (own) => {
+      if (!own) return;
+      const list = await loadServices();
+      if (list?.find((service) => service.slug === "github")?.server_setup_needed) return;
+      fetchGitHubConnection().then(setGitHub, (err: unknown) => setGitHubError(errorText(err)));
+    });
   }, [load, loadServices]);
 
   if (hidden) return null;
@@ -145,12 +161,18 @@ export default function ServiceAccessSection({
           Service access
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          What this agent may use of your own connections. Its sessions are given
+          What this agent may use of your own connectors. Its sessions are given
           short-lived access for what you grant, and nothing else.
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
         {notice && <Alert severity="info">{notice}</Alert>}
         {grants === null && !error && <CircularProgress size={20} />}
+        {grants !== null && !canGrant && (
+          <Alert severity="info">
+            New grants are only for an agent Switch Console runs from a known agent type. What it
+            has been granted can still be removed.
+          </Alert>
+        )}
 
         {grants?.addressing_open && grants.grants.length > 0 && (
           <Alert
@@ -189,7 +211,7 @@ export default function ServiceAccessSection({
                 variant="outlined"
                 label={grant.access === "write" ? "Read and write" : "Read"}
               />
-              {grant.service === "github" && (
+              {canGrant && grant.service === "github" && (
                 <Button size="small" disabled={busy} onClick={() => setEditing(true)}>
                   Change
                 </Button>
@@ -229,6 +251,7 @@ export default function ServiceAccessSection({
               grant={grants.grants.find((grant) => grant.service === service.slug) ?? null}
               agentName={agent.name}
               busy={busy}
+              canTurnOn={canGrant}
               canSetUp={isOperator}
               onTurnOn={() =>
                 void act(() => setServiceGrant(agent.id, service.slug, { access: null, resources: {} }))
@@ -237,7 +260,7 @@ export default function ServiceAccessSection({
             />
           ))}
 
-        {grants && (editing || !githubGrant) && (
+        {grants && canGrant && (editing || !githubGrant) && (
           <GitHubGrantForm
             github={github}
             githubError={githubError}
@@ -277,16 +300,23 @@ export function onOffGrantNote(
   const off = `Turning it off stops its sessions using ${name} within a minute.`;
   if (service.key)
     return `On, ${agentName} uses ${name} with your key, as far as the key allows. ${off}`;
-  const note = `On, ${agentName} acts as you at ${name}, with everything your ${name} connection allows. ${off}`;
+  const note = `On, ${agentName} acts as you at ${name}, with everything your ${name} connector allows. ${off}`;
   return service.token_lifetime !== null && service.token_lifetime > 3600
     ? `${note} A token already handed out stays valid at ${name} until it expires or you disconnect.`
     : note;
 }
 
-/** The operator's way from a service that is not set up to where it is set up. */
+/** The operator's way from a service that is not set up to where it is set
+ * up: their server-wide connector apps, under Platform in the new layout. */
 function SetUpLink() {
+  const { capabilities } = useAuth();
   return (
-    <Button component={RouterLink} to="/connectors" size="small" sx={{ ml: 1 }}>
+    <Button
+      component={RouterLink}
+      to={capabilities.features.gateway_v2 ? "/platform/connectors" : "/connectors"}
+      size="small"
+      sx={{ ml: 1 }}
+    >
       Set up
     </Button>
   );
@@ -298,6 +328,7 @@ function OnOffGrant({
   grant,
   agentName,
   busy,
+  canTurnOn,
   canSetUp,
   onTurnOn,
   onTurnOff,
@@ -306,13 +337,15 @@ function OnOffGrant({
   grant: ServiceGrant | null;
   agentName: string;
   busy: boolean;
+  canTurnOn: boolean;
   canSetUp: boolean;
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
   const connected = service.status === "active";
   // A grant can be turned off whatever the server's state; on needs a usable connection.
-  const blocked = grant === null && (!connected || service.unavailable_reason !== null);
+  const blocked =
+    grant === null && (!canTurnOn || !connected || service.unavailable_reason !== null);
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }}>
       <Stack direction="row" alignItems="center" spacing={1}>
@@ -346,7 +379,7 @@ function OnOffGrant({
       )}
       {!grant && !connected && !service.unavailable_reason && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          To turn {service.name} on, first connect it from Switch Console&apos;s connections.
+          To turn {service.name} on, first connect it in Switch Console, under Connectors.
         </Typography>
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
@@ -356,7 +389,7 @@ function OnOffGrant({
   );
 }
 
-function GitHubGrantForm({
+export function GitHubGrantForm({
   github,
   githubError,
   notSetUp,
@@ -398,8 +431,8 @@ function GitHubGrantForm({
   if (github.status === "not_connected")
     return (
       <Typography variant="body2" color="text.secondary">
-        To grant GitHub, first connect your GitHub account from Switch Console&apos;s
-        connections.
+        To grant GitHub, first connect your GitHub account in Switch Console, under
+        Connectors.
       </Typography>
     );
 
@@ -469,7 +502,7 @@ function GitHubGrantForm({
 
 /** What removing a grant does, and what it does not. */
 export const REMOVED_NOTE =
-  "Removing a grant stops Switch giving this access. On a laptop or server, the agent may still use the machine's own sign-in, and the session says so when it does.";
+  "Removing a grant stops Switch giving this access. On a device, the agent may still use the device's own sign-in, and the session says so when it does.";
 
 /** What a GitHub grant changes on the machine the agent runs on, and what it does not. */
 export function GitHubNotes() {

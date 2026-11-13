@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
+from switch_core.bridges.agent.protocol.types import OverallStatus
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -92,6 +93,10 @@ class RoomSummary(BaseModel):
     viewer_is_member: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
+    # Its people (`connected_user_*`) are its Switch members rather than
+    # accounts on a messaging app: a Console chat on no app. Lets a client tell
+    # a chat with no members from a server too old to count them.
+    people_are_members: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
     # links and attaching resources; `can_change_members` covers adding and
@@ -107,6 +112,29 @@ class RoomSummary(BaseModel):
     can_manage: bool
     can_unlink: bool
     can_transfer: bool
+
+
+class RoomAutoRoute(BaseModel):
+    """A room's auto-route (`decision/room.py`): `on` is the room's switch,
+    the same one `!auto-route` sets; `available` whether it can act in the
+    room (the server's flag and the workspace's decision backend), with
+    `reason` saying why not and who can fix it; `fallback_agent` the id of
+    the room's triage agent, if any, and `fallback_agent_name` its name."""
+
+    on: bool
+    available: bool
+    reason: str | None
+    fallback_agent: str | None
+    fallback_agent_name: str | None
+
+
+class RoomAutoRouteRequest(BaseModel):
+    """`PUT /rooms/{id}/auto-route`. Either field may be left out to leave it
+    as it is. `fallback_agent` is the id of an agent in the room (its name
+    or alias here is accepted too); null clears it."""
+
+    on: bool | None = None
+    fallback_agent: str | None = None
 
 
 class RoomDetail(RoomSummary):
@@ -134,6 +162,7 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
+    auto_route: RoomAutoRoute
 
 
 class RoomCreateRequest(BaseModel):
@@ -409,6 +438,35 @@ class AgentCapabilities(BaseModel):
 
 class GatewayAgentSummary(AgentSummary, AgentCapabilities):
     pass
+
+
+class AgentDevice(BaseModel):
+    """The device a managed agent is placed on."""
+
+    id: str
+    name: str
+    # Whose device it is: two people's devices can share a name, as every
+    # Switch cloud device does.
+    owner_name: str
+    # Removed from Switch. The agent stays placed on it, and runs nowhere,
+    # until its owner moves it.
+    removed: bool
+
+
+class GatewayAgentListEntry(GatewayAgentSummary):
+    """A row of the Gateway's agent list: the summary and what the caller may
+    do, with where the agent stands now. Only the list carries these: they are
+    read for every agent at once, and nothing else that returns an agent shows
+    them."""
+
+    # `online` while it holds a live connection or session, or its device
+    # runs it; `offline` otherwise; `not_tracked` for an agent that only
+    # polls, which holds nothing Switch can see between polls.
+    status: OverallStatus
+    # Named to the device's owner and to workspace admins, who see every
+    # device in the workspace. Null for an agent placed on no device, and for
+    # anyone else.
+    device: AgentDevice | None
 
 
 class GatewayAgentDetail(AgentDetail, AgentCapabilities):
@@ -732,6 +790,18 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Whether a new room here can have a private channel, and whether that
+    # channel needs the person asking to have linked their account on the
+    # platform, through which Switch puts them in it (on Teams, as its owner).
+    # Lets a room form offer "New private channel" from the server rather than
+    # a list of its own.
+    private_channels_supported: bool = True
+    private_channel_needs_linked_account: bool = False
+    # Whether a new public channel here has the person asking put in it, when
+    # they have a confirmed linked account on the platform. It is made without
+    # them when they have none. False on Teams, where it would add them to the
+    # whole team.
+    public_channel_adds_creator: bool = False
     # Why no existing channel can be bound to a room by id on this connection,
     # or None when one can. Set for a connection whose chats arrive only one
     # way, so the room form can say so instead of offering the choice.
@@ -1118,6 +1188,16 @@ class TenantMembershipResponse(BaseModel):
     # None only for a workspace from before organizations that no migration
     # has given one yet.
     organization_id: str | None
+
+
+class WorkspaceCountsResponse(BaseModel):
+    """How many people and agents one workspace the caller may enter has, as
+    its members list and agents list show them. The body of
+    `GET /tenants/counts`, one per workspace."""
+
+    id: str
+    users: int
+    agents: int
 
 
 class OperatorWorkspaceResponse(BaseModel):
@@ -1568,10 +1648,14 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
-    # What the caller may do with it (`switch_core.authz`). `can_edit`: change
-    # it — its owner, an admin, or anyone when it is publicly writable.
-    # `can_manage`: delete it, change who may see or edit it, transfer it — its
-    # owner or an admin.
+    # What the caller may do with it (`switch_core.authz`). `can_read`: open
+    # it — its owner, an admin, or anyone when it is publicly readable. Every
+    # route returns only what the caller may read, except a package's or a
+    # room's list, which names a private item to everyone who may read the
+    # package or room. `can_edit`: change it — its owner, an admin, or anyone
+    # when it is publicly writable. `can_manage`: delete it, change who may see
+    # or edit it, transfer it — its owner or an admin.
+    can_read: bool
     can_edit: bool
     can_manage: bool
 
@@ -1782,8 +1866,11 @@ class DocumentDetail(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
-    # All three are false for a room's own document, which is changed and
-    # removed in its room, not through the library.
+    # Those three are false for a room's own document, which is changed and
+    # removed in its room, not through the library. `can_read` is whether the
+    # library opens it; the room routes say otherwise for a room's own document
+    # (`RoomDocumentDetail`).
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
@@ -1795,7 +1882,10 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in."""
+    """A document as seen from a room it is in. Its `can_read` is true for a
+    room's own document, which the room opens for everyone who may read the
+    room; an attached library document keeps the library's rule, which says
+    whether its own page opens."""
 
     can_remove: bool
 
@@ -1821,13 +1911,15 @@ class DocumentSummary(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `DocumentDetail`.
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in."""
+    """A document as listed in a room it is in. `can_read` as on
+    `RoomDocumentDetail`."""
 
     can_remove: bool
 
@@ -1946,6 +2038,12 @@ class TemplateSummary(BaseModel):
     # client cannot tell from the user's global role.
     can_edit: bool
     can_manage: bool
+    # Why a person should not run it by hand, for a client to give beside a
+    # greyed Run; None when nothing stands in the way. Advice, not a refusal.
+    run_blocked_reason: str | None
+    # How many times it has been run in this workspace, by people and agents,
+    # since runs were first counted.
+    run_count: int
     version: int
     size_bytes: int
     created_at: str
@@ -1954,6 +2052,11 @@ class TemplateSummary(BaseModel):
 
 class TemplateDetail(TemplateSummary):
     content: str
+
+
+class TemplateRunRecorded(BaseModel):
+    template_id: str
+    run_count: int
 
 
 # The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels
@@ -2066,6 +2169,126 @@ class BudgetResponse(BaseModel):
 
 
 # ── Switch Trust ──────────────────────────────────────────────────────────────
+
+
+DecisionBackendName = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+
+
+class DecisionEffective(BaseModel):
+    """What a workspace's rooms use now: its own choice, or the server
+    default, or nothing. `available` folds in the server's flag."""
+
+    backend: DecisionBackendName
+    endpoint: str | None
+    threshold: float | None
+    available: bool
+    reason: str | None
+
+
+class DecisionWorkspaceSettings(BaseModel):
+    """The workspace's saved choice. The key is never returned: only whether
+    one is set, its last four characters, and whether this server can still
+    decrypt it."""
+
+    backend: DecisionBackendName
+    endpoint: str | None
+    threshold: float | None
+    has_api_key: bool
+    api_key_last4: str | None
+    api_key_unreadable: bool
+    updated_at: str
+
+
+class DecisionServerDefault(BaseModel):
+    configured: bool
+    endpoint: str | None
+    has_api_key: bool
+
+
+class DecisionOptions(BaseModel):
+    """Which Haiku backends the server offers: both need the server's
+    decision service, and Bedrock also `DECISION_BEDROCK_ENABLED`."""
+
+    haiku_anthropic: bool
+    haiku_bedrock: bool
+
+
+class DecisionSettingsResponse(BaseModel):
+    source: Literal["workspace", "server_default"]
+    effective: DecisionEffective
+    workspace: DecisionWorkspaceSettings | None
+    server_default: DecisionServerDefault
+    options: DecisionOptions
+
+
+class DecisionSettingsUpdateRequest(BaseModel):
+    """`api_key` omitted keeps the stored key when the backend, and for an
+    `endpoint` its URL, stay the same; moving a keyed endpoint to another URL
+    needs a new key or `clear_api_key`, which drops it. A key is the bearer token for an
+    `endpoint`, and the Anthropic key for `haiku_anthropic`."""
+
+    backend: DecisionBackendName
+    endpoint: str | None = None
+    api_key: str | None = None
+    clear_api_key: bool = False
+    threshold: float | None = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _validate(self) -> DecisionSettingsUpdateRequest:
+        if self.api_key is not None and not self.api_key.strip():
+            raise ValueError(
+                "api_key must not be blank; omit it to keep the stored key, or "
+                "set clear_api_key"
+            )
+        if self.backend == "endpoint":
+            value = self.endpoint
+            if value is None or not value.strip():
+                raise ValueError("a self-hosted endpoint needs its URL")
+            if value != value.strip():
+                raise ValueError("endpoint has leading or trailing whitespace")
+            parts = urlsplit(value)
+            if parts.scheme not in ("http", "https"):
+                raise ValueError("endpoint must be an http(s) URL")
+            if not parts.netloc:
+                raise ValueError("endpoint must include a host")
+        return self
+
+
+class DecisionSettingsTestRequest(DecisionSettingsUpdateRequest):
+    """The PUT body, or `backend: "default"` to test the server default with
+    the server's own endpoint and key, never the workspace's."""
+
+    backend: DecisionBackendName | Literal["default"]  # type: ignore[assignment]
+
+
+TestErrorCode = Literal[
+    "unreachable",
+    "timeout",
+    "unauthorized",
+    "key_refused",
+    "bad_answer",
+    "backend_unavailable",
+    "not_configured",
+    "refused",
+]
+
+
+class DecisionTestError(BaseModel):
+    code: TestErrorCode
+    message: str
+
+
+class DecisionTestResponse(BaseModel):
+    """The sample decision's pick (`agent`, None for nobody), confidence and
+    latency, or why there was none."""
+
+    ok: bool
+    agent: str | None
+    model_choice: str | None
+    confidence: float | None
+    latency_ms: int | None
+    backend: str | None
+    error: DecisionTestError | None
 
 
 class TrustSettingsResponse(BaseModel):

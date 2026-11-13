@@ -66,6 +66,7 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # Deletes the caller's `users` row and sign-in identities, which belong to
     # no workspace; each workspace is left in a `tenant_session` of its own.
     ("DELETE", "/auth/me"),
+    ("POST", "/auth/me/reset-test-account"),
     # "Sign out of all devices" moves the caller's `users` row on, which has no
     # tenant, and must work for a caller with no workspace selected.
     ("POST", "/auth/sessions/revoke"),
@@ -107,6 +108,7 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # Deleting your account acts on every workspace you are in, each in a
     # `tenant_session` of its own (`accounts/deletion.py`).
     ("DELETE", "/auth/me"),
+    ("POST", "/auth/me/reset-test-account"),
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.
     ("GET", "/auth/session"),
@@ -119,6 +121,11 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/tenants"),
     ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
+    # What the workspace switcher shows beside each of those workspaces. It
+    # opens a `tenant_session` per tenant `tenants_bindable_by` names, and
+    # around the operator's claim only once `may_bind_tenant` admits it — see
+    # `workspace_counts`.
+    ("GET", "/tenants/counts"),
     # The same for organizations: list the caller's, make one.
     ("GET", "/organizations"),
     ("POST", "/organizations"),

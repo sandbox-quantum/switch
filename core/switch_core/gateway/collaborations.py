@@ -201,25 +201,25 @@ def _installed_refusal(installs: list[MessagingInstall]) -> str:
     them = "it" if len(installs) == 1 else "them"
     if platform == "telegram":
         return (
-            f"The Switch bot is still in {where} through this connection. "
+            f"The Switch bot is still in {where} through this messaging app. "
             f"Disconnect {them} under Installed apps first, then delete the "
-            "connection here."
+            "messaging app here."
         )
     if platform == "discord":
         return (
-            f"This connection was created by adding the Switch bot to {where}. "
+            f"This messaging app was created by adding the Switch bot to {where}. "
             f"Disconnect {them} under Installed apps instead: that stops Switch "
-            "using the server and removes this connection. The bot stays in the "
+            "using the Discord server and removes this messaging app. The bot stays in the "
             "server until you remove it in Discord."
         )
     if platform == "slack":
-        effect = "revokes Switch's token at Slack and removes this connection"
+        effect = "revokes Switch's token at Slack and removes this messaging app"
     elif platform == "teams":
-        effect = "takes the app out of every team and removes this connection"
+        effect = "takes the app out of every team and removes this messaging app"
     else:
-        effect = "removes this connection"
+        effect = "removes this messaging app"
     return (
-        f"This connection was created by installing the Switch app into "
+        f"This messaging app was created by installing the Switch app into "
         f"{where}. Disconnect {them} under Installed apps instead: that "
         f"{effect}."
     )
@@ -262,6 +262,17 @@ async def _detail(
             bridge.type
         ),
         channel_creation_enabled=bridge.channel_creation_enabled,
+        private_channels_supported=collab_lifecycle.supports_private_channels(
+            bridge.type
+        ),
+        # Every private channel Switch makes needs one: the person asking is
+        # put in it (or, on Teams, made its owner) through that account.
+        private_channel_needs_linked_account=(
+            collab_lifecycle.supports_private_channels(bridge.type)
+        ),
+        public_channel_adds_creator=collab_lifecycle.adds_creator_to_public_channel(
+            bridge.type
+        ),
         channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
@@ -354,10 +365,7 @@ async def create_bridge(
     if req.connection_config.get("event_delivery") == "shared":
         raise HTTPException(
             status_code=422,
-            detail=(
-                "A shared connection is created by installing the app, not "
-                "registered here."
-            ),
+            detail=("A shared messaging app is added by installing the app, not here."),
         )
     try:
         bridge = await collab_lifecycle.register(
@@ -494,7 +502,7 @@ async def update_bridge(
             status_code=400,
             detail=(
                 f"{bridge.type} cannot create channels from Switch, so this "
-                "connection cannot be allowed to. Create the chat on the "
+                "messaging app cannot be allowed to. Create the chat on the "
                 "platform and add the bot to it; Switch adopts it as a room."
             ),
         )
@@ -508,7 +516,7 @@ async def update_bridge(
         if merged.get("event_delivery") != current.get("event_delivery"):
             raise HTTPException(
                 status_code=422,
-                detail="event_delivery cannot be changed on an existing connection.",
+                detail="event_delivery cannot be changed on an existing messaging app.",
             )
         # A connection on an app the deployment owns may hold settings that
         # decide where the deployment's credential is pointed; only the ones
@@ -525,7 +533,7 @@ async def update_bridge(
                     status_code=422,
                     detail=(
                         f"{', '.join(locked)} cannot be changed on this "
-                        "connection: Switch manages it for the installed app."
+                        "messaging app: Switch manages it for the installed app."
                     ),
                 )
         # Not held across the platform's credential check; nothing is written

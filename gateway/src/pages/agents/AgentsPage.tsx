@@ -23,10 +23,10 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import DataTable from "../../components/DataTable";
-import { type AgentSummary, deleteAgent } from "../../data/api";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
+import { type AgentSummary, type DeleteAgentResult, deleteAgent } from "../../data/api";
 import { useAgents } from "../../data/hooks";
-import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
+import { EM_DASH, formatDate, sentenceCase } from "../../theme/format";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 
 // Connector type is a category, not a status. Colour here would compete with
@@ -130,13 +130,19 @@ export default function AgentsPage() {
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    const result = await deleteAgent(deleteTarget.id);
-    if (result === null) {
+    let result: DeleteAgentResult;
+    try {
+      result = await deleteAgent(deleteTarget.id);
+    } catch (err) {
       setDeleteNotice({
         severity: "error",
-        text: `Could not delete agent "${deleteTarget.name}".`,
+        text: `Could not delete agent "${deleteTarget.name}": ${err instanceof Error ? err.message : String(err)}`,
       });
-    } else if (result.bridge_cleanup_failures.length > 0) {
+      setDeleteTarget(null);
+      setDeleting(false);
+      return;
+    }
+    if (result.bridge_cleanup_failures.length > 0) {
       setDeleteNotice({
         severity: "warning",
         text:
@@ -157,7 +163,7 @@ export default function AgentsPage() {
       { field: "name", headerName: "Name", flex: 1, minWidth: 200 },
       {
         field: "connector_type",
-        headerName: "Agent Type",
+        headerName: "Agent type",
         width: 150,
         renderCell: ({ value }) =>
           value ? (
@@ -170,9 +176,9 @@ export default function AgentsPage() {
       },
       {
         field: "connection_model",
-        headerName: "Connection Type",
+        headerName: "Availability",
         width: 170,
-        valueFormatter: (value) => (value ? titleCase(value as string) : EM_DASH),
+        valueFormatter: (value) => (value ? sentenceCase(value as string) : EM_DASH),
       },
       {
         field: "parent_agent_id",
@@ -209,6 +215,7 @@ export default function AgentsPage() {
             <>
               <IconButton
                 size="small"
+                aria-label={`Delete ${row.name}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   setDeleteTarget(row);
@@ -233,7 +240,7 @@ export default function AgentsPage() {
           startIcon={<AddCircleOutline />}
           onClick={() => setRegisterOpen(true)}
         >
-          Register Agent
+          Add agent
         </Button>
       </Stack>
 
@@ -250,7 +257,7 @@ export default function AgentsPage() {
       <Stack
         direction="row"
         spacing={2}
-        sx={{ mb: 2, flexWrap: "wrap", rowGap: 2 }}
+        sx={{ mb: 2, flexWrap: "wrap", rowGap: 2, alignItems: "flex-end" }}
       >
         <TextField
           size="small"
@@ -324,6 +331,17 @@ export default function AgentsPage() {
           rows={filteredAgents}
           columns={columns}
           fillHeight
+          emptyState={
+            search || typeFilter || parentFilter || ownerFilter ? (
+              <TableEmptyState title="No agents match these filters">
+                Clear the search or filters to see every agent.
+              </TableEmptyState>
+            ) : (
+              <TableEmptyState title="No agents in this workspace yet">
+                Add one to put it to work in rooms.
+              </TableEmptyState>
+            )
+          }
           onRowClick={(params) => navigate(`/agents/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />

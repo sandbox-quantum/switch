@@ -1,12 +1,13 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, RoomDetail } from "../../data/api";
 import * as api from "../../data/api";
 import * as hooks from "../../data/hooks";
 import RoomDetailPage from "./RoomDetailPage";
 
+const navigate = vi.fn();
 vi.mock("react-router", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
   useParams: () => ({ roomId: "r1" }),
 }));
 
@@ -23,7 +24,13 @@ vi.mock("../../data/hooks", () => ({
 
 vi.mock("../../data/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../data/api")>();
-  return { ...actual, updateRoom: vi.fn() };
+  return {
+    ...actual,
+    updateRoom: vi.fn(),
+    archiveRoom: vi.fn(),
+    deleteRoom: vi.fn(),
+    deleteRoomRole: vi.fn(),
+  };
 });
 
 vi.mock("./RoomGraphView", () => ({ default: () => null }));
@@ -65,6 +72,8 @@ const room = {
   write_visibility: "public",
   created_at: "2026-10-01T00:00:00Z",
   archived: false,
+  viewer_is_member: false,
+  channel_on_delete: null,
   transport_room_id: "!r1:example.test",
   matrix_room_id: "!r1:example.test",
   external_channel_id: null,
@@ -79,16 +88,24 @@ const room = {
   can_write: true,
   can_manage: false,
   can_unlink: false,
+  can_transfer: false,
+  can_change_members: true,
 } as RoomDetail;
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
 
-function viewAs(can: { can_write: boolean; can_manage: boolean; can_unlink: boolean }) {
+// Members can be changed by whoever may write to the room, as the server
+// says, unless a test sets otherwise.
+const refetchRoom = vi.fn();
+
+function viewAs(
+  can: { can_write: boolean; can_manage: boolean; can_unlink: boolean } & Partial<RoomDetail>,
+) {
   vi.mocked(hooks.useRoom).mockReturnValue({
-    data: { ...room, ...can },
+    data: { ...room, can_change_members: can.can_write, ...can },
     loading: false,
     error: null,
-    refetch: vi.fn(),
+    refetch: refetchRoom,
   });
   render(<RoomDetailPage />);
 }
@@ -161,6 +178,35 @@ describe("RoomDetailPage permissions", () => {
     expect(sent).not.toHaveProperty("write_visibility");
   });
 
+  it("lets someone who may write edit a bridged room's description like any other room's", async () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Retro and planning" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateRoom).mock.calls[0][1]).toMatchObject({
+      description: "Retro and planning",
+    });
+  });
+
+  it("leaves a chat's members to its platform, keeping its settings editable", () => {
+    viewAs({
+      can_write: true,
+      can_manage: false,
+      can_unlink: false,
+      can_change_members: false,
+      channel_type: "group",
+    });
+
+    expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove planner" })).toBeNull();
+    expect(screen.getByText(/rooms is managed from the messaging platform/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
   it("lets someone who may manage the room change its access and delete it", async () => {
     viewAs({ can_write: true, can_manage: true, can_unlink: false });
 
@@ -204,10 +250,171 @@ describe("RoomDetailPage permissions", () => {
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
   });
 
+  it("lists a Switch Console chat's members as its people, to change in Console", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        bridge_id: null,
+        bridge_display_name: null,
+        is_console_chat: true,
+        connected_user_count: 2,
+        connected_user_names: ["Ada Lovelace", "Grace Hopper"],
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.getByText("People (2)")).toBeTruthy();
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+    expect(screen.getByText("Grace Hopper")).toBeTruthy();
+    expect(screen.queryByText(/Connected users/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add user" })).toBeNull();
+  });
+
+  it("lists two people who share a name as two people", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        bridge_id: null,
+        bridge_display_name: null,
+        is_console_chat: true,
+        connected_user_count: 2,
+        connected_user_names: ["Alex", "Alex"],
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.getAllByText("Alex")).toHaveLength(2);
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
+    errors.mockRestore();
+  });
+
+  it("lists no people for a room on no app that is not a Console chat", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: { ...room, bridge_id: null, bridge_display_name: null },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(screen.queryByText(/^People \(/)).toBeNull();
+  });
+
   it("lets someone taking part in a room they cannot edit unlink its resources", () => {
     viewAs({ can_write: false, can_manage: false, can_unlink: true });
 
     expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
     expect(screen.getByTestId("resources").dataset.canUnlink).toBe("true");
+  });
+});
+
+describe("RoomDetailPage archive, delete and roles", () => {
+  beforeEach(() => {
+    vi.mocked(hooks.useRoomGroups).mockReturnValue({ data: [], loading: false, error: null, refetch: vi.fn() });
+    vi.mocked(hooks.useAgents).mockReturnValue({ data: [agent], loading: false, error: null, refetch: vi.fn() });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("asks before archiving", async () => {
+    vi.mocked(api.archiveRoom).mockResolvedValue(room);
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
+    fireEvent.click(screen.getByRole("button", { name: "Archive room" }));
+    expect(api.archiveRoom).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByRole("dialog", { name: "Archive planning?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Archive room" }));
+    await waitFor(() => expect(api.archiveRoom).toHaveBeenCalledWith("r1"));
+    await waitFor(() => expect(refetchRoom).toHaveBeenCalled());
+  });
+
+  it("keeps the channel unless asked, and archives it when asked", async () => {
+    vi.mocked(api.deleteRoom).mockResolvedValue({ ok: true, channel: { outcome: "archived", reason: null } });
+    viewAs({ can_write: true, can_manage: true, can_unlink: false, channel_on_delete: "archived" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete room" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Delete planning?" });
+    expect(dialog.textContent).toContain("The Slack channel stays as it is; Switch stops syncing it.");
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Also archive the Slack channel" }));
+    expect(dialog.textContent).toContain("Its Slack channel will be archived.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete room" }));
+
+    await waitFor(() => expect(api.deleteRoom).toHaveBeenCalledWith("r1", true));
+    expect(navigate).toHaveBeenCalledWith("/rooms", undefined);
+  });
+
+  it("says what is left to clean up when the channel could not be retired", async () => {
+    vi.mocked(api.deleteRoom).mockResolvedValue({
+      ok: true,
+      channel: { outcome: "failed", reason: "missing scope" },
+    });
+    viewAs({ can_write: true, can_manage: true, can_unlink: false, channel_on_delete: "archived" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete room" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete planning?" });
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Also archive the Slack channel" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete room" }));
+
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith("/rooms", {
+        state: {
+          notice:
+            "The room was deleted, but its Slack channel could not be archived (missing scope). Archive it in Slack by hand.",
+        },
+      }),
+    );
+  });
+
+  it("offers no choice where the platform keeps the channel, and says so", async () => {
+    viewAs({
+      can_write: true,
+      can_manage: true,
+      can_unlink: false,
+      bridge_display_name: "Teams",
+      channel_on_delete: "kept",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete room" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete planning?" });
+    expect(within(dialog).queryByRole("checkbox")).toBeNull();
+    expect(dialog.textContent).toContain("Its Teams channel stays in Teams; remove it there.");
+  });
+
+  it("keeps the delete dialog open with the server's reason when deleting fails", async () => {
+    vi.mocked(api.deleteRoom).mockRejectedValue(new Error("Only the owner can delete this room"));
+    viewAs({ can_write: true, can_manage: true, can_unlink: false });
+    fireEvent.click(screen.getByRole("button", { name: "Delete room" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete planning?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete room" }));
+
+    expect((await within(dialog).findByRole("alert")).textContent).toContain(
+      "Only the owner can delete this room",
+    );
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("asks before deleting a role, which takes its instructions with it", async () => {
+    vi.mocked(api.deleteRoomRole).mockResolvedValue([]);
+    viewAs({
+      can_write: true,
+      can_manage: false,
+      can_unlink: false,
+      roles: [{ name: "reviewer", instructions: "Review every PR", exclusive: false, held_by: [] }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete role reviewer" }));
+    expect(api.deleteRoomRole).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByRole("dialog", { name: "Delete the reviewer role?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete role" }));
+    await waitFor(() => expect(api.deleteRoomRole).toHaveBeenCalledWith("r1", "reviewer"));
+    await waitFor(() => expect(refetchRoom).toHaveBeenCalled());
   });
 });

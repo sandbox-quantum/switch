@@ -87,7 +87,10 @@ from switch_core.db.stores.service_connection_store import (
     ServiceConnectionBusy,
     ServiceConnectionStore,
 )
-from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
+from switch_core.db.stores.workspace_service_store import (
+    ServiceSwitch,
+    WorkspaceServiceStore,
+)
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
 from switch_core.observability.metrics import metrics
@@ -140,7 +143,7 @@ UNREVOCABLE_UNKNOWN = (
     "Some access already given to agents cannot be taken back and may keep "
     "working until it expires."
 )
-SWITCHED_OFF = "Switched off on this server."
+SWITCHED_OFF = "Switched off here."
 # Why a connection needs reconnecting: the operator replaced the app it
 # signed in through.
 CLIENT_REPLACED = "client_replaced"
@@ -178,8 +181,8 @@ def organization_locked(name: str, enabled: bool) -> str:
     locked it on or off. What agents and the dashboard both say."""
     return (
         f"Your organization has {name} locked {'on' if enabled else 'off'} for its "
-        "workspaces. An organization admin can change it under Organization, "
-        "Services."
+        "workspaces. An organization admin can change it in your organization's "
+        "connector settings."
     )
 
 
@@ -618,6 +621,17 @@ class ServiceBroker:
             session, self._catalog, organizations=self._organization_settings
         )
 
+    async def workspace_switches(
+        self, session: AsyncSession
+    ) -> dict[str, ServiceSwitch] | None:
+        """Every service's switch in this workspace, and whose say it is;
+        None with the gate off, where every service counts as on."""
+        if not self._workspace_gate:
+            return None
+        return await self._workspace_services.switches(
+            session, self._catalog, organizations=self._organization_settings
+        )
+
     async def _choose(self, session: AsyncSession, service: str) -> _Choice:
         """The adapter `service` goes through in the bound workspace: its
         organization's app where it saved one, else the server's. `session`
@@ -678,8 +692,7 @@ class ServiceBroker:
                 503,
                 INTERNAL,
                 choice.problem
-                or f"{self._entry(service).definition.name} is not available on "
-                "this server.",
+                or f"{self._entry(service).definition.name} is not available here.",
                 retryable=False,
             )
         return choice.adapter
@@ -743,7 +756,7 @@ class ServiceBroker:
                 403,
                 GRANT_MISSING,
                 f"Agent {agent.name} has no {name} grant. Its owner can grant "
-                f"{name} to it under the agent's Connections.",
+                f"{name} to it from the agent's page.",
                 retryable=False,
             )
         if grant.owner_id != owner_id:
@@ -782,8 +795,8 @@ class ServiceBroker:
             raise ServiceError(
                 404,
                 CONNECTOR_NOT_CONNECTED,
-                f"The agent's owner has not connected {name}. Connect it under "
-                "Settings, Connections.",
+                f"The agent's owner has not connected {name}. Connect it in "
+                "Switch Console, under Connectors.",
                 retryable=False,
             )
         if connection.status != "active":
@@ -791,16 +804,17 @@ class ServiceBroker:
                 409,
                 CONNECTOR_REVOKED,
                 f"The agent's owner must reconnect {name}: its sign-in was "
-                "revoked or has lapsed. Reconnect it under Settings, Connections.",
+                "revoked or has lapsed. Reconnect it in Switch Console, under "
+                "Connectors.",
                 retryable=False,
             )
         if _scopes_changed(connection, entry):
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"The agent's owner must reconnect {name}: this server now asks "
+                f"The agent's owner must reconnect {name}: Switch now asks "
                 f"for other {name} access than the sign-in granted. Reconnect it "
-                "under Settings, Connections.",
+                "in Switch Console, under Connectors.",
                 retryable=False,
             )
         if grant.account_id != connection.account_id:
@@ -825,7 +839,7 @@ class ServiceBroker:
             raise ServiceError(
                 403,
                 FORBIDDEN,
-                f"This grant asks for write access, but the {name} connection "
+                f"This grant asks for write access, but the {name} connector "
                 "allows only reading. Reconnect with write access, or make the "
                 "grant read-only.",
                 retryable=False,
@@ -1192,8 +1206,8 @@ class ServiceBroker:
                 raise ServiceError(
                     409,
                     CONNECTOR_REVOKED,
-                    f"The agent's owner must reconnect {name} under Settings, "
-                    "Connections.",
+                    f"The agent's owner must reconnect {name} in Switch Console, "
+                    "under Connectors.",
                     retryable=False,
                 )
             if _client_replaced(connection, adapter):
@@ -1204,8 +1218,7 @@ class ServiceBroker:
                 raise self._revoked(
                     service,
                     ReauthorizationRequiredError(
-                        f"{name} was connected through an app this server no "
-                        "longer uses."
+                        f"{name} was connected through an app Switch no longer uses."
                     ),
                 )
             secret = self._secret(connection)
@@ -1216,7 +1229,7 @@ class ServiceBroker:
                     raise ServiceError(
                         500,
                         INTERNAL,
-                        f"The {name} connection holds no token.",
+                        f"The {name} connector holds no token.",
                         retryable=False,
                     )
                 await session.commit()
@@ -1256,8 +1269,8 @@ class ServiceBroker:
         return ServiceError(
             409,
             CONNECTOR_REVOKED,
-            f"{error} The agent's owner must reconnect {name} under Settings, "
-            "Connections.",
+            f"{error} The agent's owner must reconnect {name} in Switch Console, "
+            "under Connectors.",
             retryable=False,
         )
 
@@ -1324,7 +1337,7 @@ class ServiceBroker:
         server = self._adapters.get(service)
         if here is None and server is None:
             raise ServiceUnavailableError(
-                f"{name} is not set up on this server, so Switch could not "
+                f"{name} is not set up here, so Switch could not "
                 f"revoke the sign-in. Revoke it at {name}."
             )
         # A sign-in from before clients were recorded predates organizations'
@@ -1476,11 +1489,7 @@ class ServiceBroker:
     def _reason(self, service: str, choice: _Choice) -> str:
         """Why `service` cannot be used through `choice`, in a sentence."""
         unavailable = self._unavailable(service, choice)
-        return (
-            "Not available on this server."
-            if unavailable is None
-            else unavailable.reason
-        )
+        return "Not available here." if unavailable is None else unavailable.reason
 
     def server_serves(self, service: str) -> bool:
         """Whether a workspace that goes through the server's app for
@@ -1520,11 +1529,11 @@ class ServiceBroker:
                 return Unavailable("organization_app_unusable", choice.problem)
             if kind is not None:
                 return Unavailable("app_not_set_up", not_set_up(name))
-            return Unavailable("not_set_up", f"{name} is not set up on this server.")
+            return Unavailable("not_set_up", f"{name} is not set up here.")
         if not adapter.can_issue:
             return Unavailable(
                 "not_fully_set_up",
-                f"{name} can be connected on this server but not granted to "
+                f"{name} can be connected here but not granted to "
                 "agents: it is not fully set up.",
             )
         return None
@@ -1571,14 +1580,14 @@ class ServiceBroker:
             raise ServiceError(
                 409,
                 CONNECTOR_NOT_CONNECTED,
-                f"Connect {name} under Settings, Connections first.",
+                f"Connect {name} in Switch Console, under Connectors, first.",
                 retryable=False,
             )
         if connection.status != "active" or _scopes_changed(connection, entry):
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"Reconnect {name} under Settings, Connections first.",
+                f"Reconnect {name} in Switch Console, under Connectors, first.",
                 retryable=False,
             )
         if _passes_through(entry):
@@ -1587,7 +1596,7 @@ class ServiceBroker:
                     422,
                     VALIDATION_ERROR,
                     f"A {name} grant is on or off: the agent reaches what your "
-                    f"{name} connection does. Leave out access and tools.",
+                    f"{name} connector does. Leave out access and tools.",
                     retryable=False,
                 )
             access = _consent(connection)
@@ -1596,7 +1605,7 @@ class ServiceBroker:
             raise ServiceError(
                 422,
                 VALIDATION_ERROR,
-                f"Your {name} connection allows only reading. Reconnect with "
+                f"Your {name} connector allows only reading. Reconnect with "
                 "write access to grant writing.",
                 retryable=False,
             )
@@ -1759,7 +1768,7 @@ class ServiceBroker:
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"Your {name} connection changed. Please retry.",
+                f"Your {name} connector changed. Please retry.",
                 retryable=True,
             )
         previous = await self._store.get_grant(session, agent.id, service)
@@ -2110,6 +2119,29 @@ class ServiceBroker:
         service allows it. Returns a warning naming whatever could not be
         revoked.
         """
+        return await self._end_connection(
+            session, user_id, service, actor_id=user_id, revoked_by_admin=False
+        )
+
+    async def revoke_connection(
+        self, session: AsyncSession, actor_id: str, user_id: str, service: str
+    ) -> str | None:
+        """A workspace admin ends `user_id`'s connection, as its owner's
+        disconnect does: its grants go, and what was issued is revoked. The
+        caller has checked that `actor_id` administers the workspace."""
+        return await self._end_connection(
+            session, user_id, service, actor_id=actor_id, revoked_by_admin=True
+        )
+
+    async def _end_connection(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        service: str,
+        *,
+        actor_id: str,
+        revoked_by_admin: bool,
+    ) -> str | None:
         name = self._entry(service).definition.name
         removed = await self._remove_connection(session, user_id, service)
         if removed is None:
@@ -2122,8 +2154,10 @@ class ServiceBroker:
         await record_audit_event(
             session,
             tenant_id=require_tenant_id(),
-            actor_user_id=user_id,
-            action=AuditAction.SERVICE_DISCONNECTED,
+            actor_user_id=actor_id,
+            action=AuditAction.SERVICE_CONNECTION_REVOKED
+            if revoked_by_admin
+            else AuditAction.SERVICE_DISCONNECTED,
             target_type="user",
             target_id=user_id,
             details={"service": service},
@@ -2360,9 +2394,7 @@ class ServiceBroker:
             adapter = adapters[service]
             try:
                 if adapter is None or encrypted is None:
-                    raise ServiceUnavailableError(
-                        f"{service} is not available on this server."
-                    )
+                    raise ServiceUnavailableError(f"{service} is not available here.")
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_issued(self._keyring.decrypt(encrypted))
                 return row_id

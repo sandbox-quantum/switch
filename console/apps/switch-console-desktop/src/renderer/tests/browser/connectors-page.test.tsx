@@ -167,6 +167,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
+    agent_access_note: null,
     loopback_ports: null,
     access_levels: null,
     key: null,
@@ -493,6 +494,31 @@ it('says on the profile when re-reading the catalog fails, with Retry', async ()
   await act(async () => button(/^retry$/i, page)!.click());
   await vi.waitFor(() => expect(button(/^Connect to Switch$/, page)).toBeDefined());
   expect(page.querySelector('[role="alert"]')).toBeNull();
+});
+
+/** The paragraphs under General on Atlassian's profile, with `note` as its agent access note. */
+async function generalNotes(note: string | null): Promise<string[]> {
+  workspaces.getServiceConnections.mockResolvedValue(
+    CATALOG.map((item) => (item.slug === 'atlassian' ? { ...item, agent_access_note: note } : item))
+  );
+  const page = await render();
+  await vi.waitFor(() => expect(button(/^Atlassian/, grid(page)!)).toBeDefined());
+  await act(async () => button(/^Atlassian/, grid(page)!)!.click());
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Atlassian'));
+  const general = [...page.querySelectorAll('section')].find(
+    (section) => section.querySelector('h2')?.textContent === 'General'
+  )!;
+  return [...general.querySelectorAll(':scope > p')].map((p) => p.textContent ?? '');
+}
+
+it("shows a service's agent access note on its profile", async () => {
+  expect(await generalNotes('Agents have Atlassian for up to an hour.')).toEqual([
+    'Agents have Atlassian for up to an hour.',
+  ]);
+});
+
+it('shows no agent access note on the profile of a service without one', async () => {
+  expect(await generalNotes(null)).toEqual([]);
 });
 
 it("shows GitHub's repositories on its profile, and adds an agent with them", async () => {

@@ -3,6 +3,11 @@ name: Google Workspace
 category: Productivity
 description: Work with Google Drive, Docs, Sheets, Slides and Calendar, as you.
 enabled: true
+publisher: Google
+links:
+  documentation: https://developers.google.com/workspace
+  support: https://support.google.com/a
+  privacy: https://policies.google.com/privacy
 adapter: oauth
 auth:
   type: oauth

@@ -38,9 +38,12 @@ import {
 import {
   normaliseServerUrl,
   type AddServerParams,
+  type ApiKeyLifetime,
   type BundledChatSignIn,
+  type ClearDecisionSettingsResult,
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
+  type FetchDecisionSettingsResult,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
@@ -53,6 +56,10 @@ import {
   type SwitchUser,
   type UpdateServerParams,
   type UpdateServerResult,
+  type TestDecisionSettingsParams,
+  type TestDecisionSettingsResult,
+  type UpdateDecisionSettingsParams,
+  type UpdateDecisionSettingsResult,
   type UpdateTrustSettingsParams,
   type UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
@@ -68,6 +75,12 @@ import {
   signup,
 } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
+import {
+  clearDecisionSettingsOnServer,
+  fetchDecisionSettingsFromServer,
+  testDecisionSettingsOnServer,
+  updateDecisionSettingsOnServer,
+} from './decision-settings';
 import {
   getConnectionCatalog,
   getGitHubConnection,
@@ -89,6 +102,7 @@ import {
   createRegistrationKey,
   deleteApiKey,
   deleteMyAccount,
+  resetMyTestAccount,
   fetchMyApiKeys,
   revealApiKey,
   updateMyName,
@@ -579,6 +593,36 @@ export const switchServersController = createRPCController({
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
 
   /**
+   * A workspace's decision routing settings, its admins only. Scoped to the
+   * workspace named, not the server: each workspace chooses its own decision
+   * backend, so the call runs with that workspace's tenant selected.
+   */
+  getDecisionSettings: (workspaceId: string): Promise<FetchDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, fetchDecisionSettingsFromServer),
+
+  updateDecisionSettings: ({
+    workspaceId,
+    ...input
+  }: UpdateDecisionSettingsParams): Promise<UpdateDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      updateDecisionSettingsOnServer(server, input)
+    ),
+
+  /** Return the workspace to the server's default decision backend. */
+  clearDecisionSettings: (workspaceId: string): Promise<ClearDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, clearDecisionSettingsOnServer),
+
+  /** Run one sample decision against the unsaved values, or the server
+   * default, nothing stored. */
+  testDecisionSettings: ({
+    workspaceId,
+    ...input
+  }: TestDecisionSettingsParams): Promise<TestDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      testDecisionSettingsOnServer(server, input)
+    ),
+
+  /**
    * The apps connectors sign in through, for the server's operator: not
    * scoped to a workspace, since one app serves them all. Null when the
    * server has none to set up.
@@ -710,9 +754,10 @@ export const switchServersController = createRPCController({
   createRegistrationKey: async (params: {
     serverId: string;
     label: string;
+    lifetime: ApiKeyLifetime;
   }): Promise<CreatedRegistrationKey> => {
     const server = await requireReachableServer(params.serverId);
-    return createRegistrationKey(server, params.label);
+    return createRegistrationKey(server, params.label, params.lifetime);
   },
 
   /** One of the signed-in person's keys in full, for copying. */
@@ -731,6 +776,13 @@ export const switchServersController = createRPCController({
   deleteAccount: async (params: { serverId: string; email: string }): Promise<void> => {
     const server = await requireReachableServer(params.serverId);
     await deleteMyAccount(server, params.email);
+    await forgetSession(params.serverId);
+  },
+
+  /** Wipe the signed-in test account on the server, then forget its session here. */
+  resetTestAccount: async (params: { serverId: string; email: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await resetMyTestAccount(server, params.email);
     await forgetSession(params.serverId);
   },
 

@@ -11,6 +11,7 @@ vi.mock('node:child_process', () => ({
 
 const {
   ensureUserBinDirsInPath,
+  ensureWindowsGitBashInPath,
   ensureWindowsNpmGlobalBinInPath,
   ensureWindowsUserBinDirsInPath,
   resolveUserEnv,
@@ -70,7 +71,7 @@ describe('ensureWindowsNpmGlobalBinInPath', () => {
 });
 
 describe('ensureWindowsUserBinDirsInPath', () => {
-  it('adds the folder Google’s agy installer writes to, once, after the PATH as the controller does', () => {
+  it('adds the folders the agy and official Codex installers write to, once, after the PATH as the controller does', () => {
     const env: NodeJS.ProcessEnv = {
       localappdata: 'C:\\Users\\test\\AppData\\Local',
       Path: 'C:\\Windows\\System32',
@@ -78,8 +79,11 @@ describe('ensureWindowsUserBinDirsInPath', () => {
 
     expect(ensureWindowsUserBinDirsInPath(env)).toEqual([
       'C:\\Users\\test\\AppData\\Local\\agy\\bin',
+      'C:\\Users\\test\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin',
     ]);
-    expect(env.Path).toBe('C:\\Windows\\System32;C:\\Users\\test\\AppData\\Local\\agy\\bin');
+    expect(env.Path).toBe(
+      'C:\\Windows\\System32;C:\\Users\\test\\AppData\\Local\\agy\\bin;C:\\Users\\test\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin'
+    );
     expect(ensureWindowsUserBinDirsInPath(env)).toEqual([]);
   });
 
@@ -87,6 +91,19 @@ describe('ensureWindowsUserBinDirsInPath', () => {
     const env: NodeJS.ProcessEnv = { Path: 'C:\\Windows\\System32' };
     expect(ensureWindowsUserBinDirsInPath(env)).toEqual([]);
     expect(env.Path).toBe('C:\\Windows\\System32');
+  });
+});
+
+describe('ensureWindowsGitBashInPath', () => {
+  it("adds Git for Windows' bin folder to the PATH Windows gave, whatever its casing", () => {
+    const env: NodeJS.ProcessEnv = {
+      Path: 'C:\\Windows\\System32',
+      programfiles: 'C:\\Program Files',
+    };
+    const exists = (file: string) => file === 'C:\\Program Files\\Git\\bin\\bash.exe';
+    expect(ensureWindowsGitBashInPath(env, exists)).toBe('C:\\Program Files\\Git\\bin');
+    expect(env.Path).toBe('C:\\Windows\\System32;C:\\Program Files\\Git\\bin');
+    expect(ensureWindowsGitBashInPath(env, exists)).toBeNull();
   });
 });
 

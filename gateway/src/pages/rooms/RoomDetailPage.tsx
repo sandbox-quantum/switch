@@ -10,12 +10,12 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
   Divider,
   FormControlLabel,
@@ -26,6 +26,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import SearchablePickerDialog, {
   type PickerOption,
 } from "../../components/SearchablePickerDialog";
@@ -55,14 +56,23 @@ import {
   MONO_SX,
   channelTypeLabel,
   formatDateTime,
-  titleCase,
-} from "../../theme/hootFormat";
+  sentenceCase,
+} from "../../theme/format";
+import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
+import type { RoomsNotice } from "./RoomsPage";
 import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
+import {
+  channelCleanupText,
+  channelKeptText,
+  channelRetiredText,
+  isRetirable,
+  retireChannelLabel,
+} from "./roomDeleteWording";
 
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -98,7 +108,7 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -130,6 +140,17 @@ export default function RoomDetailPage() {
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
+        {room.auto_route && (
+          <>
+            <RoomAutoRouteSection
+              room={room}
+              autoRoute={room.auto_route}
+              canWrite={canWrite}
+              canManage={canManage}
+            />
+            <Divider />
+          </>
+        )}
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
@@ -160,7 +181,7 @@ export default function RoomDetailPage() {
             <ArchiveSection room={room} onChanged={refetch} />
           </>
         )}
-        {canManage && (
+        {room.can_transfer && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -168,10 +189,20 @@ export default function RoomDetailPage() {
               resourceId={room.id}
               resourceLabel={room.name}
               ownerId={room.owner_id}
+              blockedReason={null}
               onTransferred={refetch}
             />
+          </>
+        )}
+        {canManage && (
+          <>
             <Divider />
-            <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
+            <DangerSection
+              room={room}
+              onDeleted={(notice) =>
+                navigate("/rooms", notice ? { state: { notice } satisfies RoomsNotice } : undefined)
+              }
+            />
           </>
         )}
       </Stack>
@@ -442,6 +473,7 @@ function RoleRow({
   role,
   canWrite,
   busy,
+  onChanged,
   run,
 }: {
   roomId: string;
@@ -452,6 +484,7 @@ function RoleRow({
   run: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   return (
     <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}>
@@ -483,7 +516,8 @@ function RoleRow({
             <IconButton
               size="small"
               disabled={busy}
-              onClick={() => run(() => deleteRoomRole(roomId, role.name))}
+              onClick={() => setDeleting(true)}
+              aria-label={`Delete role ${role.name}`}
             >
               <DeleteOutline fontSize="small" />
             </IconButton>
@@ -510,6 +544,22 @@ function RoleRow({
           </Box>
         )}
       </Stack>
+      <ConfirmDialog
+        open={deleting}
+        title={`Delete the ${role.name} role?`}
+        description={
+          role.held_by.length > 0
+            ? `Its instructions are deleted with it, and ${role.held_by.join(", ")} stops holding it. This cannot be undone.`
+            : "Its instructions are deleted with it. This cannot be undone."
+        }
+        confirmLabel="Delete role"
+        tone="destructive"
+        onConfirm={async () => {
+          await deleteRoomRole(roomId, role.name);
+          onChanged();
+        }}
+        onClose={() => setDeleting(false)}
+      />
       <RoleEditorDialog
         open={editing}
         mode="edit"
@@ -570,8 +620,7 @@ function EditableFieldsSection({
     try {
       await updateRoom(room.id, {
         name: name !== room.name ? name : undefined,
-        description:
-          !isBridged && description !== room.description ? description : undefined,
+        description: description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
         ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
@@ -582,7 +631,7 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
+  }, [room, name, description, instructions, access, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
@@ -614,7 +663,6 @@ function EditableFieldsSection({
         disabled={!canWrite || saving}
         multiline
         rows={2}
-        slotProps={{ input: { readOnly: isBridged } }}
       />
       <TextField
         label="Instructions"
@@ -762,7 +810,10 @@ function ParticipantsSection({
     [room.id, onChanged],
   );
 
-  const isFixedMembership = room.channel_type === "group" || room.channel_type === "direct";
+  // A direct or group chat takes its members from its platform: the server
+  // refuses changing them, and the page says where they are changed.
+  const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
+  const canChangeMembers = room.can_change_members;
 
   return (
     <Stack spacing={3}>
@@ -789,9 +840,7 @@ function ParticipantsSection({
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                !canWrite || isFixedMembership || working
-                  ? undefined
-                  : () => handleRemoveAgent(id)
+                !canChangeMembers || working ? undefined : () => handleRemoveAgent(id)
               }
             />
           ))}
@@ -801,7 +850,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {canWrite && !isFixedMembership && (
+        {canChangeMembers && (
           <>
             <Button
               size="small"
@@ -826,14 +875,31 @@ function ParticipantsSection({
             />
           </>
         )}
-        {isFixedMembership && (
+        {platformMembership && (
           <Typography variant="caption" color="text.secondary">
             Membership for {channelTypeLabel(room.channel_type)} rooms is managed from the messaging platform.
           </Typography>
         )}
       </Box>
 
-      {room.bridge_id && !isFixedMembership && (
+      {room.is_console_chat && !room.bridge_id && (
+        <Box>
+          <Typography variant="body2" gutterBottom>
+            People ({room.connected_user_names.length})
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
+            {/* Two people may share a name, so a name alone does not key a chip. */}
+            {room.connected_user_names.map((name, index) => (
+              <Chip key={`${index}:${name}`} label={name} size="small" />
+            ))}
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            Members of a Switch Console chat are added and removed in Switch Console.
+          </Typography>
+        </Box>
+      )}
+
+      {room.bridge_id && !platformMembership && (
         <Box>
           <Typography variant="body2" gutterBottom>
             Connected users ({room.connected_user_names.length})
@@ -848,7 +914,7 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          {canWrite && (
+          {canChangeMembers && (
             <>
               <Button
                 size="small"
@@ -923,22 +989,22 @@ const STATUS_META: Record<
 > = {
   live: {
     label: "Live",
-    color: "var(--hoot-success)",
+    color: "var(--sw-success)",
     description: "Connected and receiving events",
   },
   awaiting_manual_poll: {
     label: "Idle",
-    color: "var(--hoot-warning)",
+    color: "var(--sw-warning)",
     description: "Session open — awaiting manual poll",
   },
   no_session: {
     label: "No session",
-    color: "var(--hoot-muted-foreground)",
+    color: "var(--sw-muted-foreground)",
     description: "Not currently connected to this room",
   },
   disconnected: {
     label: "Disconnected",
-    color: "var(--hoot-destructive)",
+    color: "var(--sw-destructive)",
     description: "Always-on agent is not connected",
   },
 };
@@ -961,8 +1027,8 @@ function AgentRow({
 }) {
   const navigate = useNavigate();
   const meta = (status && STATUS_META[status]) || {
-    label: status ? titleCase(status) : "Unknown",
-    color: "var(--hoot-muted-foreground)",
+    label: status ? sentenceCase(status) : "Unknown",
+    color: "var(--sw-muted-foreground)",
     description: "",
   };
   return (
@@ -1078,25 +1144,23 @@ function ArchiveSection({
   room: RoomDetail;
   onChanged: () => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleToggle = useCallback(async () => {
+  // Unarchiving restores the room, so it does not ask first; archiving does.
+  const unarchive = useCallback(async () => {
     setSaving(true);
     setError(null);
     try {
-      if (room.archived) {
-        await unarchiveRoom(room.id);
-      } else {
-        await archiveRoom(room.id);
-      }
+      await unarchiveRoom(room.id);
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update archive state");
+      setError(err instanceof Error ? err.message : "Failed to unarchive the room");
     } finally {
       setSaving(false);
     }
-  }, [room.id, room.archived, onChanged]);
+  }, [room.id, onChanged]);
 
   return (
     <Stack spacing={2}>
@@ -1107,93 +1171,106 @@ function ArchiveSection({
       <Typography variant="body2" color="text.secondary">
         {room.archived
           ? "This room is archived: hidden from the active room list but fully intact and retrievable. Unarchive it to restore it to the active list."
-          : "Archiving hides this room from the active room list while keeping it fully intact — the Matrix room, members, and any bridge channel are untouched. It's reversible at any time."}
+          : "Archiving hides this room from the active room list while keeping it fully intact — its messages, who is in it and any linked channel are untouched. It's reversible at any time."}
       </Typography>
       <Box>
         <Button
           variant="outlined"
           startIcon={room.archived ? <UnarchiveOutlined /> : <ArchiveOutlined />}
-          onClick={handleToggle}
+          onClick={room.archived ? unarchive : () => setConfirming(true)}
           disabled={saving}
         >
           {room.archived ? "Unarchive room" : "Archive room"}
         </Button>
       </Box>
+      <ConfirmDialog
+        open={confirming}
+        title={`Archive ${room.name}?`}
+        description="Archiving hides it from the active room list. Its messages, people and any linked channel are untouched, and you can unarchive it at any time."
+        confirmLabel="Archive room"
+        tone="plain"
+        onConfirm={async () => {
+          await archiveRoom(room.id);
+          onChanged();
+        }}
+        onClose={() => setConfirming(false)}
+      />
     </Stack>
   );
 }
 
 // ── Danger ───────────────────────────────────────────────────────────────────
 
+/** Deleting the room, and with it, if the person asks and the platform
+ * allows, its platform channel. The channel is kept unless they ask: a room
+ * is often deleted to take the agents out of a channel people keep using. */
 function DangerSection({
   room,
   onDeleted,
 }: {
   room: RoomDetail;
-  onDeleted: () => void;
+  // With the notice for a channel left to clean up by hand, if any.
+  onDeleted: (notice: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [retire, setRetire] = useState(false);
+  const outcome = room.channel_on_delete;
+  const platform = room.bridge_display_name ?? "messaging app";
 
   const handleDelete = useCallback(async () => {
-    setDeleting(true);
-    setError(null);
-    try {
-      const ok = await deleteRoom(room.id);
-      if (!ok) throw new Error("Delete returned false");
-      onDeleted();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
-      setDeleting(false);
-    }
-  }, [room.id, onDeleted]);
+    const planned = retire && isRetirable(outcome) ? outcome : null;
+    const result = await deleteRoom(room.id, planned !== null);
+    onDeleted(planned ? channelCleanupText(platform, planned, result.channel) : null);
+  }, [room.id, retire, outcome, platform, onDeleted]);
+
+  const channelText =
+    outcome === null
+      ? null
+      : retire && isRetirable(outcome)
+        ? channelRetiredText(platform, outcome)
+        : channelKeptText(platform, outcome);
 
   return (
     <Stack spacing={2}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Danger zone
       </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
-      {room.bridge_id && (
-        <Alert severity="warning">
-          Deleting this room does not delete the external channel on{" "}
-          {room.bridge_display_name ?? "the messaging platform"}. You will need
-          to remove or archive it manually.
-        </Alert>
-      )}
+      <Typography variant="body2" color="text.secondary">
+        Deleting the room takes everyone out of it and cannot be undone.
+      </Typography>
       <Box>
         <Button
           variant="outlined"
           color="error"
           startIcon={<DeleteOutline />}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            setRetire(false);
+            setOpen(true);
+          }}
         >
           Delete room
         </Button>
       </Box>
-      <Dialog open={open} onClose={() => setOpen(false)}>
-        <DialogTitle>Delete room?</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete <b>{room.name}</b>? This removes the
-            Matrix room, all client memberships, and any bridge mapping. This
-            cannot be undone.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button
-            color="error"
-            variant="contained"
-            onClick={handleDelete}
-            disabled={deleting}
-            startIcon={deleting ? <CircularProgress size={16} /> : undefined}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={open}
+        title={`Delete ${room.name}?`}
+        description={
+          <Stack spacing={1.5}>
+            <span>This removes the room and takes everyone out of it. This cannot be undone.</span>
+            {isRetirable(outcome) && (
+              <FormControlLabel
+                control={<Checkbox checked={retire} onChange={(e) => setRetire(e.target.checked)} />}
+                label={retireChannelLabel(platform, outcome)}
+              />
+            )}
+            {channelText && <span>{channelText}</span>}
+          </Stack>
+        }
+        confirmLabel="Delete room"
+        tone="destructive"
+        onConfirm={handleDelete}
+        onClose={() => setOpen(false)}
+      />
     </Stack>
   );
 }

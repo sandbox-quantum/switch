@@ -274,6 +274,26 @@ class InstallClaimRepeated(RuntimeError):
     """
 
 
+async def let_go_at_platform(
+    installer: MessagingAppInstaller,
+    *,
+    bot_token: str | None,
+    external_workspace_id: str,
+    bridge_connected: bool,
+) -> None:
+    """Tell the platform an install is over: revoke its token, or release
+    the workspace where it holds none.
+
+    A tokenless install has nothing to revoke, and a connected bridge lets go
+    of the platform itself as it is removed. One that is not running, or still
+    starting, cannot, so the installer does it. So does a claimed chat, whose
+    bridge is the tenant's and is not removed with it."""
+    if bot_token is not None:
+        await installer.revoke(bot_token=bot_token)
+    elif installer.installs_by_claim or not bridge_connected:
+        await installer.release(external_workspace_id=external_workspace_id)
+
+
 class MessagingInstallService:
     def __init__(
         self,
@@ -690,7 +710,7 @@ class MessagingInstallService:
                     grant.external_workspace_id,
                 )
                 raise MessagingInstallError(
-                    "Switch recorded the approval, but the connection could not "
+                    "Switch recorded the approval, but the messaging app could not "
                     f"restart to use it ({error}). It is stopped until Switch "
                     "restarts or the approval is given again."
                 ) from error
@@ -1135,20 +1155,13 @@ class MessagingInstallService:
                 return await self._store.get(session, install_id=install_id)
 
         with tenant_scope(tenant_id):
-            installer = self._installers.get(platform)
-            if token is not None:
-                await installer.revoke(bot_token=self._keyring.decrypt(token))
-            elif (
-                installer.installs_by_claim
-                or bridge_id is None
-                or not self._lifecycle.is_connected(bridge_id)
-            ):
-                # A tokenless install has nothing to revoke, and a connected
-                # bridge lets go of the platform itself as it is removed. One
-                # that is not running, or still starting, cannot, so the
-                # installer does it. So does a claimed chat, whose bridge is
-                # the tenant's and is not removed with it.
-                await installer.release(external_workspace_id=workspace_id)
+            await let_go_at_platform(
+                self._installers.get(platform),
+                bot_token=None if token is None else self._keyring.decrypt(token),
+                external_workspace_id=workspace_id,
+                bridge_connected=bridge_id is not None
+                and self._lifecycle.is_connected(bridge_id),
+            )
 
             async with tenant_session(self._session_factory, tenant_id) as session:
                 ended = await self._store.end(

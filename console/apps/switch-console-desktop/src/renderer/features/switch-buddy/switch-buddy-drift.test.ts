@@ -18,6 +18,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     workspaces: {
       getTemplateDetail: async () => ({ name: 'switch-buddy', definition: 'version: 2' }),
       runTemplateDocument,
+      recordTemplateRun: async () => {},
     },
   },
 }));

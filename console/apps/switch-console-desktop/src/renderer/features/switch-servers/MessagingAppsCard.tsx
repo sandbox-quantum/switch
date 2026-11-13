@@ -45,6 +45,10 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
+import {
+  ambiguousBundledBridgeMessage,
+  bundledMattermostBridge,
+} from '@shared/core/switch-servers/bundled-bridge';
 import type {
   LinkedIdentity,
   PendingIdentity,
@@ -52,7 +56,6 @@ import type {
 } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectedChatsList } from './ConnectedChatsList';
-import { LinkAccountPrompts } from './link-account-prompts';
 import { accountHandle, linkRequestFailureText } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
 import {
@@ -145,6 +148,23 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
 
   const bridges = useMemo(() => orderBridges(bridgesQuery.data ?? []), [bridgesQuery.data]);
+  // Only the bundled Mattermost has those generated credentials; a Mattermost
+  // the user connected themselves beside it does not.
+  const bundledChoice = useMemo(
+    () => (isManaged ? bundledMattermostBridge(bridges) : null),
+    [isManaged, bridges]
+  );
+  const bundledBridgeId = bundledChoice?.kind === 'bundled' ? bundledChoice.bridge.id : null;
+  const ambiguousBundledIds =
+    bundledChoice?.kind === 'ambiguous' ? bundledChoice.bridgeIds.join(',') : null;
+  useEffect(() => {
+    if (ambiguousBundledIds !== null) {
+      log.warn(
+        `Not showing the bundled Mattermost sign-in. ${ambiguousBundledBridgeMessage(ambiguousBundledIds.split(','))}`,
+        { serverId }
+      );
+    }
+  }, [ambiguousBundledIds, serverId]);
 
   // Which platforms the signed-in user may connect another chat on. Asked only
   // once there is a connection whose chats arrive that way, which also keeps
@@ -330,13 +350,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
         )}
       </div>
 
-      <LinkAccountPrompts
-        workspaceId={workspaceId}
-        bridges={bridges}
-        identities={identities}
-        pending={pending}
-      />
-
       {/* Same shape as the addressing editor's owner warning, so the two
         readings of one problem look like one problem.
 
@@ -414,7 +427,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                       }
                     : null
                 }
-                showBundledSignIn={isManaged && bridge.type === 'mattermost'}
+                showBundledSignIn={bridge.id === bundledBridgeId}
                 isAdmin={isAdmin}
                 personal={personal}
                 savingChannelCreation={savingBridgeId === bridge.id}

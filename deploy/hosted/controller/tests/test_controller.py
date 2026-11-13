@@ -966,3 +966,57 @@ def test_a_database_that_kept_bundle_tokens_keeps_the_current_instance_bundle(
     columns = {row[1] for row in connection.execute("PRAGMA table_info(machines)")}
     connection.close()
     assert "instance_bundle_token" not in columns
+
+
+OLD_IMAGE = "ami-0aaaaaaaaaaaaaaaa"
+
+
+@pytest.mark.parametrize("delete_on_termination", [True, None])
+def test_a_stopped_instance_on_an_old_image_is_started_while_its_data_volume_could_go_with_it(
+    tmp_path: Path, delete_on_termination
+):
+    cfg = config(tmp_path)
+    store = MachineStore(cfg.state_db_path, cfg.fingerprint())
+    machine = store.insert(
+        machine_id=MACHINE_ID,
+        core_revision=1,
+        instance_type="m6i.large",
+        image_id=OLD_IMAGE,
+        max_machines=cfg.max_machines,
+    )
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    store.record_instance(machine.machine_id, "i-0123456789abcdef0", REVISION_2_BUNDLE)
+    machine = with_bundle(store, machine.machine_id, 2)
+    stopped = {**instance(cfg, machine, "stopped"), "ImageId": OLD_IMAGE}
+    if delete_on_termination is not None:
+        stopped["BlockDeviceMappings"] = [
+            {
+                "DeviceName": "/dev/sdf",
+                "Ebs": {
+                    "VolumeId": "vol-0123456789abcdef0",
+                    "DeleteOnTermination": delete_on_termination,
+                },
+            }
+        ]
+    client = ec2_client()
+    with Stubber(client) as stubber:
+        stubber.add_response(
+            "describe_volumes",
+            {"Volumes": [volume(cfg, machine)]},
+            {"VolumeIds": [machine.data_volume_id]},
+        )
+        stubber.add_response(
+            "describe_instances",
+            {"Reservations": [{"Instances": [stopped]}]},
+            {"InstanceIds": [machine.instance_id]},
+        )
+        stubber.add_response(
+            "start_instances", {"StartingInstances": []}, {"InstanceIds": [machine.instance_id]}
+        )
+        result = Reconciler(store, Ec2Cloud(client, cfg), instance_type=None).reconcile(
+            machine.machine_id
+        )
+        stubber.assert_no_pending_responses()
+    assert not result.instance_terminate_issued
+    assert result.image_id == OLD_IMAGE
+    store.close()

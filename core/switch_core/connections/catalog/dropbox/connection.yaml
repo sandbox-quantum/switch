@@ -3,6 +3,11 @@ name: Dropbox
 category: File storage
 description: Find, read and organize the files in your Dropbox, as you.
 enabled: true
+publisher: Dropbox
+links:
+  documentation: https://www.dropbox.com/developers/documentation
+  support: https://help.dropbox.com
+  privacy: https://www.dropbox.com/privacy
 adapter: oauth
 auth:
   type: oauth

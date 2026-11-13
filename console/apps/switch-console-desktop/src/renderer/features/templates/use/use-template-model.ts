@@ -1,6 +1,7 @@
 import type { ParsedAgentEntry, UnsaidRuntime } from '@main/core/agent-templates/template-document';
 import type { ParamSpec } from '@main/core/room-templates/controller';
 import {
+  CONSOLE_ROOM,
   FIRST,
   NEW,
   type ParamType,
@@ -150,17 +151,20 @@ export function serverInputs(
   return inputs;
 }
 
-/** The messaging apps a room can be created on, the server's default first, then by name. */
+/** Where a room can be created: the messaging apps, the server's default
+ * first, then by name, and Switch Console last when the server offers it. */
 export function bridgeCandidates(
-  bridges: { displayName: string; status: string; isDefault: boolean }[]
+  bridges: { displayName: string; status: string; isDefault: boolean }[],
+  consoleOffered: boolean
 ): string[] {
-  return bridges
+  const apps = bridges
     .filter((b) => b.status === 'active')
     .sort(
       (a, b) =>
         Number(b.isDefault) - Number(a.isDefault) || a.displayName.localeCompare(b.displayName)
     )
     .map((b) => b.displayName);
+  return consoleOffered ? [...apps, CONSOLE_ROOM] : apps;
 }
 
 /**
@@ -174,9 +178,12 @@ export function resolveChain(
   hasNewRoom = false
 ): string | null {
   if (!isChain(param)) return null;
+  // `$first` is the first messaging app, never Switch Console, which a
+  // template only gets by naming it (as the server resolves it).
+  const firsts = candidates.filter((c) => !(param.type === 'bridge' && c === CONSOLE_ROOM));
   for (const candidate of param.default) {
     if (candidate === FIRST) {
-      if (candidates.length > 0) return candidates[0];
+      if (firsts.length > 0) return firsts[0];
     } else if (candidate === NEW) {
       if (param.type === 'room' && hasNewRoom) return NEW;
     } else if (candidates.includes(candidate)) {

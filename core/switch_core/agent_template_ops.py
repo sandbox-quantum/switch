@@ -30,6 +30,7 @@ from switch_core.official_templates import (
     matches,
     official_template,
     official_templates,
+    slug_of,
 )
 from switch_core.template_lint import lint_template
 
@@ -127,6 +128,7 @@ class AgentTemplates:
         rows = await self._store.list_all(
             session, viewer_id=acting.owner.id, is_admin=False, query=query, kind=kind
         )
+        hidden = await self._store.hidden_official_slugs(session)
         official = [
             {
                 "id": t.id,
@@ -138,7 +140,7 @@ class AgentTemplates:
                 "can_edit": False,
             }
             for t in official_templates(self._agent_management, self._switch_buddy)
-            if matches(t, query, kind)
+            if matches(t, query, kind) and slug_of(t.id) not in hidden
         ]
         return official + [
             {
@@ -158,12 +160,14 @@ class AgentTemplates:
     ) -> Template | OfficialTemplate:
         """A template the agent may read, or ``not_found``: one it may not
         read does not exist for it, as for a person. An ``official:`` id is
-        one that comes with Switch."""
+        one that comes with Switch, unless the workspace removed it."""
         if is_official(template_id):
             official = official_template(
                 template_id, self._agent_management, self._switch_buddy
             )
-            if official is None:
+            if official is None or slug_of(
+                template_id
+            ) in await self._store.hidden_official_slugs(session):
                 raise AgentRefused(
                     "not_found",
                     f"No template with id {template_id}. list_templates shows the "
@@ -212,8 +216,7 @@ class AgentTemplates:
         if size > self._max_bytes:
             raise AgentRefused(
                 "too_large",
-                f"The template is {size} bytes, over this server's limit of "
-                f"{self._max_bytes}.",
+                f"The template is {size} bytes, over the limit of {self._max_bytes}.",
             )
         lint = lint_template(content)
         if lint.blocked:
@@ -296,8 +299,10 @@ class AgentTemplates:
         if isinstance(template, OfficialTemplate):
             raise AgentRefused(
                 "not_yours",
-                f"'{template.name}' comes with Switch, so nobody can change or "
-                "delete it. Save your own version under another name instead.",
+                f"'{template.name}' comes with Switch, so no agent can change or "
+                "delete it. Save your own version under another name instead. "
+                "A workspace admin can remove a room template that comes with "
+                "Switch from the workspace in Switch Console.",
             )
         if template.created_by_agent_id != acting.agent.id:
             raise AgentRefused(

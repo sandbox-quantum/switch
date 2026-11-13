@@ -148,6 +148,9 @@ export function ServiceConnectStep({
         ) : (
           <>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
+            {connection.agent_access_note && (
+              <p className="text-sm text-foreground-muted">{connection.agent_access_note}</p>
+            )}
             <p className="text-sm text-foreground-muted">
               {connected
                 ? `Agents you turn ${connection.name} on for act as you there, with what you allowed when you signed in.`

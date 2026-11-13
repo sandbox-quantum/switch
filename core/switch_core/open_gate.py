@@ -291,7 +291,7 @@ async def _refuse(
     # Rounded up to the millisecond clients wait in, so none comes back early.
     seconds = math.ceil(retry_after_s * 1000) / 1000
     message = (
-        "This server is opening as many connections as it can take right now. "
+        "Switch is opening as many connections as it can take right now. "
         f"Open again in {seconds:g} s."
     )
     path = scope.get("path", "")

@@ -181,6 +181,12 @@ class _CollabLifecycle:
     def supports_channel_creation(self, bridge_type: str) -> bool:
         return True
 
+    def supports_private_channels(self, bridge_type: str) -> bool:
+        return True
+
+    def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
 
@@ -257,7 +263,12 @@ def _config() -> SimpleNamespace:
         gateway_password_login_enabled=True,
         gateway_signup_open=True,
         gateway_signup_max_per_hour=100,
+        gateway_signup_refused_header=None,
         gateway_admin_email="admin@example.invalid",
+        decision_routing_enabled=False,
+        decision_endpoint_url=None,
+        decision_api_key=None,
+        decision_bedrock_enabled=False,
     )
 
 

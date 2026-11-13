@@ -50,6 +50,7 @@ from switch_core.gateway.schemas import (
     TemplateDeleteResponse,
     TemplateDetail,
     TemplateFinding,
+    TemplateRunRecorded,
     TemplateSummary,
     TemplateUpdateRequest,
     TemplateValidateRequest,
@@ -61,6 +62,7 @@ from switch_core.official_templates import (
     matches,
     official_template,
     official_templates,
+    slug_of,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_days
@@ -85,7 +87,10 @@ def _size_bytes(content: str) -> int:
 
 
 def _summary(
-    row: TemplateListing, owner_name: str | None, principal: Principal
+    row: TemplateListing,
+    owner_name: str | None,
+    principal: Principal,
+    run_count: int,
 ) -> TemplateSummary:
     return TemplateSummary(
         id=row.id,
@@ -98,6 +103,8 @@ def _summary(
         write_visibility=row.write_visibility,
         can_edit=can(principal, "write", row),
         can_manage=can_manage(principal, row.owner_id),
+        run_blocked_reason=None,
+        run_count=run_count,
         version=row.version,
         size_bytes=row.size_bytes,
         created_at=str(row.created_at),
@@ -105,7 +112,9 @@ def _summary(
     )
 
 
-def _official_detail(template: OfficialTemplate) -> TemplateDetail:
+def _official_detail(
+    template: OfficialTemplate, is_admin: bool, run_count: int
+) -> TemplateDetail:
     return TemplateDetail(
         id=template.id,
         owner_id=None,
@@ -117,7 +126,10 @@ def _official_detail(template: OfficialTemplate) -> TemplateDetail:
         write_visibility=template.write_visibility,
         official=True,
         can_edit=False,
-        can_manage=False,
+        # A workspace admin may remove it from the workspace, nothing more.
+        can_manage=template.removable and is_admin,
+        run_blocked_reason=template.run_blocked_reason,
+        run_count=run_count,
         version=template.version,
         size_bytes=_size_bytes(template.content),
         created_at="",
@@ -126,11 +138,12 @@ def _official_detail(template: OfficialTemplate) -> TemplateDetail:
     )
 
 
-def _official_or_none(
-    template_id: str, config: SwitchConfig
+async def _official_or_none(
+    template_id: str, config: SwitchConfig, session: AsyncSession, store: TemplateStore
 ) -> OfficialTemplate | None:
     """The official template an ``official:`` id names, or a 404 for one
-    this release does not ship; None for any other id."""
+    this release does not ship or this workspace removed; None for any
+    other id."""
     if not is_official(template_id):
         return None
     template = official_template(
@@ -138,7 +151,9 @@ def _official_or_none(
         config.feature_flags[AGENT_MANAGEMENT],
         config.feature_flags[SWITCH_BUDDY],
     )
-    if template is None:
+    if template is None or slug_of(template_id) in await store.hidden_official_slugs(
+        session
+    ):
         raise HTTPException(
             status_code=404, detail=f"Template not found: {template_id}"
         )
@@ -154,7 +169,7 @@ async def readable_template(
     config: SwitchConfig,
 ) -> Template | OfficialTemplate:
     """A template the caller may read, official or saved; 404 otherwise."""
-    official = _official_or_none(template_id, config)
+    official = await _official_or_none(template_id, config, session, store)
     if official is not None:
         return official
     return await _load_for("read", session, store, template_id, user, is_admin)
@@ -172,7 +187,10 @@ def _refuse_official(template_id: str) -> None:
 
 
 def _detail(
-    template: Template, owner_name: str | None, principal: Principal
+    template: Template,
+    owner_name: str | None,
+    principal: Principal,
+    run_count: int,
 ) -> TemplateDetail:
     return TemplateDetail(
         id=template.id,
@@ -185,6 +203,8 @@ def _detail(
         write_visibility=template.write_visibility,
         can_edit=can(principal, "write", template),
         can_manage=can_manage(principal, template.owner_id),
+        run_blocked_reason=None,
+        run_count=run_count,
         version=template.version,
         size_bytes=_size_bytes(template.content),
         created_at=str(template.created_at),
@@ -237,7 +257,7 @@ def _require_within_size_limit(content: str, config: SwitchConfig) -> None:
             status_code=413,
             detail=(
                 f"Template is {size} bytes, over the {config.template_max_bytes}-byte "
-                "limit for this server."
+                "limit."
             ),
         )
 
@@ -306,19 +326,33 @@ async def list_templates(
     names = await _owner_names(session, user_store, {r.owner_id for r in rows})
     principal = Principal(user.id, is_admin)
     # The ones that come with Switch first, as nobody's own.
-    official = (
+    hidden = await template_store.hidden_official_slugs(session)
+    shipped = (
         []
         if owner_id
         else [
-            TemplateSummary(**_official_detail(t).model_dump(exclude={"content"}))
+            t
             for t in official_templates(
                 config.feature_flags[AGENT_MANAGEMENT],
                 config.feature_flags[SWITCH_BUDDY],
             )
-            if matches(t, q, kind)
+            if matches(t, q, kind) and slug_of(t.id) not in hidden
         ]
     )
-    return official + [_summary(r, names.get(r.owner_id), principal) for r in rows]
+    runs = await template_store.run_counts(
+        session, [t.id for t in shipped] + [r.id for r in rows]
+    )
+    official = [
+        TemplateSummary(
+            **_official_detail(t, is_admin, runs.get(t.id, 0)).model_dump(
+                exclude={"content"}
+            )
+        )
+        for t in shipped
+    ]
+    return official + [
+        _summary(r, names.get(r.owner_id), principal, runs.get(r.id, 0)) for r in rows
+    ]
 
 
 @router.post("/templates", status_code=201)
@@ -360,6 +394,7 @@ async def create_template(
         template,
         await _owner_name(session, user_store, user.id),
         Principal(user.id, is_admin),
+        0,
     )
 
 
@@ -412,9 +447,11 @@ async def get_template(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TemplateDetail:
-    official = _official_or_none(template_id, config)
+    official = await _official_or_none(template_id, config, session, template_store)
     if official is not None:
-        return _official_detail(official)
+        return _official_detail(
+            official, is_admin, await template_store.run_count(session, template_id)
+        )
     template = await _load_for(
         "read", session, template_store, template_id, user, is_admin
     )
@@ -422,6 +459,7 @@ async def get_template(
         template,
         await _owner_name(session, user_store, template.owner_id),
         Principal(user.id, is_admin),
+        await template_store.run_count(session, template_id),
     )
 
 
@@ -435,8 +473,8 @@ async def get_template_content(
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> Response:
     """The stored document itself, byte for byte, with no envelope around it."""
-    template: Template | OfficialTemplate | None = _official_or_none(
-        template_id, config
+    template: Template | OfficialTemplate | None = await _official_or_none(
+        template_id, config, session, template_store
     )
     if template is None:
         template = await _load_for(
@@ -453,6 +491,31 @@ async def get_template_content(
             # talked into sniffing them into something it will render.
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@router.post("/templates/{template_id}/runs", status_code=201)
+async def record_template_run(
+    template_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> TemplateRunRecorded:
+    """Count a run of a template the caller may read, as Switch Console
+    reports once a whole run has succeeded, however it ran: through the
+    server or with agents it made itself. Only a count, so it does not check
+    that a run happened; it is refused, as not found, for a template the
+    caller could not have run."""
+    await readable_template(
+        template_id, session, template_store, user, is_admin, config
+    )
+    await template_store.record_run(session, template_id)
+    await session.commit()
+    return TemplateRunRecorded(
+        template_id=template_id,
+        run_count=await template_store.run_count(session, template_id),
     )
 
 
@@ -527,6 +590,7 @@ async def patch_template(
         template,
         await _owner_name(session, user_store, template.owner_id),
         Principal(user.id, is_admin),
+        await template_store.run_count(session, template_id),
     )
 
 
@@ -537,8 +601,12 @@ async def delete_template(
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TemplateDeleteResponse:
-    _refuse_official(template_id)
+    if is_official(template_id):
+        return await _remove_official(
+            template_id, session, template_store, user, is_admin, config
+        )
     template = await _load_for(
         "delete", session, template_store, template_id, user, is_admin
     )
@@ -553,4 +621,38 @@ async def delete_template(
         "template_deleted",
         {"template_kind": kind, "age_days": age},
     )
+    return TemplateDeleteResponse(deleted_id=template_id)
+
+
+async def _remove_official(
+    template_id: str,
+    session: AsyncSession,
+    store: TemplateStore,
+    user: User,
+    is_admin: bool,
+    config: SwitchConfig,
+) -> TemplateDeleteResponse:
+    """Remove an official template from this workspace, for an admin. It stays
+    on every other workspace, and nothing made from it changes."""
+    official = official_template(
+        template_id,
+        config.feature_flags[AGENT_MANAGEMENT],
+        config.feature_flags[SWITCH_BUDDY],
+    )
+    if official is None:
+        raise HTTPException(
+            status_code=404, detail=f"Template not found: {template_id}"
+        )
+    if not official.removable:
+        _refuse_official(template_id)
+    if not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This template comes with Switch. Only a workspace admin can "
+                "remove it from the workspace."
+            ),
+        )
+    await store.hide_official(session, slug_of(template_id), user.id)
+    await session.commit()
     return TemplateDeleteResponse(deleted_id=template_id)

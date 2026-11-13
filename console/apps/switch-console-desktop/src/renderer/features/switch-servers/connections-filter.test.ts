@@ -16,6 +16,7 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     unavailable_code: null,
     pass_through: false,
     token_lifetime: null,
+    agent_access_note: null,
     loopback_ports: null,
     access_levels: null,
     key: null,

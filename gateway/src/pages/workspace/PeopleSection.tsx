@@ -9,9 +9,9 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { type Erasure, type Person, fetchErasures, fetchPeople } from "../../data/api";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase, titleCase } from "../../theme/format";
 import EraseDialog from "./EraseDialog";
 import { useLoad } from "./useLoad";
 
@@ -133,7 +133,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
         <Stack key={erasure.id} direction="row" spacing={1} alignItems="center">
           <Chip
             size="small"
-            label={titleCase(erasure.state)}
+            label={sentenceCase(erasure.state)}
             color={STATE_COLORS[erasure.state]}
           />
           <Typography variant="body2">
@@ -154,6 +154,15 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
         <DataTable
           rows={rows}
           columns={columns}
+          emptyState={
+            search ? (
+              <TableEmptyState title="No one matches that search" />
+            ) : (
+              <TableEmptyState title="No one seen in this workspace yet">
+                People show up here once they take part in a room, through a messaging app or Switch Console.
+              </TableEmptyState>
+            )
+          }
           height={Math.min(520, 108 + Math.max(1, rows.length) * 52)}
           pageSize={25}
         />

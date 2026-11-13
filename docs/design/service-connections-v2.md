@@ -49,7 +49,11 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
+    # mcp_tool: whoami        # in place of url: call this read-only
+    #                         #   tool on the entry's MCP server
 token: { kind: pass_through, max_lifetime: 28800 }
+# token.note: shown in Switch Console beside how long agent access lasts, for
+#   a vendor that limits it further (Sentry)
 mcp:
   servers:
     - { name: atlassian, url: "https://mcp.atlassian.com/v2/mcp" }
@@ -427,6 +431,8 @@ one of three shapes. Pick the first that fits:
    the server (`registration: dynamic`); otherwise each server's operator
    registers an OAuth app and saves it under Connectors in the dashboard,
    or names it in `<PREFIX>_CLIENT_CONFIG_PATH` (`registration: static`).
+   Where the vendor's API refuses its MCP tokens (Sentry), the account
+   is read from a tool on the MCP server (`identity.mcp_tool`).
 2. **A command-line tool with OAuth** (Google Workspace): `adapter: oauth` with
    `cli`, a pinned release per platform with its SHA-256, and the allow and
    deny lists that keep it to the vendor's own commands.
@@ -449,6 +455,127 @@ Then:
   dynamic registration needs a development OAuth app of the tester's own.
 - Say in the entry's comments what the vendor needs turned on (Datadog's MCP
   access) and anything measured rather than documented (a token's lifetime).
+
+## Shared OAuth catalog opt-ins
+
+`auth.identity.mcp_tool` names an MCP tool that identifies the account. An
+entry names exactly one of `url`, `mcp_tool` or `introspection: true`. A
+`url` is for an authenticated JSON GET. Entries with a `url` keep their REST
+identity.
+
+Before Core calls the tool, it checks these things:
+
+- Exactly one tool on the server has the name.
+- The tool has `readOnlyHint: true`.
+- Its `inputSchema` has `type: object`.
+- Its `required` is absent or empty.
+
+Core reads nothing else in the schema and runs no JSON Schema validator. On a
+small hostile schema, a validator can spend minutes of CPU time and block
+Core's event loop. A tool that still refuses `{}` fails when Core calls it,
+with `tool_error`: an `isError` result or a JSON-RPC invalid-params error.
+
+This check only shows that the schema names no required argument. It does
+not show that the tool only reads. That rests on `readOnlyHint: true` and on
+the catalog review of the tool an entry names. The MCP specification calls
+tool annotations untrusted.
+
+Core calls the tool with `{}`. Core does not check the result against the
+tool's `outputSchema`, because the MCP SDK's check can fetch a remote `$ref`.
+Core's own checks apply instead. The result must be one JSON object, from
+`structuredContent` or from one text block. Each `account_id` path must give
+a string with at least one character that is not a space, or an integer.
+Missing ids, arrays and results with several accounts fail sign-in. Core never
+picks the first account.
+
+`account_id` is one path, or a list of 2 to 8 paths, for example
+`[userId, hubId]`. Core percent-encodes each part of a list and joins the
+parts with `:`. So a separator in a vendor id cannot make two accounts look
+the same. The single-path form keeps the vendor id unchanged. The two forms
+give different ids for the same account, so an entry chooses its form once.
+
+The MCP identity call has these limits:
+
+- 15 seconds for the whole call.
+- 1 MiB per response, and 4 MiB for all responses together.
+- 20 pages of `tools/list`. A repeated cursor fails.
+- 64 KiB for the tool's result.
+- No redirects, and no compressed responses.
+
+The identity call reaches only the addresses that Core's outbound policy
+allows. So a self-hosted MCP server on a private address must be listed in
+`OUTBOUND_ALLOWED_PRIVATE_HOSTS`.
+
+A failure of the tool checks or of the result names one reason code:
+`tool_not_found`, `not_read_only`, `needs_arguments`, `tool_error`,
+`bad_result` or `protocol_error`. A response over a limit gives `bad_result`.
+An answer that is not valid MCP, or a redirect, gives `protocol_error`.
+
+Other failures have no reason code:
+
+- A 401 from the MCP server. The person must reconnect.
+- A timeout, a 429, a 5xx, a network error or a host that does not resolve.
+  The person can try again.
+- Any other 4xx. The message gives the status, for example "would not say
+  whose sign-in this is (HTTP 403)".
+- An MCP server address that the outbound policy refuses.
+- A Core HTTP client that is not held to the outbound policy. Core then sends
+  no request.
+
+Core reports an HTTP error on `tools/call` only when the 15-second limit
+ends.
+
+Every message is fixed text and never holds vendor text.
+
+Core drops the vendor's log notifications. While the call runs, Core replaces
+each log record from the MCP SDK with a fixed line.
+
+`auth.identity.introspection: true` is for a vendor whose MCP tokens reach no
+account endpoint. Core sends the token to the `introspection_endpoint` in the
+discovered metadata (RFC 7662). Core authenticates there as it does at the
+token endpoint. Only an answer with `active: true` names an account. If the
+metadata has no introspection endpoint, Core refuses the sign-in before the
+person consents.
+
+The introspection request does not have the MCP identity call's limits. It
+has these:
+
+- 20 seconds for each connect, read and write, from Core's HTTP client for
+  services. No limit applies to the whole request.
+- 64 KiB for the answer.
+- No redirects.
+- Only the addresses that Core's outbound policy allows.
+
+Core never reads the ids in the token response, because nothing checks that
+response against the token later. The introspection answer is the vendor's
+live answer for the token. With a list `account_id` such as
+`[workspace_id, user_id]`, the same person in two workspaces has two account
+ids. A person still has one connection for each service, so connecting the
+second workspace replaces the first.
+
+For a server whose OAuth endpoints Core discovers, Core reads `resource` from
+the protected-resource metadata. If the metadata names none, Core uses the
+configured MCP URL. Core accepts the value only if it has the MCP URL's
+scheme (https), host and port. A URL without a port has port 443. The value
+must have no query and no fragment. Its path must be the MCP URL's path, or a
+parent path on a segment boundary. So `/v1` covers `/v1/mcp`, but `/mcp` does
+not cover `/mcp2`. Otherwise sign-in fails before Core reads the metadata's
+authorization servers. The path rule is the MCP Python SDK's. RFC 9728 §3.3 wants
+an exact match, but Airtable advertises its origin for its `/mcp` server. Core
+sends the accepted value in the authorization request, the code exchange and
+every refresh.
+
+`access.unscoped: true` is only for vendors that advertise and document no
+OAuth scopes. The catalog entry must cite that evidence in a YAML comment.
+Only an OAuth entry can be unscoped, and its Read and Write scope lists must
+be empty. The authorization request omits `scope`, and consent always records
+Write, never Read. The opt-in does not make the tools read-only. An unscoped
+entry has no access profiles, and no access profile can be unscoped. Entries
+without the opt-in still need non-empty scopes. Core does not enforce a
+narrower level through the listed tools.
+
+Neither feature enables a connector. Each connector supplies its own verified
+identity mapping, evidence comments, skill, tests and live acceptance.
 
 ## Atlassian
 
@@ -715,6 +842,86 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Notion
+
+Built from sign-in runs against a Notion workspace through Notion's hosted MCP
+server, with a dynamically registered public client:
+
+- Notion offers dynamic registration and takes the loopback redirect on any
+  port, so Core registers its client and Notion connects through Switch
+  Console. Its consent screen asks the person to tick that they trust the
+  loopback address before they can continue.
+- A Notion MCP token reaches neither Notion's REST API (`/v1/users/me`
+  answers 401) nor the MCP server's `/userinfo` (403, `insufficient_scope`).
+  Notion's authorization server advertises an `introspection_endpoint` that
+  takes a public client's id alone, and its answer for a live token has
+  `active: true`, our `client_id`, `workspace_id` and `user_id`. The account
+  is the two ids. A person has one Notion connection. Connecting another
+  workspace replaces it, and grants made for the first workspace fail until
+  the person grants them again. The answer names neither by name, so the
+  connection is labelled with the workspace's id. The token response carries
+  the same ids, but it is never read for identity, since nothing checks it
+  against the token later.
+- Notion has one scope, `default`, and its consent screen picks a workspace,
+  not scopes or pages, so every connection is granted the write level and
+  reaches what the person can reach in that workspace.
+- Access tokens live 8 hours; each refresh returns a new refresh token.
+  Revocation is at the token endpoint, as the metadata advertises; revoking
+  the refresh token makes the access token inactive at once.
+- The server listed 77 tools, read-only and destructive ones annotated as
+  such; they pass through. Some (Notion's own agents, suggested edits) need a
+  paid plan or Notion AI and say so when refused. The skill keeps the agent to reading, editing with
+  confirmation, and deleting only what the user named.
+
+To connect: Settings, Connections in Switch Console, then Notion. Nothing
+needs configuring on the server. To roll back, add `notion` to
+
+## Sentry
+
+Built from sign-ins against sentry.io with a test organization:
+
+- Sentry's MCP server (`mcp.sentry.dev/mcp`) offers dynamic registration,
+  PKCE S256 and revocation at its token endpoint, so Core registers its client
+  and nothing is set up on the server. It connects through Switch Console in
+  loopback mode, on Atlassian's five ports.
+- The token answer names nobody, and `sentry.io/api/0/users/me/` answers an
+  MCP token with 401: the token works with the MCP server alone. So the
+  account is read from the server's own `whoami` tool (`identity.mcp_tool`).
+  Core lists the server's tools, checks that `whoami` is read-only
+  (`readOnlyHint: true`) and needs no argument, calls it, and reads
+  `user.id` and `user.email` from its structured answer.
+- The first access token lives 3600 s. Sentry's MCP server never refreshes
+  upstream: a refresh re-issues a token that lives as long as the person's
+  30-day Sentry token has left (`tokenExchangeCallback` in getsentry/sentry-mcp).
+  That outlives the entry's `max_lifetime`, and a pass-through token may be
+  capped at 7 days at most, so the broker withholds it (503, retryable) and
+  hands it out only in its last hour (about day 30). The broker refreshes a
+  pass-through token 15 minutes before it expires, so a request after about
+  minute 45 gets the refusal; a token an agent already holds works until it
+  expires. Agents have Sentry for up to an hour after each sign-in. The cap
+  stays: raised for one vendor, a grant turned off would leave an agent's
+  copy valid for weeks. The entry's `token.note` says so, and Switch Console
+  shows it on Sentry's page and before connecting, so nobody expects more.
+- For another hour, the owner disconnects and connects again. A disconnect
+  deletes every agent's Sentry grant, so the owner then turns Sentry on again
+  for each agent.
+- Sentry's consent screen asks which skills to allow: Inspect Issues & Events
+  (read-only tools), Seer, Triage Issues, and Manage Projects & Teams. The
+  token's scopes are the same four (`org:read`, `project:write`,
+  `team:write`, `event:write`) whatever is chosen. The choice limits the tools
+  on Sentry's side, and Sentry remembers it for the next sign-in. A read level
+  cannot be asked for by scope, so every connection is granted the write
+  level, and a person who wants a read-only agent allows Inspect alone.
+  `alerts:write` is not asked for, but `project:write` still lets tools
+  create, change and delete alert rules. No admin scope is asked for, so
+  Sentry refuses to delete projects and teams.
+- Tools pass through unchanged.
+- Sentry.io only: a self-hosted Sentry is not part of this entry.
+
+To connect: Settings, Connections in Switch Console, then Sentry. Nothing
+needs configuring on the server. To roll back, add `sentry` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
 ## Not yet
 

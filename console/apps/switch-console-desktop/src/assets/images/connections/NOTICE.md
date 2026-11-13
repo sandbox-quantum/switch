@@ -12,17 +12,19 @@ embedded raster data. The single-colour marks draw in `currentColor`, and
 one-colour black or white version on the theme where the colour would not
 stand out from the tile.
 
-All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and `dropbox.svg`, fetched 2026-11-03.
+All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14,
+`dropbox.svg`, fetched 2026-11-03, `atlassian.svg` and `google-workspace.svg`,
+fetched 2026-11-10, and `sentry.svg`, fetched 2026-11-05.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
 | `github.svg` | GitHub | [Simple Icons](https://simpleicons.org) 16.33.0, `github` | CC0-1.0 ([Simple Icons disclaimer](https://github.com/simple-icons/simple-icons/blob/develop/DISCLAIMER.md)); brand guidelines https://github.com/logos | theme foreground |
-| `atlassian.svg` | Jira, for the Atlassian connection (Jira only) | Simple Icons 16.33.0, `jira` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
+| `atlassian.svg` | Atlassian | Simple Icons 16.33.0, `atlassian` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
 | `bitbucket.svg` | Bitbucket | Simple Icons 16.33.0, `bitbucket` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
 | `asana.svg` | Asana | Simple Icons 16.33.0, `asana` | CC0-1.0; guidelines https://asana.com/brand | `#F06A6A` |
 | `gitlab.svg` | GitLab | Simple Icons 16.33.0, `gitlab` | CC0-1.0; guidelines https://about.gitlab.com/press/press-kit/ | `#FC6D26` |
-| `google-workspace.svg` | Google | Simple Icons 16.33.0, `google` | CC0-1.0; guidelines https://about.google/brand-resource-center/brand-elements/ | `#4285F4` |
 | `datadog.svg` | Datadog | Simple Icons 16.33.0, `datadog` | CC0-1.0; guidelines https://www.datadoghq.com/about/resources/ | `#632CA6`, white in dark theme |
+| `sentry.svg` | Sentry | Simple Icons 16.33.0, `sentry` | CC0-1.0; guidelines https://sentry.io/branding/ | `#362D59`, white in dark theme |
 | `new-relic.svg` | New Relic | Simple Icons 16.33.0, `newrelic` | CC0-1.0; guidelines https://newrelic.com/about/media-assets | black in light theme, `#1CE783` in dark theme |
 | `notion.svg` | Notion | Simple Icons 16.33.0, `notion` | CC0-1.0 | theme foreground |
 | `linear.svg` | Linear | Simple Icons 16.33.0, `linear` | CC0-1.0 | `#5E6AD2` |
@@ -37,13 +39,21 @@ trademark rights, which remain with the owners.
 
 ## Vendor-supplied logos
 
-These two are the owners' own files rather than Simple Icons drawings (Simple
-Icons no longer carries either mark). Both are full colour and unmodified apart
+These are the owners' own files rather than Simple Icons drawings: Simple Icons
+no longer carries the Microsoft 365 or Salesforce marks, and its Google mark is
+a one-colour G where Google's guidelines call for the full-colour one. Both are full colour and unmodified apart
 from the hygiene above: `microsoft-365.svg` had its gradient ids renamed and its
 `viewBox` cropped from `0 0 48 48` to the artwork (`4 2 40 44`) so it sits at
 the same size as the other logos; `salesforce.svg` had its `<style>` classes
 written out as the equivalent `fill` attributes and its ids removed.
 
+- **Google** (`google-workspace.svg`): Google's full-colour "G", the file Google
+  serves for its own sign-in buttons at
+  https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg, reduced to
+  its four paths and their colours (the two group transforms it nests them in
+  cancel out). Fetched 2026-11-10. Vendor permission has not been verified;
+  trademark of its owner. Terms: Google's brand guidelines
+  (https://about.google/brand-resource-center/brand-elements/).
 - **Microsoft 365** (`microsoft-365.svg`): the Microsoft 365 app icon,
   `m365_48x1.svg` from Microsoft's Fluent UI brand-icon CDN,
   https://res.cdn.office.net/files/fabric-cdn-prod_20240129.001/assets/brand-icons/product/svg/m365_48x1.svg

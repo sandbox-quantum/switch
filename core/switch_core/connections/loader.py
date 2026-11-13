@@ -188,9 +188,9 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a `method` request to `url` with
-    the access token, and the dotted paths in its JSON answer to the id and to
-    a label people recognise (an email, a login).
+    """Read account identity from an authenticated request to `url` (a GET,
+    or a POST), an MCP tool result, or the vendor's RFC 7662 introspection
+    answer for the token.
 
     A POST may carry a static JSON `body`, and sends no body without one; a
     GET never carries one. This differs from `ApiKeyIdentity`, whose POST must
@@ -198,16 +198,35 @@ class ConnectionIdentity(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    method: Literal["GET", "POST"]
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    method: Literal["GET", "POST"] = "GET"
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     body: dict[str, object] | None = None
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
+    introspection: bool = False
+    account_id: (
+        Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+        | Annotated[
+            list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]],
+            Field(min_length=2, max_length=8),
+        ]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
-    def _only_a_post_has_a_body(self) -> "ConnectionIdentity":
+    def _one_source(self) -> "ConnectionIdentity":
+        sources = (self.url is not None, self.mcp_tool is not None, self.introspection)
+        if sum(sources) != 1:
+            raise ValueError(
+                "identity needs exactly one of url, mcp_tool or introspection"
+            )
+        if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
+            self.account_id
+        ):
+            raise ValueError("account_id lists a path twice")
         if self.body is not None and self.method != "POST":
             raise ValueError("only a POST identity call sends a body")
+        if self.method != "GET" and self.url is None:
+            raise ValueError("only a url identity call has a method")
         return self
 
 
@@ -363,11 +382,18 @@ class TokenPolicy(BaseModel):
     null for a credential that never expires (a pasted key): Switch could
     neither take such a credential back nor wait for it to lapse, so it is
     never handed to an agent.
+
+    `note` is shown to people beside how long agent access lasts, for a
+    vendor that limits it further (Sentry's renewed tokens outlive the cap,
+    so agents have Sentry for up to an hour after each sign-in).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     kind: Literal["minted", "pass_through"]
     max_lifetime: Annotated[int, Field(ge=300, le=7 * 24 * 3600)] | None
+    note: str | None = Field(
+        default=None, min_length=1, max_length=400, pattern=r"^[^\n]+$"
+    )
 
     @property
     def issued_to_agents(self) -> bool:
@@ -541,7 +567,7 @@ class LevelAccess(BaseModel):
     def _one_kind(self) -> "LevelAccess":
         if (self.scopes is None) == (self.permissions is None):
             raise ValueError("an access level holds scopes or permissions, not both")
-        if not (self.scopes or self.permissions):
+        if self.permissions == {}:
             raise ValueError("an access level needs at least one scope or permission")
         return self
 
@@ -553,11 +579,22 @@ class ConnectionAccess(BaseModel):
     # The person picks read or read-and-write when they connect, instead of
     # being asked for the write level whenever the service has one.
     choose: bool = False
+    unscoped: bool = False
 
     @model_validator(mode="after")
     def _a_choice_has_two_levels(self) -> "ConnectionAccess":
         if self.choose and self.write is None:
             raise ValueError("choose offers read or write, so it needs a write level")
+        return self
+
+    @model_validator(mode="after")
+    def _scopes_match_consent(self) -> "ConnectionAccess":
+        levels = [self.read, *([self.write] if self.write is not None else [])]
+        if self.unscoped:
+            if self.write is None or any(level.scopes != [] for level in levels):
+                raise ValueError("unscoped access needs empty read and write scopes")
+        elif any(level.scopes == [] for level in levels):
+            raise ValueError("an access level needs at least one scope or permission")
         return self
 
 
@@ -599,6 +636,15 @@ class ConnectionTools(BaseModel):
         return self
 
 
+class ConnectionLinks(BaseModel):
+    """The vendor's own pages a connector's profile points people to."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    documentation: str = Field(pattern=HTTPS_URL_PATTERN)
+    support: str = Field(pattern=HTTPS_URL_PATTERN)
+    privacy: str = Field(pattern=HTTPS_URL_PATTERN)
+
+
 class ConnectionDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     slug: str = Field(pattern=SLUG_PATTERN)
@@ -606,6 +652,10 @@ class ConnectionDefinition(BaseModel):
     category: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=200, pattern=r"^[^\n]+$")
     enabled: bool
+    # Who makes the service, and its own pages, as its profile shows them.
+    # Every shipped entry that can be connected names both.
+    publisher: str | None = Field(default=None, min_length=1, max_length=64)
+    links: ConnectionLinks | None = None
     adapter: AdapterName | None = None
     auth: ConnectionAuth
     token: TokenPolicy | None = None
@@ -636,6 +686,8 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
         if self.access is not None and self.access.choose and self.adapter != "oauth":
             raise ValueError("only an oauth entry lets the person choose the level")
+        if self.access is not None and self.access.unscoped and self.adapter != "oauth":
+            raise ValueError("only an oauth entry can have unscoped access")
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":
@@ -661,7 +713,13 @@ class ConnectionDefinition(BaseModel):
             raise ValueError(
                 "only an oauth entry with access levels has access profiles"
             )
+        # An unscoped profile names no scopes, so any scope the vendor grants
+        # looks changed, and every grant would ask to reconnect.
+        if self.access.unscoped:
+            raise ValueError("an unscoped entry has no access profiles")
         for name, profile in self.access_profiles.items():
+            if profile.access.unscoped:
+                raise ValueError(f"access profile {name} cannot be unscoped")
             # A grant keeps its level when the server changes profile.
             if (profile.access.write is None) != (self.access.write is None):
                 raise ValueError(
@@ -738,6 +796,9 @@ class ConnectionDefinition(BaseModel):
     def _check_oauth(self) -> None:
         if self.auth.type != "oauth":
             raise ValueError("the oauth adapter signs in with OAuth")
+        identity = self.auth.identity
+        if identity is not None and identity.mcp_tool is not None and self.mcp is None:
+            raise ValueError("an MCP identity needs an MCP server")
         if self.mcp is not None and self.cli is not None:
             raise ValueError(
                 "an oauth entry's tools are its MCP servers or its command-line "
@@ -758,6 +819,20 @@ class ConnectionDefinition(BaseModel):
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
         oauth = self.auth.oauth
+        # The introspection endpoint is the one the authorization server's
+        # metadata advertises, so it is found where the others are.
+        if (
+            self.auth.identity is not None
+            and self.auth.identity.introspection
+            and (
+                self.mcp is None
+                or (oauth is not None and oauth.authorization_url is not None)
+            )
+        ):
+            raise ValueError(
+                "introspection asks the authorization server an MCP server names, "
+                "so the endpoints are discovered"
+            )
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.
         if self.mcp is None and oauth is not None:
@@ -823,7 +898,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
                 f"Connection {slug} skill exceeds {MAX_SKILL_BYTES} bytes."
             )
         try:
-            content = raw.decode("utf-8")
+            content = raw.decode("utf-8").replace("\r\n", "\n")
         except UnicodeDecodeError:
             raise CatalogError(
                 f"Connection {slug} skill file is not UTF-8: {relative}"

@@ -4,7 +4,8 @@
 refresh, check a grant, issue, revoke, all counted. `FakeOAuthServer` plays
 the HTTP side of an OAuth vendor with MCP servers, for the generic OAuth/MCP
 adapter to talk to: its metadata, authorization, token, registration,
-revocation and account endpoints, and an MCP server that takes its tokens.
+revocation, introspection and account endpoints, and an MCP server that takes
+its tokens.
 """
 
 from __future__ import annotations
@@ -351,6 +352,7 @@ class FakeOAuthServer:
         self.spent_refresh: set[str] = set()
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
+        self.introspections: list[dict[str, str]] = []
         self.mcp_calls: list[dict[str, Any]] = []
         self.paths: list[str] = []
         # (method, body) of each account request, in order.
@@ -362,6 +364,7 @@ class FakeOAuthServer:
             "token_endpoint": f"{ISSUER}/token",
             "registration_endpoint": f"{ISSUER}/register",
             "revocation_endpoint": f"{ISSUER}/revoke",
+            "introspection_endpoint": f"{ISSUER}/introspect",
             "response_types_supported": ["code"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": [
@@ -373,6 +376,16 @@ class FakeOAuthServer:
         # Answer the account request with the account itself, not under
         # "account", as a vendor that names its fields at the top does.
         self.flat_account = False
+        # What introspecting a live token says beside `active`.
+        self.introspected: dict[str, Any] = {
+            "workspace_id": "ws-1",
+            "user_id": "user-1",
+            "sub": "user-1",
+        }
+        # Leaves `active` out of the introspection answer.
+        self.introspect_without_active = False
+        # Fields every token response carries beside the tokens.
+        self.token_extras: dict[str, Any] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -413,6 +426,7 @@ class FakeOAuthServer:
             "expires_in": self.lifetime,
             "refresh_token": refresh,
             "scope": " ".join(scopes),
+            **self.token_extras,
         }
 
     # ── HTTP ─────────────────────────────────────────────────────────────────
@@ -446,6 +460,8 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
+        if where == f"{ISSUER}/introspect" and request.method == "POST":
+            return self._introspect(request)
         if where == IDENTITY_URL and request.method in ("GET", "POST"):
             self.identity_requests.append((request.method, request.content))
             if self._bearer(request) is None:
@@ -522,6 +538,26 @@ class FakeOAuthServer:
             del self.live_refresh[minted.pop("refresh_token")]
             return _json(200, minted)
         return _json(400, {"error": "unsupported_grant_type"})
+
+    def _introspect(self, request: httpx.Request) -> httpx.Response:
+        """RFC 7662: a client known as at the token endpoint asks; a token
+        that is not live is only `active: false`."""
+        form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        self.introspections.append(form)
+        if not self._client_ok(request, form):
+            return _json(401, {"error": "invalid_client"})
+        scopes = self.live_access.get(form.get("token", ""))
+        if scopes is None:
+            return _json(200, {"active": False})
+        answer = {
+            "active": True,
+            "scope": " ".join(scopes),
+            "token_type": "bearer",
+            **self.introspected,
+        }
+        if self.introspect_without_active:
+            del answer["active"]
+        return _json(200, answer)
 
     def _register(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

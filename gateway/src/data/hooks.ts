@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ApiError,
   type ConnectorAppScope,
   type ConnectorApps,
   fetchConnectorApps,
@@ -32,7 +31,7 @@ import {
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
-  type UserInfo,
+  type ListedUser,
   fetchAgent,
   fetchAgents,
   fetchApiKeys,
@@ -92,16 +91,24 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
     let cancelled = false;
     setLoading(true);
 
-    fetcher().then((result) => {
-      if (cancelled) return;
-      if (result === null) {
-        setError("Failed to fetch data");
-      } else {
-        setData(result);
-        setError(null);
-      }
-      setLoading(false);
-    });
+    fetcher().then(
+      (result) => {
+        if (cancelled) return;
+        if (result === null) {
+          setError("Failed to fetch data");
+        } else {
+          setData(result);
+          setError(null);
+        }
+        setLoading(false);
+      },
+      // A fetcher that raises carries the server's own reason; show that.
+      (e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -185,12 +192,8 @@ export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
 }
 
 /** The connector apps of `scope`: the server's, which only its operator
- * reads, or the current organization's, which only its org admins do. A 404
- * is the routes not being mounted: `notEnabled` says so. */
-export function useConnectorApps(
-  scope: ConnectorAppScope,
-  notEnabled: string,
-): UseQueryResult<ConnectorApps> {
+ * reads, or the current organization's, which only its org admins do. */
+export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<ConnectorApps> {
   const [data, setData] = useState<ConnectorApps | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -209,25 +212,19 @@ export function useConnectorApps(
       },
       (err: unknown) => {
         if (cancelled) return;
-        setError(
-          err instanceof ApiError && err.status === 404
-            ? notEnabled
-            : err instanceof Error
-              ? err.message
-              : String(err),
-        );
+        setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [scope, notEnabled, tick]);
+  }, [scope, tick]);
 
   return { data, loading, error, refetch };
 }
 
-export function useUsers(): UseQueryResult<UserInfo[]> {
+export function useUsers(): UseQueryResult<ListedUser[]> {
   return useQuery(fetchUsers);
 }
 

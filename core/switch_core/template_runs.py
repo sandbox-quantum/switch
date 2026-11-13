@@ -240,8 +240,8 @@ class TemplateAgents:
                     Problem(
                         plan.slot,
                         "agent_management_off",
-                        "agent management is not enabled on this Switch server, "
-                        "so it cannot create agents on a machine.",
+                        "agent management is not turned on here, "
+                        "so it cannot create agents on a device.",
                     )
                     for plan in plans
                 ]
@@ -397,7 +397,7 @@ class TemplateAgents:
                 Problem(
                     plan.slot,
                     "connections_off",
-                    "connections are not enabled on this Switch server, so it "
+                    "connectors are not turned on here, so it "
                     f"cannot be granted {', '.join(c.service for c in plan.connections)}.",
                 )
             ]

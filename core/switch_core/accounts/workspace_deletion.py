@@ -117,6 +117,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "package_documents": "deleted",
     "package_references": "deleted",
     "pending_attachment_groups": "deleted",
+    "pending_decisions": "deleted",
     "role_leases": "deleted",
     "room_agents": "deleted",
     "room_documents": "deleted",
@@ -124,6 +125,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "room_packages": "deleted",
     "room_references": "deleted",
     "room_roles": "deleted",
+    "room_schedules": "deleted",
     "room_skills": "deleted",
     "sealed_provider_logins": "deleted",
     "service_grants": "deleted",
@@ -136,10 +138,13 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     # The workspace's own setup, and what the person deleting it holds in it.
     "api_keys": "deleted",
     "clients": "deleted",
+    "decision_settings": "deleted",
     "invitations": "deleted",
     "provider_connections": "deleted",
     "sign_in_flows": "deleted",
     "template_installs": "deleted",
+    "template_run_records": "deleted",
+    "hidden_official_templates": "deleted",
     "tenant_data_moves": "deleted",
     "tenant_join_domains": "deleted",
     "tenant_retention_policies": "deleted",
@@ -159,13 +164,13 @@ REFUSED: dict[str, tuple[str, str]] = {
     "documents": ("document", "documents"),
     "templates": ("template", "templates"),
     "room_groups": ("room group", "room groups"),
-    "messaging_installs": ("messaging app connection", "messaging app connections"),
-    "collaboration_bridges": ("messaging bridge", "messaging bridges"),
-    "machine_workspaces": ("cloud machine", "cloud machines"),
-    "agent_controllers": ("machine", "machines"),
-    "server_connectors": ("server connector", "server connectors"),
+    "messaging_installs": ("installed app", "installed apps"),
+    "collaboration_bridges": ("messaging app", "messaging apps"),
+    "machine_workspaces": ("cloud device", "cloud devices"),
+    "agent_controllers": ("device", "devices"),
+    "server_connectors": ("agent run by Switch", "agents run by Switch"),
     "skills": ("skill", "skills"),
-    "service_connections": ("service connection", "service connections"),
+    "service_connections": ("connector", "connectors"),
 }
 
 
@@ -224,15 +229,7 @@ async def remaining(session: AsyncSession, tenant_id: str, owner_id: str) -> lis
     # A token issued to an agent is revoked at its vendor from this row, after
     # the access it came from is gone; deleting the row first would leave it
     # live there until it expires.
-    revocable = await session.scalar(
-        select(func.count())
-        .select_from(ServiceTokenIssuance)
-        .where(
-            ServiceTokenIssuance.tenant_id == tenant_id,
-            ServiceTokenIssuance.encrypted_token.is_not(None),
-            ServiceTokenIssuance.expires_at > func.now(),
-        )
-    )
+    revocable = await live_service_tokens(session, tenant_id)
     if revocable:
         left.append(
             _counted(
@@ -250,15 +247,32 @@ async def remaining(session: AsyncSession, tenant_id: str, owner_id: str) -> lis
         .where(members.c.tenant_id == tenant_id, members.c.user_id != owner_id)
     )
     if others:
-        left.append(_counted(others, ("other member", "other members")))
+        left.append(_counted(others, ("other user", "other users")))
     return left
+
+
+async def live_service_tokens(session: AsyncSession, tenant_id: str) -> int:
+    """How many service tokens issued in the workspace are unexpired and
+    still held, so still revocable at their vendor from their row."""
+    return (
+        await session.scalar(
+            select(func.count())
+            .select_from(ServiceTokenIssuance)
+            .where(
+                ServiceTokenIssuance.tenant_id == tenant_id,
+                ServiceTokenIssuance.encrypted_token.is_not(None),
+                ServiceTokenIssuance.expires_at > func.now(),
+            )
+        )
+        or 0
+    )
 
 
 async def refusal(session: AsyncSession, tenant_id: str, owner_id: str) -> str | None:
     """Why the workspace cannot be deleted now, or None when it can."""
     if tenant_id == TENANT_ZERO_ID:
         return (
-            "This is the server's default workspace, where new accounts start. "
+            "This is Switch's default workspace, where new accounts start. "
             "It can't be deleted."
         )
     left = await remaining(session, tenant_id, owner_id)
@@ -288,27 +302,8 @@ async def delete_workspace(
     reason = await refusal(session, tenant_id, owner_id)
     if reason is not None:
         raise WorkspaceDeletionRefused(reason)
-    key_hashes = list(
-        await session.scalars(
-            select(ApiKey.key_hash).where(ApiKey.tenant_id == tenant_id)
-        )
-    )
-    await record_audit_event(
-        session,
-        tenant_id=tenant_id,
-        actor_user_id=actor_user_id,
-        action=AuditAction.TENANT_DELETED,
-        target_type="tenant",
-        target_id=tenant_id,
-        details={"slug": tenant.slug},
-    )
-    await record_server_audit_event(
-        session,
-        actor_user_id=actor_user_id,
-        action=ServerAuditAction.WORKSPACE_DELETED,
-        target_type="tenant",
-        target_id=tenant_id,
-        details={"slug": tenant.slug},
+    key_hashes = await _record_deletion(
+        session, tenant, actor_user_id, {"slug": tenant.slug}
     )
     # Children before parents, so no foreign key between two of these tables
     # holds a delete back.
@@ -327,4 +322,73 @@ async def delete_workspace(
         await session.execute(delete(table).where(table.c.tenant_id == tenant_id))
     await session.execute(delete(Tenant).where(Tenant.id == tenant_id))
     await session.flush()
+    return key_hashes
+
+
+async def purge_workspace(
+    session: AsyncSession, tenant_id: str, request: str
+) -> list[str]:
+    """Delete the workspace and everything in it, whatever is left: what
+    `REFUSED` names goes too, and only `KEPT` stays. On `session`, which is
+    bound to it; the caller commits.
+
+    For the operator purging an organization at its owner's request
+    (`organization_purge.py`), who has already withdrawn what outside Switch
+    these rows drive. `request` is the operator's reference to that request,
+    recorded in both audit logs; no account acts, so neither names one.
+    Returns the hashes of the API keys deleted with it."""
+    if tenant_id == TENANT_ZERO_ID:
+        raise WorkspaceDeletionRefused(
+            "The server's default workspace can't be deleted."
+        )
+    tenant = await session.scalar(
+        select(Tenant).where(Tenant.id == tenant_id).with_for_update()
+    )
+    if tenant is None:
+        raise WorkspaceDeletionRefused("That workspace doesn't exist.")
+    key_hashes = await _record_deletion(
+        session, tenant, None, {"slug": tenant.slug, "purged_on_request": request}
+    )
+    for table in reversed(Base.metadata.sorted_tables):
+        if table.name == "tenants" or WORKSPACE_TABLES.get(table.name) not in (
+            "deleted",
+            "refused",
+        ):
+            continue
+        await session.execute(delete(table).where(table.c.tenant_id == tenant_id))
+    await session.execute(delete(Tenant).where(Tenant.id == tenant_id))
+    await session.flush()
+    return key_hashes
+
+
+async def _record_deletion(
+    session: AsyncSession,
+    tenant: Tenant,
+    actor_user_id: str | None,
+    details: dict[str, str],
+) -> list[str]:
+    """Record the deletion in the workspace's audit log and the server's,
+    and return the hashes of the API keys about to go with it."""
+    key_hashes = list(
+        await session.scalars(
+            select(ApiKey.key_hash).where(ApiKey.tenant_id == tenant.id)
+        )
+    )
+    await record_audit_event(
+        session,
+        tenant_id=tenant.id,
+        actor_user_id=actor_user_id,
+        action=AuditAction.TENANT_DELETED,
+        target_type="tenant",
+        target_id=tenant.id,
+        details=details,
+    )
+    await record_server_audit_event(
+        session,
+        actor_user_id=actor_user_id,
+        action=ServerAuditAction.WORKSPACE_DELETED,
+        target_type="tenant",
+        target_id=tenant.id,
+        details=details,
+    )
     return key_hashes

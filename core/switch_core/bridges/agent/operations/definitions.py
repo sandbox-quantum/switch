@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
@@ -75,6 +76,7 @@ from switch_core.template_runs import (
     room_ids_of,
 )
 from switch_core.template_v2 import is_v2_text
+from switch_core.ui_spec import parse_ui_spec
 
 logger = logging.getLogger(__name__)
 
@@ -576,6 +578,8 @@ async def create_room_document(
     agent) can later update or delete it via `update_room_document` /
     `delete_room_document`. Other room members can read it via
     `load_internal_documents`, and human users can delete it from the room UI.
+    A document the room's template made can be updated or deleted by any
+    agent in the room.
 
     Args:
         name: Short identifier for the document. Must be unique within this room.
@@ -610,10 +614,11 @@ async def update_room_document(
     instructions: str | None = None,
     content: str | None = None,
 ) -> dict[str, str]:
-    """Update a room-scoped document you created in the connected room.
+    """Update a room-scoped document in the connected room.
 
-    Only the agent that created the document can update it. Pass only the
-    fields you want to change; omit (or set to None) the others.
+    A document an agent created can be updated only by that agent; one the
+    room's template made, by any agent in the room. Pass
+    only the fields you want to change; omit (or set to None) the others.
     """
     if (
         content is not None
@@ -637,9 +642,10 @@ async def update_room_document(
 
 @operation
 async def delete_room_document(document_id: str) -> dict[str, str]:
-    """Delete a room-scoped document you created in the connected room.
+    """Delete a room-scoped document in the connected room.
 
-    Only the agent that created the document can delete it via MCP. Users
+    A document an agent created can be deleted only by that agent; one the
+    room's template made, by any agent in the room. Users
     can also delete from the room UI as an admin escape hatch.
     """
     agent_id = get_agent_id()
@@ -785,7 +791,9 @@ async def list_participants() -> list[dict[str, Any]]:
 
 
 @operation
-async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any]:
+async def post_message(
+    body: str, thread_id: str | None = None, ui: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Send a message to the connected room (broadcast, no specific recipient).
 
     Args:
@@ -799,6 +807,11 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any
             reply) — it is normalised to the thread root. Omit for a top-level
             message. Get ids from read_context or from a notification's
             thread_id.
+        ui: Optional. A rich card to show with the message, as a spec of
+            `root` and `elements` (see the skill's "Rich cards" section).
+            Platforms that can draw it (Slack) show the card; the rest show
+            `body`, so `body` must still say what matters. An invalid spec
+            fails the call, listing each problem, and nothing is posted.
 
     Returns:
         {"event_id": "<event id>"} for the posted message, plus `trust` when
@@ -814,12 +827,17 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any
         posted in the room; when it could not be, `note` is absent and
         `notice_error` says why, and the room was not warned. A blocked
         message is not delivered at all, and the call fails instead.
+        `trust.card` is "dropped" when Switch Trust redacted the text of your
+        `ui` card: the card was not sent, only `body` (as `delivered`).
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
+    spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
-    sent = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
+    sent = await protocol.send_message(
+        agent_id, room_id, body, thread_id=thread_id, ui=spec
+    )
     return _with_trust({"event_id": sent.event_id}, sent.trust)
 
 
@@ -829,6 +847,7 @@ async def send_targeted_message(
     target_names: list[str] | None = None,
     target_roles: list[str] | None = None,
     thread_id: str | None = None,
+    ui: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Send a message addressed to specific agents/users and/or roles.
 
@@ -856,6 +875,11 @@ async def send_targeted_message(
         thread_id: Optional. The `id` of a message to reply into, making this a
             threaded reply. Pass any message id from the thread — it is
             normalised to the thread root. Omit for a top-level message.
+        ui: Optional. A rich card to show with the message, as a spec of
+            `root` and `elements` (see the skill's "Rich cards" section).
+            Platforms that can draw it (Slack) show the card; the rest show
+            `body`, so `body` must still say what matters. An invalid spec
+            fails the call, listing each problem, and nothing is posted.
 
     At least one of target_names / target_roles is required.
 
@@ -890,6 +914,7 @@ async def send_targeted_message(
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
+    spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
     result = await protocol.send_targeted_message(
         agent_id,
@@ -898,6 +923,7 @@ async def send_targeted_message(
         body,
         thread_id=thread_id,
         target_roles=target_roles or [],
+        ui=spec,
     )
     return _with_trust(
         {
@@ -1409,6 +1435,144 @@ async def unlink_rooms(source_room_id: str, target_room_id: str) -> dict[str, bo
 
 
 @operation
+async def list_room_schedules(room_id: str) -> list[dict[str, Any]]:
+    """List a room's schedules: the messages Switch posts to its agents on a timer.
+
+    Args:
+        room_id: The Switch room id.
+
+    Returns:
+        One `{id, agents, text, cron, run_at, timezone, paused, next_run_at,
+        last_run_at, set_up_by_you}` per schedule, oldest first. `next_run_at`
+        is null once a one-off has been sent; `set_up_by_you` marks the ones
+        you may change.
+    """
+    return await get_protocol().list_room_schedules(get_agent_id(), room_id)
+
+
+def _moment(run_at: str | None) -> datetime | None:
+    if run_at is None:
+        return None
+    try:
+        return datetime.fromisoformat(run_at)
+    except ValueError as e:
+        raise ValueError(
+            f"run_at must be an ISO 8601 time with its offset, such as "
+            f"2026-11-20T09:00:00+00:00, not {run_at!r}."
+        ) from e
+
+
+@operation
+async def create_room_schedule(
+    room_id: str,
+    agents: list[str],
+    text: str,
+    timezone: str,
+    cron: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Set up a message Switch posts in a room, addressed to some of its agents,
+    once or on a repeating rule.
+
+    It is posted as you, so each agent answers it as it would answer you, and
+    it stops (paused, the room told) if you leave the room. You need to be in
+    the room, and your owner needs to be allowed to manage it (its owner or a
+    workspace admin). Give exactly one of `cron` and `run_at`.
+
+    Args:
+        room_id: The Switch room id.
+        agents: Names of the agents in the room it is for. You may name
+            yourself, for a reminder of your own.
+        text: What to post, up to 4000 characters.
+        timezone: An IANA zone, such as `Europe/London`, that `cron` is read
+            in.
+        cron: A five-field cron rule, such as `0 9 * * 1-5` for weekdays at
+            09:00.
+        run_at: For a one-off: an ISO 8601 time with its offset, in the
+            future.
+
+    Returns:
+        The schedule, shaped as `list_room_schedules` lists it.
+    """
+    return await get_protocol().create_room_schedule(
+        get_agent_id(),
+        room_id,
+        agents=agents,
+        text=text,
+        cron=cron,
+        run_at=_moment(run_at),
+        timezone=timezone,
+    )
+
+
+@operation
+async def update_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    agents: list[str],
+    text: str,
+    timezone: str,
+    cron: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Replace what one of your own schedules says, to whom and when.
+
+    Only a schedule you set up yourself can be changed this way; one a person
+    set up is theirs to change. Arguments as for `create_room_schedule`.
+
+    Returns:
+        The schedule as it now stands.
+    """
+    return await get_protocol().update_room_schedule(
+        get_agent_id(),
+        room_id,
+        schedule_id,
+        agents=agents,
+        text=text,
+        cron=cron,
+        run_at=_moment(run_at),
+        timezone=timezone,
+    )
+
+
+@operation
+async def pause_room_schedule(
+    room_id: str, schedule_id: str, paused: bool
+) -> dict[str, Any]:
+    """Pause one of your own schedules, or resume it.
+
+    Resuming starts again from now: runs that fell due while it was paused are
+    not sent.
+
+    Args:
+        room_id: The Switch room id.
+        schedule_id: The schedule's id, from `list_room_schedules`.
+        paused: True to pause it, false to resume it.
+
+    Returns:
+        The schedule as it now stands.
+    """
+    return await get_protocol().pause_room_schedule(
+        get_agent_id(), room_id, schedule_id, paused=paused
+    )
+
+
+@operation
+async def delete_room_schedule(room_id: str, schedule_id: str) -> dict[str, bool]:
+    """Delete one of your own schedules.
+
+    Args:
+        room_id: The Switch room id.
+        schedule_id: The schedule's id, from `list_room_schedules`.
+
+    Returns:
+        `{"ok": true}`.
+    """
+    await get_protocol().delete_room_schedule(get_agent_id(), room_id, schedule_id)
+    return {"ok": True}
+
+
+@operation
 async def list_bridges() -> list[dict[str, Any]]:
     """List collaboration bridges available on this Switch instance.
 
@@ -1417,7 +1581,8 @@ async def list_bridges() -> list[dict[str, Any]]:
 
     Returns:
         List of `{id, type, display_name, status, is_default,
-        can_create_channels}` dicts. Only `status` == "active" bridges are
+        can_create_channels, can_create_private_channels,
+        private_channel_needs_linked_account}` dicts. Only `status` == "active" bridges are
         usable for new rooms; others are shown for context. `is_default`
         marks the bridge that `create_room` uses when no `bridge_id` is given
         (at most one).
@@ -1427,6 +1592,17 @@ async def list_bridges() -> list[dict[str, Any]]:
         operator has withheld it. Creating a room on one of those fails, so
         offer an existing channel instead: the chat is made on the platform,
         the Switch app is added to it, and the room is adopted from that.
+
+        `can_create_private_channels` says whether `channel_type`
+        "channel_private" can be asked for there. Where
+        `private_channel_needs_linked_account` is true, the room's owner,
+        your owner when you create it, must have linked and confirmed their
+        account on that platform: Switch puts them in the private channel
+        through it (on Teams, as its owner), and refuses the room when they
+        have not, since nobody could get into it otherwise. A new public
+        channel puts them in too when they have such an account (not on
+        Teams, where that would add them to the whole team), and is made
+        without them when they have none.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()
@@ -1801,7 +1977,7 @@ async def _provision_as_agent(
         # Without the owner's admin reach, which filing rooms in a group needs.
         require_group_filing(False)
     await rooms_yaml.check_entity_params(parsed, reader=reader)
-    await rooms_yaml.check_bridges(parsed)
+    await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
     room_specs = (
         [(r, r.kickoff) for r in parsed.spec.rooms]
         if isinstance(parsed.spec, GroupSpec)
@@ -1926,11 +2102,14 @@ async def list_templates(
     query: str | None = None,
     kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List the templates saved on this workspace that you can use.
+    """List the templates on this workspace that you can use.
 
-    That is every shared template plus your owner's private ones. Each row
-    says who saved it (a person, or which agent) and ``can_edit``: whether
-    you may change or delete it, which is true only for templates you saved.
+    That is the templates that come with Switch (ids starting ``official:``,
+    saved by "Switch"), less any a workspace admin removed from the
+    workspace, then every shared template plus your owner's private ones.
+    Each row says who saved it (a person, or which agent) and ``can_edit``:
+    whether you may change or delete it, which is true only for templates
+    you saved.
 
     Args:
         query: Only templates whose name or description contains this.
@@ -2011,7 +2190,10 @@ async def run_template(
     Args:
         template_id: The id from ``list_templates``.
         inputs: Values for the template's params (see ``get_template``),
-            including a ``machine`` or ``provider`` param.
+            including a ``machine`` or ``provider`` param. A ``bridge`` param
+            also takes ``"Switch Console"``: the room is then on no messaging
+            app, with your owner in it as one of their Switch Console chats
+            (only where the server has group chats).
         agents: Existing agents to stand in for slots instead of creating
             them, ``{slot name: agent name}``, the slot named as
             ``get_template`` lists it or as it reads with your inputs. Only a
@@ -2033,13 +2215,27 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        return await _run_document(
+        result = await _run_document(
             content,
             inputs,
             agents or {},
             template_name=name,
             source=source_of(template),
         )
+        await _count_run(template.id)
+        return result
+
+
+async def _count_run(template_id: str) -> None:
+    """Count a run that has already made its agents and rooms. A failure here
+    is not the run's: it is logged, and the run goes uncounted rather than
+    reported as failed to an agent that might then run it again."""
+    try:
+        async with get_protocol().session_factory() as session:
+            await TemplateStore().record_run(session, template_id)
+            await session.commit()
+    except Exception:
+        logger.exception("Could not count a run of template %s", template_id)
 
 
 async def _run_document(

@@ -25,7 +25,9 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -41,6 +43,12 @@ DATABASE_TIMEOUT_SECONDS = 5.0
 # Multiples of the refresh interval: enough that a slow refresh does not make
 # the answer flap, few enough to catch a refresher that has stopped.
 _STALENESS_MULTIPLIER = 4
+
+# How soon an answer of "not ready" is checked again, instead of a full
+# interval. A process starting up reads not ready until its listeners
+# connect, a moment after the first check, and during a roll the pods left
+# serve alone until it reads ready.
+NOT_READY_RECHECK_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,75 @@ def database_check(session_factory: async_sessionmaker) -> HealthCheck:
         return CheckOutcome(name="database", healthy=True, detail="")
 
     return HealthCheck(name="database", gates_readiness=True, probe=probe)
+
+
+# The decision service is optional and has its own pod: a short timeout, so a
+# hung one is reported rather than holding up the other checks' refresh.
+DECISION_TIMEOUT_SECONDS = 3.0
+
+
+def decision_health_url(endpoint_url: str) -> str:
+    """The server default decision service's `/health`, from the URL its
+    decisions go to: the service's base URL, or its `/decide` route (or a
+    proxy's path ending in it), with `/health` in place of the last part."""
+    parts = urlsplit(endpoint_url)
+    path = parts.path.rstrip("/")
+    base = path.rsplit("/", 1)[0] if path.endswith("/decide") else path
+    return urlunsplit(parts._replace(path=f"{base}/health", query="", fragment=""))
+
+
+def decision_check(
+    endpoint_url: str, api_key: str | None, client: httpx.AsyncClient
+) -> HealthCheck:
+    """Whether the server default decision service answers its health route.
+
+    Never gates readiness: auto-route is optional, and a decision service that
+    is down costs untagged messages their answer, not the room. Only the
+    server's own default is probed; an endpoint a workspace configured is the
+    workspace's, and its failures show in `switch.decision.failures`. The
+    detail names the status or the error, never the response body.
+    """
+    url = decision_health_url(endpoint_url)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    async def probe() -> CheckOutcome:
+        try:
+            response = await client.get(
+                url, headers=headers, timeout=DECISION_TIMEOUT_SECONDS
+            )
+        except httpx.TimeoutException:
+            return CheckOutcome(
+                name="decision",
+                healthy=False,
+                detail=(
+                    f"The decision service at {url} did not answer within "
+                    f"{DECISION_TIMEOUT_SECONDS:.0f}s. Untagged messages in "
+                    "auto-route rooms reach nobody (or the room's triage agent)."
+                ),
+            )
+        except httpx.HTTPError as error:
+            return CheckOutcome(
+                name="decision",
+                healthy=False,
+                detail=(
+                    f"The decision service at {url} could not be reached "
+                    f"({type(error).__name__}). Untagged messages in auto-route "
+                    "rooms reach nobody (or the room's triage agent)."
+                ),
+            )
+        if response.status_code != 200:
+            return CheckOutcome(
+                name="decision",
+                healthy=False,
+                detail=(
+                    f"The decision service at {url} answered its health check "
+                    f"with status {response.status_code}: it is up, but its "
+                    "model is not ready or it refused the token."
+                ),
+            )
+        return CheckOutcome(name="decision", healthy=True, detail="")
+
+    return HealthCheck(name="decision", gates_readiness=False, probe=probe)
 
 
 def _listener_check(
@@ -308,15 +385,20 @@ class HealthMonitor:
 
     async def run_forever(self) -> None:
         while True:
+            ready = False
             try:
-                await self.refresh()
+                ready = (await self.refresh()).ready
             except asyncio.CancelledError:
                 raise
             except Exception:
                 # `refresh` handles a failing check; reaching here means the
                 # monitor itself is broken, and it must not stop looping.
                 logger.exception("Health monitor refresh raised; continuing.")
-            await asyncio.sleep(self._interval_seconds)
+            await asyncio.sleep(
+                self._interval_seconds
+                if ready
+                else min(self._interval_seconds, NOT_READY_RECHECK_SECONDS)
+            )
 
     def install(self, registry: MetricsRegistry) -> None:
         registry.register_observer(self._readings)

@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.models import CreatedChannel
 from switch_core.db.models import Client, CollaborationBridge, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -63,10 +64,12 @@ class _FakeProvisioning:
 
 
 class _FakeAdapter:
+    adds_creator_to_public_channel = False
+
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
-    ) -> str:
-        return f"chan-{uuid.uuid4().hex[:8]}"
+    ) -> CreatedChannel:
+        return CreatedChannel(id=f"chan-{uuid.uuid4().hex[:8]}", name=name)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]

@@ -156,7 +156,12 @@ export function useAgentInstallationStatuses(connectionId?: string) {
   >({
     mutationFn: ({ id, selection }) =>
       rpc.providers.setUsedInstallation(id, connectionId, selection) as Promise<void>,
-    onSuccess: invalidate,
+    onSuccess: (_, { id }) => {
+      invalidate();
+      // The sign-in check runs the executable chosen here, so an answer read
+      // with the previous choice no longer stands.
+      void queryClient.invalidateQueries({ queryKey: ['provider-readiness', id] });
+    },
   });
 
   const refreshLatestMutation = useMutation<void, Error, string>({

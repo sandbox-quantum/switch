@@ -135,6 +135,13 @@ class TestConnections:
         assert github["connectable"] is True
         assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
         assert github["loopback_ports"] is None
+        assert github["publisher"] == "GitHub"
+        assert github["links"]["support"] == "https://support.github.com"
+        # GitHub's tool is its CLI; Atlassian's is the vendor's MCP server.
+        assert github["mcp_urls"] == []
+        assert entries["atlassian"]["mcp_urls"] == ["https://mcp.atlassian.com/v2/mcp"]
+        # No workspace switch on this server: nobody decided, it reads as on.
+        assert (github["organization_locked"], github["decided_by"]) == (False, None)
         asana = entries["asana"]
         assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
         assert asana["configured"] is False
@@ -157,6 +164,8 @@ class TestConnections:
         # Their own connection is theirs to disconnect; there is nothing to
         # disconnect where they have none.
         assert (github["can_revoke"], asana["can_revoke"]) == (True, False)
+        assert atlassian["agent_access_note"] is None
+        assert "hour after each sign-in" in entries["sentry"]["agent_access_note"]
 
     async def test_disconnecting_deletes_grants_and_revokes_the_sign_in(
         self, harness: Harness, vendor: FakeVendor
@@ -288,7 +297,7 @@ class TestGrants:
         response = await _put(harness, owner, agent_id, {"resources": RESOURCES})
 
         assert response.status_code == 409
-        assert "Settings, Connections" in response.json()["detail"]
+        assert "Switch Console, under Connectors" in response.json()["detail"]
 
     async def test_write_on_a_read_only_connection(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -528,6 +537,9 @@ class TestWorkspaceSwitch:
         assert {
             slug for slug, entry in entries.items() if not entry["workspace_enabled"]
         } == {"datadog"}
+        assert entries["datadog"]["decided_by"] == "workspace"
+        assert entries["github"]["decided_by"] == "workspace_default"
+        assert entries["datadog"]["organization_locked"] is False
         assert entries["github"]["consent"] == "read"
         assert entries["atlassian"]["consent"] is None
 
@@ -629,20 +641,35 @@ class TestYourAgents:
         response = await _agents(harness, owner)
 
         assert response.status_code == 200, response.text
-        assert response.json() == [
-            {
-                "agent_id": granted_id,
-                "name": "builder",
-                "granted": True,
-                "addressing_open": True,
-            },
-            {
-                "agent_id": plain_id,
-                "name": "planner",
-                "granted": False,
-                "addressing_open": False,
-            },
+        listed = response.json()
+        assert [
+            (a["agent_id"], a["name"], a["granted"], a["addressing_open"])
+            for a in listed
+        ] == [
+            (granted_id, "builder", True, True),
+            (plain_id, "planner", False, False),
         ]
+        builder, planner = listed
+        assert (builder["grant"]["access"], builder["grant"]["resources"]) == (
+            "write",
+            RESOURCES,
+        )
+        assert builder["grant"]["summary"]
+        assert planner["grant"] is None
+        assert (builder["grantable"], planner["grantable"]) == (True, True)
+
+    async def test_an_agent_on_its_own_runtime_is_not_grantable(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        await agent_with_key(
+            harness.session_factory, owner, "standalone", known_agent_type=None
+        )
+
+        response = await _agents(harness, owner)
+
+        assert response.status_code == 200, response.text
+        assert [a["grantable"] for a in response.json()] == [False]
 
     async def test_an_agent_only_its_owners_agents_can_address_is_not_open(
         self, harness: Harness
@@ -673,3 +700,127 @@ class TestYourAgents:
         response = await _agents(harness, member, service)
         assert response.status_code == 404
         assert response.json()["detail"] == f"No service named {service!r}."
+
+
+async def _workspace_admin(harness: Harness, name: str):
+    admin = await add_member(harness.session_factory, name)
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(TenantMember)
+            .where(TenantMember.user_id == admin.id)
+            .values(role="admin")
+        )
+        await session.commit()
+    return admin
+
+
+async def _in_workspace(harness: Harness, user, service: str = "github"):
+    async with harness.client() as client:
+        return await client.get(
+            f"/gateway/service-connections/{service}/workspace",
+            cookies=cookies_for(user),
+        )
+
+
+async def _revoke(harness: Harness, admin, user_id: str, service: str = "github"):
+    async with harness.client() as client:
+        return await client.delete(
+            f"/gateway/service-connections/{service}/people/{user_id}",
+            cookies=cookies_for(admin),
+        )
+
+
+class TestTheWorkspacesView:
+    async def test_an_admin_sees_everyone_connected_and_every_agent_granted(
+        self, harness: Harness
+    ) -> None:
+        admin = await _workspace_admin(harness, "admin")
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        builder, _ = await agent_with_key(harness.session_factory, ada, "builder")
+        closed, _ = await agent_with_key(harness.session_factory, bob, "closed")
+        await connect(harness.session_factory, ada.id)
+        await connect(harness.session_factory, bob.id, account_id="1002")
+        await grant_directly(harness.session_factory, builder, ada.id)
+        await grant_directly(harness.session_factory, closed, bob.id)
+        await _set_policy(harness, closed, owner_only_policy([]))
+
+        response = await _in_workspace(harness, admin)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert [
+            (p["user_id"], p["name"], p["status"], p["agents"]) for p in body["people"]
+        ] == [(ada.id, "ada", "active", 1), (bob.id, "bob", "active", 1)]
+        assert all(p["connected_at"] for p in body["people"])
+        assert all(p["can_revoke"] for p in body["people"])
+        agent, closed_agent = body["agents"]
+        assert (agent["agent_id"], agent["name"]) == (builder, "builder")
+        assert (agent["owner_id"], agent["owner_name"]) == (ada.id, "ada")
+        assert agent["grant"]["access"] == "write"
+        # Whether others than its owner could have it act as its owner.
+        assert agent["addressing_open"] is True
+        assert (closed_agent["agent_id"], closed_agent["addressing_open"]) == (
+            closed,
+            False,
+        )
+
+    async def test_a_member_sees_and_ends_only_their_own(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        await connect(harness.session_factory, bob.id)
+
+        listed = await _in_workspace(harness, ada)
+        revoked = await _revoke(harness, ada, bob.id)
+
+        assert listed.status_code == 403
+        assert revoked.status_code == 403
+        async with harness.session_factory() as session:
+            assert await STORE.get_connection(session, bob.id, "github") is not None
+
+    async def test_an_admin_ends_someone_elses_connection(
+        self, harness: Harness, vendor: FakeVendor
+    ) -> None:
+        admin = await _workspace_admin(harness, "admin")
+        ada = await add_member(harness.session_factory, "ada")
+        builder, _ = await agent_with_key(harness.session_factory, ada, "builder")
+        await connect(harness.session_factory, ada.id)
+        await grant_directly(harness.session_factory, builder, ada.id)
+
+        response = await _revoke(harness, admin, ada.id)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"warning": None}
+        assert len(vendor.connections_revoked) == 1
+        async with harness.session_factory() as session:
+            assert await STORE.get_connection(session, ada.id, "github") is None
+            assert await STORE.list_grants(session, builder) == []
+            event = await session.scalar(
+                select(AuditEvent).order_by(AuditEvent.occurred_at.desc()).limit(1)
+            )
+        assert event is not None
+        assert event.action == AuditAction.SERVICE_CONNECTION_REVOKED
+        assert (event.actor_user_id, event.target_id) == (admin.id, ada.id)
+        assert event.details == {"service": "github"}
+        # What its owner sees on their own list: no longer connected.
+        assert (await _listed(harness, ada))["github"]["status"] == "not_connected"
+
+    async def test_an_admins_own_or_a_missing_connection(
+        self, harness: Harness
+    ) -> None:
+        admin = await _workspace_admin(harness, "admin")
+        ada = await add_member(harness.session_factory, "ada")
+        await connect(harness.session_factory, admin.id)
+
+        mine = (await _in_workspace(harness, admin)).json()["people"]
+        own = await _revoke(harness, admin, admin.id)
+        missing = await _revoke(harness, admin, ada.id)
+        unknown = await _in_workspace(harness, admin, "nowhere")
+
+        assert [(p["user_id"], p["can_revoke"]) for p in mine] == [(admin.id, False)]
+        assert own.status_code == 409
+        assert missing.status_code == 404
+        assert missing.json()["code"] == "connector_not_connected"
+        assert unknown.status_code == 404

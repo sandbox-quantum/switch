@@ -61,7 +61,7 @@ INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 
 def client_changed(name: str) -> str:
-    return f"This server's {name} app changed during your sign-in. Start it again."
+    return f"Switch's {name} app changed during your sign-in. Start it again."
 
 
 class FlowError(Exception):
@@ -165,13 +165,13 @@ class ServiceFlows:
         port: int,
         completion_secret: str,
         owner_label: str,
-        access: AccessLevel | None,
+        access: AccessLevel | None = None,
     ) -> ServiceFlow:
         mode = self.mode(definition)
         if mode is None:
             raise FlowError(
-                f"{definition.name} can return a sign-in only to this server, "
-                "which has no public address (GATEWAY_PUBLIC_URL)."
+                f"{definition.name} can return a sign-in only to Switch's public "
+                "address, and none is set (GATEWAY_PUBLIC_URL)."
             )
         assert definition.auth.oauth is not None
         ports = definition.auth.oauth.loopback_ports
@@ -218,6 +218,7 @@ class ServiceFlows:
                 owner_label=owner_label,
                 details={
                     "name": definition.name,
+                    "unscoped": levels.unscoped,
                     "consent": consent,
                     "scopes": list(level.scopes),
                     "read_scopes": list(levels.read.scopes),
@@ -373,9 +374,11 @@ class ServiceFlows:
         """What the person consented to, as the vendor granted it."""
         granted = set(exchange.signed_in.granted_scopes)
         details = exchange.flow.details
+        if details.get("unscoped"):
+            return "write"
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
-            if details["consent"] == "read":
+            if details.get("consent") == "read":
                 raise FlowError(
                     f"{details['name']} granted write access, which was not asked "
                     "for, so Switch did not keep the sign-in. Remove it under the "

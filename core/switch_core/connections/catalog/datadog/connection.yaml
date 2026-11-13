@@ -3,6 +3,11 @@ name: Datadog
 category: Observability
 description: Query Datadog metrics, logs, traces, monitors and incidents, with your keys.
 enabled: true
+publisher: Datadog
+links:
+  documentation: https://docs.datadoghq.com/bits_ai/mcp_server/
+  support: https://www.datadoghq.com/support/
+  privacy: https://www.datadoghq.com/legal/privacy/
 adapter: api_key
 auth:
   type: api_key

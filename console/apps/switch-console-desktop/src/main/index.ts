@@ -1,6 +1,7 @@
 import './app/configure-app-identity';
 // Installs the agent provider catalogue before any module that reads it loads.
 import './core/providers/plugin-registry';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
@@ -9,6 +10,11 @@ import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { deeplinkFromArgv, flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
+import {
+  dbusSend,
+  linuxPasswordStoreFallback,
+  probeSecretService,
+} from './app/linux-password-store';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
@@ -41,6 +47,7 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { retireDashboardFallbacks } from './core/switch-servers/server-address';
+import { bridgeSessionEndedToRenderer } from './core/switch-servers/session-ended-bridge';
 import { startActivationTracking } from './core/telemetry/activation';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
@@ -73,9 +80,18 @@ if (import.meta.env.DEV) {
 serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
+/** Long enough for switch-core's own stop grace, PostgreSQL and Mattermost's
+ * containers; the window is gone by then, so nobody watches it. */
+const LOCAL_SERVER_SHUTDOWN_MS = 30_000;
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  const passwordStore = linuxPasswordStoreFallback(
+    process.env,
+    app.commandLine.hasSwitch('password-store'),
+    () => probeSecretService(process.env, existsSync, dbusSend)
+  );
+  if (passwordStore) app.commandLine.appendSwitch('password-store', passwordStore);
 }
 
 registerAppScheme();
@@ -199,8 +215,8 @@ void app.whenReady().then(async () => {
 
   void reconcileResourceSampler();
 
-  // Reflect a managed local Switch stack that survived the last quit, so the UI
-  // shows it running without the user restarting it.
+  // Reflect a managed local Switch stack that is still running (a Console that
+  // crashed leaves it up), and start one that the last quit stopped.
   const localServerReady = localServerService.initialize();
   // Re-establish desktop-side forwards for remote-managed stacks that survived
   // the last quit, restoring their reachability from this machine.
@@ -225,6 +241,10 @@ void app.whenReady().then(async () => {
   void retireDashboardFallbacks().catch((error: unknown) => {
     log.error('Could not check which servers still need a separate dashboard address:', error);
   });
+
+  // A signed-in call refused with 401 tells the window to re-check that server's
+  // sign-in, so a revoked session reads as signed out rather than offline.
+  bridgeSessionEndedToRenderer();
 
   // Each server's feature flags, read on a schedule so a redeploy that changes
   // them reaches the window without a restart. Started once the managed stacks
@@ -326,6 +346,10 @@ app.on('before-quit', (event) => {
   // while it is being replaced.
   const updaterRestarts = updateService.getState().status === 'installing';
   logAppExit('before-quit');
+  // Stopping the server on this computer can take a while; the app reads as
+  // gone the moment it is asked to quit.
+  const mainWindow = getMainWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
   controlService.dispose();
   stopAutoMigration();
   stopResourceSampler();
@@ -350,6 +374,16 @@ app.on('before-quit', (event) => {
         log.error('Failed to stop the embedded agent controllers:', e);
       }),
     ]);
+    // The server on this computer lives as long as the app does. Stopped after
+    // the sessions and controllers that talk to it, and bounded like them.
+    await Promise.race([
+      localServerService.stopForQuit(),
+      delay(LOCAL_SERVER_SHUTDOWN_MS).then(() =>
+        log.warn('The local Switch server did not stop in time; it may outlive Console.')
+      ),
+    ]).catch((e) => {
+      log.error('Failed to stop the local Switch server:', e);
+    });
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });

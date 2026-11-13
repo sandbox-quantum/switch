@@ -100,20 +100,20 @@ const WD = '/home/agent/repo';
 describe('codexLaunchProfile', () => {
   it('writes the profile under ~/.codex keyed on the (dir, slug) and loads with --profile', () => {
     const profile = codexLaunchProfile({
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       values: { model: 'gpt-5.6-terra' },
     });
     expect(profile).not.toBeNull();
-    expect(profile!.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
+    expect(profile!.args).toEqual(['--profile', codexProfileName('codex-agent', WD)]);
     expect(profile!.files).toEqual([
       {
-        relativePath: codexProfileRelativePath('codex-hoot', WD),
+        relativePath: codexProfileRelativePath('codex-agent', WD),
         content: expect.stringContaining('model = "gpt-5.6-terra"'),
       },
     ]);
-    expect(codexProfileRelativePath('codex-hoot', WD)).toBe(
-      `.codex/${codexProfileName('codex-hoot', WD)}.config.toml`
+    expect(codexProfileRelativePath('codex-agent', WD)).toBe(
+      `.codex/${codexProfileName('codex-agent', WD)}.config.toml`
     );
   });
 
@@ -123,16 +123,16 @@ describe('codexLaunchProfile', () => {
     // (`$(…)`, backticks). Two fixed tokens is the whole command-line surface.
     const instructions = 'be terse\n$(whoami) and "quotes"';
     const profile = codexLaunchProfile({
-      slug: 'codex-hoot',
+      slug: 'codex-agent',
       workingDir: WD,
       values: { instructions },
     })!;
 
     expect(profile.files).toHaveLength(1);
-    expect(profile.files[0].relativePath).toBe(codexProfileRelativePath('codex-hoot', WD));
+    expect(profile.files[0].relativePath).toBe(codexProfileRelativePath('codex-agent', WD));
     const parsed = parseTOML(profile.files[0].content) as Record<string, unknown>;
     expect(parsed.developer_instructions).toBe(instructions);
-    expect(profile.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
+    expect(profile.args).toEqual(['--profile', codexProfileName('codex-agent', WD)]);
     expect(profile.args.join(' ')).not.toContain('whoami');
   });
 
@@ -164,11 +164,11 @@ describe('codexProfileName', () => {
   it('gives two agents that share a name in different dirs distinct profiles', () => {
     // Agent names are unique only within a location, so the working dir must
     // discriminate — otherwise the second launch overwrites the first's profile.
-    expect(codexProfileName('hoot', '/dir/one')).not.toBe(codexProfileName('hoot', '/dir/two'));
+    expect(codexProfileName('switch', '/dir/one')).not.toBe(codexProfileName('switch', '/dir/two'));
   });
 
   it('is stable for the same (slug, dir)', () => {
-    expect(codexProfileName('hoot', WD)).toBe(codexProfileName('hoot', WD));
+    expect(codexProfileName('switch', WD)).toBe(codexProfileName('switch', WD));
   });
 
   it('keeps slugs that differ only in rewritten characters on distinct profiles', () => {
@@ -222,18 +222,29 @@ describe('codexLaunchProfileSettings', () => {
       'model_reasoning_effort',
       'model_reasoning_summary',
       'model_verbosity',
-      'tools',
+      'web_search',
     ]);
-    expect((toml.tools as Record<string, unknown>).web_search).toBe(true);
+    expect(toml.web_search).toBe('live');
   });
 
   it('turns web search off explicitly, which is not the same as leaving it unset', () => {
     const off = parseTOML(buildCodexProfileToml({ webSearch: 'false' }));
-    expect((off.tools as Record<string, unknown>).web_search).toBe(false);
+    expect(off).toEqual({ web_search: 'disabled' });
 
     // Unset writes nothing at all, so the user's own config still decides.
     // An empty profile still stringifies to a newline, which is why the
     // no-profile check in `codexLaunchProfile` tests the trimmed result.
     expect(buildCodexProfileToml({ webSearch: '' }).trim()).toBe('');
+  });
+
+  it('writes the top-level web_search mode, not the boolean Codex discards', () => {
+    // Codex parses `tools.web_search = <bool>` and throws the value away, so
+    // a profile carrying it leaves web search on whatever it says.
+    for (const raw of ['true', 'false']) {
+      expect(parseTOML(buildCodexProfileToml({ webSearch: raw }))).not.toHaveProperty('tools');
+    }
+    expect(parseTOML(buildCodexProfileToml({ webSearch: 'true' }))).toEqual({
+      web_search: 'live',
+    });
   });
 });

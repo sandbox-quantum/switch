@@ -33,6 +33,25 @@ export function toSelection(
   return null;
 }
 
+/**
+ * Why a path or CLI override the person entered was not saved, or null when
+ * it can be used. Only an available override replaces the saved choice, so
+ * anything else has to be said, or the old choice silently stays in use.
+ */
+export function overrideProblem(
+  kind: 'path' | 'cli',
+  value: string,
+  installation: Installation | null
+): string | null {
+  if (installation?.status === 'available') return null;
+  const shown = value.trim();
+  if (!installation || installation.status === 'missing')
+    return kind === 'path'
+      ? `No executable was found at ${shown} on this machine. It was not saved.`
+      : `${shown} was not found on this machine's PATH. It was not saved.`;
+  return `${shown} was found, but it did not answer --version as expected. It was not saved.`;
+}
+
 export function refLabel(ref: SelectedSource, installOptions: InstallOption[]): string {
   if (ref.kind === 'auto') return 'Auto';
   if (ref.kind === 'pinned') return `Pinned`;

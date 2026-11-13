@@ -2,8 +2,9 @@ name: E2E
 
 # The one definition of an end-to-end run: a lane of console/tooling-e2e on a
 # throwaway stack built from this checkout. Called by pr-ci.yml (the fast lane,
-# on every PR) and by e2e-scheduled.yml (the provider lane after each merge and
-# nightly), and dispatchable by hand.
+# on every PR, and the browser lane in both layouts on gateway and server PRs) and by
+# e2e-scheduled.yml (the provider lane after each merge and nightly, and every
+# lane on a release tag), and dispatchable by hand.
 #
 #   lane         fast      provider-free scenarios over plain HTTP
 #                provider  real agent sessions on a headless agent controller
@@ -13,6 +14,9 @@ name: E2E
 #                          checkout
 #                explore   the same gateway UI, driven at random by Bombadil
 #                          against the properties in its specification
+#
+#   gateway_layout  the dashboard layout the browser lane's server runs:
+#                   current, or v2 (the gateway_v2 flag, the new layout)
 #
 # Runs against the deployed environments are not here: they live with the
 # deployment configuration, which checks out this harness at the commit the
@@ -44,6 +48,11 @@ on:
         description: Provider for the provider lane
         type: string
         required: true
+      gateway_layout:
+        description: The dashboard layout for the browser lane, current or v2
+        type: string
+        required: false
+        default: current
     outputs:
       summary:
         description: One line counting the lane's scenarios by outcome
@@ -59,14 +68,19 @@ on:
         type: choice
         options: [claude-code]
         default: claude-code
+      gateway_layout:
+        description: The dashboard layout for the browser lane
+        type: choice
+        options: [current, v2]
+        default: current
 
 permissions:
   contents: read
 
 jobs:
   run:
-    name: ${{ inputs.lane }} lane
-    runs-on: ubuntu-latest
+    name: ${{ inputs.lane }} lane${{ inputs.gateway_layout == 'v2' && ' (new layout)' || '' }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     environment: ${{ (inputs.lane == 'provider' || inputs.lane == 'agentic') && 'e2e-provider' || '' }}
     outputs:
@@ -79,6 +93,10 @@ jobs:
     env:
       OUT: ${{ github.workspace }}/build/e2e/out
       LANE: ${{ inputs.lane }}
+      GATEWAY_LAYOUT: ${{ inputs.gateway_layout }}
+      # Two runs of one lane in a workflow need their own artifact and title.
+      RUN_NAME: ${{ inputs.lane }}${{ inputs.gateway_layout == 'v2' && '-v2' || '' }}
+      RUN_TITLE: ${{ inputs.lane }} lane${{ inputs.gateway_layout == 'v2' && ' (new layout)' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -88,6 +106,11 @@ jobs:
           AGENT_TYPE: ${{ inputs.agent_type }}
         run: |
           case "$LANE" in fast|provider|browser|agentic|explore) ;; *) echo "::error::Unknown lane '$LANE'."; exit 1 ;; esac
+          case "$GATEWAY_LAYOUT" in
+            current) ;;
+            v2) [ "$LANE" = browser ] || { echo "::error::gateway_layout v2 is for the browser lane, not '$LANE'."; exit 1; } ;;
+            *) echo "::error::Unknown gateway_layout '$GATEWAY_LAYOUT'."; exit 1 ;;
+          esac
           case "$LANE" in provider|agentic) REAL_SESSION=1 ;; *) REAL_SESSION=0 ;; esac
           if [ "$REAL_SESSION" = 1 ] && [ "$AGENT_TYPE" != claude-code ]; then
             echo "::error::CI has credentials for claude-code only, not '$AGENT_TYPE'."; exit 1
@@ -141,6 +164,7 @@ jobs:
         env:
           SWITCH_E2E_LANE: ${{ inputs.lane }}
           SWITCH_E2E_AGENT_TYPE: ${{ inputs.agent_type }}
+          SWITCH_E2E_GATEWAY_LAYOUT: ${{ inputs.gateway_layout }}
           E2E_OUT: ${{ env.OUT }}
           # The agentic lane's models, by exact id, and what one run may spend
           # (driver, judge and agent together). Pinned here, so changing them
@@ -157,7 +181,7 @@ jobs:
         if: ${{ always() }}
         run: |
           node --experimental-strip-types console/tooling-e2e/src/ci-summary.ts \
-            "$OUT/junit.xml" "$LANE" "$LANE lane" >>"$GITHUB_STEP_SUMMARY"
+            "$OUT/junit.xml" "$LANE" "$RUN_TITLE" >>"$GITHUB_STEP_SUMMARY"
 
       - name: Scan the output for secrets
         id: scan
@@ -174,7 +198,7 @@ jobs:
         if: ${{ always() && steps.scan.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-${{ inputs.lane }}
+          name: e2e-${{ env.RUN_NAME }}
           path: ${{ env.OUT }}
           include-hidden-files: true
           retention-days: 14

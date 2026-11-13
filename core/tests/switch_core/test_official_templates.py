@@ -13,6 +13,7 @@ from switch_core.agent_templates import repo_note
 from switch_core.management.schemas import MAX_INSTRUCTIONS_BYTES
 from switch_core.official_templates import (
     _SHIPPED,
+    OfficialTemplate,
     current_revision,
     official_template,
     official_templates,
@@ -27,8 +28,19 @@ _REPO = Path(__file__).resolve().parents[3]
 _PACKAGED = _REPO / "core" / "switch_core" / "official_templates"
 
 
-_KNOWLEDGE = _REPO / "switch-expert" / "knowledge"
 _PLAYBOOK = _PACKAGED / "switch-buddy" / "PLAYBOOK.md"
+
+
+def _agent_templates(
+    agent_management: bool, switch_buddy: bool
+) -> list[OfficialTemplate]:
+    """The official agent templates, without the room templates (see
+    test_official_room_templates)."""
+    return [
+        t
+        for t in official_templates(agent_management, switch_buddy)
+        if t.kind == "agent"
+    ]
 
 
 def test_the_switch_expert_copies_match_the_repository():
@@ -57,7 +69,7 @@ def test_the_flag_picks_the_document():
 def test_switch_expert_is_served_only_where_switch_buddy_is_not():
     """Buddy covers what the Switch expert does, so a server offers exactly
     one built-in assistant: buddy where it is served, the expert elsewhere."""
-    assert [t.id for t in official_templates(True, switch_buddy=True)] == [
+    assert [t.id for t in _agent_templates(True, switch_buddy=True)] == [
         "official:switch-buddy"
     ]
     assert official_template("official:switch-expert", True, switch_buddy=True) is None
@@ -66,31 +78,28 @@ def test_switch_expert_is_served_only_where_switch_buddy_is_not():
         (False, True),
         (True, False),
     ):
-        assert [t.id for t in official_templates(agent_management, switch_buddy)] == [
+        assert [t.id for t in _agent_templates(agent_management, switch_buddy)] == [
             "official:switch-expert"
         ]
 
 
-def test_the_knowledge_switch_buddy_reads_is_present():
-    """switch-buddy reads switch-expert/knowledge/ from its clone of the
-    repository at runtime; every file it is pointed at must exist."""
-    for name in (
-        "INDEX.md",
-        "CONCEPTS.md",
-        "PATTERNS.md",
-        "RECIPES.md",
-        "CHECKLIST.md",
-        "GOTCHAS.md",
-    ):
-        assert (_KNOWLEDGE / name).is_file(), name
-    assert (_REPO / "switch-expert" / "CORRECTIONS.md").is_file()
+def test_switch_buddy_reads_the_published_docs_not_a_clone():
+    """switch-buddy fetches the published docs rather than cloning the
+    repository: a new user's machine may have no git, and the first reply
+    must not wait on a clone."""
     instructions = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
-    assert "switch-expert/knowledge/INDEX.md" in instructions
+    assert "https://docs.switchagents.ai/llms.txt" in instructions
+    assert "https://docs.switchagents.ai/llms-full.txt" in instructions
+    assert "git clone" not in instructions
+    template = yaml.safe_load(
+        (_PACKAGED / "switch-buddy" / "template.yaml").read_text(encoding="utf-8")
+    )
+    assert "repo" not in template["resources"]["buddy"]
 
 
 def test_the_instructions_are_written_in_and_the_documents_are_clean():
     for flag in (True, False):
-        for template in official_templates(flag, switch_buddy=True):
+        for template in _agent_templates(flag, switch_buddy=True):
             data = yaml.safe_load(template.content)
             agent = (
                 next(iter(data["resources"].values()))
@@ -107,7 +116,7 @@ def test_every_official_template_s_instructions_fit_the_server_limit():
     is a template nobody can create."""
     for agent_management in (True, False):
         for switch_buddy in (True, False):
-            for template in official_templates(agent_management, switch_buddy):
+            for template in _agent_templates(agent_management, switch_buddy):
                 data = yaml.safe_load(template.content)
                 agents = (
                     [r for r in data["resources"].values() if r["type"] == "agent"]
@@ -123,7 +132,7 @@ def test_every_official_template_s_instructions_fit_the_server_limit():
 
 def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
     for agent_management, switch_buddy in ((False, True), (True, False)):
-        assert [t.id for t in official_templates(agent_management, switch_buddy)] == [
+        assert [t.id for t in _agent_templates(agent_management, switch_buddy)] == [
             "official:switch-expert"
         ]
     buddy = official_template(
@@ -133,6 +142,25 @@ def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
     agent = yaml.safe_load(buddy.content)["resources"]["buddy"]
     assert agent["can_manage_agents"] is True
     assert agent["addressing"] == "owner-agents"
+
+
+def test_only_switch_buddy_tells_a_person_not_to_run_it():
+    """Switch Console makes each person's buddy itself, so a client greys Run
+    on it; the expert is run like any other template."""
+    buddy = official_template(
+        "official:switch-buddy", agent_management=True, switch_buddy=True
+    )
+    assert buddy is not None
+    assert buddy.run_blocked_reason == (
+        "Switch Console sets up your switch-buddy for you."
+    )
+    for agent_management in (False, True):
+        (expert,) = [
+            t
+            for t in official_templates(agent_management, switch_buddy=False)
+            if t.kind == "agent"
+        ]
+        assert expert.run_blocked_reason is None
 
 
 def test_switch_buddy_puts_itself_in_the_rooms_it_creates():
@@ -313,11 +341,14 @@ def test_switch_buddy_offers_choices_in_its_question_form():
 
 
 def test_every_playbook_section_switch_buddy_is_pointed_at_exists():
-    """switch-buddy reads the playbook from its clone of the repository when
-    its instructions point at a section, so the path and each section named
-    must exist as written."""
+    """switch-buddy fetches the playbook from the repository's main branch
+    when its instructions point at a section, so the path and each section
+    named must exist as written."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
-    paths = re.findall(r"`switch/(\S+?PLAYBOOK\.md)`", text)
+    paths = re.findall(
+        r"`https://raw\.githubusercontent\.com/sandbox-quantum/switch/main/(\S+?PLAYBOOK\.md)`",
+        text,
+    )
     assert paths
     for path in paths:
         assert (_REPO / path).resolve() == _PLAYBOOK.resolve(), path
@@ -340,8 +371,8 @@ def test_switch_buddy_checks_the_services_an_agent_needs_before_proposing():
 
 
 def test_switch_buddy_carries_on_without_its_playbook():
-    """A fresh install may have no clone, and an older tag no playbook: that
-    must pause only what needs the detail, never basic onboarding."""
+    """The playbook may be unreachable or lack a section: that must pause only
+    what needs the detail, never basic onboarding."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
     assert "read it only if you need more" in text
     assert "pause only the action that needs the missing detail" in text

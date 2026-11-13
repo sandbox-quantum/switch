@@ -3,6 +3,11 @@ name: Airtable
 category: Knowledge base
 description: Read and update records in the Airtable bases you share, as you.
 enabled: true
+publisher: Airtable
+links:
+  documentation: https://support.airtable.com/docs/using-the-airtable-mcp-server
+  support: https://support.airtable.com
+  privacy: https://www.airtable.com/company/privacy
 adapter: oauth
 auth:
   type: oauth

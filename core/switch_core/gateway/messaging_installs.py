@@ -124,7 +124,7 @@ def _require_installs(
             status_code=501,
             detail=(
                 "This Switch deployment has no messaging app of its own to "
-                "install. Register a bridge with your own app's credentials "
+                "install. Add a messaging app with your own app's credentials "
                 "instead."
             ),
         )

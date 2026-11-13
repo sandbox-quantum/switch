@@ -53,6 +53,7 @@ function listed(
       unavailable_code: null,
       pass_through: true,
       token_lifetime: 28_800,
+      agent_access_note: null,
       loopback_ports: ports,
       access_levels: levels,
       key: null,

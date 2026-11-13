@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.account_reset import AccountReset
 from switch_core.accounts.deletion import (
     AccountDeletion,
     AccountDeletionIncomplete,
@@ -37,6 +38,7 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
+    SIGNUP_REFUSED_DETAIL,
     AuthenticatedCaller,
     AuthenticatedSession,
     describe_session_state,
@@ -51,6 +53,7 @@ from switch_core.gateway.auth import (
     require_admin,
     session_auth_time,
     set_session_cookie,
+    signup_refused_by_edge,
     tenants_bindable_by,
     verify_password_off_loop,
 )
@@ -227,7 +230,7 @@ async def _refuse_signup(
         emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
         raise HTTPException(
             status_code=429,
-            detail="Too many sign-ups on this server in the last hour. Try again later.",
+            detail="Too many sign-ups in the last hour. Try again later.",
             headers={"Retry-After": str(retry_after)},
         )
     if await user_store.get_by_email(session, email) is not None:
@@ -239,6 +242,7 @@ async def _refuse_signup(
 @router.post("/auth/signup", status_code=201)
 async def signup(
     req: SignupRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -257,9 +261,13 @@ async def signup(
     """
     if not config.gateway_signup_open:
         emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
-        raise HTTPException(
-            status_code=403, detail="Sign-up is disabled on this server"
+        raise HTTPException(status_code=403, detail="Sign-up is turned off here")
+    if signup_refused_by_edge(request, config):
+        logger.warning(
+            "Refused sign-up: the request is marked as from a country without sign-up"
         )
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
+        raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL)
 
     with tenant_scope(TENANT_ZERO_ID):
         # Checked before the hash so a refusal stays cheap, and again under the
@@ -293,7 +301,7 @@ async def signup(
                 status_code=409, detail="Email already registered"
             ) from None
         await session.commit()
-        logger.info("Signed up user: %s (%s)", user.email, user.id)
+        logger.info("Signed up user %s", user.id)
         emit_safely(current_telemetry(), "account_created", {"method": "signup"})
 
         set_session_cookie(
@@ -541,13 +549,7 @@ async def delete_my_account(
     their email, since an SSO account has no password to ask for. A refusal
     is a 409 saying what to do first, and leaves the account untouched.
     """
-    user = await user_store.get(session, caller.id)
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    if req.email.strip().lower() != user.email.lower():
-        raise HTTPException(
-            status_code=400, detail="That email doesn't match this account."
-        )
+    user = await _confirmed_user(session, user_store, caller, req)
     deletion = _account_deletion(
         request,
         session_factory,
@@ -575,6 +577,87 @@ async def delete_my_account(
         raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
+
+
+@router.post("/auth/me/reset-test-account")
+async def reset_test_account(
+    req: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """Wipe the caller's own test account, on a test or canary server that
+    allows it (`gateway_allow_test_account_reset`): an organization nobody
+    else is in is purged whole; elsewhere only the workspaces the caller is
+    alone in are purged, and the caller leaves the rest, the server's default
+    workspace included (`accounts/account_reset.py`). Refused with a 409,
+    before anything changes, for anything `DELETE /auth/me` refuses or the
+    purge must wait for."""
+    if not config.gateway_allow_test_account_reset:
+        raise HTTPException(
+            status_code=404, detail="Test-account reset is not enabled on this server."
+        )
+    user = await _confirmed_user(session, user_store, caller, req)
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        client_lifecycle,
+        config,
+    )
+    reset = AccountReset(
+        session_factory=session_factory,
+        purge=request.app.state.organization_purge,
+        deletion=deletion,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, user.id
+    )
+    try:
+        await reset.reset(session, user, workspaces)
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+async def _confirmed_user(
+    session: AsyncSession,
+    user_store: UserStore,
+    caller: AuthenticatedCaller,
+    req: DeleteAccountRequest,
+) -> User:
+    user = await user_store.get(session, caller.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    if req.email.strip().lower() != user.email.lower():
+        raise HTTPException(
+            status_code=400, detail="That email doesn't match this account."
+        )
+    return user
 
 
 def _account_deletion(
@@ -744,7 +827,7 @@ async def create_user(
         ) from None
     await session.commit()
 
-    logger.info("Created user: %s (%s)", user.email, user.id)
+    logger.info("Created user %s", user.id)
     emit_safely(current_telemetry(), "account_created", {"method": "admin"})
     return OperatorUserResponse(
         id=user.id,

@@ -7,6 +7,15 @@ import {
 import { icon } from './icon';
 import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
 
+/**
+ * Anthropic's documented Windows installer, wrapped in `powershell -c` so it
+ * runs whichever shell the install runner resolved: cmd.exe, Windows
+ * PowerShell 5.1 (where `&&` does not parse and `curl` is an alias) or Git
+ * Bash. Kept free of `$` and `%` so neither shell expands anything first.
+ */
+const CLAUDE_WINDOWS_INSTALL_SCRIPT =
+  'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"';
+
 export const plugin = definePlugin(
   {
     id: 'claude',
@@ -45,9 +54,8 @@ export const plugin = definePlugin(
         ],
         windows: [
           {
-            method: 'curl',
-            command:
-              'curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd',
+            method: 'powershell',
+            command: CLAUDE_WINDOWS_INSTALL_SCRIPT,
             uninstallCommand: 'claude uninstall',
           },
         ],

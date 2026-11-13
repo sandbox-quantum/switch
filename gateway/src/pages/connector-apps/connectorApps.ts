@@ -5,7 +5,12 @@
  * Labels follow what Google and GitHub call things, so the operator can copy
  * values across.
  */
-import type { ConnectorApp, ConnectorAppField, ConnectorAppImpact } from "../../data/api";
+import type {
+  ConnectorApp,
+  ConnectorAppField,
+  ConnectorAppImpact,
+  ConnectorAppScope,
+} from "../../data/api";
 
 export type CardState = "ready" | "not_set_up" | "configured" | "attention";
 
@@ -125,7 +130,7 @@ export function stateLabel(state: CardState): string {
     case "not_set_up":
       return "Not set up";
     case "configured":
-      return "Set on the server";
+      return "Set in configuration";
     case "attention":
       return "Needs attention";
   }
@@ -154,7 +159,7 @@ export function notSetUpSentence(app: ConnectorApp): string {
   const what = app.kind === "github_app" ? "GitHub App" : `${vendorName(app)} client`;
   // An organization's page: its workspaces may use the server's app meanwhile.
   if (app.server_app === true)
-    return `Your workspaces use the server's ${what}. Add your organization's own to use that instead.`;
+    return `Your workspaces use Switch's ${what}. Add your organization's own to use that instead.`;
   if (app.server_app === false)
     return `People in your organization can't connect ${app.name} until you add your organization's ${what}.`;
   return app.kind === "github_app"
@@ -317,7 +322,7 @@ export function setupInstructions(
   if (app.slug === AIRTABLE)
     return [
       {
-        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that stops every connection.",
+        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that disconnects everyone.",
         copy: [],
         link: { label: "Open Builder Hub", href: "https://airtable.com/create/oauth" },
         items: [],
@@ -415,12 +420,16 @@ export function setupInstructions(
         items: [],
       },
     ];
-  return [
+  const steps = [
     redirectStep(
       `Register an OAuth client for Switch at ${app.name}, with ${app.redirect_uris.length > 1 ? "these redirect URIs" : "this redirect URI"}:`,
       app.redirect_uris,
     ),
   ];
+  // A vendor refuses a sign-in that asks for a scope its app lacks.
+  if (app.scopes.length > 0)
+    steps.push({ text: "Give it exactly these scopes:", copy: [], link: null, items: app.scopes });
+  return steps;
 }
 
 export const UPDATE_SECRET_NOTE = "Nobody is disconnected.";
@@ -433,24 +442,65 @@ export function switchWarning(app: ConnectorApp, impact: ConnectorAppImpact): st
   if (app.kind === "github_app")
     lines.push("They will also need to choose their repositories again.");
   lines.push(
-    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid for up to an hour.`,
+    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid until they expire.`,
   );
   return lines;
 }
 
-export function removeWarning(app: ConnectorApp): string {
+function counted(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** What removing an app does, before it is removed: the one sentence that
+ * says where people stand afterwards, and what it touches, counted. Removing
+ * revokes nothing: the connections and the grants on them are kept, and
+ * work again once their people reconnect. */
+export function removeImpact(
+  app: ConnectorApp,
+  scope: ConnectorAppScope,
+): { lead: string; lines: string[] } {
   const name = app.name;
-  if (app.server_app === true) {
-    const back = `Your workspaces go back to the server's ${name} app.`;
-    if (app.connected_members === 0) return back;
-    const people =
-      app.connected_members === 1 ? "The 1 person" : `The ${app.connected_members} people`;
-    return `${back} ${people} connected now must reconnect.`;
+  const fallsBack = scope === "organization" && app.server_app === true;
+  const lead = fallsBack
+    ? `Your workspaces go back to Switch's ${name} app.`
+    : scope === "organization"
+      ? `Nobody in your organization can connect ${name} until your organization sets up an app again.`
+      : `Nobody can connect ${name} until an app is set up again.`;
+  const lines: string[] = [];
+  if (app.connected_members === 0) {
+    lines.push(`Nobody is connected through it, so nobody has to reconnect.`);
+    return { lead, lines };
   }
-  if (app.connected_members === 0) return `Nobody will be able to connect ${name}.`;
-  const people =
-    app.connected_members === 1 ? "the 1 person" : `the ${app.connected_members} people`;
-  return `Nobody will be able to connect ${name}, and ${people} connected now lose it. They can still disconnect.`;
+  lines.push(
+    fallsBack
+      ? `${counted(app.workspaces, "workspace moves", "workspaces move")} to Switch's app.`
+      : `${counted(app.workspaces, "workspace loses", "workspaces lose")} ${name}.`,
+  );
+  const one = app.connected_members === 1;
+  lines.push(
+    fallsBack
+      ? `${counted(app.connected_members, "connected account", "connected accounts")} must reconnect before ${one ? "it works" : "they work"} again.`
+      : `${counted(app.connected_members, "connected account stops", "connected accounts stop")} working. ${one ? "It" : "They"} can still be disconnected.`,
+  );
+  if (app.agent_grants > 0)
+    lines.push(
+      `${counted(app.agent_grants, "agent grant stops", "agent grants stop")} working until ${app.agent_grants === 1 ? "its owner reconnects" : "their owners reconnect"}. The grants themselves are kept.`,
+    );
+  return { lead, lines };
+}
+
+/** "Set up by Ada, 1 Oct 2026", or "Set up 1 Oct 2026 · changed by Ada, 15 Oct 2026"
+ * once someone saved it again; null for an app not saved here. */
+export function setUpLine(
+  app: Pick<ConnectorApp, "created_at" | "updated_at" | "updated_by_name">,
+  format: (iso: string) => string,
+): string | null {
+  if (app.created_at === null) return null;
+  const setUp = format(app.created_at);
+  const changed = app.updated_at === null ? setUp : format(app.updated_at);
+  const by = app.updated_by_name;
+  if (changed === setUp) return by ? `Set up by ${by}, ${setUp}` : `Set up ${setUp}`;
+  return by ? `Set up ${setUp} · changed by ${by}, ${changed}` : `Set up ${setUp} · changed ${changed}`;
 }
 
 export interface Confirmation {
@@ -486,7 +536,7 @@ export function moveChecklist(app: ConnectorApp): ChecklistItem[] {
   return [
     { text: "Copy into Switch. Nothing is retyped.", done: waitingForRestart(app) },
     {
-      text: `Remove ${variables(app)} from the server's configuration.${helm ? ` For Helm, that is ${helm}.` : ""}`,
+      text: `Remove ${variables(app)} from Switch's configuration.${helm ? ` For Helm, that is ${helm}.` : ""}`,
       done: false,
     },
     { text: "Restart Switch.", done: false },
@@ -507,6 +557,3 @@ export function changeBlocked(app: ConnectorApp, publicUrl: string | null): bool
 
 export const PUBLIC_URL_BANNER =
   "Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.";
-
-export const ONLY_THE_OPERATOR =
-  "Only the person who runs this Switch server can set up connectors.";
