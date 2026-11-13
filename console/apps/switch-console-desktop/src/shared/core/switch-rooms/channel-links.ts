@@ -9,8 +9,12 @@
  * a machine without that app the click reaches nobody and nothing happens.
  *
  * Both of those have a web address for the same channel, so build that instead.
- * It is the one form that works either way: an installed app still claims its
- * own web links, and a machine without one falls back to the browser.
+ * It is the one form that opens anywhere.
+ *
+ * The web form is only the fallback, though. Slack's and Discord's desktop apps
+ * do not pick up their web links, so opening one always lands in the browser
+ * even with the app installed. {@link appUrlForChannelLink} gives the link the
+ * app itself answers, for the caller to use when that app is installed.
  */
 
 /** Slack's web client, where a workspace/channel pair addresses a channel. */
@@ -71,6 +75,42 @@ function slackWebUrl(deeplink: string): string | null {
 
   const channel = parsed.searchParams.get('id');
   return channel ? `${SLACK_WEB_CLIENT}/${team}/${channel}` : `${SLACK_WEB_CLIENT}/${team}`;
+}
+
+/** Discord's web client, whose `/channels/…` paths its desktop app also takes. */
+const DISCORD_CHANNELS = /^https:\/\/(?:www\.)?discord\.com(\/channels\/[^?#]*)/i;
+
+/** Slack's web client path for a workspace, optionally followed by a channel. */
+const SLACK_WEB_CLIENT_PATH = /^https:\/\/app\.slack\.com\/client\/([^/?#]+)(?:\/([^/?#]+))?/i;
+
+/**
+ * The link the platform's desktop app answers for a bridge channel or workspace
+ * link, with the URL scheme that app registers, or null for a platform whose
+ * app already picks up its web links (or that we do not know).
+ *
+ * Accepts either form a link reaches Console in: the bridge's own, or the web
+ * address {@link browserUrlForChannelLink} made from it. Only open the result
+ * when the app is installed: nothing else answers these schemes.
+ */
+export function appUrlForChannelLink(
+  link: string
+): { scheme: 'slack' | 'discord'; url: string } | null {
+  if (link.startsWith('slack://')) return { scheme: 'slack', url: link };
+
+  const slack = SLACK_WEB_CLIENT_PATH.exec(link);
+  if (slack) {
+    const [, team, channel] = slack;
+    return {
+      scheme: 'slack',
+      url: channel ? `slack://channel?team=${team}&id=${channel}` : `slack://open?team=${team}`,
+    };
+  }
+
+  const discord = DISCORD_CHANNELS.exec(link);
+  // `discord://-/` is the authority Discord's own "open in app" links use.
+  if (discord) return { scheme: 'discord', url: `discord://-${discord[1]}` };
+
+  return null;
 }
 
 function parseDeeplink(deeplink: string): URL | null {
