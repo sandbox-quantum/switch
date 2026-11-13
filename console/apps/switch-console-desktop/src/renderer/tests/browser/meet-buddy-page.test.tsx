@@ -44,7 +44,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { statusFor: () => ({ user: { name: 'Max Tam', email: null } }) },
 }));
 vi.mock('@renderer/features/switch-buddy/meet-buddy-intro', () => ({
-  MeetBuddyIntro: () => <p>intro</p>,
+  MeetBuddyIntro: ({ after }: { after: React.ReactNode }) => <div>{after}</div>,
 }));
 vi.mock('@renderer/lib/components/agent-icon', () => ({
   AgentIcon: ({ id }: { id: string }) => <span data-provider-icon={id} />,
@@ -128,24 +128,24 @@ describe('MeetBuddyPage', () => {
     // Claude ready and Codex known: decided, without waiting for the others.
     state.computer = machine(ready('claude'), signedOut('codex'));
     await render();
-    expect(buttons()).toEqual(['Claude Code', 'Use other AI providers']);
+    expect(buttons()).toEqual(['Claude CodeSigned in locally', 'use other providers']);
 
     // Codex signs in afterwards: the row stays as it first was.
     state.computer = machine(ready('claude'), ready('codex'));
     await render();
-    expect(buttons()).toEqual(['Claude Code', 'Use other AI providers']);
+    expect(buttons()).toEqual(['Claude CodeSigned in locally', 'use other providers']);
   });
 
   it('offers to set one up, or skip, when none is ready', async () => {
     state.computer = machine(...agentProviders().map((provider) => signedOut(provider.id)));
     await render();
-    expect(buttons()).toEqual(['Skip', 'Set up AI provider']);
+    expect(buttons()).toEqual(['Set up AI provider', 'Skip']);
   });
 
   it("goes by Console's own early check until this computer reports", async () => {
     state.early = [ready('codex'), signedOut('claude')];
     await render();
-    expect(buttons()).toEqual(['Codex', 'Use other AI providers']);
+    expect(buttons()).toEqual(['CodexSigned in locally', 'use other providers']);
   });
 
   it('starts a provider chosen before this computer is ready, once it is', async () => {
@@ -155,7 +155,7 @@ describe('MeetBuddyPage', () => {
 
     await act(async () =>
       [...container!.querySelectorAll('button')]
-        .find((b) => b.textContent === 'Claude Code')!
+        .find((b) => b.textContent?.startsWith('Claude Code'))!
         .click()
     );
     expect(state.createBuddy).not.toHaveBeenCalled();
@@ -175,7 +175,7 @@ describe('MeetBuddyPage', () => {
 
     await act(async () =>
       [...container!.querySelectorAll('button')]
-        .find((b) => b.textContent === 'Use other AI providers')!
+        .find((b) => b.textContent === 'use other providers')!
         .click()
     );
 
