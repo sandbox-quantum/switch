@@ -271,6 +271,7 @@ def _paste_form(method: PasteMethod) -> dict[str, Any]:
         "label": method.label,
         "fields": [_field(field) for field in method.fields],
         "help_url": method.help_url,
+        "create_url": method.create_url,
         # `vendor`: it ends on the date it was made to end; `never`: only
         # the vendor can revoke it.
         "expires": method.expires,

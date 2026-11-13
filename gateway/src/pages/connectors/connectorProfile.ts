@@ -66,6 +66,56 @@ export function pastedLasts(name: string, expires: ServicePasteMethod["expires"]
   return expires === "vendor" ? `Expires on the date you set in ${name}.` : `Never expires; only ${name} can revoke it.`;
 }
 
+const PERMISSION_NAMES: Record<string, string> = {
+  contents: "Code",
+  pull_requests: "Pull requests",
+  issues: "Issues",
+  workflows: "Workflows",
+};
+
+/** What a vendor's prefilled form for a new token asks for, read off its
+ * link: each permission and level, then how long it lasts. */
+export function prefilledAccess(createUrl: string): string[] {
+  const params = new URL(createUrl).searchParams;
+  const said: string[] = [];
+  params.forEach((level, key) => {
+    if (["name", "description", "target_name", "expires_in"].includes(key)) return;
+    const name = PERMISSION_NAMES[key] ?? key.replaceAll("_", " ");
+    said.push(`${name}: ${level === "write" ? "read and write" : level}`);
+  });
+  const days = params.get("expires_in");
+  if (days && days !== "none") said.push(`Expires in ${days} days`);
+  return said;
+}
+
+/** How each way of connecting a service differs, where the page sets them
+ * side by side: by the service's slug. */
+export interface ConnectChoice {
+  title: string;
+  points: string[];
+}
+
+export const CONNECT_CHOICES: Record<string, { signIn: ConnectChoice; token: ConnectChoice }> = {
+  github: {
+    signIn: {
+      title: "Switch GitHub App",
+      points: [
+        "You pick the repositories each agent can use",
+        "Agents act as the Switch app, not as you",
+        "Access lasts an hour at a time, and Switch can revoke it",
+      ],
+    },
+    token: {
+      title: "Personal access token",
+      points: [
+        "For when the App isn't installed in your organization",
+        "Agents act as you, wherever the token reaches",
+        "It ends on the date you set; only GitHub can revoke it",
+      ],
+    },
+  },
+};
+
 export const CONSOLE_SIGN_IN_NOTE =
   "To sign in with your account instead, connect it from Switch Console on your computer.";
 
@@ -143,12 +193,18 @@ export function offNotice(
 }
 
 export function signInLabel(
-  connection: Pick<ServiceConnection, "auth_type" | "slug" | "publisher" | "name" | "pass_through" | "method">,
+  connection: Pick<
+    ServiceConnection,
+    "auth_type" | "slug" | "publisher" | "name" | "pass_through" | "method" | "status" | "paste"
+  >,
 ): string {
   if (connection.auth_type === "api_key") return "A key you paste";
   if (connection.method === "token") return "A token you pasted";
   if (connection.method === "keys") return "Keys you pasted";
-  if (githubThroughApp(connection)) return "Sign in with GitHub, through the Switch GitHub App";
+  if (githubThroughApp(connection))
+    return connection.status !== "active" && connection.paste.some((way) => way.method === "token")
+      ? "The Switch GitHub App, or a personal access token"
+      : "Sign in with GitHub, through the Switch GitHub App";
   return `Sign in at ${connection.publisher ?? connection.name}`;
 }
 

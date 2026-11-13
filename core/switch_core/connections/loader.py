@@ -443,8 +443,9 @@ class PasteMethod(BaseModel):
     its sign-in. `headers` are the MCP request headers the credential goes in,
     templates of the fields and the choices; the entry's identity call is made
     with them too. GitHub's single method, a personal access token, has no
-    MCP server: its headers are those its check at GitHub's API is made with. `expires`: `vendor` for a credential its vendor ends on the
-    date it was made to end, which Switch neither asks for nor stores;
+    MCP server: its headers are those its check at GitHub's API is made with.
+    `expires`: `vendor` for a credential its vendor ends on the date it was
+    made to end, which Switch neither asks for nor stores;
     `never` for one that works until someone revokes it at the vendor, which
     a server offers only where it allows such keys (`ALLOW_NON_EXPIRING_KEYS`).
 
@@ -452,7 +453,8 @@ class PasteMethod(BaseModel):
     pasted value whose one group, itself starting there, is the part the
     vendor shows people (a token's public portion): it names the connection
     where the vendor will not say whose the credential is. `help_url` is where
-    the person makes one.
+    the person reads how to make one; `create_url`, where the vendor offers
+    it, opens the vendor's form for a new one already filled in for Switch.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -464,6 +466,7 @@ class PasteMethod(BaseModel):
     )
     expires: PasteExpiry
     alias: str | None = Field(default=None, min_length=3, max_length=200)
+    create_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
 
     @model_validator(mode="after")

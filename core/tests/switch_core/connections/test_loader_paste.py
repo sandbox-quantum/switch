@@ -271,6 +271,13 @@ def test_github_takes_a_personal_access_token_its_vendor_ends():
     assert method.headers == {"Authorization": "Bearer {pat}"}
     assert method.help_url is not None
     assert method.help_url.startswith("https://docs.github.com/")
+    # GitHub's form for a new fine-grained token, asking for what the App does.
+    assert method.create_url is not None
+    assert method.create_url.startswith(
+        "https://github.com/settings/personal-access-tokens/new?"
+    )
+    assert "contents=write" in method.create_url
+    assert "pull_requests=write" in method.create_url
     assert definition.methods() == ["oauth", "token"]
 
 

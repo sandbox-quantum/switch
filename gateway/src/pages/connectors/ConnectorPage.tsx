@@ -37,6 +37,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { formatDate } from "../../theme/format";
+import ConnectChoices, { offersChoices } from "./ConnectChoices";
 import ConnectorAgents from "./ConnectorAgents";
 import {
   CONSOLE_CONNECT_NOTE,
@@ -400,6 +401,9 @@ export default function ConnectorPage() {
   const broken = brokenLine(connection);
   // What a pasted connection is replaced with: pasted the same way where
   // that is still offered here, else the first way that is.
+  // Not connected, with a sign-in and a token in its place: both are offered
+  // side by side below, in place of the buttons here.
+  const choosing = !connected && way === "web" && offersChoices(connection);
   const replaceWith = isPasted(connection)
     ? (connection.paste.find((way) => way.method === connection.method) ?? connection.paste[0] ?? null)
     : null;
@@ -440,7 +444,7 @@ export default function ConnectorPage() {
                 Add keys
               </Button>
             )}
-            {way === "web" && (!connected || broken) && (
+            {way === "web" && (!connected || broken) && !choosing && (
               <Button
                 variant={connected ? "outlined" : "contained"}
                 onClick={connect}
@@ -450,7 +454,7 @@ export default function ConnectorPage() {
                 {connected ? "Reconnect" : "Connect"}
               </Button>
             )}
-            {!connected && way === "web" && connection.paste.length > 0 && (
+            {!connected && way === "web" && connection.paste.length > 0 && !choosing && (
               <Button variant="text" onClick={() => setPasteDialog("add")} disabled={leaving !== null}>
                 {connection.paste.some((offered) => offered.method === "token")
                   ? "Use a token instead"
@@ -512,6 +516,15 @@ export default function ConnectorPage() {
         <Alert severity="info" onClose={() => setNotice(null)}>
           {notice}
         </Alert>
+      )}
+
+      {choosing && (
+        <ConnectChoices
+          connection={connection}
+          leaving={leaving !== null}
+          onSignIn={connect}
+          onToken={() => setPasteDialog("add")}
+        />
       )}
 
       <General connection={connection} />

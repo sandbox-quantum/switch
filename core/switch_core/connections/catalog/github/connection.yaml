@@ -24,6 +24,10 @@ auth:
       headers: { Authorization: "Bearer {pat}" }
       expires: vendor
       help_url: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+      # GitHub's form for a new fine-grained token, filled in with what the
+      # App asks for: code and pull requests, read and write, for 30 days.
+      # The person picks the repositories it reaches there.
+      create_url: https://github.com/settings/personal-access-tokens/new?name=Switch%20agents&description=Used%20by%20Switch%20agents%20you%20turn%20GitHub%20on%20for&expires_in=30&contents=write&pull_requests=write
 token: { kind: minted, max_lifetime: 3600 }
 access:
   read:

@@ -601,7 +601,7 @@ describe("connecting by pasting a token in place of a sign-in", () => {
     expect(await screen.findByText("Datadog is connected.")).toBeTruthy();
   });
 
-  it("offers a token beside a sign-in in the browser, as GitHub's in place of its App", async () => {
+  it("sets GitHub's App and a token side by side, with a link to a token made for Switch", async () => {
     signedIn();
     const token = pastedConnector().paste[0]!;
     const calls = server(
@@ -611,7 +611,13 @@ describe("connecting by pasting a token in place of a sign-in", () => {
         publisher: "GitHub",
         web_sign_in: true,
         pass_through: false,
-        paste: [{ ...token, help_url: "https://docs.github.com/tokens" }],
+        paste: [
+          {
+            ...token,
+            help_url: "https://docs.github.com/tokens",
+            create_url: "https://github.com/settings/personal-access-tokens/new?name=Switch&expires_in=30&contents=write",
+          },
+        ],
       }),
       [],
       null,
@@ -619,10 +625,19 @@ describe("connecting by pasting a token in place of a sign-in", () => {
     );
     renderPage("github");
 
-    expect(await screen.findByRole("button", { name: "Connect" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Use a token instead" }));
-    const dialog = await screen.findByRole("dialog");
+    const choices = await screen.findByRole("region", { name: "Connect GitHub" });
+    expect(within(choices).getByRole("region", { name: "Switch GitHub App" })).toBeTruthy();
+    expect(within(choices).getByText("Agents act as you, wherever the token reaches")).toBeTruthy();
+    expect(within(choices).getByRole("button", { name: "Sign in with GitHub" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    fireEvent.click(within(choices).getByRole("button", { name: "Use a token" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect GitHub with a personal access token" });
     expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
+    expect(within(dialog).getByRole("link", { name: /Create a token in GitHub/ }).getAttribute("href")).toBe(
+      "https://github.com/settings/personal-access-tokens/new?name=Switch&expires_in=30&contents=write",
+    );
+    expect(within(dialog).getByText("Code: read and write")).toBeTruthy();
+    expect(within(dialog).getByText("Expires in 30 days")).toBeTruthy();
     fireEvent.change(within(dialog).getByLabelText("Personal access token"), {
       target: { value: "github_pat_example" },
     });
