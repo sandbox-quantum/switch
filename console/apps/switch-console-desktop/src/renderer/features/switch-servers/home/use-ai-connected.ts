@@ -7,6 +7,7 @@ import {
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { findBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { reachable } from './home-state';
 
 /** How long Home waits on the check before treating AI as not connected. */
 const AI_CHECK_TIMEOUT_MS = 8_000;
@@ -19,9 +20,9 @@ export type AiConnection = {
 };
 
 /**
- * Whether switch-buddy can chat: it exists, and the machine it runs on has an
- * AI provider installed and signed in, as that machine last reported to
- * Switch — what the buddy's setup goes by.
+ * Whether switch-buddy can chat: it exists, the machine it runs on is
+ * reachable, and that machine has an AI provider installed and signed in, as
+ * it last reported to Switch — what the buddy's setup goes by.
  *
  * Read afresh each time Home mounts, and for each workspace: what is cached
  * from before does not count, so the page never answers from an old list and
@@ -66,7 +67,8 @@ export function useAiConnected(
     const machine = machines.isError
       ? undefined
       : machines.data?.find((each) => each.id === buddy.machine?.id);
-    return { connected: machine?.providers.some((provider) => provider.ready) ?? false, buddy };
+    if (!machine || !reachable(machine)) return { connected: false, buddy };
+    return { connected: machine.providers.some((provider) => provider.ready), buddy };
   })();
 
   if (answer.connected === null && timedOut) return { connected: false, buddy: answer.buddy };

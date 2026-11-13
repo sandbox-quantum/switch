@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { homeChips } from './home-chips';
-import { type HomeStateInputs, homeState } from './home-state';
+import { type HomeStateInputs, homeState, reachable } from './home-state';
 
 const ready: HomeStateInputs = {
   hostBlocked: false,
@@ -68,5 +68,22 @@ describe('homeChips', () => {
     expect(
       homeChips({ hasMessagingApp: false, isAdmin: true, otherAgentCount: 0, otherRoomCount: 0 })
     ).toEqual(['connect_chat_app', 'first_agent', 'team_room']);
+  });
+});
+
+describe('reachable', () => {
+  it('needs a machine to be online', () => {
+    expect(reachable({ state: 'online', cloud: false })).toBe(true);
+    expect(reachable({ state: 'offline', cloud: false })).toBe(false);
+    expect(reachable({ state: 'unknown', cloud: false })).toBe(false);
+  });
+
+  it('lets a Switch cloud machine be offline, since it is started when needed', () => {
+    expect(reachable({ state: 'offline', cloud: true })).toBe(true);
+  });
+
+  it('never counts a revoked machine', () => {
+    expect(reachable({ state: 'revoked', cloud: true })).toBe(false);
+    expect(reachable({ state: 'revoked', cloud: false })).toBe(false);
   });
 });

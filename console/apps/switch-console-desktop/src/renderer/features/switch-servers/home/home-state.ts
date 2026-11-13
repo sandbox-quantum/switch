@@ -1,3 +1,5 @@
+import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+
 /**
  * What a server's Home shows below its header, besides the error banner,
  * which sits above whatever this is.
@@ -40,4 +42,14 @@ export function homeState(inputs: HomeStateInputs): HomeState {
   if (inputs.aiConnected === null) return 'loading';
   if (!inputs.aiConnected) return 'connectAi';
   return inputs.suggestionsReady ? 'askBuddy' : 'loading';
+}
+
+/**
+ * Whether the buddy's machine can take a message now. A Switch cloud machine
+ * is started when it is needed, so being offline does not count against it;
+ * any other has to be connected, or the buddy only answers that it is away.
+ */
+export function reachable(machine: Pick<OwnedMachine, 'state' | 'cloud'>): boolean {
+  if (machine.state === 'revoked') return false;
+  return machine.cloud || machine.state === 'online';
 }
