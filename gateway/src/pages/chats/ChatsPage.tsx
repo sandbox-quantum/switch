@@ -22,8 +22,9 @@ import { observer } from "mobx-react-lite";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { type AgentSummary, fetchAgents, fetchRoom } from "../../data/api";
-import { webChatsClient, webFailures } from "./webChatClient";
-import { WEB_SERVER_ID } from "./webChats";
+import { useAuth } from "../../data/AuthContext";
+import { ChatRequestError, webChatsClient, webFailures } from "./webChatClient";
+import { WEB_SERVER_ID } from "./webServer";
 
 function chatTitle(chat: ChatSummary): string {
   if (chat.channelType === "direct" && chat.agents.length === 1) return chatAgentLabel(chat.agents[0]!);
@@ -88,6 +89,20 @@ const ChatList = observer(function ChatList({
   );
 });
 
+/**
+ * The agents the person may start a chat with, as the server decides it; null
+ * on a server without group chats, which does not say, and checks each agent
+ * only as the chat is made.
+ */
+async function candidates(): Promise<Set<string> | null> {
+  try {
+    return new Set(await webChatsClient.listAgentCandidates(null));
+  } catch (caught) {
+    if (caught instanceof ChatRequestError && caught.apiCode === "GROUP_CHATS_OFF") return null;
+    throw caught;
+  }
+}
+
 /** Picks an agent to start a direct chat with: one the server lets the viewer chat with. */
 function NewChatDialog({
   open,
@@ -98,6 +113,7 @@ function NewChatDialog({
   onClose: () => void;
   onCreated: (chat: ChatSummary) => void;
 }) {
+  const userId = useAuth().user?.id ?? null;
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -107,12 +123,14 @@ function NewChatDialog({
     setAgents(null);
     setError(null);
     let cancelled = false;
-    Promise.all([webChatsClient.listAgentCandidates(null), fetchAgents()])
+    Promise.all([candidates(), fetchAgents()])
       .then(([ids, all]) => {
         if (cancelled) return;
         if (all === null) throw new Error("The agents could not be listed.");
-        const allowed = new Set(ids);
-        setAgents(all.filter((agent) => allowed.has(agent.id)));
+        const listed = ids === null ? all : all.filter((agent) => ids.has(agent.id));
+        // The person's own agents first: those are the ones they can always chat with.
+        const own = (agent: AgentSummary) => (agent.owner_id === userId ? 0 : 1);
+        setAgents([...listed].sort((a, b) => own(a) - own(b)));
       })
       .catch((caught: unknown) => {
         if (!cancelled) setError(webFailures.describe(caught, "The agents could not be listed.").headline);
@@ -120,7 +138,7 @@ function NewChatDialog({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, userId]);
 
   const start = async (agent: AgentSummary) => {
     setBusy(agent.id);

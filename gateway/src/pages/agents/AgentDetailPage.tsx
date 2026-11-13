@@ -31,6 +31,7 @@ import {
   sentenceCase,
 } from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
+import ChatWithAgentButton from "../chats/ChatWithAgentButton";
 import AddressingPolicySection from "./AddressingPolicySection";
 import RenameAgentDialog from "./RenameAgentDialog";
 import AgentManagementSection from "./AgentManagementSection";
@@ -130,6 +131,7 @@ export default function AgentDetailPage() {
           </Tooltip>
         )}
         <Box sx={{ flexGrow: 1 }} />
+        <ChatWithAgentButton agentId={agent.id} />
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip

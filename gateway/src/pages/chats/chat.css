@@ -62,6 +62,11 @@
   --radius-xl: var(--sw-radius-xl);
 }
 
+/* The few raw variables the chat reads, beside its colour names. */
+.switch-ui {
+  --fill-2: var(--sw-secondary);
+}
+
 /* Tailwind's reset, inside the chat only. */
 @layer base {
   .switch-ui,

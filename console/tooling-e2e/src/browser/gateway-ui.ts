@@ -19,6 +19,12 @@ const SETTLE_TIMEOUT_MS = 15_000;
 const STREAMING = new Set(['eventsource', 'websocket']);
 
 /**
+ * The server's live feeds the dashboard's chats read with `fetch` rather than
+ * an EventSource (to resume from where they reached), which stay open the same.
+ */
+const STREAMING_PATHS = new Set(['/gateway/chats/events', '/gateway/chats/activity/events']);
+
+/**
  * How each browser reports a request it cancelled itself: the page navigated
  * away mid-request, or a component unmounted and aborted its fetch. Nothing
  * went wrong on the server.
@@ -83,7 +89,7 @@ export class GatewayUi {
     page.on('pageerror', (error) => this.problems.push(`page error: ${error.message}`));
     page.on('console', (entry) => this.onConsole(entry));
     page.on('request', (request) => {
-      if (!this.isGatewayApi(request.url()) || STREAMING.has(request.resourceType())) return;
+      if (!this.isGatewayApi(request.url()) || this.isStream(request)) return;
       this.inFlight.set(request, this.path());
       this.lastActivityMs = Date.now();
     });
@@ -404,6 +410,10 @@ export class GatewayUi {
     this.problems.push(
       `${response.request().method()} ${this.pathOf(response.url())} answered ${status} on ${from}`
     );
+  }
+
+  private isStream(request: Request): boolean {
+    return STREAMING.has(request.resourceType()) || STREAMING_PATHS.has(this.pathOf(request.url()));
   }
 
   private isGatewayApi(url: string): boolean {

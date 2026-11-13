@@ -30,7 +30,7 @@ import ConfirmDialog from "../../components/ConfirmDialog";
 import SearchablePickerDialog, {
   type PickerOption,
 } from "../../components/SearchablePickerDialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import {
   type RoomDetail,
@@ -81,6 +81,10 @@ import {
   isRetirable,
   retireChannelLabel,
 } from "./roomDeleteWording";
+
+// Loaded apart from the page: it reads the chat stores, which only a server
+// with chats in the dashboard loads.
+const OpenChatButton = lazy(() => import("../chats/OpenChatButton"));
 
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -134,6 +138,9 @@ export default function RoomDetailPage() {
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" />
         )}
+        <Suspense fallback={null}>
+          <OpenChatButton roomId={room.id} />
+        </Suspense>
         <Button variant="outlined" size="small" onClick={() => setExportOpen(true)}>
           Export to YAML
         </Button>

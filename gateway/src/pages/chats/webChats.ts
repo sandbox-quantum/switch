@@ -11,12 +11,8 @@ import type {
 import { AgentActivities } from "@switch-console/chat-ui/stores/chat-activity-store";
 import { type ChatsEvents, ChatsStore } from "@switch-console/chat-ui/stores/chats-store";
 import { ChatRequestError, callGateway, warn, webChatsClient } from "./webChatClient";
+import { WEB_SERVER_ID } from "./webServer";
 
-/**
- * The chat stores speak of servers, as Console holds several; the dashboard
- * is one server's, so every chat here is on this one.
- */
-export const WEB_SERVER_ID = "web";
 
 class Channel<T> {
   private readonly listeners = new Set<(data: T) => void>();
