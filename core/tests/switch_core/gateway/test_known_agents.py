@@ -412,6 +412,7 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ],
             [],
         ),
+        ("grok", "Grok Build CLI", [], []),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(

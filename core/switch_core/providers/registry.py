@@ -270,6 +270,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="WebSearch", description="Searches the web"),
         ),
     ),
+    AgentProvider(
+        id="grok",
+        label="Grok Build",
+        sign_in_command="grok login",
+        connector_type="Grok Build CLI",
+    ),
 )
 
 

@@ -94,6 +94,7 @@ export type RendererTelemetryEvents = {
       | 'droid'
       | 'cline'
       | 'junie'
+      | 'grok'
       | 'none';
   };
   /** A screen failed and the error boundary caught it. */

@@ -142,6 +142,8 @@ interface State {
   interrupted: boolean;
   /** Whether someone cancelled or declined one of this turn's approval requests. */
   refusedRequest: boolean;
+  /** A tool call was declined this turn (`AcpProviderHooks.declineEndsTurn`). */
+  declined: boolean;
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
@@ -235,6 +237,7 @@ export class AcpAdapter implements ProviderAdapter {
       stopping: false,
       interrupted: false,
       refusedRequest: false,
+      declined: false,
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
@@ -370,6 +373,7 @@ export class AcpAdapter implements ProviderAdapter {
     state.turn = input.turnId;
     state.interrupted = false;
     state.refusedRequest = false;
+    state.declined = false;
     state.messageId = randomUUID();
     state.items.clear();
     state.mcpToolCalls.clear();
@@ -380,14 +384,22 @@ export class AcpAdapter implements ProviderAdapter {
         if (state.turn !== input.turnId) return;
         // `cancelled` answers our own `session/cancel`, or follows a request
         // someone cancelled or declined; an agent that cancels unasked (Junie,
-        // when every model refuses it) has failed.
-        const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
+        // when every model refuses it) has failed. A vendor that ends its whole
+        // turn once a tool call is declined (`declineEndsTurn`) has completed it.
+        const endedByDecline =
+          reason === 'cancelled' &&
+          !state.interrupted &&
+          state.declined &&
+          !!this.hooks.declineEndsTurn;
+        const interrupted =
+          state.interrupted || (reason === 'cancelled' && state.refusedRequest && !endedByDecline);
+        const completed = reason === 'end_turn' || endedByDecline;
         this.complete(
           state,
-          interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
+          interrupted ? 'interrupted' : completed ? 'completed' : 'error',
           interrupted
             ? 'Interrupted.'
-            : reason === 'end_turn'
+            : completed
               ? undefined
               : reason === 'cancelled'
                 ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
@@ -506,6 +518,7 @@ export class AcpAdapter implements ProviderAdapter {
       throw new ProviderSessionError(this.provider, id, `Decision ${decision} is not offered`);
     state.decisions.delete(requestId);
     if (decision === 'cancel' || decision === 'decline') state.refusedRequest = true;
+    if (decision === 'decline') state.declined = true;
     pending.settle(response ?? ACP_CANCELLED);
     this.emit(state, { type: 'request.resolved', requestId, decision });
   }
