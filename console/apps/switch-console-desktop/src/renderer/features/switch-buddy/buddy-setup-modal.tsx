@@ -28,7 +28,6 @@ export function BuddySetupModal({
         <ProviderSetup
           serverId={serverId}
           workspaceId={workspaceId}
-          entryPoint="switch_buddy"
           onCreated={onSuccess}
           thisComputer={thisComputer}
         />

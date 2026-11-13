@@ -311,3 +311,7 @@ standalone-reset:
 # Convert the published Switch pages into docs/official as Markdown
 sync-docs *args:
     python3 scripts/sync_docs.py {{ args }}
+
+# Fail when docs/official differs from the published docs (writes nothing)
+check-docs *args:
+    python3 scripts/sync_docs.py --check {{ args }}

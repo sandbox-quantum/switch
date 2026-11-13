@@ -578,8 +578,8 @@ async def create_room_document(
     agent) can later update or delete it via `update_room_document` /
     `delete_room_document`. Other room members can read it via
     `load_internal_documents`, and human users can delete it from the room UI.
-    A document the room's template made can be updated or deleted by any
-    agent in the room.
+    A document the room's template made can be updated or deleted by an
+    agent in the room whose owner can edit the room.
 
     Args:
         name: Short identifier for the document. Must be unique within this room.
@@ -617,7 +617,7 @@ async def update_room_document(
     """Update a room-scoped document in the connected room.
 
     A document an agent created can be updated only by that agent; one the
-    room's template made, by any agent in the room. Pass
+    room's template made, by an agent whose owner can edit the room. Pass
     only the fields you want to change; omit (or set to None) the others.
     """
     if (
@@ -645,7 +645,7 @@ async def delete_room_document(document_id: str) -> dict[str, str]:
     """Delete a room-scoped document in the connected room.
 
     A document an agent created can be deleted only by that agent; one the
-    room's template made, by any agent in the room. Users
+    room's template made, by an agent whose owner can edit the room. Users
     can also delete from the room UI as an admin escape hatch.
     """
     agent_id = get_agent_id()
@@ -2078,6 +2078,7 @@ def _agent_templates() -> AgentTemplates:
         max_bytes=protocol.config.template_max_bytes,
         agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
+        telemetry=protocol.telemetry,
     )
 
 

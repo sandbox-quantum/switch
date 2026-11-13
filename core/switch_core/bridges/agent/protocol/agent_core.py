@@ -154,7 +154,7 @@ from switch_core.room_wide_mention import (
     room_wide_mention_content,
 )
 from switch_core.sessions.attachments import normalise_mime_type
-from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry import TelemetryService, emit_after_commit, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 from switch_core.tenant_context import current_tenant_id, tenant_scope
@@ -1463,7 +1463,7 @@ class AgentCore:
         # Captured before the row goes: afterwards there is nothing left to
         # describe what was removed, and "an agent was deleted" without its
         # runtime or its age says almost nothing.
-        removed: dict[str, str | int | float | bool] = {
+        removed: dict[str, str | int | float | bool | None] = {
             "known_agent_type": normalise_known_agent_type(agent.metadata_),
             "age_days": age_days(agent.created_at),
             "had_parent": agent.parent_agent_id is not None,
@@ -3514,6 +3514,7 @@ class AgentCore:
             room_group_store=self.room_group_store,
             console_rooms=console_rooms,
             client_lifecycle=self.client_lifecycle,
+            telemetry=self.telemetry,
         )
 
     async def _resolve_acting_identity(
@@ -3566,6 +3567,19 @@ class AgentCore:
         require(Principal(owner_id, owner_is_admin), action, room)
         return room
 
+    async def _owner_writes_room(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> bool:
+        """Whether the calling agent's owner may write the room, the
+        ``_require_room_action`` rule as a yes or no."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        room = await self.room_store.get(session, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        return can(Principal(owner_id, owner_is_admin), "write", room)
+
     async def _require_room_roster_change(
         self, session: AsyncSession, agent_id: str, room_id: str
     ) -> Room:
@@ -3606,6 +3620,9 @@ class AgentCore:
             await self.room_role_store.define_role(
                 session, room_id, name, instructions, exclusive
             )
+            emit_after_commit(
+                session, self.telemetry, "room_role_defined", {"exclusive": exclusive}
+            )
             await session.commit()
 
     async def edit_room_role(
@@ -3633,6 +3650,7 @@ class AgentCore:
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, room_id, "write")
             await self.room_role_store.delete_role(session, room_id, name)
+            emit_after_commit(session, self.telemetry, "room_role_deleted", {})
             await session.commit()
 
     async def _build_role_entries(
@@ -3965,6 +3983,7 @@ class AgentCore:
                 description=description,
                 instructions=instructions,
                 value=value,
+                created_by_kind="agent",
             )
             await session.commit()
         return ref
@@ -4449,6 +4468,12 @@ class AgentCore:
                 description=description,
                 color=color,
                 parent_group_id=parent_group_id,
+            )
+            emit_after_commit(
+                session,
+                self.telemetry,
+                "room_group_created",
+                {"has_parent": parent_group_id is not None},
             )
             result: dict[str, Any] = {
                 "id": group.id,
@@ -4997,6 +5022,9 @@ class AgentCore:
                 session,
                 room_id=room_id,
                 agent_id=agent_id,
+                owner_writes_room=await self._owner_writes_room(
+                    session, agent_id, room_id
+                ),
                 document_id=document_id,
                 name=name,
                 description=description,
@@ -5031,6 +5059,9 @@ class AgentCore:
                 session,
                 room_id=room_id,
                 agent_id=agent_id,
+                owner_writes_room=await self._owner_writes_room(
+                    session, agent_id, room_id
+                ),
                 document_id=document_id,
             )
             await session.commit()

@@ -34,12 +34,15 @@ function param(overrides: Partial<ParamSpec>): ParamSpec {
 describe('bridgeCandidates', () => {
   it('puts the default app first, then the rest by name, and leaves out stopped ones', () => {
     expect(
-      bridgeCandidates([
-        { displayName: 'Teams', status: 'active', isDefault: false },
-        { displayName: 'Slack', status: 'active', isDefault: true },
-        { displayName: 'Discord', status: 'stopped', isDefault: false },
-        { displayName: 'Mattermost', status: 'active', isDefault: false },
-      ], false)
+      bridgeCandidates(
+        [
+          { displayName: 'Teams', status: 'active', isDefault: false },
+          { displayName: 'Slack', status: 'active', isDefault: true },
+          { displayName: 'Discord', status: 'stopped', isDefault: false },
+          { displayName: 'Mattermost', status: 'active', isDefault: false },
+        ],
+        false
+      )
     ).toEqual(['Slack', 'Mattermost', 'Teams']);
   });
 

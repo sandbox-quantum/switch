@@ -350,14 +350,14 @@ export const switchServersController = createRPCController({
       server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', {
-        server_kind: 'external',
+        server_kind: serverKindOf({ managed: false, managementKind: null, url: params.url }),
         outcome: 'failure',
         failure_reason: serverAddFailureOf(error),
       });
       throw error;
     }
     trackEvent('server_added', {
-      server_kind: 'external',
+      server_kind: serverKindOf(server),
       outcome: 'success',
       failure_reason: 'none',
     });
