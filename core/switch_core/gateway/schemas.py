@@ -1808,7 +1808,8 @@ class ReferenceTypeInfo(BaseModel):
 
 
 class ReferenceTypeDetail(BaseModel):
-    """A stored reference type, for the management list. Never a built-in."""
+    """A stored reference type the caller may read, for the management list,
+    with what they may do to it. Never a built-in."""
 
     type: str
     display_name: str

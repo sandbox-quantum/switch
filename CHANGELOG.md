@@ -455,6 +455,24 @@ version of their own to them without also giving them a release of their own.
   the action fails. Deleting a role, which takes its instructions with it,
   used to happen at one click, and a failed delete or bulk archive gave no
   reason. Unarchiving still acts at once.
+- **The Resources page uses the dashboard's shared table, as the design has
+  it.** References, Documents, Packages and Reference types each count their
+  rows and search the name, description and owner. Owner (and on References,
+  Type) is a dropdown above the table and a filter in its column header, as
+  is Access; lists open newest first. The name links to the resource's page.
+  Reference types puts Edit, Transfer ownership and Delete in each row's menu,
+  offered as the server allows each type, and Delete confirms first.
+- **The Reference types list includes every type you can read.** It showed a
+  member the built-ins and their own types only, though another person's
+  public type is offered when creating a reference; a type anyone may change
+  can now be edited from it. `GET /gateway/references/reference-types/owned`
+  returns every stored type the caller may read, each with `can_edit` and
+  `can_manage`, where it returned only those they manage.
+- **Removing something from a resource asks first.** Unlinking a reference,
+  document or package from a room and taking something out of a package
+  confirm in a dialog, which keeps the server's reason if it is refused.
+  Deleting a resource names, before you confirm, the packages it is taken out
+  of as well as the rooms.
 
 #### Fixed
 - **A GitLab disconnect or reconnect no longer says agents keep their
@@ -610,6 +628,27 @@ version of their own to them without also giving them a release of their own.
   greyed out with no explanation, most often because a room with no bridge
   needs an agent. It now names what is missing, and Agents is marked required
   while no bridge is chosen.
+- **A second URL can be typed into a reference.** The dashboard's URL box
+  dropped a new line as soon as it was typed, so only a pasted list could hold
+  more than one. Creating a reference now also waits for a URL, which the
+  server requires, rather than failing after Create.
+- **The dashboard's resource pages say when they cannot load.** A list that
+  failed showed "Failed to fetch data" over an empty table that said there
+  were none, a resource page said "not found" whatever went wrong, and a
+  package's contents read as empty. Each now says what failed, with Retry.
+- **Smaller fixes on the dashboard's resource pages.** Name, description and
+  a document's content can no longer be saved empty. Attaching to several
+  rooms, or adding several items to a package, shows the ones that went in
+  when others are refused. A package you can't open is counted rather than
+  shown by its id. A document that belongs to one room no longer offers
+  "Attach to room", which was refused. A transfer no longer reloads the
+  browser, and says when there is no one to give the resource to. A failed
+  page's Back goes to its own tab. A few errors that read "[object Object]"
+  give the reason, and each list loads once when opened, not twice.
+- **Dashboard tables no longer scroll sideways by a sliver.** A table whose
+  last column has a header menu could be scrolled 23px to the side at any
+  width, because the menu button the table hides until the header is hovered
+  stuck out past it.
 
 #### Security
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,

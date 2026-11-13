@@ -2299,6 +2299,19 @@ export async function fetchOwnedReferenceTypes(): Promise<
   return fetchJson<ReferenceTypeDetail[]>("/references/reference-types/owned");
 }
 
+// The `load*` calls below throw the server's reason, where their `fetch*`
+// twins answer null: a list or page that failed to load says why rather than
+// passing for an empty one.
+
+export async function loadReferenceTypes(): Promise<ReferenceTypeInfo[]> {
+  return jsonRequest<ReferenceTypeInfo[]>("/references/reference-types", "GET");
+}
+
+/** Every stored type the caller may read, with what they may do to each. */
+export async function loadOwnedReferenceTypes(): Promise<ReferenceTypeDetail[]> {
+  return jsonRequest<ReferenceTypeDetail[]>("/references/reference-types/owned", "GET");
+}
+
 export async function createReferenceType(
   input: ReferenceTypeCreateInput,
 ): Promise<ReferenceTypeDetail> {
@@ -2337,6 +2350,14 @@ export async function fetchReference(id: string): Promise<ReferenceDetail | null
   return fetchJson<ReferenceDetail>(`/references/${id}`);
 }
 
+export async function loadReferences(): Promise<ReferenceDetail[]> {
+  return jsonRequest<ReferenceDetail[]>("/references", "GET");
+}
+
+export async function loadReference(id: string): Promise<ReferenceDetail> {
+  return jsonRequest<ReferenceDetail>(`/references/${id}`, "GET");
+}
+
 export async function createReference(
   input: ReferenceCreateInput,
 ): Promise<ReferenceDetail> {
@@ -2356,6 +2377,10 @@ export async function deleteReference(id: string): Promise<ResourceDeleteResult>
 
 export async function fetchReferenceRooms(id: string): Promise<ResourceRoom[] | null> {
   return fetchJson<ResourceRoom[]>(`/references/${id}/rooms`);
+}
+
+export async function loadReferenceRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/references/${id}/rooms`, "GET");
 }
 
 export async function fetchRoomReferences(
@@ -2384,7 +2409,7 @@ export async function detachReferenceFromRoom(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2512,6 +2537,14 @@ export async function fetchDocument(id: string): Promise<DocumentDetail | null> 
   return fetchJson<DocumentDetail>(`/documents/${id}`);
 }
 
+export async function loadDocuments(): Promise<DocumentSummary[]> {
+  return jsonRequest<DocumentSummary[]>("/documents", "GET");
+}
+
+export async function loadDocument(id: string): Promise<DocumentDetail> {
+  return jsonRequest<DocumentDetail>(`/documents/${id}`, "GET");
+}
+
 export async function createDocument(
   input: DocumentCreateInput,
 ): Promise<DocumentDetail> {
@@ -2531,6 +2564,10 @@ export async function deleteDocument(id: string): Promise<ResourceDeleteResult> 
 
 export async function fetchDocumentRooms(id: string): Promise<ResourceRoom[] | null> {
   return fetchJson<ResourceRoom[]>(`/documents/${id}/rooms`);
+}
+
+export async function loadDocumentRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/documents/${id}/rooms`, "GET");
 }
 
 export async function fetchRoomDocuments(
@@ -2566,7 +2603,7 @@ export async function detachDocumentFromRoom(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2632,6 +2669,14 @@ export async function fetchPackage(id: string): Promise<PackageDetail | null> {
   return fetchJson<PackageDetail>(`/packages/${id}`);
 }
 
+export async function loadPackages(): Promise<PackageDetail[]> {
+  return jsonRequest<PackageDetail[]>("/packages", "GET");
+}
+
+export async function loadPackage(id: string): Promise<PackageDetail> {
+  return jsonRequest<PackageDetail>(`/packages/${id}`, "GET");
+}
+
 export async function createPackage(
   input: PackageCreateInput,
 ): Promise<PackageDetail> {
@@ -2653,6 +2698,10 @@ export async function fetchPackageRooms(id: string): Promise<ResourceRoom[] | nu
   return fetchJson<ResourceRoom[]>(`/packages/${id}/rooms`);
 }
 
+export async function loadPackageRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/packages/${id}/rooms`, "GET");
+}
+
 export async function fetchPackageReferences(
   id: string,
 ): Promise<ReferenceDetail[] | null> {
@@ -2665,6 +2714,14 @@ export async function fetchPackageDocuments(
   return fetchJson<DocumentSummary[]>(`/packages/${id}/documents`);
 }
 
+export async function loadPackageReferences(id: string): Promise<ReferenceDetail[]> {
+  return jsonRequest<ReferenceDetail[]>(`/packages/${id}/references`, "GET");
+}
+
+export async function loadPackageDocuments(id: string): Promise<DocumentSummary[]> {
+  return jsonRequest<DocumentSummary[]>(`/packages/${id}/documents`, "GET");
+}
+
 export async function addReferenceToPackage(
   packageId: string,
   referenceId: string,
@@ -2675,7 +2732,7 @@ export async function addReferenceToPackage(
   );
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2699,7 +2756,7 @@ export async function addDocumentToPackage(
   );
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2739,7 +2796,7 @@ export async function detachPackageFromRoom(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 

@@ -25,8 +25,8 @@ interface ConfirmDialogProps {
    *  refused action never looks like it worked. */
   onConfirm: () => Promise<void> | void;
   onClose: () => void;
-  /** Holds the confirm button off while something must happen first, which
-   *  the description says. */
+  /** Holds the confirm button while the question is not yet complete, such
+   *  as a list of what the action affects that is still loading. */
   confirmDisabled?: boolean;
 }
 
