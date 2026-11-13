@@ -1,4 +1,7 @@
-import { agentAvatarUrlForName, agentAvatarUrlForNewAgent } from '@switch-console/chat-ui/model/agent-avatar';
+import {
+  agentAvatarUrlForName,
+  agentAvatarUrlForNewAgent,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentSettingsRelativePath } from './switch-settings-paths';

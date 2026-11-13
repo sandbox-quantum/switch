@@ -161,7 +161,7 @@ class ConsolePage:
 
 
 # Switch Console's link catalogue (`CONSOLE_PAGES` in
-# console/apps/switch-console-desktop/src/shared/core/deeplinks/console-links.ts),
+# console/packages/chat-ui/src/model/console-links.ts),
 # with the names a person reads. A test holds the two together.
 CONSOLE_PAGES: Mapping[str, ConsolePage] = {
     "home": ConsolePage("the server's home"),

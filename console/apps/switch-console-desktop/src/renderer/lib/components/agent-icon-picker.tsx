@@ -1,4 +1,7 @@
-import { agentAvatarUrlForNewAgent, isThirdPartyAvatarUrl } from '@switch-console/chat-ui/model/agent-avatar';
+import {
+  agentAvatarUrlForNewAgent,
+  isThirdPartyAvatarUrl,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import { useQuery } from '@tanstack/react-query';
 import { Pencil, RotateCw, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
