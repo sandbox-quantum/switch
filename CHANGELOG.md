@@ -3672,6 +3672,10 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A sign-in the vendor refuses no longer waits without a word.** A vendor
+  that refuses the sign-in (a wrong redirect URI, a scope the app lacks)
+  shows its own error page and never sends the browser back. After a minute,
+  the connect step now says what to check.
 - **Usage data recognises Switch Cloud the way the app shows it**, by its
   address's origin, and adding the Cloud by its address reports it as `cloud`
   rather than `external`. A Switch Cloud address that cannot be read is logged,

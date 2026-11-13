@@ -4,6 +4,7 @@ import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  signInHint,
   signInProgress,
 } from '@renderer/features/connectors/connect-flow';
 import {
@@ -716,6 +717,17 @@ describe('the sign-in flow', () => {
     );
     expect(signInProgress({ ...flow, status: 'checking' }, 'Example')).toBe('Connecting Example…');
     expect(signInProgress({ ...flow, status: 'failed', error: 'Refused.' }, 'Example')).toBeNull();
+  });
+
+  it('suggests what to check only while the browser has not come back', () => {
+    const flow = { account: null, error: null, warning: null };
+    const hint =
+      'If Example showed an error, cancel, and ask the person who set up Example for Switch to check its redirect URI and scopes.';
+    expect(signInHint({ ...flow, status: 'pending' }, 'Example')).toBe(hint);
+    expect(signInHint(null, 'Example')).toBe(hint);
+    expect(signInHint({ ...flow, status: 'checking' }, 'Example')).toBeNull();
+    expect(signInHint({ ...flow, status: 'failed', error: 'Refused.' }, 'Example')).toBeNull();
+    expect(signInHint({ ...flow, status: 'connected' }, 'Example')).toBeNull();
   });
 
   it('cannot be closed while waiting for the browser, or mid-call', () => {
