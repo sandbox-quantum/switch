@@ -138,13 +138,13 @@ from switch_core.delivery.recipient import (
     post_anchor,
 )
 from switch_core.logging_context import STRUCTURED_FIELDS, StructuredValue, log_context
+from switch_core.messages.edits import Edit, parse_edit
 from switch_core.observability.catalogue import (
     DECISION_NOTICES,
     DECISION_SETTLED,
     DECISION_WAIT,
     ROUTING_FAILURES,
 )
-from switch_core.messages.edits import Edit, parse_edit
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
 from switch_core.tenant_context import tenant_scope

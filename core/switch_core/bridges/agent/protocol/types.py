@@ -366,7 +366,11 @@ class RoomLeavePayload(BaseModel):
 
 
 Payload = (
-    MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload | RoomLeavePayload
+    MessagePayload
+    | MessageEditPayload
+    | CommandPayload
+    | RoomJoinPayload
+    | RoomLeavePayload
 )
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {

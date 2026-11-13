@@ -185,6 +185,7 @@ class _StartableAdapter:
 
     def set_member_sync_hooks(self, **hooks: Any) -> None:
         pass
+
     def set_edit_handler(self, handler: Any) -> None:
         return None
 

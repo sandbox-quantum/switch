@@ -272,6 +272,7 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
 
         def set_member_sync_hooks(self, **hooks: Any) -> None:
             pass
+
         def set_edit_handler(self, handler: Any) -> None:
             return None
 
