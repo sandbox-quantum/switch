@@ -981,6 +981,15 @@ version of their own to them without also giving them a release of their own.
   and widens their next connection. Disconnecting or reconnecting says so and
   where in Airtable to remove it, as any OAuth service without revocation now
   does rather than reporting a failed revoke.
+- **The Trello connection.** A person connects Trello from Switch Console,
+  picking the workspace and the permissions to grant at Atlassian's consent
+  screen, and a granted agent reads, searches and updates its boards, lists,
+  cards and checklists, and their Inbox and Planner, as them, through
+  Trello's MCP server. Core registers its own client, so nothing is set up on
+  the server. Read asks for Trello's read scopes; write asks for every
+  scope, changing workspaces included, since Atlassian grants no write
+  without it. Where the consent screen offers Read alone, the connection is
+  read-only. Trello's tools archive rather than delete.
 - **Connector apps set up Airtable.** An app's entry in `GET /connector-apps`
   gains `redirect_uris` (every address to register), `needs_public_url` and
   `scopes`. The dashboard's Connectors page walks Airtable's Builder Hub, with
@@ -3498,6 +3507,7 @@ version of their own to them without also giving them a release of their own.
   delete them, with the next run shown, using the cron picker for repeating
   ones (#771).
 - **Airtable's logo on the Connections grid.**
+- **Trello's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
   the operator to confirm the integration's support details are set, which no

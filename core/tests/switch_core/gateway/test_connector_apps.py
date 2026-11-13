@@ -402,6 +402,7 @@ class TestOnlyTheOperator:
             "atlassian",
             "notion",
             "sentry",
+            "trello",
         ]
 
     async def test_an_unknown_service_is_not_found(
