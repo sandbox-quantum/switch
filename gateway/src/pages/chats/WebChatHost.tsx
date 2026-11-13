@@ -159,7 +159,7 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
         chats: web.chats,
         activities: web.activities,
         unsavedChat: (roomId) => web.directChats.unsavedChat(roomId),
-        sent: () => {},
+        sent: (server, roomId, body) => void web.titler.sent(server, roomId, body),
         draftOwner: () => ({ userId, workspaceId: tenantId }),
         commands: (_serverId, roomId) => webChatsClient.listChatCommands(roomId),
         media: (_serverId, roomId, uri) => mediaOf(roomId, uri),

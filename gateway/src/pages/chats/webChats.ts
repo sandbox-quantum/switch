@@ -10,6 +10,7 @@ import type {
   ChatSummary,
 } from "@switch-console/chat-ui/contracts/chats";
 import { AgentActivities } from "@switch-console/chat-ui/stores/chat-activity-store";
+import { ChatTitler } from "@switch-console/chat-ui/stores/chat-titler";
 import { type ChatsEvents, ChatsStore } from "@switch-console/chat-ui/stores/chats-store";
 import type { DirectChatStarter } from "@switch-console/chat-ui/stores/direct-chat-starter";
 import { ChatRequestError, callGateway, warn, webChatsClient } from "./webChatClient";
@@ -45,6 +46,16 @@ async function openFeed(path: string, signal: AbortSignal): Promise<Response> {
   return response;
 }
 
+const TITLE_WORDS = 6;
+const TITLE_CHARACTERS = 48;
+
+/** A chat's name from its first message: its first few words, on one line. */
+export function firstWords(message: string): string {
+  const words = message.replace(/\s+/g, " ").trim().split(" ").slice(0, TITLE_WORDS).join(" ");
+  if (!words) throw new Error("There is no message text to name the chat from.");
+  return words.length > TITLE_CHARACTERS ? `${words.slice(0, TITLE_CHARACTERS - 1).trimEnd()}…` : words;
+}
+
 function bytesOf(base64: string): Uint8Array {
   return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 }
@@ -54,6 +65,8 @@ export type WebChats = {
   activities: AgentActivities;
   /** Direct chats with one agent, each made when its first message is sent. */
   directChats: DirectChatStarter;
+  /** Names a new direct chat from its first message. */
+  titler: ChatTitler;
   /** Called with an unsaved chat's id and its room's, once the room is made. */
   onChatMade: (listener: (made: { from: string; to: string }) => void) => () => void;
   /** Opens the live feeds and reads the chats; `stop` closes them. */
@@ -185,6 +198,16 @@ export function createWebChats(identity: { userId: string; tenantId: string }): 
     },
   });
 
+  // Console asks a local model for a title; the web names a chat from its
+  // first words, which needs nothing on the person's computer.
+  const titler = new ChatTitler({
+    title: async (message) => firstWords(message),
+    rename: (_server, roomId, name) => webChatsClient.renameChat(roomId, name),
+    chat: (roomId) => chats.chat(roomId),
+    add: (server, chat) => chats.add(server, chat),
+    warn,
+  });
+
   const made = new Channel<{ from: string; to: string }>();
   const directChats = directChatsFor({
     chats,
@@ -192,7 +215,12 @@ export function createWebChats(identity: { userId: string; tenantId: string }): 
     scope: () => ({ serverId, userId: identity.userId, workspaceId: identity.tenantId }),
     storage: localStorage,
     newId: () => crypto.randomUUID(),
-    moved: (unsaved, chat) => made.emit({ from: unsaved.roomId, to: chat.roomId }),
+    moved: (unsaved, chat) => {
+      made.emit({ from: unsaved.roomId, to: chat.roomId });
+      titler.created(chat, false);
+      const first = chats.timelines.peek(serverId, chat.roomId)?.pending[0];
+      if (first) void titler.sent(serverId, chat.roomId, first.body);
+    },
   });
 
   removed.on(({ roomId, reason }) => {
@@ -205,6 +233,7 @@ export function createWebChats(identity: { userId: string; tenantId: string }): 
     chats,
     activities,
     directChats,
+    titler,
     onChatMade: (listener) => made.on(listener),
     start: () => void chats.connect(serverId),
     stop: () => {

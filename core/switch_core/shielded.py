@@ -9,10 +9,12 @@ logger = logging.getLogger(__name__)
 async def finish_shielded[T](operation: Coroutine[Any, Any, T]) -> T:
     """Run `operation` to the end even if the caller is cancelled.
 
-    The broker's steps that must not stop half done: taking back a token it
-    just issued, storing a sign-in the vendor has already rotated, marking a
-    connection as needing reauthorization. A failure seen only after the
-    caller has gone is logged, as nobody is left to raise it to.
+    For steps that must not stop half done: the connection broker taking back
+    a token it just issued or storing a sign-in the vendor has already
+    rotated, or a live chat feed's database read when its client leaves
+    mid-read (cancelling it would close a pooled connection mid-query). A
+    failure seen only after the caller has gone is logged, as nobody is left
+    to raise it to.
     """
     task = asyncio.create_task(operation)
     try:
@@ -27,7 +29,7 @@ async def finish_shielded[T](operation: Coroutine[Any, Any, T]) -> T:
                 break
         if not task.cancelled() and task.exception() is not None:
             logger.error(
-                "Service operation failed after its caller was cancelled",
+                "An operation failed after its caller was cancelled",
                 exc_info=task.exception(),
             )
         raise
