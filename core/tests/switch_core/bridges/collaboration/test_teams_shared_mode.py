@@ -185,6 +185,27 @@ def test_only_the_default_team_is_editable_on_a_shared_bridge() -> None:
     assert TeamsAdapter.editable_config_keys({"event_delivery": "own_listener"}) is None
 
 
+def test_a_connection_with_no_default_team_cannot_create_a_channel_yet() -> None:
+    assert (
+        TeamsAdapter.channel_creation_blocker(
+            {"event_delivery": "shared", "tenant_id": ORG}
+        )
+        == adapter_module._NO_DEFAULT_TEAM
+    )
+    assert (
+        TeamsAdapter.channel_creation_blocker(
+            {"event_delivery": "shared", "tenant_id": ORG, "team_id": None}
+        )
+        == adapter_module._NO_DEFAULT_TEAM
+    )
+    assert (
+        TeamsAdapter.channel_creation_blocker(
+            {"event_delivery": "shared", "tenant_id": ORG, "team_id": "team-1"}
+        )
+        is None
+    )
+
+
 # ── The deployment's app ─────────────────────────────────────────────────────
 
 
@@ -2057,6 +2078,31 @@ async def test_switch_added_to_its_first_team_from_teams_makes_it_the_default() 
     assert adapter.default_team_id == "team-3"
 
 
+async def test_the_bot_joining_a_channel_of_its_first_team_makes_it_the_default() -> (
+    None
+):
+    """Teams also says Switch is in a team by adding the bot to its channels."""
+    writer = _Writer(True)
+    adapter = _writing_adapter(writer)
+    adapter._team_of_channel[CHANNEL] = "team-2"
+    adapter._channel_type[CHANNEL] = "channel_public"
+
+    await adapter._dispatch_conversation_update(
+        {
+            "type": "conversationUpdate",
+            "conversation": {"id": CHANNEL, "conversationType": "channel"},
+            "channelData": {"channel": {"id": CHANNEL, "name": "General"}},
+            "membersAdded": [{"id": "28:bot"}],
+            "recipient": {"id": "28:bot"},
+        },
+        CHANNEL,
+        None,
+    )
+
+    assert writer.calls == [(None, "team-2")]
+    assert adapter.default_team_id == "team-2"
+
+
 async def test_a_team_joined_later_does_not_replace_the_default() -> None:
     writer = _Writer()
     adapter = _writing_adapter(writer, team_id="team-1")
@@ -2146,9 +2192,26 @@ async def test_a_quiet_copy_leaves_the_default_team_to_the_holder() -> None:
 
     assert relayed == [
         {"action": "team_joined", "team_id": "team-3"},
-        {"action": "team_left", "team_id": "team-2"},
+        {"action": "team_left", "team_id": "team-2", "release_default": "1"},
     ]
     assert writer.calls == []
+
+
+@pytest.mark.parametrize(("release", "expected"), [("1", None), ("", "team-2")])
+async def test_a_relayed_departure_releases_the_default_only_if_it_says_so(
+    release: str, expected: str | None
+) -> None:
+    """A quiet copy relays an explicit removal as one, and the recheck's as
+    one that keeps the default; a relay from a process that predates the
+    distinction is read as the second."""
+    writer = _Writer(True)
+    adapter = _writing_adapter(writer, team_id="team-2")
+
+    await adapter.receive_relayed(
+        {"action": "team_left", "team_id": "team-2", "release_default": release}
+    )
+
+    assert adapter.default_team_id == expected
 
 
 async def test_leaving_the_default_team_clears_it() -> None:
@@ -2200,13 +2263,13 @@ async def test_a_default_team_changed_meanwhile_is_not_cleared() -> None:
     assert adapter.default_team_id == "team-2"
 
 
-async def test_a_departure_noticed_in_error_is_put_right_when_switch_is_seen_again(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_departure_only_the_recheck_noticed_keeps_the_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The recheck can only ask Graph, and an answer that wrongly says Switch
-    left clears the default; the next answer, saying it is there, sets it
-    back."""
-    writer = _Writer(True, True)
+    """The recheck can only ask Graph, and one wrong "not installed" answer
+    must not lose the team an admin chose: the default is kept, and said to
+    have lost Switch, until Switch is seen there again."""
+    writer = _Writer()
     adapter = _writing_adapter(writer, team_id="team-2")
     graph = adapter._graph
     assert isinstance(graph, _SubscribingGraph)
@@ -2215,12 +2278,15 @@ async def test_a_departure_noticed_in_error_is_put_right_when_switch_is_seen_aga
 
     graph.installed_in.discard("team-2")
     await adapter._recheck_teams()
-    assert adapter.default_team_id is None
+
+    assert adapter.default_team_id == "team-2"
+    assert "Switch no longer appears to be in Teams team team-2" in caplog.text
 
     graph.installed_in.add("team-2")
     await adapter._recheck_teams()
+
     assert adapter.default_team_id == "team-2"
-    assert writer.calls == [("team-2", None), (None, "team-2")]
+    assert writer.calls == []
 
 
 async def test_two_catalogue_ids_for_the_app_are_logged(

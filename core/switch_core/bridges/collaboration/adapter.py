@@ -1002,6 +1002,20 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def channel_creation_blocker(
+        cls, connection_config: Mapping[str, object]
+    ) -> str | None:
+        """Why a connection with this config cannot create a channel yet,
+        though the platform can and an admin allows it; None when nothing is
+        missing.
+
+        None — the default — for a platform whose new channels need nothing
+        from the connection. Asked of the stored config, so every process
+        answers alike, before anyone tries.
+        """
+        return None
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:

@@ -369,17 +369,14 @@ async def test_removing_switch_from_the_default_team_clears_the_default(
     assert lifecycle.restarted == [bridge_id]
 
 
-async def test_leaving_the_default_team_through_the_holder_still_rebuilds_it(
+async def test_leaving_the_default_team_through_the_holder_rebuilds_nothing(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The copy holding the bridge clears its own default as it leaves the
-    team, so the route decides from what the default was before leaving."""
+    """The copy holding the bridge clears the stored default and its own as it
+    leaves the team; the route still sees it was the default, from the row it
+    read first, and has nothing left to clear or rebuild."""
     graph = _Graph(installed_in={"team-1": "c-1"})
-    cleared: list[tuple[str | None, str | None]] = []
-
-    async def write(expected: str | None, team_id: str | None) -> bool:
-        cleared.append((expected, team_id))
-        return True
+    holder_writes: list[tuple[str | None, str | None]] = []
 
     async with session_factory() as session:
         bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
@@ -387,6 +384,17 @@ async def test_leaving_the_default_team_through_the_holder_still_rebuilds_it(
             session, bridge_id, {"team_id": "team-1"}
         )
         await session.commit()
+
+    async def write(expected: str | None, team_id: str | None) -> bool:
+        holder_writes.append((expected, team_id))
+        async with session_factory() as own:
+            written = await CollaborationBridgeStore().replace_team(
+                own, bridge_id, expected=expected, team_id=team_id
+            )
+            await own.commit()
+        return written is not None
+
+    async with session_factory() as session:
         adapter = _shared_adapter(graph)
         adapter.set_default_team_writer(write)
         lifecycle = _Lifecycle(adapter)
@@ -397,8 +405,43 @@ async def test_leaving_the_default_team_through_the_holder_still_rebuilds_it(
 
     async with session_factory() as session:
         bridge = await CollaborationBridgeStore().get(session, bridge_id)
-    assert cleared == [("team-1", None)]
+    assert holder_writes == [("team-1", None)]
     assert adapter.default_team_id is None
+    assert bridge is not None
+    assert bridge.connection_config["team_id"] is None
+    assert lifecycle.restarted == []
+
+
+async def test_a_copy_not_yet_rebuilt_still_clears_the_stored_default(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A quiet copy not yet rebuilt from the latest edit does not know the team
+    became the default. The route decides from the stored row, and clears it
+    itself: the holder may be in another process, or nobody may hold the
+    bridge to be relayed the removal."""
+    graph = _Graph(installed_in={"team-1": "c-1"})
+    async with session_factory() as session:
+        bridge_id = await _connection(session, platform_data={"catalog_app_id": "c-1"})
+        await CollaborationBridgeStore().merge_connection_config(
+            session, bridge_id, {"team_id": "team-1"}
+        )
+        await session.commit()
+        adapter = _shared_adapter(graph)
+        adapter._config = adapter._config.model_copy(update={"team_id": None})
+        adapter.set_listening(False)
+        relayed: list[dict[str, str]] = []
+        adapter.set_holder_relay(relayed.append)
+        lifecycle = _Lifecycle(adapter)
+
+        await _call(
+            remove_from_team, session, lifecycle, bridge_id=bridge_id, team_id="team-1"
+        )
+
+    async with session_factory() as session:
+        bridge = await CollaborationBridgeStore().get(session, bridge_id)
+    assert relayed == [
+        {"action": "team_left", "team_id": "team-1", "release_default": "1"}
+    ]
     assert bridge is not None
     assert bridge.connection_config["team_id"] is None
     assert lifecycle.restarted == [bridge_id]

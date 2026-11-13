@@ -240,6 +240,9 @@ export interface BridgeDetail {
   // Whether this operator has allowed this connection to create channels.
   // Only meaningful when channel_creation_supported is true.
   channel_creation_enabled: boolean;
+  // Why a new channel cannot be made here yet even so — a Teams connection
+  // with no default team — or null. Absent on an older server.
+  channel_creation_blocker?: string | null;
   // Why no existing channel can be linked by id on this connection, or null
   // when one can — the Switch Telegram app, whose chats come from connecting.
   channel_ids_refused?: string | null;

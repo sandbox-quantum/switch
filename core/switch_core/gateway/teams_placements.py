@@ -231,23 +231,33 @@ async def remove_from_team(
     adapter, _install = await _connection(
         bridge_id, session, bridge_store, install_store, collab_lifecycle
     )
-    # Read before leaving: the copy holding the bridge clears its own default
-    # as it leaves the team.
-    was_default = adapter.default_team_id == team_id
+    # From the stored row, read before leaving: this process's copy may be a
+    # quiet one not yet rebuilt from the latest edit, and the copy holding the
+    # bridge clears its own default as it leaves the team.
+    bridge = await bridge_store.get(session, bridge_id)
+    was_default = (
+        bridge is not None
+        and (bridge.connection_config or {}).get("team_id") == team_id
+    )
     try:
         await adapter.remove_from_team(team_id)
     except _MICROSOFT_FAILURES as error:
         raise _microsoft_failed(error) from error
-    if was_default:
-        # New channels are made in the default team, and cannot be in one the
-        # app has left. The holder clears it too, but perhaps in another
-        # process and a moment later; this copy is rebuilt now so the next
-        # read already has no default. Channel creation stays as an admin set
-        # it: the next team Switch joins becomes the default.
-        await bridge_store.replace_team(
-            session, bridge_id, expected=team_id, team_id=None
-        )
-        await session.commit()
+    if not was_default:
+        return Response(status_code=204)
+    # New channels are made in the default team, and cannot be in one the app
+    # has left. The holder clears it too, but perhaps in another process, a
+    # moment later, or not at all if nobody holds the bridge; it is cleared
+    # here, only if it is still that team. Channel creation stays as an admin
+    # set it: the next team Switch joins becomes the default.
+    cleared = await bridge_store.replace_team(
+        session, bridge_id, expected=team_id, team_id=None
+    )
+    await session.commit()
+    # This copy is rebuilt when it still has the team, so the next read here
+    # already has no default. The holder, when it is this one, cleared its own
+    # and needs nothing.
+    if cleared is not None or adapter.default_team_id == team_id:
         try:
             await collab_lifecycle.restart(bridge_id)
         except Exception as error:

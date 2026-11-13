@@ -919,6 +919,66 @@ class TestChangesMadeElsewhere:
         assert await change("team-9", None)
         assert await stored_team() is None
 
+    async def test_a_recheck_while_a_default_team_is_being_written_restarts_nothing(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A re-check in the holder's own process can read the row after the
+        write has committed and before it has been recorded as the one the
+        holder runs from. It is the holder's own write, so it restarts
+        nothing."""
+        holder, quiet = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+        held = holder.bridges.get(bridge.bridge_id)
+        committed = asyncio.Event()
+        release = asyncio.Event()
+        store = holder.bridges._bridge_store
+        replace_team = store.replace_team
+
+        async def replace_then_pause_after_commit(
+            session: AsyncSession,
+            bridge_id: str,
+            *,
+            expected: str | None,
+            team_id: str | None,
+        ) -> CollaborationBridge | None:
+            written = await replace_team(
+                session, bridge_id, expected=expected, team_id=team_id
+            )
+            commit = session.commit
+
+            async def commit_then_pause() -> None:
+                await commit()
+                committed.set()
+                await release.wait()
+
+            session.commit = commit_then_pause  # type: ignore[method-assign]
+            return written
+
+        monkeypatch.setattr(store, "replace_team", replace_then_pause_after_commit)
+
+        writing = asyncio.create_task(
+            holder.bridges._write_default_team(
+                bridge.bridge_id, TENANT_ZERO_ID, None, "team-9"
+            )
+        )
+        await committed.wait()
+        await holder.bridges.reconcile_bridge(bridge.bridge_id)
+        assert holder.bridges.get(bridge.bridge_id) is held
+
+        release.set()
+        assert await writing
+        await holder.bridges.reconcile_bridge(bridge.bridge_id)
+        assert holder.bridges.get(bridge.bridge_id) is held
+
     async def test_a_bridge_removed_through_the_quiet_process_stops_listening(
         self,
         postgres_url: str,

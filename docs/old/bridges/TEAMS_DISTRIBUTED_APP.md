@@ -161,7 +161,10 @@ startup. Setting `TEAMS_APP_CLIENT_ID` is what enables the button.
    Only a team Switch is in can be the default. A team Switch joins with no
    default set, whether added here or from Teams, becomes the default on its
    own, and taking Switch out of its default team, either way, clears it;
-   neither changes whether channel creation is on. Switch
+   neither changes whether channel creation is on. A removal Switch only
+   notices on its periodic check (below) leaves the default alone and is
+   logged, since it may be one wrong answer from Microsoft. Until there is a
+   default team, a room cannot be created with a new channel. Switch
    captures messages only in teams it is in: taking it out of a team stops
    capture there, restarts included, until it is added back. Where Teams does
    not tell the bot that Switch was added or removed, Switch notices within

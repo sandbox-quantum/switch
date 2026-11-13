@@ -337,6 +337,11 @@ class CollaborationBridgeLifecycleService:
         self._workspace_cursors: dict[str, ConsumerCursors] = {}
         # What each running bridge was started from (`_started_from`).
         self._started_rows: dict[str, str] = {}
+        # Rows a running bridge here is writing into its own config as an edit
+        # (`_write_default_team`), as `_started_from` will read them once
+        # committed: a re-check that reads one before the write has recorded
+        # it as started from restarts nothing.
+        self._rows_being_written: dict[str, str] = {}
         # Quiet copies being started in the background after a hand-over.
         self._quiet_starts: dict[str, asyncio.Task[None]] = {}
         # One start or stop of a bridge at a time. A bridge is started and
@@ -699,6 +704,21 @@ class CollaborationBridgeLifecycleService:
         if adapter_cls is None:
             return None
         return adapter_cls.editable_config_keys(connection_config)
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> str | None:
+        """Why a bridge cannot create a channel yet, though its platform can
+        and an admin allows it; None when nothing is missing.
+
+        The adapter class decides — see `PlatformAdapter.channel_creation_blocker`.
+        An unknown type has no adapter to ask, and is reported as missing
+        nothing, as `supports_channel_creation` reports it capable.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return None
+        return adapter_cls.channel_creation_blocker(connection_config)
 
     def supports_private_channels(self, bridge_type: str) -> bool:
         """Whether this platform can make a private channel for a new room.
@@ -1489,15 +1509,32 @@ class CollaborationBridgeLifecycleService:
         through any of them goes where the default team now says. The copy
         that made the change already runs with it, so the row it now runs from
         is recorded as the one it started from, and the re-check leaves it
-        running."""
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            bridge = await self._bridge_store.replace_team(
-                session, bridge_id, expected=expected, team_id=team_id
+        running, including one that reads the row while it is being written."""
+        written: str | None = None
+        try:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                bridge = await self._bridge_store.replace_team(
+                    session, bridge_id, expected=expected, team_id=team_id
+                )
+                if bridge is not None:
+                    written = _started_from(bridge)
+                    self._rows_being_written[bridge_id] = written
+                await session.commit()
+                # Only a copy still started here runs with the change; one
+                # stopped meanwhile is started from the row when it next is.
+                if written is not None and bridge_id in self._started_rows:
+                    self._started_rows[bridge_id] = written
+        finally:
+            self._rows_being_written.pop(bridge_id, None)
+        if written is None:
+            logger.info(
+                "Collaboration bridge %s's default team was not changed from %s "
+                "to %s: it had been changed meanwhile",
+                bridge_id,
+                expected,
+                team_id,
             )
-            await session.commit()
-        if bridge is None:
             return False
-        self._started_rows[bridge_id] = _started_from(bridge)
         logger.info(
             "Collaboration bridge %s's default team is now %s (was %s)",
             bridge_id,
@@ -2111,7 +2148,12 @@ class CollaborationBridgeLifecycleService:
             # Starting in the background, from the row as it reads then.
             return
         started_from = self._started_rows.get(bridge_id)
-        if started_from == _started_from(bridge):
+        current = _started_from(bridge)
+        if started_from == current:
+            return
+        if started_from is not None and self._rows_being_written.get(bridge_id) == (
+            current
+        ):
             return
         if started_from is None:
             logger.info(

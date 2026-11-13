@@ -336,12 +336,17 @@ version of their own to them without also giving them a release of their own.
   default team, so creating a room with a channel failed until an admin
   picked one. Now, when Switch joins a team with no default set, from the
   connection's Microsoft Teams panel or from Teams, that team becomes the
-  default; a default team already chosen is never replaced. When Switch
-  leaves its default team, from the panel or from Teams, the default is
+  default; a default team already chosen is never replaced. When Switch is
+  taken out of its default team, from the panel or from Teams, the default is
   cleared, so no channel is made in a team Switch is not in and the next team
-  it joins becomes the default. Leaving the default team no longer turns
-  channel creation off: that stays an admin's choice, and is still off after
-  approval until an admin turns it on.
+  it joins becomes the default. A removal Switch only notices on its periodic
+  check leaves the default alone and is logged, so one wrong answer from
+  Microsoft cannot lose it. Leaving the default team no longer turns channel
+  creation off: that stays an admin's choice, and is still off after
+  approval until an admin turns it on. Until a connection has a default team,
+  `list_bridges` reports `can_create_channels: false` for it, the dashboard's
+  New room form says why it cannot create a channel, and creating a room with
+  a channel there is refused before anything is made.
 - **A refusal for not being a workspace admin says "Workspace admin access
   required"**, where it said "Tenant admin access required", on every
   gateway route that only the workspace's admins may use.

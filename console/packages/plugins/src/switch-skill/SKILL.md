@@ -644,10 +644,11 @@ carrying a display name addresses no one.
   `status == "active"` bridges are usable. `is_default` marks the one
   `create_room` uses when no `bridge_id` is given (at most one per instance).
   `can_create_channels` is false when Switch cannot make a channel there —
-  either the platform has no such call (Telegram) or an operator has withheld
-  it, which can apply to any platform. Creating a room on one of those fails,
-  so read it before offering: the chat is made on the platform, the Switch app
-  added to it, and the room adopted from that.
+  the platform has no such call (Telegram), an operator has withheld it, which
+  can apply to any platform, or a Microsoft Teams connection has no default
+  team yet, which it gets when Switch is added to a team. Creating a room on
+  one of those fails, so read it before offering: the chat is made on the
+  platform, the Switch app added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
   `agent_names`. Commonly used: `bridge_id`, `internal_only`, `include_owner`,
   `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
