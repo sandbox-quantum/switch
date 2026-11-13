@@ -1940,7 +1940,10 @@ class ServiceBroker:
         revocation could end a connection Switch keeps in another one. `kept`
         is the connection Switch keeps for the same account or person, if
         any, and `account_id` is None when Switch could not read the account.
-        Ends `session`'s transaction before it calls the vendor. Returns a
+        The token check compares only with `kept`, because no catalog vendor
+        gives the same access token to two separate sign-ins: Sentry makes
+        each token from a new grant, Airtable has no revocation, and Switch
+        never revokes at Google. Ends `session`'s transaction before it calls the vendor. Returns a
         sentence for the person when the sign-in was not revoked."""
         same = (
             kept is not None and self._secret(kept).access_token == secret.access_token
