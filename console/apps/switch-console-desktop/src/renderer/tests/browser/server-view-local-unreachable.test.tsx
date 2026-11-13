@@ -87,8 +87,11 @@ vi.mock('@renderer/features/switch-servers/GuardrailsSection', () => ({
 vi.mock('@renderer/features/switch-servers/home/use-ai-connected', () => ({
   useAiConnected: () => ({ connected: null, buddy: null }),
 }));
-vi.mock('@renderer/features/switch-servers/home/home-panels', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
+// Stubbed whole: loading the real panels would pull in modules these tests mock only in part.
+vi.mock('@renderer/features/switch-servers/home/home-panels', () => ({
+  SignedOutPanel: () => null,
+  ConnectAiPanel: () => null,
+  AskBuddyPanel: () => null,
   useHomeChips: () => null,
 }));
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({

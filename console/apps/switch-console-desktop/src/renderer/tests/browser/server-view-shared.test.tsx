@@ -106,8 +106,16 @@ vi.mock('@renderer/features/switch-servers/MessagingAppsCard', () => ({
 vi.mock('@renderer/features/switch-servers/home/use-ai-connected', () => ({
   useAiConnected: () => ({ connected: null, buddy: null }),
 }));
-vi.mock('@renderer/features/switch-servers/home/home-panels', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
+// The pill reads connection and Docker state these tests do not model; the menu is what they check.
+vi.mock('@renderer/features/switch-servers/server-presentation', () => ({
+  ServerStatusPill: () => null,
+  serverPlacementLabel: () => null,
+}));
+// Stubbed whole: loading the real panels would pull in modules these tests mock only in part.
+vi.mock('@renderer/features/switch-servers/home/home-panels', () => ({
+  SignedOutPanel: () => null,
+  ConnectAiPanel: () => null,
+  AskBuddyPanel: () => null,
   useHomeChips: () => null,
 }));
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
