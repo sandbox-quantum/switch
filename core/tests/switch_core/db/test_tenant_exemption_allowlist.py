@@ -129,6 +129,12 @@ _ALLOWED_MODULES = {
     # look for their rows in each under its own policy, the same fan-out as
     # the boot work.
     "switch_core.accounts.deletion",
+    # The operator purging an organization: which workspaces it has, which
+    # others each of its people belong to, and which workspaces each of its
+    # cloud machines serves, asked with no tenant bound because the operator
+    # holds no membership. Everything it then reads or deletes in a workspace
+    # is bound to that workspace.
+    "switch_core.accounts.organization_purge",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
@@ -264,6 +270,11 @@ _RAW_SESSION_FACTORY_MODULES = {
     # their sign-in identities belong to no tenant. Its organization linking
     # binds the organization (`organization_session`).
     "switch_core.workos_linking",
+    # The operator's organization purge reads and deletes `users`,
+    # `oidc_identities` and `cloud_machines`, all global
+    # (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it touches
+    # is bound.
+    "switch_core.accounts.organization_purge",
     # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.

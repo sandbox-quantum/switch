@@ -9,6 +9,7 @@ import {
   DialogTitle,
   IconButton,
   InputAdornment,
+  ListItemText,
   MenuItem,
   Stack,
   TextField,
@@ -17,31 +18,44 @@ import {
 import { useCallback, useState } from "react";
 import { type TenantRole, createInvitation } from "../../data/api";
 import { type DeliveryNotice, deliveryNotice, inviteUrl } from "../../data/sessionState";
+import { announceInvitationCreated } from "./invitationEvents";
+import { WORKSPACE_ROLES, workspaceRoleLabel } from "./roles";
 
 /** Mirrors `MAX_INVITATION_USES` in the server's invitation schema. */
 const MAX_INVITATION_USES = 100;
 
+/** How long a link lasts, in hours: all within the server's limit of a year. */
+export const EXPIRY_CHOICES: readonly { hours: number; label: string }[] = [
+  { hours: 24, label: "1 day" },
+  { hours: 24 * 7, label: "7 days" },
+  { hours: 24 * 30, label: "30 days" },
+  { hours: 24 * 90, label: "90 days" },
+];
+const DEFAULT_EXPIRY_HOURS = 24 * 7;
+
 interface Props {
   open: boolean;
   tenantId: string;
+  workspaceName: string;
   emailEnabled: boolean;
   onClose: () => void;
-  onCreated: () => void;
 }
 
 /** An invitation naming an address is e-mailed when the server has mail set
  * up; either way the token is returned once, at creation, so the link is
- * shown here and nowhere else — alongside what happened to the e-mail. */
+ * shown here and nowhere else — alongside what happened to the e-mail. The
+ * role is picked, not defaulted: it is the one choice here that decides what
+ * someone can do. */
 export default function CreateInvitationDialog({
   open,
   tenantId,
+  workspaceName,
   emailEnabled,
   onClose,
-  onCreated,
 }: Props) {
-  const [role, setRole] = useState<TenantRole>("member");
+  const [role, setRole] = useState<TenantRole | "">("");
   const [email, setEmail] = useState("");
-  const [hours, setHours] = useState("168");
+  const [hours, setHours] = useState(DEFAULT_EXPIRY_HOURS);
   const [uses, setUses] = useState("1");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,9 +64,9 @@ export default function CreateInvitationDialog({
   const [copied, setCopied] = useState(false);
 
   const handleClose = useCallback(() => {
-    setRole("member");
+    setRole("");
     setEmail("");
-    setHours("168");
+    setHours(DEFAULT_EXPIRY_HOURS);
     setUses("1");
     setError(null);
     setLink(null);
@@ -62,24 +76,25 @@ export default function CreateInvitationDialog({
   }, [onClose]);
 
   const handleSubmit = useCallback(async () => {
+    if (role === "") return;
     setSubmitting(true);
     setError(null);
     try {
       const created = await createInvitation(tenantId, {
         role,
         email: email.trim() === "" ? null : email.trim(),
-        expires_in_hours: Number(hours),
+        expires_in_hours: hours,
         uses_remaining: Number(uses),
       });
       setLink(inviteUrl(window.location.origin, created.token));
       setNotice(deliveryNotice(created.email_delivery, created.email));
-      onCreated();
+      announceInvitationCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create the invitation");
     } finally {
       setSubmitting(false);
     }
-  }, [tenantId, role, email, hours, uses, onCreated]);
+  }, [tenantId, role, email, hours, uses]);
 
   const copy = useCallback(async () => {
     if (link === null) return;
@@ -88,14 +103,15 @@ export default function CreateInvitationDialog({
   }, [link]);
 
   const addressed = email.trim() !== "";
-  const roles: TenantRole[] = ["member", "admin"];
-  const valid =
-    Number.isInteger(Number(hours)) && Number(hours) > 0 && Number(hours) <= 8760 &&
+  const usesValid =
     Number.isInteger(Number(uses)) && Number(uses) > 0 && Number(uses) <= MAX_INVITATION_USES;
+  const valid = role !== "" && usesValid;
 
   return (
-    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Invite to workspace</DialogTitle>
+    // Held open while the link is being made: closed then, the link would be
+    // created with nowhere to show it, and it is shown only once.
+    <Dialog open={open} onClose={submitting ? undefined : handleClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Invite users to {workspaceName}</DialogTitle>
       <DialogContent>
         {link !== null && notice !== null ? (
           <Stack spacing={2} sx={{ pt: 1 }}>
@@ -128,10 +144,26 @@ export default function CreateInvitationDialog({
               label="Role"
               value={role}
               onChange={(e) => setRole(e.target.value as TenantRole)}
+              helperText={`Workspace admin and Member are both scoped to ${workspaceName}.`}
+              slotProps={{
+                select: {
+                  displayEmpty: true,
+                  renderValue: (value) =>
+                    value === "" ? "Select role" : workspaceRoleLabel(value as TenantRole),
+                },
+              }}
             >
-              {roles.map((r) => (
-                <MenuItem key={r} value={r}>
-                  {r.charAt(0).toUpperCase() + r.slice(1)}
+              {WORKSPACE_ROLES.map((option) => (
+                <MenuItem
+                  key={option.role}
+                  value={option.role}
+                  sx={{ whiteSpace: "normal", maxWidth: 520 }}
+                >
+                  <ListItemText
+                    primary={option.label}
+                    secondary={option.description}
+                    slotProps={{ secondary: { variant: "caption" } }}
+                  />
                 </MenuItem>
               ))}
             </TextField>
@@ -147,17 +179,24 @@ export default function CreateInvitationDialog({
             />
             <Stack direction="row" spacing={2}>
               <TextField
-                label="Expires in (hours)"
-                type="number"
+                select
+                label="Expires after"
                 value={hours}
-                onChange={(e) => setHours(e.target.value)}
+                onChange={(e) => setHours(Number(e.target.value))}
                 fullWidth
-              />
+              >
+                {EXPIRY_CHOICES.map((choice) => (
+                  <MenuItem key={choice.hours} value={choice.hours}>
+                    {choice.label}
+                  </MenuItem>
+                ))}
+              </TextField>
               <TextField
                 label="Uses"
                 type="number"
                 value={uses}
                 onChange={(e) => setUses(e.target.value)}
+                error={!usesValid}
                 helperText={`Up to ${MAX_INVITATION_USES}`}
                 fullWidth
               />
@@ -172,7 +211,9 @@ export default function CreateInvitationDialog({
           </Button>
         ) : (
           <>
-            <Button onClick={handleClose}>Cancel</Button>
+            <Button onClick={handleClose} disabled={submitting}>
+              Cancel
+            </Button>
             <Button
               onClick={handleSubmit}
               variant="contained"

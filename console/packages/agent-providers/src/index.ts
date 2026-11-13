@@ -15,7 +15,12 @@ export type {
   StdioMcpServerSpec,
   TurnAttachment,
 } from './adapter';
-export { ProviderSessionError, ProviderUnavailableError, runtimeModeFor } from './adapter';
+export {
+  ProviderSessionError,
+  ProviderUnavailableError,
+  runtimeModeFor,
+  sessionInput,
+} from './adapter';
 export type { ClaudeAdapterLogger, ClaudeAdapterOptions } from './claude/claude-adapter';
 export { ClaudeAdapter, createClaudeAdapter } from './claude/claude-adapter';
 export type {
@@ -44,6 +49,7 @@ export { createPiAdapter, PiAdapter } from './pi/pi-adapter';
 export { AcpAdapter, createAcpAdapter } from './acp/acp-adapter';
 export type {
   AcpAdapterOptions,
+  AcpConnection,
   AcpExtensionRegistrar,
   AcpLaunch,
   AcpLaunchInput,
@@ -58,9 +64,12 @@ export {
   createDeepseekHarnessAdapter,
   deepseekHarnessAcp,
 } from './deepseek-harness/deepseek-harness-acp';
+export { droidAcp, createDroidAdapter } from './droid/droid-adapter';
 export { gooseAcp, createGooseAdapter } from './goose/goose-adapter';
 export { kiroAcp, createKiroAdapter } from './kiro/kiro-acp';
 export { qwenAcp, createQwenAdapter } from './qwen/qwen-acp';
+export { clineAcp, createClineAdapter } from './cline/cline-adapter';
+export { createJunieAdapter, junieAcp } from './junie/junie-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
@@ -96,17 +105,7 @@ export {
   type ProviderRecheckReply,
   type ProviderRecheckRequest,
 } from './host/provider-recheck';
-export {
-  hostStartSources,
-  type HostStartSource,
-  type OwedSessionStart,
-} from './host/session-start';
-export {
-  isSessionStartedNotice,
-  reportedStartSource,
-  SESSION_STARTED_KIND,
-  type SessionStartedNotice,
-} from './host/session-started';
+export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
   type AgentStreamDeps,

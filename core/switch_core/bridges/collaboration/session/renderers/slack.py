@@ -56,6 +56,7 @@ from . import (
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
+    STEERED_MARKER,
     RequestReference,
     example_value,
     surface_label,
@@ -63,6 +64,7 @@ from . import (
     unanswerable,
 )
 from .neutral import SAID_MARKER, in_activity_log
+from .subagents import is_subagent, is_tool_call, subagent_lines, subagent_state
 
 # Slack's own limits. Exceeding one is rejected at the API, so it is caught here
 # where the offending value can still be named.
@@ -257,6 +259,8 @@ _TASK_STATUS = {
 # prompt would ideally be.
 _SAID_ICON = "comment"
 _TOOL_ICON = "code"
+# A call that started another agent, so a subagent stands apart from a tool.
+_SUBAGENT_ICON = "bot"
 
 _DANGEROUS = {"decline", "cancel"}
 
@@ -1045,12 +1049,17 @@ def render_activity(
                         "task_id": _task_id(turn.turn_id),
                         "title": _truncate(state, _MAX_PLAN_TASK_TITLE),
                         "status": "in_progress",
-                    }
+                    },
                 ],
             )
         return SlackMessage(text=state, blocks=[_context(state)])
     said = [item for item in items if item.kind == "assistant-message"]
-    did = [item for item in items if item.kind == "tool-activity"]
+    did = [
+        item
+        for item in items
+        if item.kind == "tool-activity"
+        or (item.kind == "user-message" and in_activity_log(item))
+    ]
 
     blocks: list[dict[str, Any]] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)
@@ -1122,7 +1131,11 @@ def render_activity_text(
     is skipped rather than shown quoted back.
     """
     said = [item for item in items if item.kind == "assistant-message"]
-    did = [item for item in items if item.kind == "tool-activity"]
+    did = [
+        item
+        for item in items
+        if is_tool_call(item) or (item.kind == "user-message" and in_activity_log(item))
+    ]
 
     lines: list[str] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)
@@ -1130,6 +1143,7 @@ def render_activity_text(
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
     lines += _activity_lines(did)
+    lines += subagent_lines(items, fit=lambda text, size: _fit(text, size))
     lines.append(
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
     )
@@ -1167,9 +1181,17 @@ def _activity_lines(items: list[Item]) -> list[str]:
     spent = 0
     for position, item in enumerate(reversed(items), start=1):
         title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
-        line = f"{_ACTIVITY[item.status]} {title}"
-        if item.text:
-            line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
+        if item.kind == "user-message":
+            excerpt = (
+                _fit(" ".join(item.text.split()), _MAX_ACTIVITY_DETAIL)
+                if item.text
+                else "(attachment)"
+            )
+            line = f"{STEERED_MARKER}: {excerpt}"
+        else:
+            line = f"{_ACTIVITY[item.status]} {title}"
+            if item.text:
+                line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
         if position > _MAX_ACTIVITY_LINES or spent + len(line) + 1 > _MAX_ACTIVITY:
             lines.append(f"_…and {len(items) - position + 1} more before these._")
             break
@@ -1516,6 +1538,9 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
     """
     if item.kind == "assistant-message":
         return task
+    if is_subagent(item) and item.status == "in-progress":
+        # A subagent can outlive its turn: still at work is still running.
+        return task
     if item.status != "in-progress" or turn.status in TURN_ENDED:
         task["status"] = "complete"
     if item.status == "in-progress" and turn.status in TURN_ENDED:
@@ -1661,6 +1686,14 @@ def _plan_task(item: Item) -> dict[str, Any]:
     and is less lossy than stripping the marks out and leaving a reader unable
     to tell a code span from a word.
     """
+    if item.kind == "user-message":
+        excerpt = " ".join(item.text.split()) or "(attachment)"
+        return {
+            "task_id": _task_id(item.item_id),
+            "title": _truncate(f"{STEERED_MARKER}: {excerpt}", _MAX_PLAN_TASK_TITLE),
+            "icon": {"type": "icon", "name": _SAID_ICON},
+            "status": "complete",
+        }
     if item.kind == "assistant-message":
         preview = f"{SAID_MARKER} {' '.join(plain_text(item.text).split())}"
         return {
@@ -1672,12 +1705,19 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
     title = plain_text(item.title) if item.title else ""
-    if item.status in ("failed", "declined"):
+    if is_subagent(item):
+        # A card with an icon shows the icon in place of its status, so a
+        # subagent's status is said in words.
+        title = f"Subagent: {title or 'untitled'} — {subagent_state(item)}"
+    elif item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {
         "task_id": _task_id(item.item_id),
         "title": _truncate(title, _MAX_PLAN_TASK_TITLE) or "(untitled)",
-        "icon": {"type": "icon", "name": _TOOL_ICON},
+        "icon": {
+            "type": "icon",
+            "name": _SUBAGENT_ICON if is_subagent(item) else _TOOL_ICON,
+        },
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""

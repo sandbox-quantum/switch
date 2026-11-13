@@ -3,12 +3,26 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, literal, select, tuple_
+from sqlalchemy import (
+    CursorResult,
+    and_,
+    case,
+    delete,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    tuple_,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.account_links import (
     LINK_CODE_TTL,
+    PROMPT_LIMIT,
+    PROMPT_WINDOW,
     hash_link_code,
     new_link_code,
     normalise_link_code,
@@ -362,6 +376,20 @@ class ExternalUserStore:
             raise RuntimeError("A link request was written but could not be read back")
         return request
 
+    async def has_link_request(
+        self, session: AsyncSession, external_user: ExternalUser
+    ) -> bool:
+        """Whether a link is waiting for this account, expired or not."""
+        return bool(
+            await session.scalar(
+                select(
+                    exists().where(
+                        ExternalUserLinkRequest.external_user_id == external_user.id
+                    )
+                )
+            )
+        )
+
     async def get_link_request(
         self, session: AsyncSession, external_user_id: str, switch_user_id: str
     ) -> ExternalUserLinkRequest | None:
@@ -449,6 +477,11 @@ class ExternalUserStore:
         if normalised is None:
             raise RuntimeError(f"Generated a link code that does not parse: {code!r}")
         request.code_hash = hash_link_code(normalised)
+        # A prompt belongs to the code it was sent with: a newer code retires
+        # the older prompt's buttons, whether or not a new prompt goes out.
+        request.prompt_token = None
+        request.prompt_choices = None
+        request.prompt_number = None
         # The database's clock, since the database's clock is what a redeem
         # compares it to.
         request.code_expires_at = func.now() + LINK_CODE_TTL  # type: ignore[assignment]
@@ -509,6 +542,82 @@ class ExternalUserStore:
             )
         await self.confirm_link_request(session, request)
         return request
+
+    async def attach_link_prompt(
+        self,
+        session: AsyncSession,
+        request: ExternalUserLinkRequest,
+        *,
+        token: str,
+        number: int,
+        choices: list[int],
+    ) -> None:
+        """Record the prompt about to be sent for this request's current code
+        (CHOO-4121), replacing any sent before."""
+        request.prompt_token = token
+        request.prompt_number = number
+        request.prompt_choices = choices
+        await session.flush()
+
+    async def take_link_prompt_allowance(
+        self, session: AsyncSession, external_user: ExternalUser
+    ) -> bool:
+        """Count one prompt against this account's allowance, or say there is
+        none left in the current window.
+
+        One statement, so two requests at the same moment cannot both read a
+        count under the limit and both send.
+        """
+        window_open = and_(
+            ExternalUser.link_prompt_window_started_at.is_not(None),
+            ExternalUser.link_prompt_window_started_at > func.now() - PROMPT_WINDOW,
+        )
+        result = await session.execute(
+            update(ExternalUser)
+            .where(
+                ExternalUser.id == external_user.id,
+                or_(~window_open, ExternalUser.link_prompts_sent < PROMPT_LIMIT),
+            )
+            .values(
+                link_prompts_sent=case(
+                    (window_open, ExternalUser.link_prompts_sent + 1), else_=1
+                ),
+                link_prompt_window_started_at=case(
+                    (window_open, ExternalUser.link_prompt_window_started_at),
+                    else_=func.now(),
+                ),
+            )
+            .returning(ExternalUser.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def lock_link_request_by_prompt(
+        self, session: AsyncSession, token: str
+    ) -> tuple[ExternalUserLinkRequest, ExternalUser, bool] | None:
+        """The request a prompt's button names, locked until the transaction
+        ends, with its account and whether its code is still live. None when no
+        request carries the token: it was answered, cancelled, or replaced by a
+        newer code."""
+        result = await session.execute(
+            select(
+                ExternalUserLinkRequest,
+                ExternalUser,
+                ExternalUserLinkRequest.code_expires_at > func.now(),
+            )
+            .join(
+                ExternalUser,
+                ExternalUser.id == ExternalUserLinkRequest.external_user_id,
+            )
+            .where(ExternalUserLinkRequest.prompt_token == token)
+            .with_for_update(of=ExternalUserLinkRequest)
+            .execution_options(populate_existing=True)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        request, account, live = row
+        return request, account, bool(live)
 
     async def confirm_link_request(
         self, session: AsyncSession, request: ExternalUserLinkRequest

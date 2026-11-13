@@ -68,7 +68,7 @@ def unusable(name: str, error: str) -> str:
     cannot be used, for a reason its organization admins can fix."""
     return (
         f"Your organization's {name} app can't be used: {error} An organization "
-        "admin can fix it under Organization, Connectors."
+        "admin can fix it in your organization's connector settings."
     )
 
 
@@ -186,6 +186,7 @@ class OrganizationApps:
         try:
             loaded = load_saved_app(
                 spec,
+                definition=self._apps.definition(spec.service),
                 client_id=row.client_id,
                 settings=row.settings,
                 secrets=lambda: self._store.secrets(row),

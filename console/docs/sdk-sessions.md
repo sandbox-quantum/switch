@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity, Cursor, DeepSeek Harness, Pi and Kiro CLI. Local sessions and sessions reached through SSH run
+Antigravity, Cursor, DeepSeek Harness, Pi, Kiro CLI and Junie. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -32,6 +32,41 @@ changes apply to the next turn and survive host restart. A cold
 provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;
 its initial prompt is not automatically sent again.
+
+### Messages sent while the agent is working
+
+On a provider that can steer a running turn (Claude Code, Codex and OpenCode),
+a message sent while the agent is working reaches that turn instead of waiting
+for it to end. Any message that reaches the agent does: from the person who
+started the turn or anyone else who can talk to the agent, from another agent,
+or a schedule or kickoff; in any thread, at the top level of a channel, in a
+direct room, or typed in the session's own view in Switch Console. Who can
+reach the agent at all is still its addressing policy's choice. Each message
+tells the agent who sent it and from which room and thread, so it can handle
+several at once.
+
+A provider reads a steered message at its next step, not mid-sentence: Claude
+Code reads it after the tool call in progress, or after the answer it is
+writing. If the turn ends just as the message arrives, or the provider declines
+it (Codex sometimes does), the message runs as the next turn instead, with a
+notice in the transcript; it is never lost or sent twice, and a message whose
+delivery is uncertain is shown as such and not resent. Running a failed message
+again always queues. A steer never answers or cancels an open approval: answer
+the request, or interrupt the turn.
+
+Room activity cards on every platform say how many messages were steered into
+a turn, with a line for each in its sender's words, and a turn waiting behind
+another says so. A steered message carries the working reaction while its turn
+runs. The Console transcript labels each mid-turn message as steered or queued.
+
+An agent's **Steer messages sent while it works** setting turns this off for
+the messages Switch delivers from rooms: with it off, every one waits for the
+turn to end, as before. It is on by default, lives on the agent in Switch (so it
+survives the agent re-registering), and applies to the next message without a
+restart. Change it in Switch Console's agent settings, on the agent's page in
+the web dashboard (its owner or a workspace admin), or with the
+`update_agent_detail` tool (`mid_turn_delivery`). Providers that cannot steer
+always queue.
 
 ## Server isolation
 
@@ -254,6 +289,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | Pi | Yes | Models of the providers Pi has credentials for | RPC `compact` | Images as bytes; other files named by path |
 | Kiro CLI | Yes | ACP model catalog (a `model` config option on its V3 engine) | Unavailable | Images as bytes; embedded file resources where advertised |
 | Mistral Vibe | Yes | ACP model config option | Unavailable | Images as bytes; embedded file resources |
+| Junie | Yes | ACP model catalog | Unavailable | Images as bytes where advertised; staged file references |
 | Kimi Code | Yes | ACP model config option | Unavailable | Images as bytes; embedded file resources |
 
 Controls depend on the connected provider's reported support. OpenCode models
@@ -403,7 +439,7 @@ resumes or attaches, including ones started automatically:
   uses Smart Auto, Mistral Vibe uses Smart Approve where Vibe offers it, and
   Antigravity, Pi (and Mistral Vibe without Smart Approve) approve edits and ask
   before commands. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
-  and Kiro applies its own trust policy and safety check before anything reaches
+  Junie uses its Auto brave mode, and Kiro applies its own trust policy and safety check before anything reaches
   Console, which asks about the rest. Kimi Code runs in its `yolo` mode, which
   asks only before dangerous commands and access to sensitive files or git
   internals, and runs connectors' tools without asking.
@@ -443,13 +479,16 @@ and, when that cannot answer, the agent's handshake, which a signed-out Kiro
 answers with its `kiro-login` method. Antigravity initializes an empty
 session without sending a prompt, and returns its native model list. Pi lists the
 models it has credentials for (`pi --list-models`, offline). Mistral
-Vibe uses its read-only `_auth/status` call after the ACP handshake. Kimi Code
-reads its providers from `kimi provider list --json`. OpenCode checks connected backends; a local or free backend may need no
+Vibe uses its read-only `_auth/status` call after the ACP handshake. Junie
+initializes an empty session and reads the account it reports for it and
+whether it offers a model; a signed-in account without a Junie licence can't be
+used and is shown as such. Kimi Code reads its providers from
+`kimi provider list --json`. OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed
 catalogue checks are visible and do not prevent text entry. Claude, Codex,
-Cursor, Antigravity and Pi catalogues come from native SDK initialization without a
+Cursor, Antigravity, Pi and Junie catalogues come from native SDK initialization without a
 prompt; each metadata session is stopped after the probe. OpenCode uses its
 existing host catalogue.
 

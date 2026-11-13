@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import json
 import logging
@@ -9,7 +10,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -30,11 +31,13 @@ from mattermostdriver.exceptions import (
 from pydantic import field_validator
 from websockets.asyncio.client import ClientConnection
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivitySnapshot,
     AgentIdentity,
     AgentIdentityConflict,
+    CardRejectedError,
     MessagePartlySent,
     PlatformAdapter,
     RefusalKind,
@@ -53,10 +56,13 @@ from switch_core.bridges.collaboration.ingress import (
 from switch_core.bridges.collaboration.mattermost.callback import (
     MAX_BUTTON_LABEL,
     ActivityPress,
+    CardPress,
     InterruptPress,
     activity_action,
     answer_actions,
+    card_action,
     interrupt_action,
+    prompt_actions,
     read_press,
 )
 from switch_core.bridges.collaboration.mattermost.http_client import NoRedirectClient
@@ -66,10 +72,13 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
+    ChannelMembers,
     ChannelNotUsable,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
     DirectoryUser,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -77,6 +86,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -99,6 +109,23 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
 )
 from switch_core.outbound import guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import (
+    ActionsProps,
+    ButtonProps,
+    CardProps,
+    ChartProps,
+    DividerProps,
+    FieldProps,
+    FieldsProps,
+    ImageProps,
+    LinkButtonProps,
+    PieChart,
+    TableProps,
+    TextProps,
+    UISpec,
+    button_action,
+    to_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +175,26 @@ _PUBLICATION_PROP = "switch_publication"
 # — the callback URL and its context — server-side, never serialising it to a
 # client.
 _ATTACHMENTS_PROP = "attachments"
+
+# Mattermost's `PostPropsMaxUserRunes`: the JSON of a post's props, in runes,
+# less the room the server keeps for its own additions.
+_MAX_PROPS = 760_000
+
+# What Mattermost answers a post it did not create with: each a 4xx, so the
+# post was not made and its text may be sent instead.
+_MATTERMOST_REFUSALS = (
+    InvalidOrMissingParameters,
+    NoAccessTokenProvided,
+    NotEnoughPermissions,
+    ResourceNotFound,
+    MethodNotAllowed,
+    ContentTooLarge,
+)
+
+# How far an attachment has got, in the order Mattermost draws its parts. A
+# part that would draw above one already there goes in a new attachment.
+_TITLE, _TEXT, _FIELDS, _IMAGE, _ACTIONS, _CLOSED = range(6)
+_TABLE_ALIGN = {"left": ":---", "center": ":---:", "right": "---:"}
 
 # How far before the recorded reservation time to start looking for a post that
 # may or may not exist. Covers ordinary clock skew between Switch and the
@@ -329,6 +376,22 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
 _PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
     "switch_mattermost_press_notice", default=None
 )
+
+
+def _defuse_at(text: str) -> str:
+    """Card text that mentions nobody: Mattermost resolves `@user` and
+    `@channel` in attachment text, fields and pretext as in a message."""
+    return text.replace("@", "@" + ZERO_WIDTH_SPACE)
+
+
+def _md_url(url: str) -> str:
+    return url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+
+
+def _md_table(rows: list[list[str]], align: Sequence[str] | None) -> str:
+    head, *body = rows
+    rule = [_TABLE_ALIGN[a] for a in align] if align else ["---"] * len(head)
+    return "\n".join("| " + " | ".join(row) + " |" for row in [head, rule, *body])
 
 
 def _ephemeral(text: str) -> dict[str, Any]:
@@ -844,6 +907,8 @@ class MattermostAdapter(PlatformAdapter):
 
         if isinstance(press, InterruptPress):
             action_id, value = INTERRUPT_ACTION, press.turn_id
+        elif isinstance(press, CardPress):
+            action_id, value = press.action_id, press.value
         else:
             action_id, value = position_action(press.position), press.token
 
@@ -855,6 +920,7 @@ class MattermostAdapter(PlatformAdapter):
                     channel_id=press.channel_id,
                     sender_id=press.user_id,
                     sender_name=name,
+                    sender_display_name=name,
                     action_id=action_id,
                     value=value,
                     message_ref=press.post_id,
@@ -1064,6 +1130,202 @@ class MattermostAdapter(PlatformAdapter):
             bot_driver = self._admin_driver
         return await self._create_posts(bot_driver, channel_id, content, thread_root_id)
 
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as message attachments under `fallback_text`, which stays
+        the post's message: it is what a Mattermost notification shows. A card
+        the post cannot carry, or that Mattermost refuses, raises
+        `CardRejectedError` before anything is posted, so core sends the text."""
+        attachments = self._card_attachments(channel_id, spec)
+        attachments[0]["fallback"] = self._card_text(to_text(spec))
+        props: dict[str, Any] = {_ATTACHMENTS_PROP: attachments}
+        size = len(json.dumps(props, ensure_ascii=False))
+        if size > _MAX_PROPS:
+            raise CardRejectedError(
+                f"The card is {size} characters of post props, over Mattermost's "
+                f"{_MAX_PROPS}."
+            )
+        driver = self._bot_drivers.get(sender_name) or self._admin_driver
+        if driver is None:
+            raise RuntimeError("Mattermost is not connected.")
+        try:
+            return await self._post_or_raise(
+                driver, channel_id, fallback_text, thread_root_id, props
+            )
+        except _MATTERMOST_REFUSALS as error:
+            raise CardRejectedError(str(error)) from error
+
+    def _card_text(self, text: str) -> str:
+        return self.translate_outbound(_defuse_at(text))
+
+    def _card_cell(self, text: str) -> str:
+        return self._card_text(text.replace("\n", " ")).replace("|", "\\|")
+
+    def _card_attachments(self, channel_id: str, spec: UISpec) -> list[dict[str, Any]]:
+        """The attachments a card draws as. Buttons are drawn only where a
+        press can reach this bridge; elsewhere they are listed as text."""
+        address = self._button_address()
+        text, cell = self._card_text, self._card_cell
+        attachments: list[dict[str, Any]] = []
+        buttons_drawn = 0
+        stage = _CLOSED
+
+        def at(part: int) -> dict[str, Any]:
+            nonlocal stage
+            if stage > part:
+                attachments.append({})
+            stage = part
+            return attachments[-1]
+
+        def add_text(line: str) -> None:
+            attachment = at(_TEXT)
+            attachment["text"] = (
+                f"{attachment['text']}\n\n{line}" if "text" in attachment else line
+            )
+
+        def walk(key: str) -> None:
+            nonlocal stage, buttons_drawn
+            element = spec.elements[key]
+            p = element.props
+            children = [spec.elements[c].props for c in element.children]
+            if isinstance(p, CardProps):
+                if p.title:
+                    at(_TITLE)["title"] = text(p.title)
+                if p.subtitle:
+                    add_text(f"_{text(p.subtitle)}_")
+                if p.imageUrl:
+                    at(_IMAGE)["image_url"] = p.imageUrl
+            elif isinstance(p, TextProps):
+                content = text(p.content)
+                if p.style == "bold":
+                    content = f"**{content}**"
+                elif p.style == "muted":
+                    content = f"_{content}_"
+                add_text(content)
+            elif isinstance(p, FieldsProps):
+                at(_FIELDS).setdefault("fields", []).extend(
+                    {"title": text(f.label), "value": text(f.value), "short": True}
+                    for f in children
+                    if isinstance(f, FieldProps)
+                )
+            elif isinstance(p, TableProps):
+                table = _md_table(
+                    [[cell(c) for c in row] for row in [p.headers, *p.rows]], p.align
+                )
+                add_text(table + (f"\n{text(p.caption)}" if p.caption else ""))
+            elif isinstance(p, ChartProps):
+                chart = p.chart
+                if isinstance(chart, PieChart):
+                    rows = [["", "Value"]] + [
+                        [cell(s.label), f"{s.value:g}"] for s in chart.segments
+                    ]
+                else:
+                    rows = [
+                        [
+                            cell(chart.xLabel or ""),
+                            *(cell(s.name) for s in chart.series),
+                        ]
+                    ]
+                    rows += [
+                        [cell(c), *(f"{s.values[i]:g}" for s in chart.series)]
+                        for i, c in enumerate(chart.categories)
+                    ]
+                axis = (
+                    f" ({text(chart.yLabel)})"
+                    if not isinstance(chart, PieChart) and chart.yLabel
+                    else ""
+                )
+                add_text(f"**{text(p.title)}**{axis}\n{_md_table(rows, None)}")
+            elif isinstance(p, DividerProps):
+                stage = _CLOSED
+            elif isinstance(p, ImageProps):
+                add_text(f"![{cell(p.alt).replace(']', '')}]({_md_url(p.url)})")
+            elif isinstance(p, ActionsProps):
+                links = [
+                    f"[{cell(b.label).replace(']', '')}]({_md_url(b.url)})"
+                    for b in children
+                    if isinstance(b, LinkButtonProps)
+                ]
+                if links:
+                    add_text(" · ".join(links))
+                buttons = [b for b in children if isinstance(b, ButtonProps)]
+                if buttons and address is None:
+                    add_text(" · ".join(f"**{cell(b.label)}**" for b in buttons))
+                elif buttons and address is not None:
+                    url, key = address
+                    # A row of its own, as the card groups its buttons.
+                    if stage == _ACTIONS:
+                        stage = _CLOSED
+                    actions = at(_ACTIONS).setdefault("actions", [])
+                    for b in buttons:
+                        actions.append(
+                            card_action(
+                                key,
+                                url,
+                                channel_id,
+                                f"switchui{buttons_drawn}",
+                                b.label,
+                                b.style,
+                                *button_action(b),
+                            )
+                        )
+                        buttons_drawn += 1
+            for child in element.children:
+                walk(child)
+
+        walk(spec.root)
+        return attachments or [{}]
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Take every button off the card and say under it who chose what: a
+        card takes one answer, and its links are text, not buttons."""
+        driver, loop = self._admin_driver, self._main_loop
+        ref = interaction.message_ref
+        if driver is None or loop is None or ref is None:
+            logger.warning(
+                "Cannot mark the card press in Mattermost channel %s as done: "
+                "not connected or no post, so its buttons stay pressable",
+                interaction.channel_id,
+            )
+            return
+        chosen = _defuse_at(f"✅ {interaction.sender_display_name} chose {label}")
+        try:
+            post = await loop.run_in_executor(None, driver.posts.get_post, ref)
+            props = dict(post.get("props") or {})
+            attachments = [
+                {k: v for k, v in attachment.items() if k != "actions"}
+                for attachment in props.get(_ATTACHMENTS_PROP) or []
+            ]
+            attachments = [a for a in attachments if a] or [{}]
+            attachments[-1]["footer"] = chosen
+            props[_ATTACHMENTS_PROP] = attachments
+            await loop.run_in_executor(
+                None, driver.posts.patch_post, ref, {"props": props}
+            )
+        except Exception:
+            # The press was delivered; only its mark on the card is missing.
+            logger.exception(
+                "Could not mark the card press on Mattermost post %s as done, so "
+                "its buttons stay pressable",
+                ref,
+            )
+
     async def admin_message(
         self,
         channel_id: str,
@@ -1116,6 +1378,132 @@ class MattermostAdapter(PlatformAdapter):
         if driver is None:
             return None
         return await self._create_posts(driver, channel_id, content, thread_root_id)
+
+    def direct_prompt_unavailable(self) -> str | None:
+        if (
+            self._admin_bot_driver is None
+            or self._admin_bot_id is None
+            or self._main_loop is None
+        ):
+            return (
+                "Switch's bot isn't connected to Mattermost right now, so use "
+                "the code instead."
+            )
+        if self._button_address() is None:
+            return (
+                "This Mattermost connection has no callback address, so its "
+                "buttons couldn't be pressed. Use the code instead."
+            )
+        return None
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message one person in the Switch Admin bot's own direct channel with
+        them.
+
+        The bot cannot join a DM between two others, but it can always open
+        one of its own. Each button is signed the way a card's answer buttons
+        are, so `_handle_callback` reads a press as the same `Press` and hands
+        it on with the post it sits on as its `message_ref`, which is the id
+        returned here.
+
+        Only a process holding the bridge has the bot's driver: a quiet one
+        mints no bot token, and says the prompt cannot go out from there.
+        """
+        driver = self._admin_bot_driver
+        bot_id = self._admin_bot_id
+        loop = self._main_loop
+        if driver is None or bot_id is None or loop is None:
+            logger.warning(
+                "Cannot send a direct prompt on %s: this process has no driver "
+                "for the Switch Admin bot.",
+                self._config.url,
+            )
+            raise DirectMessageUnavailable(
+                "Switch's bot isn't connected to Mattermost right now, so use "
+                "the code instead."
+            )
+        address = self._button_address()
+        if address is None:
+            raise DirectMessageUnavailable(
+                "This Mattermost connection has no callback address, so its "
+                "buttons couldn't be pressed. Use the code instead."
+            )
+        url, key = address
+        props = {
+            _ATTACHMENTS_PROP: [
+                {"actions": prompt_actions(key, url, prompt.token, prompt.labels)}
+            ]
+        }
+        try:
+            channel = await loop.run_in_executor(
+                None,
+                driver.channels.create_direct_message_channel,
+                [bot_id, external_user_id],
+            )
+            channel_id = str(channel.get("id") or "")
+            if not channel_id:
+                raise RuntimeError(
+                    "Mattermost opened a direct channel but returned no id."
+                )
+            return await self._post_or_raise(
+                driver, channel_id, self.translate_outbound(prompt.text), None, props
+            )
+        except _DEFINITE_REFUSALS as e:
+            logger.warning(
+                "Mattermost refused a direct prompt to user %s: %s",
+                external_user_id,
+                e,
+            )
+            raise DirectMessageUnavailable(
+                "Mattermost wouldn't let Switch's bot message this account, so "
+                "use the code instead."
+            ) from e
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The post's permalink, on `public_url` only: `url` is often an address
+        only Switch can reach (the bundled deployment's
+        `http://mattermost:8065`), and a link that opens nothing is worse than
+        no link."""
+        if not self._config.public_url:
+            return None
+        base = self._config.public_url.rstrip("/")
+        return f"{base}/{self._config.team_name}/pl/{message_ref}"
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        """Replace an answered prompt's text and take its buttons off.
+
+        Edited as the bot that sent it where this process has it, and as the
+        admin user where it does not: a press reaches whichever process the
+        callback address leads to, and only the one holding the bridge has
+        the bot's token.
+        """
+        driver = self._admin_bot_driver or self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            logger.warning(
+                "Cannot replace Mattermost prompt %s: not connected. It was "
+                "answered: %s",
+                message_ref,
+                text,
+            )
+            return
+        try:
+            props = await self._props_with_actions(driver, loop, message_ref, [])
+            await loop.run_in_executor(
+                None,
+                driver.posts.patch_post,
+                message_ref,
+                {"message": self.translate_outbound(text), "props": props},
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not replace Mattermost prompt %s: %s. It was answered: %s",
+                message_ref,
+                e,
+                text,
+            )
 
     async def send_attachment(
         self,
@@ -2661,6 +3049,114 @@ class MattermostAdapter(PlatformAdapter):
                 failed.append(external_id)
         return failed
 
+    async def remove_users_from_channel(
+        self, channel_id: str, user_external_ids: list[str]
+    ) -> list[str]:
+        """Take people out of a channel as the admin account. Someone already
+        gone is success; anyone else Mattermost refuses comes back failed."""
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError(
+                "Cannot remove users from channel: Mattermost client not connected"
+            )
+        loop = self._main_loop
+        failed: list[str] = []
+        for user_id in user_external_ids:
+            try:
+                await loop.run_in_executor(
+                    None,
+                    self._admin_driver.channels.remove_channel_member,
+                    channel_id,
+                    user_id,
+                )
+            except ResourceNotFound:
+                continue
+            except Exception:
+                logger.exception(
+                    "Failed to remove user %s from Mattermost channel %s",
+                    user_id,
+                    channel_id,
+                )
+                failed.append(user_id)
+        return failed
+
+    #: Members read per page when listing a channel; Mattermost's ceiling.
+    _MEMBERS_PAGE = 200
+
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
+        """Mattermost lists the members of every channel, as the admin account."""
+        return True
+
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
+        """The people in a channel, read page by page as the admin account.
+
+        Bots (every agent's, the bridge's, anyone else's), the admin account
+        and deactivated accounts are left out. A page or a lookup that fails
+        marks the listing incomplete rather than ending it, so whoever was read
+        can still be added.
+        """
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError("Cannot list channel members: adapter not started")
+        loop = self._main_loop
+        driver = self._admin_driver
+        ids: list[str] = []
+        complete = True
+        page = 0
+        try:
+            while True:
+                params = {"page": page, "per_page": self._MEMBERS_PAGE}
+                batch = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        driver.channels.get_channel_members, channel_id, params=params
+                    ),
+                )
+                ids.extend(str(m.get("user_id", "")) for m in batch if m.get("user_id"))
+                if len(batch) < self._MEMBERS_PAGE:
+                    break
+                page += 1
+        except Exception:
+            logger.warning(
+                "Could not list every member of Mattermost channel %s",
+                channel_id,
+                exc_info=True,
+            )
+            complete = False
+
+        candidates = [
+            user_id
+            for user_id in ids
+            if user_id != self._admin_user_id
+            and user_id != self._admin_bot_id
+            and user_id not in self._bridge_bot_ids
+            and user_id not in self._bot_id_to_username
+        ]
+        members: dict[str, str] = {}
+        for start in range(0, len(candidates), self._MEMBERS_PAGE):
+            chunk = candidates[start : start + self._MEMBERS_PAGE]
+            try:
+                users = await loop.run_in_executor(
+                    None, driver.users.get_users_by_ids, chunk
+                )
+            except Exception:
+                logger.warning(
+                    "Could not describe members of Mattermost channel %s",
+                    channel_id,
+                    exc_info=True,
+                )
+                complete = False
+                continue
+            for user in users:
+                if user.get("is_bot") or user.get("delete_at"):
+                    continue
+                user_id = str(user.get("id", ""))
+                if user_id:
+                    members[user_id] = str(user.get("username") or user_id)
+        return ChannelMembers(members=members, complete=complete)
+
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the
         user does not exist. Used to rebind a human actor's ``external_user_id`` when
@@ -3269,6 +3765,10 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
+        if event_type == "user_removed":
+            await self._handle_user_removed(event)
+            return
+
         if event_type != "posted":
             return
 
@@ -3457,6 +3957,62 @@ class MattermostAdapter(PlatformAdapter):
             )
         return attachments, failures
 
+    async def _handle_user_removed(self, event: dict[str, Any]) -> None:
+        """Someone left a channel, or was taken out of it.
+
+        Mattermost sends `user_removed` twice: to the channel, naming who went
+        (`data.user_id`), and to the person removed, with no `data.user_id`.
+        Only the first is a member leaving the room; the second is how one of
+        Switch's own bots hears it was removed, which is not a person leaving.
+        It reaches every bot socket in the channel, so the same departure can
+        arrive more than once, and the second is nothing to do.
+
+        `remover_id` is whoever did it; the person themselves when they left.
+        """
+        data: dict[str, Any] = event.get("data", {})
+        user_id = str(data.get("user_id", ""))
+        broadcast: dict[str, Any] = event.get("broadcast", {})
+        channel_id = str(broadcast.get("channel_id", "") or data.get("channel_id", ""))
+        if not user_id or not channel_id:
+            return
+        if (
+            user_id in self._bridge_bot_ids
+            or user_id in self._bot_id_to_username
+            or user_id == self._admin_user_id
+            or user_id == self._admin_bot_id
+        ):
+            return
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            raise RuntimeError("Cannot handle user_removed: adapter not started")
+
+        remover_id = str(data.get("remover_id", ""))
+        removed_by: str | None = None
+        if remover_id and remover_id != user_id:
+            removed_by = await self._username_of(remover_id)
+        coro = self._user_left(
+            InboundUserLeave(
+                channel_id=channel_id,
+                external_user_id=user_id,
+                removed_by_name=removed_by,
+            )
+        )
+        self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    async def _username_of(self, user_id: str) -> str | None:
+        """A Mattermost account's username, or None if it cannot be read."""
+        if self._admin_driver is None:
+            return None
+        try:
+            user = await asyncio.get_event_loop().run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+        except Exception:
+            logger.warning("Could not resolve Mattermost user %s", user_id)
+            return None
+        name = user.get("username")
+        return str(name) if name else None
+
     async def _handle_user_added(self, event: dict[str, Any]) -> None:
         data: dict[str, Any] = event.get("data", {})
         user_id = str(data.get("user_id", ""))
@@ -3496,7 +4052,14 @@ class MattermostAdapter(PlatformAdapter):
             self._dispatch(coro, loop)  # type: ignore[arg-type]
             return
 
-        if user_id == self._admin_user_id:
+        if (
+            user_id == self._admin_user_id
+            or user_id == self._admin_bot_id
+            or user_id in self._bridge_bot_ids
+        ):
+            # Switch's own accounts: the admin, and the bot it posts its
+            # notices as, which it adds to a channel the first time it
+            # answers there. Neither is a person joining.
             return
 
         if not self._on_user_joined:

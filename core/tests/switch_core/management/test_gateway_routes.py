@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.agent_icon import generated_icon_url
+from switch_core.agent_icon import generated_icon_url, new_icon_url
 from switch_core.connections.broker import Principal, ServiceError
 from switch_core.db.models import AgentController
 from switch_core.db.stores.agent_store import AgentStore
@@ -343,7 +343,7 @@ class TestManagedAgents:
             scout = await AgentStore().get(session, generated.json()["agent_id"])
             painter = await AgentStore().get(session, chosen.json()["agent_id"])
             prober = await AgentStore().get_by_name(session, "prober")
-        assert scout is not None and scout.icon_url == generated_icon_url("scout")
+        assert scout is not None and scout.icon_url == new_icon_url("scout")
         assert painter is not None
         assert painter.icon_url == "https://example.com/painter.png"
         assert prober is None
@@ -495,10 +495,14 @@ class TestManagedAgents:
             "mistral-vibe",
             "goose",
             "qwen",
+            "droid",
+            "cline",
+            "junie",
             "kimi-code",
         }
         assert providers["cursor"] == {"fields": []}
         assert providers["kiro"] == {"fields": []}
+        assert providers["droid"] == {"fields": []}
         effort = next(
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
@@ -530,6 +534,9 @@ class TestManagedAgents:
             "mistral-vibe",
             "goose",
             "qwen",
+            "droid",
+            "cline",
+            "junie",
             "kimi-code",
         ]
         assert providers[0]["label"] == "Claude Code"

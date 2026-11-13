@@ -34,13 +34,16 @@ HOSTED_AGENTS = "hosted_agents"
 AGENT_MANAGEMENT = "agent_management"
 
 # Service connections: people connect outside services (GitHub's grants,
-# Atlassian, Google Workspace, Datadog and the rest of the catalog) and grant
+# Atlassian, Google Workspace, Airtable and the rest of the catalog) and grant
 # them to their agents. With it off, the routes for connections, sign-ins,
 # keys and grants (`/gateway/service-connections`, `/gateway/agents/{id}/
-# service-grants`, `/agents/{id}/service-grants` and `service-tokens`) are not
-# mounted: agent hosts read that as no grants, and Console and the dashboard
-# show no services but GitHub's link, as before connections. GitHub's own
-# connect routes stay.
+# service-grants`, `/agents/{id}/service-grants` and `service-tokens`), the
+# workspace's switches and the connector apps are not mounted: agent hosts
+# read that as no grants, and neither Console nor the dashboard offers any
+# service to connect or grant. GitHub's own connect routes and the older
+# catalog (`/gateway/provider-connections`) stay, for a Console from before
+# connections; a GitHub connection made through them cannot be granted until
+# the flag is on.
 SERVICE_CONNECTIONS = "service_connections"
 
 # Follow the conversation: a person's message that mentions nobody reaches an
@@ -103,6 +106,12 @@ ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 # it off the dashboard is laid out as before.
 GATEWAY_V2 = "gateway_v2"
 
+# Messaging platforms beyond Slack, Mattermost, Teams, Discord and Telegram:
+# WhatsApp, Google Chat, Zulip, Signal, Matrix, Rocket.Chat and Webex. With it
+# off their adapters are not registered, so they are missing from the platform
+# directory and no bridge of those types can be created or started.
+ADDITIONAL_MESSAGING_PLATFORMS = "additional_messaging_platforms"
+
 # Flags that need another flag on: the server refuses a configuration with
 # the key on and any of its values off, and tools that turn flags off one at a
 # time (scripts/e2e_surface.py) turn the dependants off with it.
@@ -140,5 +149,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
         GATEWAY_V2,
+        ADDITIONAL_MESSAGING_PLATFORMS,
     }
 )

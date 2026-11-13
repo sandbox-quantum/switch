@@ -81,7 +81,9 @@ from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
     message_event,
+    removed_by,
     room_join_event,
+    room_leave_event,
 )
 from switch_core.bridges.agent.protocol.positions import (
     OWN_EVENTS,
@@ -249,15 +251,15 @@ class CursorExpiredError(Exception):
 def is_notifiable(event: AgentEvent) -> bool:
     """Whether an event is addressed at the agent rather than ambient context.
 
-    Addressed messages and the room_join events the agent is configured to
-    listen for. Excludes conversation and admin command events.
+    Addressed messages and the room_join / room_leave events the agent is
+    configured to listen for. Excludes conversation and admin command events.
     This is the `addressed` delivery filter: a supervising connection watching
     every room wants only these, while a session in a single room wants
     everything.
     """
     if event.type == "message":
         return getattr(event.payload, "addressed", False)
-    if event.type == "room_join":
+    if event.type in ("room_join", "room_leave"):
         return getattr(event.payload, "listening", False)
     return False
 
@@ -1563,19 +1565,34 @@ class EventBuffer:
             event: AgentEvent | None = None
             seq = row.seq
             if isinstance(inbound, InboundMembership):
-                if inbound.membership != "join" or inbound.prev_membership == "join":
-                    continue
-                event = room_join_event(
-                    room_id=room.id,
-                    bridge_id=room.bridge_id,
-                    channel_type=room.channel_type,
-                    member=inbound.state_key,
-                    member_name=member_names.get(inbound.state_key)
+                member_name = (
+                    member_names.get(inbound.state_key)
                     or inbound.display_name
-                    or inbound.state_key.split(":")[0].lstrip("@"),
-                    timestamp=inbound.timestamp,
-                    listening=False,
+                    or inbound.state_key.split(":")[0].lstrip("@")
                 )
+                if inbound.membership == "leave":
+                    event = room_leave_event(
+                        room_id=room.id,
+                        bridge_id=room.bridge_id,
+                        channel_type=room.channel_type,
+                        member=inbound.state_key,
+                        member_name=member_name,
+                        timestamp=inbound.timestamp,
+                        listening=False,
+                        removed_by=removed_by(inbound.content),
+                    )
+                elif inbound.membership != "join" or inbound.prev_membership == "join":
+                    continue
+                else:
+                    event = room_join_event(
+                        room_id=room.id,
+                        bridge_id=room.bridge_id,
+                        channel_type=room.channel_type,
+                        member=inbound.state_key,
+                        member_name=member_name,
+                        timestamp=inbound.timestamp,
+                        listening=False,
+                    )
             elif isinstance(inbound, InboundMedia) and key in groups:
                 # A multi-file message goes out once, at its last file, which is
                 # the room row its event is numbered by. A message posted

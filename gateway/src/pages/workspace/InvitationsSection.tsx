@@ -18,6 +18,7 @@ import {
 } from "../../data/api";
 import { formatDate, sentenceCase } from "../../theme/format";
 import CreateInvitationDialog from "./CreateInvitationDialog";
+import { useInvitationCreated } from "./invitationEvents";
 import { useLoad } from "./useLoad";
 
 function invitationStatus(inv: Invitation, now: number): string {
@@ -29,15 +30,18 @@ function invitationStatus(inv: Invitation, now: number): string {
 
 export default function InvitationsSection({
   tenantId,
+  workspaceName,
   inOrganization,
   emailEnabled,
 }: {
   tenantId: string;
+  workspaceName: string;
   inOrganization: boolean;
   emailEnabled: boolean;
 }) {
   const load = useCallback(() => fetchInvitations(tenantId), [tenantId]);
   const { data: invitations, error, loading, refetch } = useLoad(load);
+  useInvitationCreated(refetch);
   // Whether only people already in the organization can accept: where its
   // members come from its account settings, Switch can't add anyone new.
   const loadOrganization = useCallback(
@@ -152,7 +156,7 @@ export default function InvitationsSection({
           columns={columns}
           emptyState={
             <TableEmptyState title="No invitations">
-              Invite someone to send them a link to this workspace.
+              Invite someone to give them a link to join with.
             </TableEmptyState>
           }
           height={Math.min(520, 108 + Math.max(1, invitations?.length ?? 0) * 52)}
@@ -162,9 +166,9 @@ export default function InvitationsSection({
       <CreateInvitationDialog
         open={createOpen}
         tenantId={tenantId}
+        workspaceName={workspaceName}
         emailEnabled={emailEnabled}
         onClose={() => setCreateOpen(false)}
-        onCreated={refetch}
       />
     </Stack>
   );

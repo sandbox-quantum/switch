@@ -319,6 +319,14 @@ class _NoRunningBridges:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
+    def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Read from the adapter class for the same reason."""
         return True

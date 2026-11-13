@@ -44,6 +44,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.rooms_yaml import RoomSpec
 from switch_core.template_guide import TEMPLATE_GUIDE
+from tests.telemetry_records import recording_telemetry
 
 ROOM_TEMPLATE = """\
 version: 1
@@ -228,8 +229,7 @@ async def test_list_shows_shared_and_the_owners_private_templates(tools):
 
     # The ones that come with Switch first, then what the owner can read.
     assert rows[0]["id"] == "official:switch-expert"
-    assert {r["name"] for r in rows} == {
-        "Switch expert",
+    assert {r["name"] for r in rows if not r["id"].startswith("official:")} == {
         "mine-private",
         "theirs-shared",
     }
@@ -278,9 +278,11 @@ async def test_run_creates_the_room_under_the_templates_name(tools):
 
     async with tools["session_factory"]() as session:
         room = await session.get(Room, result["room_id"])
+        runs = await TemplateStore().run_count(session, template_id)
     assert room is not None
     assert (room.name, room.template_name) == ("jq room", "Topic room")
     assert room.created_by_agent_id == tools["agent_id"]
+    assert runs == 1
 
 
 @pytest.mark.asyncio
@@ -355,6 +357,7 @@ async def test_missing_agents_are_named_all_at_once_and_nothing_is_created(tools
         )
     async with tools["session_factory"]() as session:
         assert (await session.execute(select(Room))).scalars().all() == []
+        assert await TemplateStore().run_count(session, template_id) == 0
 
 
 @pytest.mark.asyncio
@@ -612,6 +615,27 @@ kickoff: "@{agent} start"
 
 
 @pytest.mark.asyncio
+async def test_saving_and_deleting_are_reported_as_in_the_gateway(tools):
+    """`template_created` and `template_deleted` counted only the gateway's
+    before."""
+    telemetry, sink = recording_telemetry()
+    tools["protocol"].telemetry = telemetry
+
+    saved = await _as(
+        tools["agent_id"],
+        save_template,
+        name="mine",
+        description="",
+        yaml=ROOM_TEMPLATE,
+    )
+    await _as(tools["agent_id"], delete_template, template_id=saved["id"])
+
+    assert sink.events("template_created") == [{"template_kind": "room"}]
+    [deleted] = sink.events("template_deleted")
+    assert deleted["template_kind"] == "room"
+    assert deleted["age_days"] >= 0
+
+
 async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tools):
     saved = await _as(
         tools["agent_id"],
@@ -621,7 +645,11 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
         yaml=ROOM_TEMPLATE,
     )
     templates = AgentTemplates(
-        TemplateStore(), max_bytes=64 * 1024, agent_management=False, switch_buddy=False
+        TemplateStore(),
+        max_bytes=64 * 1024,
+        agent_management=False,
+        switch_buddy=False,
+        telemetry=None,
     )
     async with tools["session_factory"]() as session:
         agent = await session.get(Agent, tools["agent_id"])
@@ -892,3 +920,44 @@ async def test_a_server_with_switch_buddy_offers_it_instead_of_the_expert(tools)
     ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
     assert "official:switch-buddy" in ids
     assert "official:switch-expert" not in ids
+
+
+@pytest.mark.asyncio
+async def test_official_room_templates_need_agent_management(tools):
+    """They create agents on the deployer's machines, which only agent
+    management can do."""
+    ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
+    assert "official:switch-expert" in ids
+    assert not any(
+        i.startswith("official:") and i != "official:switch-expert" for i in ids
+    )
+    with pytest.raises(AgentRefused) as refused:
+        await _as(
+            tools["agent_id"], get_template, template_id="official:incident-war-room"
+        )
+    assert refused.value.reason == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_an_official_template_the_workspace_removed_is_gone_for_agents(tools):
+    tools["protocol"].config.feature_flags = {
+        "agent_management": True,
+        "switch_buddy": False,
+    }
+    async with tools["session_factory"]() as session:
+        await TemplateStore().hide_official(
+            session, "incident-war-room", tools["stranger_id"]
+        )
+        await session.commit()
+
+    ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
+    assert "official:incident-war-room" not in ids
+    assert {"official:deploy-watch-room", "official:switch-expert"} <= ids
+    for tool in (get_template, run_template):
+        with pytest.raises(AgentRefused) as refused:
+            await _as(tools["agent_id"], tool, template_id="official:incident-war-room")
+        assert refused.value.reason == "not_found"
+    with pytest.raises(AgentRefused, match="comes with Switch"):
+        await _as(
+            tools["agent_id"], delete_template, template_id="official:deploy-watch-room"
+        )

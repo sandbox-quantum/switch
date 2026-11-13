@@ -25,7 +25,9 @@ export function PageHeader({
       <div className="flex flex-col gap-1 [-webkit-app-region:drag]">
         {back && <div className="mb-1 flex [-webkit-app-region:no-drag]">{back}</div>}
         <h2 className="text-xl">{title}</h2>
-        <p className="text-sm text-foreground-muted">{description}</p>
+        <p className="text-sm text-foreground-muted [&_a]:[-webkit-app-region:no-drag] [&_button]:[-webkit-app-region:no-drag]">
+          {description}
+        </p>
       </div>
       <div className="flex flex-col gap-4 [-webkit-app-region:no-drag]">
         {children}

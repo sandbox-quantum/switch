@@ -51,7 +51,7 @@ A condition reads one param: "{param}" (true when it has a value) or
 ## An agent (type: agent)
 
   instructions: text             # REQUIRED. The agent's brief.
-  provider: claude | codex | opencode | antigravity | cursor | deepseek-harness | pi | copilot | mistral-vibe | kimi-code | "{param}"   # REQUIRED
+  provider: claude | codex | opencode | antigravity | cursor | deepseek-harness | pi | copilot | mistral-vibe | junie | kimi-code | "{param}"   # REQUIRED
   machine: machine name or id | "{param}"           # REQUIRED: where it runs
   directory: path | "{param}"                       # REQUIRED
   name: identifier               # optional; else derived from display_name.
@@ -110,7 +110,7 @@ existing agent may stand in for it.
   name: text                     # REQUIRED
   description: text              # REQUIRED
   instructions: text             # standing brief for the room's agents
-  bridge: messaging app display name, or "{param}"
+  bridge: messaging app display name, "Switch Console", or "{param}"
   channel_type: channel_public | channel_private
   agents: [agent keys, or names of agents that exist]
   users: [usernames on its messaging app; "{$creator}" is the deployer]
@@ -132,8 +132,9 @@ attaches one that exists, and a missing, ambiguous or unreadable one stops
 the run; a full entry creates a new one of a reference type (google_drive,
 confluence, github, jira, or one the server defines), private unless
 read_visibility / write_visibility say otherwise. docs are documents created
-in the room; its agents see each one's description and load the content
-when they need it. Capturing a room writes roles and docs in full and
+in the room; its agents see each one's description, load the content
+when they need it, and one whose owner can edit the room may update or
+delete it. Capturing a room writes roles and docs in full and
 references by id:
 
     roles:
@@ -154,7 +155,11 @@ references by id:
 
 Without bridge the room goes on the server's default messaging app; users
 needs one (make them depend on it: [{if: "{bridge}", value: [...]},
-{value: []}]). Several rooms go in one group. packages must be ones the
+{value: []}]). bridge "Switch Console" makes a room on no messaging app
+with the deployer in it (an agent's owner, when an agent runs the
+template), one of their Switch Console chats; it names no users, and needs
+the server's group_chats flag. A bridge param offers it last, and $first
+never picks it. Several rooms go in one group. packages must be ones the
 deployer can attach by hand; a missing or ambiguous one stops the run.
 
 ## A group (type: group)

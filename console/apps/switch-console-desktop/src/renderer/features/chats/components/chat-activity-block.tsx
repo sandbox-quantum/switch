@@ -6,7 +6,14 @@ import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
-import { isThinking, toolState, type TurnActivity, turnTools } from '../activity-join';
+import {
+  isThinking,
+  subagentStatus,
+  toolState,
+  type TurnActivity,
+  turnSubagents,
+  turnTools,
+} from '../activity-join';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
@@ -127,6 +134,18 @@ export function turnWarnings(turn: TurnActivity): ChatActivityItem[] {
   return turn.items.filter((item) => item.kind === 'notice' && item.status === 'warning');
 }
 
+/** Messages a person sent into this turn while it ran (steered), in the order they arrived. */
+export function turnDeliveries(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items.filter((item) => item.kind === 'user-message' && item.delivery === 'steered');
+}
+
+/** What a turn says while it has not started: behind another turn, or about to start. */
+export function queuedLabel(turn: TurnActivity): string {
+  return turn.items.some((item) => item.kind === 'user-message' && item.delivery === 'queued')
+    ? 'Queued behind the running turn…'
+    : 'Queued…';
+}
+
 /** Whether a turn has anything to show in its work log. */
 export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean {
   const running = turn.status === 'queued' || turn.status === 'running';
@@ -135,11 +154,13 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
   return (
     reasoningLabel(reasoning, running && reasoning !== null) !== null ||
     work.length > 0 ||
+    turnSubagents(turn).length > 0 ||
     isThinking(turn) ||
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
-    turnWarnings(turn).length > 0
+    turnWarnings(turn).length > 0 ||
+    turnDeliveries(turn).length > 0
   );
 }
 
@@ -174,6 +195,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const label = reasoningLabel(reasoning, running && reasoning !== null);
   const work = turnTools(turn);
   const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
+  const children = turnSubagents(turn);
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = turn.requests;
   if (!turnShown(activity, turn)) return null;
@@ -195,6 +217,30 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
       {/* Only the latest call gets a full line; the ones before it fold into one. */}
       {work.length > 1 && <ToolGroup items={work.slice(0, -1)} turn={turn} activity={activity} />}
       <ToolRows items={work.slice(-1)} turn={turn} activity={activity} />
+      {children.slice(0, 5).map((child) => (
+        <WorkLogRow
+          key={child.itemId}
+          icon={<ToolKindIcon kind="agent" />}
+          label={`Subagent: ${child.title}`}
+          trailing={<span className="shrink-0 text-xs">{subagentStatus(child)}</span>}
+          active={subagentStatus(child) === 'running'}
+          tone={child.status === 'failed' ? 'failed' : 'default'}
+        />
+      ))}
+      {children.length > 5 && (
+        <div className="text-xs text-foreground-muted">
+          …{children.length - 5} more subagents not shown.
+        </div>
+      )}
+      {turnDeliveries(turn).map((item) => (
+        <WorkLogRow
+          key={item.itemId}
+          icon={<ToolKindIcon kind="switch" />}
+          label={`Steered into this turn${item.text ? `: ${item.text}` : ''}`}
+          title={item.text}
+          tone="passive"
+        />
+      ))}
       {turnWarnings(turn).map((notice) => (
         <WorkLogRow
           key={notice.itemId}
@@ -207,7 +253,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
       {thinking && (
         <WorkLogRow
           icon={<ThinkingIcon />}
-          label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
+          label={turn.status === 'queued' ? queuedLabel(turn) : 'Thinking…'}
           active
         />
       )}

@@ -165,7 +165,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
             </p>
             <p className="text-xs text-foreground-muted">
               Nothing is saved until the device enrolls: closing this discards the code, and the
-              device shows up in Your devices only once its controller reports. If it does not, run{' '}
+              device shows up in Devices only once its controller reports. If it does not, run{' '}
               <code>switch-agent-controller doctor</code> on it. A computer you reach over SSH can
               also join without this: create an agent on it, and Switch Console sets its controller
               up.

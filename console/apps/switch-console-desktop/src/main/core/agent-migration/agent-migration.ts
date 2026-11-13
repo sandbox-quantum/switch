@@ -7,7 +7,7 @@ import { agentLaunchConfig } from '@main/core/agents/agent-launch-config';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { resolveWorkdirFsFor } from '@main/core/agents/agent-workdir-fs';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
-import { deleteAgent } from '@main/core/agents/deleteAgent';
+import { pruneAgent } from '@main/core/agents/deleteAgent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getAgents } from '@main/core/agents/getAgents';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
@@ -753,12 +753,7 @@ export const agentMigrationService = new AgentMigrationService({
       return agents;
     },
     stoppedByHand: async (agentId) => (await listStoppedControllerAgentIds()).includes(agentId),
-    forget: (agentId) =>
-      deleteAgent(agentId, {
-        deleteInSwitch: false,
-        removeProvisionedFiles: false,
-        trigger: 'server_teardown',
-      }),
+    forget: (agentId, cause) => pruneAgent(agentId, cause),
   },
   definitions: { build: buildDefinition },
   targets: {

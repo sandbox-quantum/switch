@@ -4,7 +4,9 @@ The decision service behind auto-route. When a room has auto-route on and a
 message tags no agent, switch-core asks this service which agent in the room,
 if any, should answer. The service puts the room's context to a decision model
 as one choice (each candidate agent, plus "none") and only names an agent when
-the model's confidence clears a threshold.
+the model is sure enough: its confidence clears a threshold, or, with
+`DECISION_MIN_LEAD` set, its top option leads the next one by that much (see
+[Who gets the message](#who-gets-the-message)).
 
 It is a small FastAPI app (`switch_decision`). It holds no state and keeps no
 message content after answering.
@@ -51,16 +53,64 @@ sat at 0.51–0.61 confidence, just under the threshold.
 switch-core talks only to this contract; the backend behind it is configuration.
 
 - **`GET /health`** returns `200 {"ok": true, "backend", "model", "model_server",
-  "model_server_status", "confidence_threshold", "backends_available"}`, or
+  "model_server_status", "confidence_threshold", "min_lead", "backends_available"}`, or
   `503 {"detail"}` when the default backend's model server is down.
   `backends_available` is `["default", "anthropic"]`, plus `"bedrock"` when
   `DECISION_BEDROCK_ENABLED=1`. It never needs a token.
 - **`POST /decide`** takes `room` (`name`, `instructions`), `message` (`sender`,
   `text`, `thread_id`), `agents` (`name`, `description`, `role`), `thread`,
   `recent` and an optional `confidence_threshold`. It returns
-  `{"agent", "model_choice", "confidence", "threshold", "reason", "model", "backend", "latency_ms"}`.
-  `agent` is null for "none", for a pick below the threshold, and for an answer
-  that names an agent who is not a candidate (logged as an error).
+  `{"agent", "model_choice", "confidence", "threshold", "rule", "min_lead", "lead", "reason", "model", "backend", "latency_ms"}`.
+  `agent` is null for "none", for a pick the rule turned down (`rule` says
+  which: `threshold` or `lead`), and for an answer that names an agent who is
+  not a candidate (logged as an error). `lead` is the chosen option's
+  probability minus the next one's, when the backend scores every option.
+
+### Who gets the message
+
+The model scores each candidate agent and "none". By default the chosen agent
+gets the message when its confidence is at least the threshold
+(`DECISION_CONFIDENCE_THRESHOLD`, or the request's `confidence_threshold`).
+
+With `DECISION_MIN_LEAD` set, a backend that scores every option (`systemone`,
+`llamacpp`) uses the lead rule instead: the top option wins when it leads the
+next option, another agent or "none", by at least that much, and "none" on top
+reaches nobody. A request that sends its own `confidence_threshold` (a
+workspace that set one) keeps the threshold rule, and so do backends that rate
+a single confidence (`anthropic`, `bedrock`, `ollama`).
+
+Why: with "none" as one of the options, Strands spreads its probability over
+"none" and the agents, so a message plainly for one agent can sit at 0.45 with
+"none" at 0.37 and stay undelivered under a 0.5 bar. On the 124 eval scenarios
+(`scenarios_hard`, `scenarios_extra60`, `scenarios_names`) Strands Decider 4B
+scored the same with a lead of 0.05 as with a 0.5 threshold (112 correct, 11
+answered when nobody should, 1 missed), and six real pilot messages for a
+named agent all reached it, against five of six with the threshold. Plain
+argmax (a lead of 0) answered two more messages that were for nobody, both
+near ties with "none".
+
+### When the sender is talking to an agent
+
+Every backend gets more context when the sender is mid-exchange with an agent, which is when one of these holds in the conversation the message belongs to (the thread, or the room for a top-level message):
+
+- the sender and one agent have been going back and forth, with nobody else in between;
+- in a thread, an agent spoke or was addressed most recently;
+- the message just before this one is from an agent, and it addressed the sender or answered them.
+
+The state then gains a "Conversation state" block, just before the latest message, with one line for each fact that holds:
+
+```
+Conversation state:
+- nora's current back-and-forth with agents, nobody else speaking in between: manager (1)
+- In this thread, the last agent to speak or be addressed is manager; nobody else has spoken since.
+- The message just before this one is from manager, to nora.
+```
+
+The model's instructions also gain one sentence: a message right after an agent answered or addressed the sender continues that conversation and is for that agent, even when it is short, unless it answers or names another person. Strands gets it in its instructions; the other backends get it in the system prompt.
+
+When none of these holds, the request is exactly as it was without this context. The decide log line ends with `context=exchange` or `context=none`.
+
+Why: auto-route rooms skip switch-core's thread follow-up rule, and a short reply to the agent a person was talking to ("ok what else", "yes", "merged") often had "none" scored above that agent. On a labelled set of real messages, the context and the sentence turned misses into deliveries without adding wrong picks elsewhere. A room's people count was tried and left out: it changed nothing on real traffic, and misled the model when the history was short.
 - **Status codes:** `422` for a bad body, `502 {"detail", "error_kind"}` when
   the backend failed (see "Error kinds" below), `401` when a service token is
   set and the request lacks it, and `400 {"detail", "code": "backend_unavailable"}`
@@ -89,7 +139,9 @@ switch-core talks only to this contract; the backend behind it is configuration.
   - `X-Decision-Model`: the model for `anthropic` (default `claude-haiku-5-5`)
     or `bedrock` (default `DECISION_BEDROCK_MODEL`).
 - **Logs:** one line per decision: backend, model, number of candidates,
-  choice, confidence, threshold, pick and latency, plus the error kind when it
+  choice, confidence, threshold, pick and latency, the rule, the lead and
+  whether the conversation context was used (`context=`), plus
+  the error kind when it
   failed. No message text, room name, room instructions or keys, and no error
   body from the backend. See "Logs" below.
 
@@ -131,6 +183,7 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `SYSTEMONE_URL` | `http://127.0.0.1:8100/v1/systemone` | SystemOne server |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama |
 | `DECISION_CONFIDENCE_THRESHOLD` | `0.6` | 0 to 1; a request can override it |
+| `DECISION_MIN_LEAD` | unset | 0 to 1. Set, the lead rule replaces the threshold for a backend that scores every option (`systemone`, `llamacpp`): see [Who gets the message](#who-gets-the-message) |
 | `DECISION_TIMEOUT_S` | `30` | per backend call |
 | `DECISION_HISTORY_LIMIT` | `8` | recent and thread messages kept, each (8 recent + 8 thread). Measured on an L4: a room at switch-core's full limits took 0.55 s with 30 and 0.23 s with 8, with the same accuracy |
 | `DECISION_WITH_REASON` | `1` | `0` drops the reason from Haiku's tool call |
@@ -309,25 +362,52 @@ terms can run without this image: Qwen on llama.cpp's CPU image (compose's
 
 ## Evaluate
 
-`eval/` holds four scenario sets: `scenarios.json` (15 easy cases, three agents),
-`scenarios_hard.json` (40 cases, five agents with overlapping jobs; regenerate
-it with `eval/make_hard_scenarios.py`), `scenarios_extra60.json` (60 cases
-across four rooms), and `scenarios_names.json` (24 cases where an agent is
-named in plain text: spoken to, so it answers, or only mentioned, quoted or
-named in code or a link, so it doesn't; each case's `note` says which). The
-standard run is the hard, extra60 and names sets.
+`eval/` holds the scenario sets:
+
+- `scenarios_hard.json`: 40 cases, five agents with overlapping jobs. Regenerate it with `eval/make_hard_scenarios.py`.
+- `scenarios_extra60.json`: 60 cases across four rooms.
+- `scenarios_names.json`: 24 cases where an agent is named in plain text. Spoken to, it answers. Only mentioned, quoted, or named in code or a link, it doesn't. Each case's `note` says which.
+- `scenarios_followups.json`: 45 cases from a busy team room. They cover:
+  - replies that continue an exchange with an agent, in a thread and at the top level, often short ("ok what else", "yes", "merged");
+  - people answering people inside an agent's thread;
+  - agents spoken to by a spoken form of their name;
+  - announcements and requests aimed at people;
+  - people talking about an agent rather than to it.
+
+  Regenerate it with `eval/make_followups_scenarios.py`. It is written from patterns seen in real rooms, reworded, with made-up people.
+- `scenarios.json`: 15 easy cases, three agents.
+
+**History.** Every case in the first three sets carries a `background`: three to five earlier messages from people talking among themselves. `eval.py` sends them before the case's own history, so no case is decided on the message alone. `eval/add_history.py` writes them with a fixed seed. Run it again after regenerating a set.
+
+The standard run is the hard, extra60, names and followups sets:
 
 ```
-uv run python eval/eval.py --url http://localhost:8230
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_extra60.json
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_names.json
+uv run python eval/eval.py --all --url http://localhost:8230
+uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_followups.json
 # through the Haiku override (reads ANTHROPIC_API_KEY)
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json --backend anthropic
+uv run python eval/eval.py --all --url http://localhost:8230 --backend anthropic
 ```
 
-`DECISION_SERVICE_TOKEN` is sent when set. It prints each pick, then the
-accuracy and the median and maximum latency.
+`DECISION_SERVICE_TOKEN` is sent when set. For each set it prints every pick, then four counts:
+- **right**;
+- **wrong**: the wrong agent, or an agent when nobody should answer;
+- **missed**: nobody, when an agent should answer;
+- **precision of deliveries**.
+
+It also prints the median and maximum latency. `--all` ends with one table of all the sets.
+
+Strands Decider 4B with the lead rule (0.05), before the conversation-state context:
+
+| set | right | wrong | missed |
+|---|---|---|---|
+| hard | 36/40 | 3 | 1 |
+| extra60 | 52/60 | 8 | 0 |
+| names | 16/24 | 7 | 1 |
+| followups | 29/45 | 5 | 11 |
+
+Adding the history made the benchmark harder: the same model and prompt scored 112 right, 11 wrong and 1 missed over the first three sets without it, against 104, 18 and 2 with it.
+
+A change to what the service sends its model is also checked against a labelled set of real messages from a deployment, before it merges. That set holds people's messages, so it is never kept in this repository; the pull request reports only its counts.
 
 ## Latency so far
 

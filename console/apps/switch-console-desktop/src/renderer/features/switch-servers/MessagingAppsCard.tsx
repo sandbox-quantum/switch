@@ -30,7 +30,7 @@ import { toast as showToast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
+import { openExternalUrl, reportOpenAttempt } from '@renderer/lib/open-external';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -56,7 +56,6 @@ import type {
 } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectedChatsList } from './ConnectedChatsList';
-import { LinkAccountPrompts } from './link-account-prompts';
 import { accountHandle, linkRequestFailureText } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
 import {
@@ -350,13 +349,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
           </Button>
         )}
       </div>
-
-      <LinkAccountPrompts
-        workspaceId={workspaceId}
-        bridges={bridges}
-        identities={identities}
-        pending={pending}
-      />
 
       {/* Same shape as the addressing editor's owner warning, so the two
         readings of one problem look like one problem.
@@ -929,7 +921,16 @@ export function MessagingAppRow({
             {bridge.homeUrl && (
               <DropdownMenuItem
                 onClick={() =>
-                  void openExternalUrl(bridge.homeUrl as string, `Could not open ${platform}`)
+                  // Through the channel opener, so Slack and Discord open in
+                  // their app when it is installed rather than the browser.
+                  void reportOpenAttempt(
+                    rpc.switchRooms.openRoomChannel({
+                      serverId,
+                      channelUrl: bridge.homeUrl as string,
+                    }),
+                    `Could not open ${platform}`,
+                    bridge.homeUrl as string
+                  )
                 }
               >
                 <ExternalLink className="size-4" />

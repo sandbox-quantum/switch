@@ -56,14 +56,17 @@ from switch_core.sessions.contract import (
 from . import (
     CLOSED,
     NO_OPTIONS,
+    STEERED_MARKER,
     Drawn,
     Markup,
     RequestReference,
     example_value,
+    is_steered,
     surface_label,
     turn_state,
     unanswerable,
 )
+from .subagents import is_tool_call, subagent_lines
 
 _CONSOLE = "Open in Switch Console"
 
@@ -239,6 +242,13 @@ def turn_summary(
     still going.
     """
     state = turn_state(items, turn, tool_detail=True)
+    children = subagent_lines(
+        items, fit=lambda text, size: _fit(text, size, escape=escape)
+    )
+    for line in children:
+        if len(state) + len(line) + 1 > limit:
+            break
+        state += f"\n{line}"
     said = [item for item in items if item.kind == "assistant-message"]
     if not said:
         return _truncate(state, limit)
@@ -311,7 +321,22 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
-    did = [item for item in items if item.kind == "tool-activity"]
+    for item in items:
+        if item.kind != "user-message" or not in_activity_log(item):
+            continue
+        line = _log_line(item, escape=escape)
+        if spent + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        spent += len(line) + 1
+    for line in subagent_lines(
+        items, fit=lambda text, size: _fit(text, size, escape=escape)
+    ):
+        if spent + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        spent += len(line) + 1
+    did = [item for item in items if is_tool_call(item)]
     for line in _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail
     ):
@@ -385,6 +410,8 @@ def in_activity_log(item: Item) -> bool:
     """
     if item.kind == "tool-activity":
         return True
+    if is_steered(item):
+        return True
     return item.kind == "assistant-message" and bool(item.text)
 
 
@@ -395,11 +422,17 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     its own paragraph breaks removed: a sentence spread over four lines is
     indistinguishable from four things having happened.
     """
+    if item.kind == "user-message":
+        text = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
+        return f"{STEERED_MARKER}: {text or '(attachment)'}"
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
-    line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
+    marker = (
+        "Subagent" if item.kind == "tool-activity" and item.subagent else _TOOL_MARKER
+    )
+    line = f"{marker} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
     return line

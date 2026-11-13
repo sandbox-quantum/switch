@@ -1981,3 +1981,75 @@ async def test_a_stranded_stream_closed_but_not_redrawn_in_time_is_waited_out() 
     assert waiting.value.retry_after == 8
     assert len(client.stopped) == 1
     assert ref not in adapter._unredrawable
+
+
+async def test_child_progress_updates_the_same_stream_without_another_message() -> None:
+    """A subagent is a task card in the streamed plan, drawn once, whose status
+    follows it; it is never a block of its own beside the plan."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    child = _tool("child-a", "Reviewer: Check changes").model_copy(
+        update={"kind": "tool-activity", "subagent": True}
+    )
+
+    def child_cards() -> list[dict[str, Any]]:
+        return [
+            task
+            for block in _drawn(client).values()
+            for task in block.get("tasks", [])
+            if task["title"].startswith("Subagent:")
+        ]
+
+    content = TurnActivity([child], _turn())
+    ref = await adapter.post_rich(CHANNEL, "Agent", content, THREAD)
+    assert all(block["type"] == "plan" for block in _drawn(client).values())
+    [card] = child_cards()
+    assert (card["status"], card["icon"]["name"]) == ("in_progress", "bot")
+    before = len(client.appended)
+    await adapter.update_rich(CHANNEL, "Agent", ref, content, THREAD)
+    assert len(client.appended) == before
+    child = child.model_copy(update={"revision": 2, "status": "completed"})
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([child], _turn("completed")), THREAD
+    )
+    [card] = child_cards()
+    assert card["status"] == "complete"
+    assert len(client.started) == 1
+    assert client.posted == []
+
+
+async def test_a_subagent_finishing_after_its_turn_edits_the_closed_stream() -> None:
+    """A background subagent outlives its turn. The turn's end closes the
+    stream with the subagent still running; when it finishes, the same message
+    is edited to say so rather than left spinning or posted again."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    child = _tool("child-a", "Find the retry setting").model_copy(
+        update={"kind": "tool-activity", "subagent": True}
+    )
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([child], _turn()), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([child], _turn("completed")), THREAD
+    )
+    assert ref not in adapter._streams
+    assert client.updated == []
+
+    done = child.model_copy(update={"revision": 2, "status": "completed"})
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([done], _turn("completed")), THREAD
+    )
+    [edit] = client.updated
+    assert edit["ts"] == "1.0"
+    tasks = [
+        task
+        for block in edit["blocks"]
+        for task in block.get("tasks", [])
+        if task["title"].startswith("Subagent:")
+    ]
+    assert [(task["status"], task["icon"]["name"]) for task in tasks] == [
+        ("complete", "bot")
+    ]
+    assert len(client.started) == 1
+    assert client.posted == []

@@ -64,6 +64,8 @@ class _FakeProvisioning:
 
 
 class _FakeAdapter:
+    adds_creator_to_public_channel = False
+
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
     ) -> CreatedChannel:
@@ -118,6 +120,11 @@ class _FakeLifecycle:
 
     def rooms_changed(self, bridge_id: str) -> None:
         self.rooms_changed_for.append(bridge_id)
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
 
 
 class _NoRunningClients:
