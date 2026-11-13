@@ -206,7 +206,8 @@ describe('room settings for someone who may write to the room', () => {
   it('lists each agent with its presence in the side column, and adds from there', async () => {
     const el = await renderPanel('side');
     expect(el.textContent).toContain('reviewer-bot');
-    expect(el.textContent).toContain('Here now');
+    // A live agent's green dot says it is here; there is no label for it.
+    expect(el.textContent).not.toContain('Here now');
     expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Add people"]')).not.toBeNull();
   });
