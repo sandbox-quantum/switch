@@ -1,0 +1,363 @@
+{
+  "title": "Switch — Hosted agents v1",
+  "description": "Hosted agents (cloud machines) for whoever is on call, in reading order: is anything firing, can people get working agents, why is it failing, capacity, and whether the charts can be trusted. Each chart is the chart of the same title on deploy/observability/dashboard.json in the switch repository, kept equal by a test, so edit both there rather than here. Pick the deployment with $service and $flint_env.",
+  "layout_type": "ordered",
+  "reflow_type": "fixed",
+  "template_variables": [
+    {
+      "name": "service",
+      "prefix": "service",
+      "default": "REPLACE-WITH-SERVICE"
+    },
+    {
+      "name": "flint_env",
+      "prefix": "flint_env",
+      "default": "REPLACE-WITH-ENV"
+    }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Hosted agents (cloud machines).** Read from the machines' status reports and the hosted controller service's calls: no ids, only counts and fixed words. Gauges come from one Core process (the hosted metrics lock holder) and leave out reports older than 3 minutes. A machine gone silent shows as reporting below expected; a machine stopped by its owner or for idleness isn't expected. `backend` is the kind of machine (`vm` today). Filter by `$service`, and by `$flint_env` for the deployment's environment.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "manage_status",
+        "title": "Hosted alerts: status",
+        "title_align": "left",
+        "summary_type": "monitors",
+        "query": "tag:\"service:REPLACE-WITH-SERVICE\" (\"Hosted machines expected but not reporting\" OR \"Hosted controller service silent\" OR \"Hosted machine launches failing\" OR \"Cloud calls failing for hosted machines\" OR \"Cloud capacity short for hosted machines\" OR \"Hosted controller service hitting errors\" OR \"Controller credential refusals rising\" OR \"Controller token exchanges and enrolments refused\" OR \"AI provider logins missing or expired on cloud machines\" OR \"Cloud machines slow to start\" OR \"Cloud machine memory nearly full\" OR \"Cloud machine disk nearly full\" OR \"Hosted metrics sampler failing\")",
+        "sort": "status,asc",
+        "display_format": "countsAndList",
+        "color_preference": "text",
+        "hide_zero_counts": false,
+        "show_status": true,
+        "show_last_triggered": true,
+        "show_priority": false
+      },
+      "layout": {
+        "x": 0,
+        "y": 2,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machines reporting vs expected, by kind (silent = reporting below expected)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.boxes_reporting{$service,$flint_env} by {backend}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.boxes_expected{$service,$flint_env} by {backend}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 6,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Seconds since the hosted controller service last called Core (min over pods; rising = reconciler silent)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "min:switch.hosted.reconciler_silence{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 6,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine changes, by event and reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.machine_events{$service,$flint_env} by {event,reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 10,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "New cloud machines: seconds from request to first report, p95 / max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.provision_seconds{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 10,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents on cloud machines, by process state and kind (a v1 machine's session is always none)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.agents{$service,$flint_env} by {process,session,backend}",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 14,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Sessions on cloud machines: running vs max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.sessions{$service,$flint_env} by {kind,backend}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 14,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud calls that failed for hosted machines, by call and kind",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.cloud_errors{$service,$flint_env} by {call,kind}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 18,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted controller service errors, by kind",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.controller_errors{$service,$flint_env} by {kind}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 18,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent controller restarts on cloud machines",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.controller_restarts{$service,$flint_env}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 22,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Controller credentials refused per second, by reason and route",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.controller.credential_refusals{$service,$flint_env} by {reason,route}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 22,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "AI provider logins missing or expired on cloud machines, by provider and reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.provider_login_problems{$service,$flint_env} by {provider,reason}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 26,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents stopped on cloud machines, by reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.agents_stopped{$service,$flint_env} by {reason,backend}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 26,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine memory used (%), p95 / max. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.box_memory_used{$service,$flint_env}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.box_memory_used{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 30,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine disk used (%), p95 / max. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.disk_used{$service,$flint_env}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.disk_used{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 30,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Metrics samples that failed, by sampler",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.observability.sample_failures{$service,$flint_env} by {sampler}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 34,
+        "width": 6,
+        "height": 4
+      }
+    }
+  ]
+}

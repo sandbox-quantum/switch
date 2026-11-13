@@ -1,7 +1,7 @@
 """What a deployment's configuration puts on the relay's resource, and what it
 must not.
 
-The relay files each event under the Amplitude project `flint_env` names. A
+The relay files each event under the Amplitude project `switch_trust.env` names. A
 server that read TELEMETRY_ENVIRONMENT and then sent something else would land
 its usage in the wrong project with nothing anywhere reporting a fault, so this
 follows the value from configuration to the request body.
@@ -91,15 +91,15 @@ async def _send_one(
 
 
 @pytest.mark.parametrize("environment", ["prod", "staging", "dev", "local"])
-async def test_the_configured_environment_is_sent_as_flint_env(
+async def test_the_configured_environment_is_sent_as_switch_trust_env(
     environment: str,
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, resource = await _send_one(_config(environment), session_factory, monkeypatch)
 
-    assert resource["flint_env"] == {"stringValue": environment}
-    assert resource["flint_internal"] == {"stringValue": "false"}
+    assert resource["switch_trust.env"] == {"stringValue": environment}
+    assert resource["switch_trust.internal"] == {"stringValue": "false"}
 
 
 async def test_operator_chosen_names_never_reach_the_relay(

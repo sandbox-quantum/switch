@@ -1,8 +1,8 @@
-"""Switch cloud machines that run the agent controller, end to end against Postgres.
+"""Switch Cloud machines that run the agent controller, end to end against Postgres.
 
 The hosted controller prepares a cloud machine; Core hands it a
 one-time enrollment code (the same one on every retry of a revision); the
-controller enrolls with it and becomes the machine's, as a Switch cloud
+controller enrolls with it and becomes the machine's, as a Switch Cloud
 controller; its status reports make the machine ready; and the managed agents
 placed on it are the machine's agents.
 """
@@ -10,6 +10,7 @@ placed on it are the machine's agents.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,7 +54,10 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_machines import router as machines_router
+from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.management.placement import placement_refusal
+from switch_core.observability.hosted import reconciler_watch
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
@@ -66,8 +70,12 @@ from tests.switch_core.management.harness import (
     build_harness,
     cookies_for,
     create_managed_agent,
+    enroll_console,
+    ensure_connected,
     platform,
+    provider,
     report_status,
+    status_report,
 )
 from tests.telemetry_records import RecordingSink, recording_telemetry
 
@@ -88,6 +96,25 @@ def _no_enrollment_left_installed() -> Iterator[None]:
 @pytest.fixture
 def harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
     return build_harness(session_factory)
+
+
+@pytest.fixture
+def hosted_metrics() -> Iterator[MetricsRegistry]:
+    """An installed metrics registry, as with OTLP configured."""
+    registry = MetricsRegistry()
+    install(registry)
+    yield registry
+    uninstall()
+
+
+def _metric_points(registry: MetricsRegistry, name: str) -> list[tuple[dict, float]]:
+    found: list[tuple[dict, float]] = []
+    for payload in registry.collect():
+        if payload.name != name:
+            continue
+        found += [(dict(p.attributes), p.value) for p in payload.numbers]
+        found += [(dict(h.attributes), h.total) for h in payload.histograms]
+    return found
 
 
 def _hosted_app(
@@ -298,7 +325,7 @@ class TestControllerMachines:
                 )
                 assert controller is not None
                 assert controller.kind == "ec2"
-                assert controller.name == "Switch cloud"
+                assert controller.name == "Switch Cloud"
             assert (
                 await _workspace(harness.session_factory, machine.id)
             ).controller_id == (enrolled["controller_id"])
@@ -383,7 +410,10 @@ class TestControllerMachines:
             ]
 
     async def test_its_status_reports_make_it_ready_and_its_agents_are_the_machines(
-        self, harness: Harness, reported: RecordingSink
+        self,
+        harness: Harness,
+        reported: RecordingSink,
+        hosted_metrics: MetricsRegistry,
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
@@ -427,6 +457,37 @@ class TestControllerMachines:
                 assert became_ready["provisioning_seconds"] >= 0
                 await report_status(client, controller, 3)  # type: ignore[arg-type]
                 assert len(reported.events("cloud_machine_ready")) == 1
+                # The report keeps its counts for the hosted metrics, and the
+                # machine becoming ready is counted.
+                (report_kept,) = ready.heartbeat["controllers"].values()
+                assert set(report_kept["metrics"]) == {
+                    "agents",
+                    "stopped",
+                    "sessions_running",
+                    "sessions_max",
+                    "login_problems",
+                }
+                # One collection: it hands over a histogram's points once.
+                collected = list(hosted_metrics.collect())
+                events = [
+                    (dict(p.attributes), p.value)
+                    for payload in collected
+                    if payload.name == "switch.hosted.machine_events"
+                    for p in payload.numbers
+                ]
+                assert ({"event": "ready", "reason": "new", "backend": "vm"}, 1.0) in (
+                    events
+                )
+                # A new machine's time from request to first report, once.
+                (provisioned,) = [
+                    h
+                    for payload in collected
+                    if payload.name == "switch.hosted.provision_seconds"
+                    for h in payload.histograms
+                ]
+                assert dict(provisioned.attributes) == {"backend": "vm"}
+                assert provisioned.count == 1
+                assert provisioned.total >= 0
                 # Up again at the same revision: ready before, so not new,
                 # and not timed.
                 await _update(
@@ -439,6 +500,17 @@ class TestControllerMachines:
                 assert reported.events("cloud_machine_ready")[1] == {
                     "new_machine": False
                 }
+                # A's metric agrees: the second ready is a restart.
+                restarted = [
+                    (dict(p.attributes), p.value)
+                    for payload in hosted_metrics.collect()
+                    if payload.name == "switch.hosted.machine_events"
+                    for p in payload.numbers
+                ]
+                assert (
+                    {"event": "ready", "reason": "restart", "backend": "vm"},
+                    1.0,
+                ) in restarted
 
                 created = await create_managed_agent(
                     client,
@@ -589,7 +661,10 @@ class TestControllerMachines:
             assert after.desired_state == "running"
 
     async def test_an_idle_machine_with_agents_is_put_to_sleep(
-        self, harness: Harness, reported: RecordingSink
+        self,
+        harness: Harness,
+        reported: RecordingSink,
+        hosted_metrics: MetricsRegistry,
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
@@ -623,6 +698,15 @@ class TestControllerMachines:
         assert (after.desired_state, after.stop_reason) == ("stopped", "idle")
         assert reported.events("cloud_machine_idle_stopped") == [{}]
         assert reported.events("cloud_machine_stopped") == []
+        assert ({"event": "stopped", "reason": "idle", "backend": "vm"}, 1.0) in (
+            _metric_points(hosted_metrics, "switch.hosted.machine_events")
+        )
+        # The poll is the reconciler calling: this process has heard from it.
+        hosted_metrics.register_observer(reconciler_watch().readings)
+        ((_, silence),) = _metric_points(
+            hosted_metrics, "switch.hosted.reconciler_silence"
+        )
+        assert 0.0 <= silence < 60.0
 
     async def test_a_message_or_a_placement_wakes_a_sleeping_machine(
         self, harness: Harness, reported: RecordingSink
@@ -679,6 +763,227 @@ class TestControllerMachines:
         assert (held.desired_state, held.stop_reason) == ("stopped", "admin")
         assert reported.events("cloud_machine_woken") == [{"trigger": "message"}]
 
+    async def test_a_woken_machine_counts_as_expected_only_once_it_reports(
+        self, harness: Harness
+    ) -> None:
+        """Observability: through the real wake and status paths, a woken
+        machine reads expected 0 while it is `provisioning`, and expected 1
+        with reporting 1 once its first status report makes it ready. So a
+        booting machine never counts as expected but silent."""
+        from switch_core.observability.hosted import MachineRow, snapshot_of
+
+        def gauges(row: CloudMachine) -> tuple[dict[str, int], dict[str, int]]:
+            snap = snapshot_of(
+                [
+                    MachineRow(
+                        id=row.id,
+                        state=row.state,
+                        desired_state=row.desired_state,
+                        heartbeat=row.heartbeat,
+                        heartbeat_at=row.heartbeat_at,
+                    )
+                ],
+                datetime.now(UTC),
+            )
+            return snap.boxes_expected, snap.boxes_reporting
+
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+                token = await client.post(
+                    f"/v1/management/controllers/{enrolled['controller_id']}/token",
+                    json={"credential": enrolled["credential"]},
+                )
+                assert token.status_code == 200, token.text
+                controller = SimpleNamespace(
+                    controller_id=enrolled["controller_id"],
+                    credential=enrolled["credential"],
+                    access_token=token.json()["access_token"],
+                    owner=owner,
+                    harness=harness,
+                    headers=bearer(token.json()["access_token"]),
+                )
+                # Asleep for idleness, its last report long gone.
+                await _update(
+                    harness.session_factory,
+                    machine.id,
+                    state="ready",
+                    desired_state="stopped",
+                    stop_reason="idle",
+                    heartbeat_at=datetime.now(UTC) - timedelta(hours=2),
+                )
+                async with harness.session_factory() as session:
+                    woken = await wake_controller_machine(
+                        session, enrolled["controller_id"], datetime.now(UTC), "message"
+                    )
+                    await session.commit()
+                assert woken is not None
+                booting = await _machine(harness.session_factory, machine.id)
+                assert (booting.state, booting.desired_state) == (
+                    "provisioning",
+                    "running",
+                )
+                assert gauges(booting) == ({"vm": 0}, {"vm": 0})
+
+                # The reconciler sees it running at the new revision, then its
+                # controller's first report makes it ready.
+                await _update(
+                    harness.session_factory,
+                    machine.id,
+                    running_observed_at=datetime.now(UTC),
+                )
+                await report_status(client, controller, 1)  # type: ignore[arg-type]
+                ready = await _machine(harness.session_factory, machine.id)
+                assert ready.state == "ready"
+                assert gauges(ready) == ({"vm": 1}, {"vm": 1})
+
+    async def test_a_login_problem_is_logged_once_when_it_first_shows(
+        self,
+        harness: Harness,
+        hosted_metrics: MetricsRegistry,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A provider login that is missing or expired is counted in the kept
+        summary on every report, but logged only on the first report showing
+        it, with fixed words and the machine id."""
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        providers = [
+            provider("claude", auth="expired"),
+            provider("codex", installed=False, auth="missing"),
+            provider("cursor"),
+        ]
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+                token = await client.post(
+                    f"/v1/management/controllers/{enrolled['controller_id']}/token",
+                    json={"credential": enrolled["credential"]},
+                )
+                assert token.status_code == 200, token.text
+                controller = SimpleNamespace(
+                    controller_id=enrolled["controller_id"],
+                    credential=enrolled["credential"],
+                    access_token=token.json()["access_token"],
+                    owner=owner,
+                    harness=harness,
+                    headers=bearer(token.json()["access_token"]),
+                )
+                with caplog.at_level(logging.INFO, logger=cloud_controllers.__name__):
+                    for seq in (1, 2):
+                        response = await report_status(
+                            client,
+                            controller,  # type: ignore[arg-type]
+                            seq,
+                            providers=providers,
+                        )
+                        assert response.status_code == 200, response.text
+        row = await _machine(harness.session_factory, machine.id)
+        assert row.heartbeat is not None
+        (kept,) = row.heartbeat["controllers"].values()
+        assert kept["metrics"]["login_problems"] == {"claude:expired": 1}
+        logged = [
+            getattr(record, STRUCTURED_FIELDS)
+            for record in caplog.records
+            if record.name == cloud_controllers.__name__
+            and hasattr(record, STRUCTURED_FIELDS)
+        ]
+        assert logged == [
+            {
+                "switch": {
+                    "event": "hosted.provider_login_problem",
+                    "provider": "claude",
+                    "reason": "expired",
+                    "machine": machine.id,
+                }
+            }
+        ]
+
+    async def test_a_new_controller_start_time_counts_as_a_restart(
+        self, harness: Harness, hosted_metrics: MetricsRegistry
+    ) -> None:
+        """The first report with a start time is not a restart, the same
+        start time again is not either, and a new one is. A report without one
+        (an older controller) counts nothing and forgets the last."""
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+                token = await client.post(
+                    f"/v1/management/controllers/{enrolled['controller_id']}/token",
+                    json={"credential": enrolled["credential"]},
+                )
+                assert token.status_code == 200, token.text
+                controller = SimpleNamespace(
+                    controller_id=enrolled["controller_id"],
+                    credential=enrolled["credential"],
+                    access_token=token.json()["access_token"],
+                    owner=owner,
+                    harness=harness,
+                    headers=bearer(token.json()["access_token"]),
+                )
+                await ensure_connected(client, controller)  # type: ignore[arg-type]
+                starts = [
+                    "2026-01-01T11:00:00Z",
+                    "2026-01-01T11:00:00+00:00",
+                    "2026-01-01T12:30:00Z",
+                    None,
+                    "2026-01-01T13:00:00Z",
+                ]
+                for seq, started_at in enumerate(starts, start=1):
+                    report = status_report(seq)
+                    if started_at is None:
+                        del report["controller"]["started_at"]
+                    else:
+                        report["controller"]["started_at"] = started_at
+                    response = await client.put(
+                        f"/v1/management/controllers/{enrolled['controller_id']}/status",
+                        json=report,
+                        headers=controller.headers,
+                    )
+                    assert response.status_code == 200, response.text
+        assert _metric_points(hosted_metrics, "switch.hosted.controller_restarts") == [
+            ({"backend": "vm"}, 1.0)
+        ]
+        row = await _machine(harness.session_factory, machine.id)
+        assert row.heartbeat is not None
+        (kept,) = row.heartbeat["controllers"].values()
+        assert kept["started_at"] == "2026-01-01T13:00:00+00:00"
+
+    async def test_a_controller_off_the_cloud_restarting_counts_nothing(
+        self, harness: Harness, hosted_metrics: MetricsRegistry
+    ) -> None:
+        """Every controller sends its start time, laptops included. Only a
+        cloud machine's counts: from any other it's accepted and ignored."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            laptop = await enroll_console(harness, client, owner)
+            await ensure_connected(client, laptop)
+            for seq, started_at in enumerate(
+                ["2026-01-01T11:00:00Z", "2026-01-01T12:30:00Z"], start=1
+            ):
+                report = status_report(seq)
+                report["controller"]["started_at"] = started_at
+                response = await client.put(
+                    f"/v1/management/controllers/{laptop.controller_id}/status",
+                    json=report,
+                    headers=laptop.headers,
+                )
+                assert response.status_code == 200, response.text
+        assert _metric_points(hosted_metrics, "switch.hosted.controller_restarts") == []
+
     async def test_placing_an_agent_on_a_sleeping_machine_wakes_it(
         self, harness: Harness, reported: RecordingSink
     ) -> None:
@@ -726,7 +1031,7 @@ def test_a_waking_machine_is_judged_by_its_last_report() -> None:
     now = datetime.now(UTC)
     controller = AgentController(
         owner_id="owner",
-        name="Switch cloud",
+        name="Switch Cloud",
         kind="ec2",
         api_key_id="key",
         connected_at=now - timedelta(hours=3),

@@ -7,8 +7,17 @@ Two sets of documents, with different owners and different audiences.
 The reader-facing Switch documentation, published at
 [docs.switchagents.ai](https://docs.switchagents.ai). It is written in
 [`sandbox-quantum/docs`](https://github.com/sandbox-quantum/docs) as Mintlify MDX
-and converted to Markdown here so that agents working in this repository can read
-what users are told.
+and converted to Markdown here as an offline copy.
+
+Agents should read the published site, which is always current:
+[`llms.txt`](https://docs.switchagents.ai/llms.txt) lists every page, and
+`https://docs.switchagents.ai/mcp` serves them over MCP. Use this copy only
+without network access.
+
+The [Docs sync](../.github/workflows/docs-sync.yml) workflow runs daily: its
+`check` job fails when this copy differs from the published docs, and its `sync`
+job opens (or updates) a pull request with the regenerated pages. Run
+`just check-docs` to compare locally.
 
 **Generated — do not edit.** Change the source pages in the docs repository, then
 run `just sync-docs`. Every file under `official/` is rewritten on each run, so

@@ -97,6 +97,9 @@ class Journey:
         async with world.session_factory() as session:
             room = await RoomStore().get(session, world.room_id)
             assert room is not None
+            # alice is claimed by the room's owner, so her room commands are
+            # the owner's; bob is someone else in the room.
+            room.owner_id = world.owner_id
             self.room = room
             for name in (*world.agents, "alice", "bob", "admin"):
                 client = await ClientStore().get_by_transport_user_id(
@@ -464,7 +467,10 @@ class TestJourneys:
 
         assert "is no longer assigned" in unassigned
         assert await room.reached(question) == set()
-        assert refused.startswith("You can't assign")
+        # Assigning is a room setting, and bob is not the room's owner.
+        assert refused.startswith(
+            "Only the room's owner, a room admin or a workspace admin"
+        )
         assert await room.reached(after) == set()
 
 
@@ -529,6 +535,19 @@ class TestAttachments:
         told = await room.send_file("bob", "deploy.log", at=10)
 
         assert await room.reached(told) == {"helper"}
+
+    async def test_followed_text_and_file_carry_the_mid_turn_setting(
+        self, room: Journey, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(AgentRecipient, "_mid_turn_delivery", lambda _self: "queue")
+        await room.say("alice", "@helper can you read this?", at=0)
+        await room.post("helper", "Yes, send it", at=10)
+        text_id = await room.say("alice", "here is the context", at=20)
+        file_id = await room.send_file("alice", "screen.png", at=30, caption="here")
+
+        for event_id in (text_id, file_id):
+            payload = (await room.payloads(event_id))["helper"]
+            assert payload.mid_turn_delivery == "queue"
 
     async def test_a_file_follows_the_agents_answer(self, room: Journey) -> None:
         await room.say("alice", "@helper can you read a screenshot?", at=0)

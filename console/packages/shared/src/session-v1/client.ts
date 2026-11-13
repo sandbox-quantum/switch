@@ -145,6 +145,9 @@ export class SessionChatClient {
         !isDeepEqual(this.pending.body.attachments, attachments))
     )
       throw new Error('Resolve the previous message before sending another.');
+    // Typed while the agent works, it joins the running turn where the
+    // provider can take it; the session queues it when nothing runs.
+    const delivery = snapshot.session.capabilities.input;
     const command: ClientCommand = this.pending ?? {
       contractVersion: 1,
       commandId,
@@ -154,7 +157,7 @@ export class SessionChatClient {
         type: 'message.send',
         text,
         attachments,
-        delivery: 'queue',
+        delivery,
       },
     };
     if (command.epoch !== snapshot.session.epoch)

@@ -59,6 +59,7 @@
           "attachments": [],
           "opening_message": null,
           "sender_role": null,
+          "mid_turn_delivery": "steer",
           "switch_notice": null,
           "routed": false,
           "routed_reason": null,

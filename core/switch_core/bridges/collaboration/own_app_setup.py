@@ -68,10 +68,14 @@ def slack_manifest() -> dict[str, Any]:
     return {
         "display_information": {"name": SLACK_APP_NAME},
         "features": {
+            # The Messages tab is where the app's direct messages show, read
+            # only: Switch sends the prompt that confirms a linked account
+            # there (CHOO-4121), and people press its buttons but cannot write
+            # to the app, which routes no messages to agents.
             "app_home": {
                 "home_tab_enabled": True,
-                "messages_tab_enabled": False,
-                "messages_tab_read_only_enabled": False,
+                "messages_tab_enabled": True,
+                "messages_tab_read_only_enabled": True,
             },
             "bot_user": {"display_name": SLACK_APP_NAME, "always_online": False},
             "agent_view": {
@@ -100,6 +104,20 @@ def slack_create_url(manifest: dict[str, Any]) -> str:
     )
 
 
+#: Bot scopes Switch cannot do without: reading and posting in channels, and
+#: `users:read`, without which linking a person's Slack account fails. An app
+#: made from the manifest has them all; one built by hand, or from an older
+#: manifest, may not, and is told which to add before it is connected.
+REQUIRED_SLACK_SCOPES: tuple[str, ...] = (
+    "channels:history",
+    "channels:read",
+    "chat:write",
+    "groups:history",
+    "groups:read",
+    "users:read",
+)
+
+
 @dataclass(frozen=True)
 class SlackCheck:
     workspace_id: str
@@ -121,12 +139,24 @@ async def check_slack(
             "The app-level token starts with xapp-. Make one under Basic "
             "Information, App-Level Tokens, with the connections:write scope."
         )
-    auth = await _slack_call(http, "auth.test", bot_token)
+    auth, granted = await _slack_call_with_scopes(http, "auth.test", bot_token)
     if not auth.get("ok"):
         raise SetupCheckError(
             f"Slack refused the bot token ({auth.get('error', 'unknown error')}). "
             "Install the app to your workspace again and copy the new token."
         )
+    # Slack lists the token's scopes in a header; an answer without it is
+    # not judged.
+    if granted is not None:
+        missing = [s for s in REQUIRED_SLACK_SCOPES if s not in granted]
+        if missing:
+            raise SetupCheckError(
+                f"The Slack app is missing the {', '.join(missing)} "
+                f"{'scope' if len(missing) == 1 else 'scopes'}. In Slack, open "
+                "OAuth & Permissions, add "
+                f"{'it' if len(missing) == 1 else 'them'} under Bot Token Scopes, "
+                "click Reinstall to Workspace, and paste the new bot token here."
+            )
     socket = await _slack_call(http, "apps.connections.open", app_token)
     if not socket.get("ok"):
         raise SetupCheckError(
@@ -143,6 +173,15 @@ async def check_slack(
 async def _slack_call(
     http: httpx.AsyncClient, method: str, token: str
 ) -> dict[str, Any]:
+    body, _scopes = await _slack_call_with_scopes(http, method, token)
+    return body
+
+
+async def _slack_call_with_scopes(
+    http: httpx.AsyncClient, method: str, token: str
+) -> tuple[dict[str, Any], set[str] | None]:
+    """Slack's answer, and the token's scopes from its `x-oauth-scopes`
+    header (None when Slack did not send it)."""
     try:
         response = await http.post(
             f"{SLACK_API}/{method}", headers={"Authorization": f"Bearer {token}"}
@@ -150,4 +189,10 @@ async def _slack_call(
     except httpx.HTTPError as error:
         raise SetupCheckError(f"Could not reach Slack: {error}") from error
     body = response.json()
-    return body if isinstance(body, dict) else {}
+    header = response.headers.get("x-oauth-scopes")
+    scopes = (
+        {s.strip() for s in header.split(",") if s.strip()}
+        if header is not None
+        else None
+    )
+    return (body if isinstance(body, dict) else {}), scopes

@@ -38,6 +38,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
+from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.db.audit import (
     OrganizationAuditAction,
     record_organization_audit_event,
@@ -47,6 +48,7 @@ from switch_core.db.models import (
     OrganizationMember,
     Tenant,
     TenantMember,
+    User,
 )
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.organization_store import OrganizationStore
@@ -271,6 +273,24 @@ async def _grant(
     wanted: str,
     source: str,
 ) -> None:
+    if wanted == ORGANIZATION_ADMIN_ROLE:
+        user = await session.get(User, user_id)
+        if user is None:
+            raise RuntimeError(f"Directory member {user_id} has no user")
+        if is_bootstrap_owner(user):
+            # Never Org Admin, whatever the directory says
+            # (`SERVICE_ACCOUNT_ADMIN_REFUSAL`): it joins as a member, if
+            # joining, and the refusal is recorded for an admin to see.
+            await _conflict(
+                session,
+                organization_id,
+                user_id,
+                {"source": source, "kind": "service_account_not_admin"},
+            )
+            if current is not None:
+                await session.commit()
+                return
+            wanted = "member"
     if current is None:
         added = await session.execute(
             insert(OrganizationMember)

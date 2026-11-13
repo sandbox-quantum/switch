@@ -186,51 +186,90 @@ CHECKS: dict[str, Check] = {
                 match=("type", "reference_type"),
             ),
         ],
-        "a room": [
-            Check(
-                "can_write",
-                _get(f"{G}/rooms/{{readable_room}}"),
-                _act("PATCH", f"{G}/rooms/{{readable_room}}", {"description": "x"}),
-            ),
-            Check(
-                "can_manage",
-                _get(f"{G}/rooms/{{readable_room}}"),
-                _act("DELETE", f"{G}/rooms/{{readable_room}}"),
-            ),
-            Check(
-                "can_transfer",
-                _get(f"{G}/rooms/{{readable_room}}"),
-                _transfer("room", "{readable_room}"),
-            ),
-            Check(
-                "can_change_members",
-                _get(f"{G}/rooms/{{readable_room}}"),
-                _act(
-                    "POST",
-                    f"{G}/rooms/{{readable_room}}/agents",
-                    {"agent_ids": ["{agent}"]},
+        **{
+            f"a room ({who})": [
+                Check(
+                    "can_write",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("PATCH", f"{G}/rooms/{{{room}}}", {"description": "x"}),
                 ),
-            ),
-        ],
+                Check(
+                    "can_manage",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("DELETE", f"{G}/rooms/{{{room}}}"),
+                ),
+                Check(
+                    "can_archive",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("POST", f"{G}/rooms/{{{room}}}/archive"),
+                ),
+                Check(
+                    "can_manage_admins",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("PUT", f"{G}/rooms/{{{room}}}/admins/{{member_target}}"),
+                    # The target isn't in the room: allowed to ask, refused for them.
+                    later=frozenset({400}),
+                ),
+                Check(
+                    "can_transfer",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _transfer("room", f"{{{room}}}"),
+                ),
+                Check(
+                    "can_attach",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("POST", f"{G}/rooms/{{{room}}}/documents/{{public_document}}"),
+                ),
+                Check(
+                    "can_invite_agents",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act(
+                        "POST",
+                        f"{G}/rooms/{{{room}}}/agents",
+                        {"agent_ids": ["{open_agent}"]},
+                    ),
+                ),
+                *(
+                    Check(
+                        flag,
+                        _get(f"{G}/rooms/{{{room}}}"),
+                        _act("DELETE", f"{G}/rooms/{{{room}}}/agents/{{agent}}"),
+                    )
+                    for flag in ("can_remove_members", "can_change_members")
+                ),
+                Check(
+                    "can_unlink",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("DELETE", f"{G}/rooms/{{{room}}}/references/{{reference}}"),
+                ),
+            ]
+            for who, room in (
+                ("everyone reads it", "readable_room"),
+                ("the member is in it", "joined_room"),
+                ("the member is a room admin", "administered_room"),
+            )
+        },
         "a direct conversation": [
             Check(
-                "can_change_members",
+                "can_invite_agents",
                 _get(f"{G}/rooms/{{direct_room}}"),
-                act,
-                refused=REFUSED | {409},
-            )
-            for act in (
                 _act(
                     "POST",
                     f"{G}/rooms/{{direct_room}}/agents",
                     {"agent_ids": ["{agent}"]},
                 ),
+                refused=REFUSED | {409},
+            ),
+            Check(
+                "can_change_members",
+                _get(f"{G}/rooms/{{direct_room}}"),
                 _act(
                     "POST",
                     f"{G}/rooms/{{direct_room}}/users",
                     {"user_names": ["someone"]},
                 ),
-            )
+                refused=REFUSED | {409},
+            ),
         ],
         "a chat": [
             Check(
@@ -342,14 +381,15 @@ CHECKS: dict[str, Check] = {
                     {"role": "member"},
                 ),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last admin stays.
+                refused=REFUSED | {409},  # The last admin stays.
             ),
             Check(
                 "can_remove",
                 MEMBERS,
                 _act("DELETE", f"{G}/tenants/{{tenant}}/members/{{self_id}}"),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last admin, or still owning agents.
+                refused=REFUSED | {409},  # The last admin stays.
+                later=frozenset({409}),  # Still owning agents.
             ),
         ],
         "your own organization membership": [
@@ -378,6 +418,11 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/tenants/current"),
                 _act("DELETE", f"{G}/tenants/{{tenant}}", {"name": "{tenant}"}),
                 later=frozenset({409}),  # Still has other members in it.
+            ),
+            Check(
+                "administers",
+                _get(f"{G}/tenants/current"),
+                _act("PATCH", f"{G}/tenants/{{tenant}}", {"name": "{tag}-renamed"}),
             ),
             Check(
                 "can_manage_data_protection",

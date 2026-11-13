@@ -32,12 +32,12 @@ from switch_decision.prompt import (
     NONE,
     PICK_TOOL,
     SPEAKER_QUESTION,
-    SYSTEM,
     build_messages,
     build_state,
     letter_messages,
     output_schema,
     pick_tool,
+    system_prompt,
     systemone_request,
 )
 
@@ -264,7 +264,7 @@ def bedrock_request(req: DecideRequest, settings: Settings) -> dict:
     names = [a.name for a in req.agents]
     body: dict[str, Any] = {
         "modelId": settings.model,
-        "system": [{"text": SYSTEM}],
+        "system": [{"text": system_prompt(req, settings.history_limit)}],
         "messages": [
             {
                 "role": "user",
@@ -382,7 +382,7 @@ def anthropic_request(req: DecideRequest, settings: Settings) -> dict:
     return {
         "model": settings.model,
         "max_tokens": 256,
-        "system": SYSTEM,
+        "system": system_prompt(req, settings.history_limit),
         "messages": [
             {"role": "user", "content": build_state(req, settings.history_limit)}
         ],

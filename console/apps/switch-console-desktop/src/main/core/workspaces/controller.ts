@@ -11,11 +11,13 @@ import {
 import {
   addBridgeTeam,
   addRoomAgents,
+  fetchRoomAgentCandidates,
   addRoomUsers,
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
   fetchBridgePeople,
+  setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -78,6 +80,7 @@ import {
   getConnectionCatalog,
   getGitHubConnection,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectGitHub,
   disconnectService,
   setRoomAutoRoute,
@@ -86,6 +89,7 @@ import {
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
+  updateMidTurnDelivery,
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
@@ -176,6 +180,7 @@ import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
@@ -1044,7 +1049,6 @@ export const workspacesController = createRPCController({
         description: params.description,
         instructions: params.instructions,
         readVisibility: params.readVisibility,
-        writeVisibility: params.writeVisibility,
       })
     ),
 
@@ -1121,6 +1125,18 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       setRoomArchived(server, params.roomId, params.archived)
+    ),
+
+  /** Make a person in the room a room admin, or take them off (`admin: false`).
+   * Refusals propagate in the gateway's own words. */
+  setRoomAdmin: (params: {
+    workspaceId: string;
+    roomId: string;
+    userId: string;
+    admin: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAdmin(server, params.roomId, params.userId, params.admin)
     ),
 
   /** The archived rooms the signed-in user can see. */
@@ -1379,6 +1395,18 @@ export const workspacesController = createRPCController({
   }: SetRoomAutoRouteParams): Promise<RoomAutoRoute> =>
     withReachableWorkspaceSession(workspaceId, (server) =>
       setRoomAutoRoute(server, roomId, changes)
+    ),
+
+  /**
+   * The agents the signed-in person may bring into `roomId`, or into a new
+   * room when it is null; null from a server that cannot say.
+   */
+  roomAgentCandidates: (params: {
+    workspaceId: string;
+    roomId: string | null;
+  }): Promise<string[] | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomAgentCandidates(server, params.roomId)
     ),
 
   /**
@@ -1642,12 +1670,19 @@ export const workspacesController = createRPCController({
 
   /**
    * Start signing in to `service` for this workspace: the browser opens at the
-   * vendor, and this Console's listener takes the result back. Resolves to the
-   * flow's id.
+   * vendor, and this Console's listener takes the result back. `choices` are
+   * what the person picked first (a vendor's site). Resolves to the flow's id,
+   * and the server's callback where the browser returns through it.
    */
-  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+  startServiceConnection: (params: {
+    workspaceId: string;
+    service: string;
+    choices: Record<string, string>;
+  }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, params.service, params.choices, (url) =>
+        appService.openExternal(url)
+      )
     ),
 
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
@@ -1668,6 +1703,19 @@ export const workspacesController = createRPCController({
   }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
       connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /**
+   * Connect `service` with a token or keys pasted in place of its sign-in, at
+   * what was picked for its choices (a site); Switch checks them at the service.
+   */
+  connectServiceWithPaste: (params: { workspaceId: string; service: string } & ServicePaste) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithPaste(server, params.service, {
+        method: params.method,
+        fields: params.fields,
+        choices: params.choices,
+      })
     ),
 
   /** Disconnect `service` in this workspace: its grants go with it. */
@@ -1778,6 +1826,15 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  updateMidTurnDelivery: (params: {
+    workspaceId: string;
+    agentId: string;
+    mode: 'steer' | 'queue';
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateMidTurnDelivery(server, params.agentId, params.mode)
     ),
 
   /** Change an agent's description. Returns the agent as the server now holds it. */

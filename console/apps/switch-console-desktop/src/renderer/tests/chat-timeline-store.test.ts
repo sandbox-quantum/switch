@@ -26,6 +26,7 @@ function message(seq: number, extra: Partial<ChatMessage> = {}): ChatMessage {
     mentions: [],
     threadReplyCount: 0,
     threadLastReplySeq: null,
+    kickoff: null,
     ...extra,
   };
 }

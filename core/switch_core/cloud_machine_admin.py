@@ -1,4 +1,4 @@
-"""`switch-cloud-machine`: an operator's hold on a person's Switch cloud machine.
+"""`switch-cloud-machine`: an operator's hold on a person's Switch Cloud machine.
 
 `stop` holds the machine stopped so that neither its owner nor Switch can
 start it again: Start and Retry in Switch Console are refused, a message to
@@ -28,6 +28,7 @@ from switch_core.db.stores.hosted_machine_store import (
     CloudMachineConflict,
     CloudMachineStore,
 )
+from switch_core.observability.hosted import record_machine_event
 from switch_core.tenant_context import no_tenant
 
 
@@ -103,6 +104,8 @@ async def stop_machine(
                 store.admin_stop(machine, datetime.now(UTC))
             except CloudMachineConflict as error:
                 raise CloudMachineAdminError(str(error)) from None
+            # Counted once committed, beside the idle and owner stops.
+            record_machine_event(session, "stopped", "admin")
             await record_server_audit_event(
                 session,
                 actor_user_id=None,
@@ -154,7 +157,7 @@ def _machine_id(value: str) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="switch-cloud-machine",
-        description="Hold a person's Switch cloud machine stopped, or release it.",
+        description="Hold a person's Switch Cloud machine stopped, or release it.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     find = commands.add_parser("find", help="list a person's cloud machines")

@@ -28,7 +28,8 @@
       "version": "0.1.0",
       "protocol": 1,
       "assignment_revision": 3,
-      "updated_by": "self"
+      "updated_by": "self",
+      "started_at": "2026-01-01T11:00:00Z"
     },
     "machine": {
       "platform": {
