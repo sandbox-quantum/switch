@@ -429,6 +429,9 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     assert oauth.authorization_url == "https://gitlab.com/oauth/authorize"
     assert oauth.token_url == "https://gitlab.com/oauth/token"
     assert oauth.revocation_url == "https://gitlab.com/oauth/revoke"
+    # Revoking the refresh token also ends the access tokens agents hold.
+    assert oauth.revocation_ends_tokens is True
+    assert oauth.revocation_ends_grant is False
     assert oauth.prompt is None
     assert oauth.revocation_discovered is False
     # A check with a made-up code shows neither the redirect URI nor the
@@ -773,6 +776,24 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     assert oauth.revocation_url == "https://auth.example.test/revoke"
 
 
+def test_rejects_revocation_ending_tokens_on_an_entry_that_passes_none_through(
+    catalog_copy,
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
+            "    revocation_url: https://auth.example.test/revoke\n"
+            "    revocation_ends_tokens: true\n",
+        ).replace(
+            "token: { kind: pass_through, max_lifetime: 3600 }\n",
+            "token: { kind: minted, max_lifetime: 3600 }\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="revocation_ends_tokens"):
+        load_catalog(catalog_copy)
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
@@ -805,6 +826,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    revocation_ends_grant: true\n",
             "revocation_ends_grant",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_ends_tokens: true\n",
+            "revocation_ends_tokens",
         ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),

@@ -52,6 +52,7 @@ class FakeVendor:
         self.issued: list[tuple[str, str]] = []
         self.revoked: list[str] = []
         self.connections_revoked: list[ConnectionSecret] = []
+        self.revoke_connection_error: Exception | None = None
         self.grant_error: Exception | None = None
         self.checked: list[tuple[str, dict[str, Any]]] = []
         self.resolved: list[list[str]] = []
@@ -101,6 +102,8 @@ class FakeVendor:
         self.revoked.append(token)
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
+        if self.revoke_connection_error is not None:
+            raise self.revoke_connection_error
         self.connections_revoked.append(secret)
 
     async def resolve_repositories(

@@ -87,6 +87,11 @@ class OAuthClient(BaseModel):
     account through the same client then does not revoke the sign-in it
     replaces, as that would end the new one too.
 
+    `revocation_ends_tokens`: revoking a sign-in also ends every access token
+    of it that is still valid, so a disconnect that revokes it also ends the
+    tokens passed through to agents, and does not say they may keep working.
+    Only for an entry that passes its token through.
+
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
     check that passes.
@@ -122,6 +127,7 @@ class OAuthClient(BaseModel):
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
+    revocation_ends_tokens: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
@@ -158,11 +164,12 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
-        if self.revocation_ends_grant and (
+        if (self.revocation_ends_grant or self.revocation_ends_tokens) and (
             self.revocation_url is None and not self.revocation_discovered
         ):
             raise ValueError(
-                "revocation_ends_grant is for a vendor Switch revokes sign-ins at"
+                "revocation_ends_grant and revocation_ends_tokens are for a "
+                "vendor Switch revokes sign-ins at"
             )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
@@ -787,6 +794,14 @@ class ConnectionDefinition(BaseModel):
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
         oauth = self.auth.oauth
+        if (
+            oauth is not None
+            and oauth.revocation_ends_tokens
+            and (self.token is None or self.token.kind != "pass_through")
+        ):
+            raise ValueError(
+                "revocation_ends_tokens is for an entry that passes its token through"
+            )
         # The introspection endpoint is the one the authorization server's
         # metadata advertises, so it is found where the others are.
         if (
