@@ -9,6 +9,7 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -61,12 +62,15 @@ type RosterControls = {
   addPeople: (() => void) | null;
   /** Why people cannot be added here, for someone who could otherwise. */
   peopleNote: string | null;
-  removeAgent: ((agentId: string) => Promise<void>) | null;
+  /** Null for someone who may not remove this agent. */
+  removeAgent: (agentId: string) => (() => Promise<void>) | null;
   /** Null for someone who may not remove people, or for a person who cannot be removed. */
   removePerson: (key: string) => (() => Promise<void>) | null;
   /** Whether the agent is told when someone joins, and the way to change it; null where it cannot be. */
   joinEvents: {
     listening: (agentId: string) => boolean;
+    /** Whether this viewer may change it for this agent. */
+    canSet: (agentId: string) => boolean;
     set: (agentId: string, on: boolean) => Promise<void>;
   } | null;
 };
@@ -75,7 +79,7 @@ const NO_CONTROLS: RosterControls = {
   addAgents: null,
   addPeople: null,
   peopleNote: null,
-  removeAgent: null,
+  removeAgent: () => null,
   removePerson: () => null,
   joinEvents: null,
 };
@@ -100,6 +104,8 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   const [error, setError] = useState<string | null>(null);
   // Anyone taking part may read the room, so this answers for a chat's members too.
   const detail = useRoomDetail(workspaceId, roomId, true);
+  // Whose each agent is, so the viewer is offered taking out their own.
+  const workspaceAgents = useWorkspaceAgents(workspaceId);
   const membersKey = chat && serverId ? chatMembersQueryKey(serverId, chat) : ['no-chat-members'];
   const members = useQuery({
     queryKey: membersKey,
@@ -156,7 +162,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       ...NO_CONTROLS,
       // Adding to a chat makes it a group, which the server offers only with group chats on.
       addAgents: groupChats ? () => setAdding('agents') : null,
-      removeAgent: async (agentId) => {
+      removeAgent: (agentId) => async () => {
         await rpc.chats.removeAgent({ serverId, roomId, agentId });
         chatsStore.dropAgent(roomId, agentId);
       },
@@ -172,40 +178,56 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   } else if (!consoleChat && room && workspaceId) {
     const permissions = switchRoomsStore.roomPermissions(workspaceId, room);
     const inviteability = roomInviteability(room, bridgePlatformLabel(room.bridgeType));
-    // Bringing agents in takes being in the room, not write access, so it is
-    // offered on its own where someone in the room may not change the rest.
+    // Adding to a room takes being in it, and taking agents out its owner or
+    // an admin; a direct or group conversation's platform fixes who is in it,
+    // so the server sets neither there. Its settings take `canWrite`.
     const addAgents = permissions.canInviteAgents ? () => setAdding('agents') : null;
+    const addPeople =
+      permissions.canAddPeople && inviteability.canInvite ? () => setAdding('people') : null;
+    // Anyone may take out their own agent, outside a direct or group
+    // conversation, whose platform fixes who is in it.
+    const viewerId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
+    const fixedMembers = room.channelType === 'direct' || room.channelType === 'group';
+    const ownerOf = new Map((workspaceAgents.data ?? []).map((agent) => [agent.id, agent.ownerId]));
+    const removeAgent = (agentId: string) =>
+      permissions.canRemoveMembers ||
+      (!fixedMembers && viewerId !== null && ownerOf.get(agentId) === viewerId)
+        ? async () => {
+            await rpc.workspaces.removeRoomAgent({ workspaceId, roomId, agentId });
+            await refreshRoom();
+          }
+        : null;
+    const peopleNote =
+      permissions.canAddPeople && !inviteability.canInvite ? inviteability.reason : null;
+    // The room's owner or an admin, or the agent's own owner, may change
+    // whether it hears joins.
+    const joinEvents: RosterControls['joinEvents'] = {
+      listening: (agentId) => room.joinEventListeners.includes(agentId),
+      canSet: (agentId) =>
+        permissions.canWrite || (viewerId !== null && ownerOf.get(agentId) === viewerId),
+      set: async (agentId, on) => {
+        queryClient.setQueryData(
+          roomDetailKey(workspaceId, roomId),
+          await rpc.workspaces.setRoomAgentJoinEvents({
+            workspaceId,
+            roomId,
+            agentId,
+            receivesJoinEvents: on,
+          })
+        );
+      },
+    };
     if (!permissions.canWrite) {
-      controls = { ...NO_CONTROLS, addAgents };
+      controls = { ...NO_CONTROLS, addAgents, addPeople, peopleNote, removeAgent, joinEvents };
     } else {
-      // A direct or group conversation's platform fixes who is in it.
-      const members = permissions.canChangeMembers;
       controls = {
         addAgents,
-        addPeople: members && inviteability.canInvite ? () => setAdding('people') : null,
-        peopleNote: inviteability.canInvite ? null : inviteability.reason,
-        removeAgent: members
-          ? async (agentId) => {
-              await rpc.workspaces.removeRoomAgent({ workspaceId, roomId, agentId });
-              await refreshRoom();
-            }
-          : null,
+        addPeople,
+        peopleNote,
+        removeAgent,
         // Switch only knows the people it saw or added; it cannot take them out of a channel.
         removePerson: () => null,
-        joinEvents: {
-          listening: (agentId) => room.joinEventListeners.includes(agentId),
-          set: async (agentId, on) => {
-            queryClient.setQueryData(
-              roomDetailKey(workspaceId, roomId),
-              await rpc.workspaces.setRoomAgentJoinEvents({
-                workspaceId,
-                roomId,
-                agentId,
-                receivesJoinEvents: on,
-              })
-            );
-          },
-        },
+        joinEvents,
       };
     }
   }
@@ -398,7 +420,8 @@ const AgentRow = observer(function AgentRow({
     setBusy(true);
     void act(action, fallback).finally(() => setBusy(false));
   };
-  const { removeAgent, joinEvents } = controls;
+  const joinEvents = controls.joinEvents?.canSet(agentId) ? controls.joinEvents : null;
+  const removeAgent = controls.removeAgent(agentId);
   const menu =
     removeAgent || joinEvents ? (
       <DropdownMenu>
@@ -428,7 +451,7 @@ const AgentRow = observer(function AgentRow({
           {removeAgent && (
             <DropdownMenuItem
               variant="destructive"
-              onClick={() => run(() => removeAgent(agentId), `Could not remove ${label}.`)}
+              onClick={() => run(removeAgent, `Could not remove ${label}.`)}
             >
               Remove from room
             </DropdownMenuItem>

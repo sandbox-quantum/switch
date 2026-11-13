@@ -71,6 +71,9 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
           canWrite: chat.canManage,
           canChangeMembers: chat.canManage,
           canInviteAgents: chat.canManage,
+          canAddPeople: chat.canManage,
+          canAttach: chat.canManage,
+          canRemoveMembers: chat.canManage,
           canManage: chat.canManage,
           canUnlink: chat.canManage,
         }
@@ -80,10 +83,14 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
             canWrite: false,
             canChangeMembers: false,
             canInviteAgents: false,
+            canAddPeople: false,
+            canAttach: false,
+            canRemoveMembers: false,
             canManage: false,
             canUnlink: false,
           };
   const canWrite = permissions.canWrite;
+  const canAttach = permissions.canAttach;
   const canUnlink = permissions.canUnlink;
 
   return (
@@ -93,21 +100,21 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
           workspaceId={workspaceId}
           roomId={roomId}
           kind="references"
-          canWrite={canWrite}
+          canAttach={canAttach}
           canUnlink={canUnlink}
         />
         <ResourceSection
           workspaceId={workspaceId}
           roomId={roomId}
           kind="documents"
-          canWrite={canWrite}
+          canAttach={canAttach}
           canUnlink={canUnlink}
         />
         <ResourceSection
           workspaceId={workspaceId}
           roomId={roomId}
           kind="packages"
-          canWrite={canWrite}
+          canAttach={canAttach}
           canUnlink={canUnlink}
         />
         <LinkedRoomsSection workspaceId={workspaceId} roomId={roomId} canWrite={canWrite} />
@@ -120,15 +127,15 @@ const ResourceSection = observer(function ResourceSection({
   workspaceId,
   roomId,
   kind,
-  canWrite,
+  canAttach,
   canUnlink,
 }: {
   workspaceId: string;
   roomId: string;
   kind: RoomResourceKind;
-  /** Attaching. */
-  canWrite: boolean;
-  /** Detaching, which the server keeps for those taking part and admins. */
+  /** Attaching: anyone in the room. */
+  canAttach: boolean;
+  /** Detaching: the room's owner or an admin. */
   canUnlink: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -188,7 +195,7 @@ const ResourceSection = observer(function ResourceSection({
     <section aria-label={label.title} className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-foreground">{label.title}</h2>
-        {canWrite && (
+        {canAttach && (
           <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
             <Plus className="size-3.5" />
             Attach {label.noun}

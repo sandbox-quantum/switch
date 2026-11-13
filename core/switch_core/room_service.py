@@ -61,6 +61,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
+from switch_core.room_policy import FIXED_MEMBERSHIP
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import (
@@ -192,10 +193,6 @@ class RoomCreateResult(BaseModel):
 
 
 ROOM_NAME_MAX = 200
-
-
-# The channel types whose members their platform fixes.
-FIXED_MEMBERSHIP = ("direct", "group")
 
 
 class MembershipFixed(ValueError):

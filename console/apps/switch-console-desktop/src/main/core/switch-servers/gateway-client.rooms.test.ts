@@ -165,6 +165,9 @@ describe('what the server says the caller may do', () => {
       canWrite: true,
       canChangeMembers: true,
       canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: false,
       canUnlink: true,
     });
@@ -185,6 +188,9 @@ describe('what the server says the caller may do', () => {
       canWrite: true,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: true,
+      canRemoveMembers: false,
       canManage: true,
       canUnlink: true,
     });
@@ -205,8 +211,37 @@ describe('what the server says the caller may do', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: true,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: true,
+    });
+  });
+
+  it('carries the room policy’s separate flags for adding, attaching and removing', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        can_write: false,
+        can_change_members: false,
+        can_invite_agents: true,
+        can_add_people: true,
+        can_attach: true,
+        can_remove_members: false,
+        can_manage: false,
+        can_unlink: false,
+      })
+    );
+    expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: false,
+      canManage: false,
+      canUnlink: false,
     });
   });
 
@@ -218,6 +253,9 @@ describe('what the server says the caller may do', () => {
       canWrite: true,
       canChangeMembers: true,
       canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: false,
       canUnlink: false,
     });

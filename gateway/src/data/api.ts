@@ -44,21 +44,25 @@ export interface RoomSummary {
   // their Switch name, rather than accounts on a messaging app. Absent from
   // servers that predate it.
   is_console_chat?: boolean;
-  // What the viewer may do, as the server decides it. `can_write` covers the
-  // room's settings, roles, links and attaching resources;
-  // `can_change_members` covers adding and removing its agents and people,
-  // which a direct or group chat takes from its platform instead;
-  // `can_manage` (owner or workspace admin) covers its access and deleting it;
-  // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
-  // reference, document or package from it; `can_transfer` (managing it,
-  // and never for a chat) covers handing it to someone else.
-  // `can_invite_agents` (in the room, or workspace admin, never for a chat)
-  // covers bringing agents in; each agent's own "who can address me" setting
-  // can still refuse a particular one.
+  // What the viewer may do, as the server's room policy decides it.
+  // `can_write` (owner or workspace admin) covers the room's settings,
+  // roles, group and linked rooms; `can_manage` (the same) covers its access,
+  // archiving and deleting it. `can_attach`, `can_invite_agents` and
+  // `can_add_people` (anyone in the room) cover attaching resources and
+  // adding agents and people, though each agent's own "who can address me"
+  // setting can still refuse a particular one;
+  // `can_remove_members` (owner or workspace admin) covers taking them out,
+  // and neither membership flag is set on a direct or group chat. A person
+  // may also take out their own agent. `can_unlink` (owner or workspace
+  // admin) covers unlinking a reference, document or package; a resource's
+  // own owner may also unlink theirs while in the room. `can_transfer`
+  // (managing it, and never for a chat) covers handing it to someone else.
   can_write: boolean;
-  can_change_members: boolean;
-  can_invite_agents: boolean;
   can_manage: boolean;
+  can_attach: boolean;
+  can_invite_agents: boolean;
+  can_add_people: boolean;
+  can_remove_members: boolean;
   can_unlink: boolean;
   can_transfer: boolean;
 }

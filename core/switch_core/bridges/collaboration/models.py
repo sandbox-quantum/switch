@@ -277,6 +277,8 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # The platform account that added the agent, where the platform says.
+    added_by_external_user_id: str | None = None
 
 
 class InboundUserJoin(BaseModel):
@@ -295,6 +297,10 @@ class InboundAppJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     channel_name: str | None = None
+    # The platform account that added the app, where the platform says (Slack's
+    # inviter, the Teams user who added it). Its linked Switch user owns the
+    # room the channel becomes.
+    added_by_external_user_id: str | None = None
 
 
 class BridgeInstallLink(BaseModel):

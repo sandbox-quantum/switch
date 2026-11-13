@@ -16,10 +16,14 @@ const permissions = vi.hoisted(() => ({
     canWrite: true,
     canChangeMembers: true,
     canInviteAgents: true,
+    canAddPeople: true,
+    canRemoveMembers: true,
     canManage: true,
   },
 }));
 const admin = vi.hoisted(() => ({ value: true }));
+// Who owns the room's agent; the viewer is `u-me`.
+const agentOwner = vi.hoisted(() => ({ value: 'u-other' }));
 const setRoomGroup = vi.hoisted(() => vi.fn());
 const listBridgePeople = vi.hoisted(() => vi.fn());
 
@@ -42,7 +46,15 @@ vi.mock('@renderer/lib/ipc', () => ({
       updateRoom: vi.fn(),
       syncRoomName: vi.fn(),
       listAgents: vi.fn(() =>
-        Promise.resolve([{ id: 'a-1', name: 'reviewer-bot', iconUrl: null, knownAgentType: null }])
+        Promise.resolve([
+          {
+            id: 'a-1',
+            name: 'reviewer-bot',
+            iconUrl: null,
+            knownAgentType: null,
+            ownerId: agentOwner.value,
+          },
+        ])
       ),
       listRoomGroups: vi.fn(() => Promise.resolve([{ id: 'g-1', name: 'Design' }])),
       roomAgentCandidates: vi.fn(() => Promise.resolve(null)),
@@ -61,6 +73,10 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     roomPermissions: () => permissions.value,
     refreshRoomState: vi.fn(async () => {}),
   },
+}));
+
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { statusFor: () => ({ user: { id: 'u-me' } }) },
 }));
 
 vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
@@ -119,6 +135,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
+  agentOwner.value = 'u-other';
   getRoomDetail.mockReset();
   getRoomDetail.mockResolvedValue(ROOM);
   setRoomAgentJoinEvents.mockReset();
@@ -142,6 +159,8 @@ beforeEach(() => {
     canWrite: true,
     canChangeMembers: true,
     canInviteAgents: true,
+    canAddPeople: true,
+    canRemoveMembers: true,
     canManage: true,
   };
   admin.value = true;
@@ -255,6 +274,8 @@ describe('room settings for someone who may write to the room', () => {
       canWrite: true,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canRemoveMembers: false,
       canManage: true,
     };
     getRoomDetail.mockResolvedValue({ ...ROOM, channelType: 'direct' });
@@ -265,6 +286,54 @@ describe('room settings for someone who may write to the room', () => {
     await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
     const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     expect(items.some((item) => /Remove from room/.test(item.textContent ?? ''))).toBe(false);
+  });
+
+  it('lets someone take their own agent out of a room they may not otherwise change', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    agentOwner.value = 'u-me';
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    expect(items.some((item) => /Remove from room/.test(item.textContent ?? ''))).toBe(true);
+  });
+
+  it('lets someone change their own agent’s join notification in a room they may not otherwise change', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    agentOwner.value = 'u-me';
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')];
+    expect(items.some((item) => /when someone joins/.test(item.textContent ?? ''))).toBe(true);
+  });
+
+  it('offers no removing of someone else’s agent to someone who may not change the room', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
   });
 
   it('shows every role an agent holds, matched on its name on the server', async () => {
@@ -359,6 +428,8 @@ describe('putting a room in a group', () => {
       canWrite: true,
       canChangeMembers: true,
       canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: true,
       canManage: false,
     };
     getRoomDetail.mockResolvedValue({ ...ROOM, groupId: 'g-1', groupName: 'Design' });
@@ -388,6 +459,8 @@ describe('room settings for someone who may only read the room', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canRemoveMembers: false,
       canManage: false,
     };
     const el = await renderPanel();
@@ -405,6 +478,8 @@ describe('room settings for someone who may only read the room', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canRemoveMembers: false,
       canManage: false,
     };
     const el = await renderPanel('side');
@@ -429,6 +504,8 @@ describe('room settings for someone who may only read the room', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: true,
+      canAddPeople: false,
+      canRemoveMembers: false,
       canManage: false,
     };
     const el = await renderPanel('side');

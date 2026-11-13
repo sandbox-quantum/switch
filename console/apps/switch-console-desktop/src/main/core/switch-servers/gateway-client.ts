@@ -3562,6 +3562,9 @@ type RoomSummaryJson = {
   can_write?: boolean;
   can_change_members?: boolean;
   can_invite_agents?: boolean;
+  can_add_people?: boolean;
+  can_attach?: boolean;
+  can_remove_members?: boolean;
   can_manage?: boolean;
   can_unlink?: boolean;
   group_id?: string | null;
@@ -3602,6 +3605,10 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
             canChangeMembers: r.can_change_members ?? r.can_write,
             // Bringing agents in took the same as any member change until the server said otherwise.
             canInviteAgents: r.can_invite_agents ?? r.can_change_members ?? r.can_write,
+            // Each of these was one write or members flag on an older server.
+            canAddPeople: r.can_add_people ?? r.can_change_members ?? r.can_write,
+            canAttach: r.can_attach ?? r.can_write,
+            canRemoveMembers: r.can_remove_members ?? r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,

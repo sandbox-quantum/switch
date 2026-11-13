@@ -9,6 +9,9 @@ describe('roomPermissionsFor', () => {
       canWrite: true,
       canChangeMembers: true,
       canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: true,
       canUnlink: true,
     });
@@ -24,6 +27,9 @@ describe('roomPermissionsFor', () => {
       canWrite: true,
       canChangeMembers: true,
       canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: true,
       canUnlink: true,
     });
@@ -34,6 +40,9 @@ describe('roomPermissionsFor', () => {
       canWrite: true,
       canChangeMembers: true,
       canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: false,
       canUnlink: true,
     });
@@ -44,6 +53,9 @@ describe('roomPermissionsFor', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: false,
     });
@@ -60,6 +72,9 @@ describe('roomPermissionsFor', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: false,
     });
@@ -72,6 +87,9 @@ describe('roomPermissionsFor', () => {
       canWrite: true,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: false,
     };
@@ -89,6 +107,9 @@ describe('roomPermissionsFor', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: true,
     };
@@ -110,6 +131,9 @@ describe('roomPermissionsFor', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: false,
     });

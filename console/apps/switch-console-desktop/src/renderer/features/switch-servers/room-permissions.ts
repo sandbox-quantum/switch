@@ -1,22 +1,26 @@
 import type { RoomVisibility } from '@shared/core/switch-servers/switch-servers';
 
 /**
- * What someone may do with a room. `canManage` is the owner's and the
- * workspace admins' alone: deleting the room, changing who may see it, naming
- * it after its channel. `canWrite` also covers anyone at all when the room's
- * write access is public: its description and instructions, its roles, its
- * group, archiving it. `canChangeMembers` is adding and removing its agents
- * and people: `canWrite`, except in a direct or group conversation, whose
- * platform fixes who is in it. `canInviteAgents` is bringing agents in, which
- * takes being in the room (or a workspace admin) rather than write access;
- * each agent's own "who can address me" setting can still refuse one. `canUnlink` is detaching what is attached to
- * it: the server now keeps that for those taking part in the room and
- * workspace admins, whatever its write access.
+ * What someone may do with a room, as the server's room policy decides it.
+ * `canManage` (the room's owner or a workspace admin): deleting the room,
+ * changing who may see it, naming it after its channel. `canWrite` (the same,
+ * on a current server): its description and instructions, its roles, its
+ * group, archiving it. `canInviteAgents`, `canAddPeople` and `canAttach`
+ * (anyone in the room): bringing agents in, adding people, attaching
+ * resources; each agent's own "who can address me" setting can still refuse
+ * one. `canRemoveMembers` (owner or admin): taking agents out. No membership
+ * flag is set in a direct or group conversation, whose platform fixes who is
+ * in it. `canUnlink` (owner or admin): detaching what is attached to it.
+ * `canChangeMembers` is what an older server said for adding and removing
+ * together.
  */
 export type RoomPermissions = {
   canWrite: boolean;
   canChangeMembers: boolean;
   canInviteAgents: boolean;
+  canAddPeople: boolean;
+  canAttach: boolean;
+  canRemoveMembers: boolean;
   canManage: boolean;
   canUnlink: boolean;
 };
@@ -43,6 +47,9 @@ export function roomPermissionsFor(
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: false,
     };
@@ -53,6 +60,9 @@ export function roomPermissionsFor(
     canWrite,
     canChangeMembers: canWrite,
     canInviteAgents: canWrite,
+    canAddPeople: canWrite,
+    canAttach: canWrite,
+    canRemoveMembers: canWrite,
     canManage,
     canUnlink: canWrite,
   };

@@ -1153,7 +1153,8 @@ async def get_role_detail(room_id: str, role_name: str) -> dict[str, Any]:
 async def define_role(
     name: str, instructions: str, exclusive: bool = False
 ) -> dict[str, Any]:
-    """Define a new role in the connected room. Requires write access to the room.
+    """Define a new role in the connected room. Your owner must be the room's
+    owner or a workspace admin.
 
     Args:
         name: Role name, unique within the room (e.g. "manager", "worker").
@@ -1176,7 +1177,8 @@ async def edit_role(
     instructions: str | None = None,
     exclusive: bool | None = None,
 ) -> dict[str, Any]:
-    """Edit a role's instructions and/or exclusivity. Requires write access.
+    """Edit a role's instructions and/or exclusivity. Your owner must be the
+    room's owner or a workspace admin.
 
     Edits take effect on the next `assume_role`; any current holder keeps the
     instructions it already received.
@@ -1193,7 +1195,7 @@ async def edit_role(
 async def delete_role(name: str) -> dict[str, Any]:
     """Delete a role from the connected room (and any lease on it).
 
-    Requires write access to the room.
+    Your owner must be the room's owner or a workspace admin.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -2845,8 +2847,8 @@ async def archive_room(room_id: str) -> dict[str, Any]:
     feature-implementation or bug-fix room) to keep the active list tidy.
     Reverse it with `unarchive_room`.
 
-    You must be a member of the room and have write access to it; fails with
-    a permission error otherwise.
+    Your owner must be the room's owner or a workspace admin; fails with a
+    permission error otherwise.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -2865,8 +2867,8 @@ async def unarchive_room(room_id: str) -> dict[str, Any]:
     """Unarchive a room you are a member of, restoring it to the default
     active room lists.
 
-    The inverse of `archive_room`. You must be a member of the room and have
-    write access to it; fails with a permission error otherwise.
+    The inverse of `archive_room`. Your owner must be the room's owner or a
+    workspace admin; fails with a permission error otherwise.
 
     Args:
         room_id: The Switch room id (UUID string).

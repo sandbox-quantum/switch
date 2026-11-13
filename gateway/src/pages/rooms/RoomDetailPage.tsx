@@ -78,7 +78,10 @@ import {
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { canAdminTenant } = useAuth();
+  const { canAdminTenant, session } = useAuth();
+  // Who is looking, to offer taking out their own agent and unlinking their
+  // own resources: the server allows those by ownership alone.
+  const viewerId = session?.user.id ?? null;
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -159,12 +162,19 @@ export default function RoomDetailPage() {
           onSaved={refetch}
         />
         <Divider />
-        <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <ParticipantsSection
+          room={room}
+          canWrite={canWrite}
+          viewerId={viewerId}
+          onChanged={refetch}
+        />
         <Divider />
         <RoomResourcesSection
           roomId={room.id}
-          canWrite={canWrite}
+          canAttach={room.can_attach}
           canUnlink={room.can_unlink}
+          inRoom={room.viewer_is_member}
+          viewerId={viewerId}
         />
         <Divider />
         <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
@@ -641,8 +651,7 @@ function EditableFieldsSection({
       </Typography>
       {!canWrite && (
         <Alert severity="info">
-          You don't have write access to this room. Only its owner and admins
-          can change these settings.
+          Only this room's owner and admins can change these settings.
         </Alert>
       )}
       {error && <Alert severity="error">{error}</Alert>}
@@ -701,10 +710,12 @@ function EditableFieldsSection({
 function ParticipantsSection({
   room,
   canWrite,
+  viewerId,
   onChanged,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  viewerId: string | null;
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
@@ -720,6 +731,17 @@ function ParticipantsSection({
     for (const a of allAgents ?? []) m.set(a.id, a.name);
     return m;
   }, [allAgents]);
+
+  // You may always take out an agent you own, whoever owns the room.
+  const ownAgentIds = useMemo(
+    () =>
+      new Set(
+        (allAgents ?? [])
+          .filter((a) => viewerId !== null && a.owner_id === viewerId)
+          .map((a) => a.id),
+      ),
+    [allAgents, viewerId],
+  );
 
   const addableAgentOptions = useMemo<PickerOption[]>(
     () =>
@@ -816,8 +838,10 @@ function ParticipantsSection({
   // A direct or group chat takes its members from its platform: the server
   // refuses changing them, and the page says where they are changed.
   const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
-  const canChangeMembers = room.can_change_members;
   const canInviteAgents = room.can_invite_agents;
+  const canAddPeople = room.can_add_people;
+  const canRemove = (agentId: string) =>
+    !platformMembership && (room.can_remove_members || ownAgentIds.has(agentId));
 
   return (
     <Stack spacing={3}>
@@ -839,12 +863,13 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                !canWrite || working
+                // The room's owner or an admin, or the agent's own owner.
+                !(canWrite || ownAgentIds.has(id)) || working
                   ? undefined
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                !canChangeMembers || working ? undefined : () => handleRemoveAgent(id)
+                !canRemove(id) || working ? undefined : () => handleRemoveAgent(id)
               }
             />
           ))}
@@ -918,7 +943,7 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          {canChangeMembers && (
+          {canAddPeople && (
             <>
               <Button
                 size="small"
