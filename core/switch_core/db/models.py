@@ -525,7 +525,7 @@ class ProviderConnection(TenantScoped, Base):
 
 
 class CloudMachine(Base):
-    """One user's Switch cloud VM, whichever workspaces it serves.
+    """One user's Switch Cloud VM, whichever workspaces it serves.
 
     Global, as the person who owns it is: one VM and one disk per user, with
     one lifecycle. What it runs in each workspace is that workspace's
@@ -4658,7 +4658,7 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
         DateTime(timezone=True), nullable=True
     )
     controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Set for a code minted for a Switch cloud machine: what enrolls with it
+    # Set for a code minted for a Switch Cloud machine: what enrolls with it
     # is that machine's controller.
     machine_workspace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

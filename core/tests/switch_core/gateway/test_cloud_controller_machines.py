@@ -1,8 +1,8 @@
-"""Switch cloud machines that run the agent controller, end to end against Postgres.
+"""Switch Cloud machines that run the agent controller, end to end against Postgres.
 
 The hosted controller prepares a cloud machine; Core hands it a
 one-time enrollment code (the same one on every retry of a revision); the
-controller enrolls with it and becomes the machine's, as a Switch cloud
+controller enrolls with it and becomes the machine's, as a Switch Cloud
 controller; its status reports make the machine ready; and the managed agents
 placed on it are the machine's agents.
 """
@@ -716,7 +716,7 @@ def test_a_waking_machine_is_judged_by_its_last_report() -> None:
     now = datetime.now(UTC)
     controller = AgentController(
         owner_id="owner",
-        name="Switch cloud",
+        name="Switch Cloud",
         kind="ec2",
         api_key_id="key",
         connected_at=now - timedelta(hours=3),

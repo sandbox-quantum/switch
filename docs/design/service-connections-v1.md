@@ -329,7 +329,7 @@ shared rooms, delegation through the owner's other open agents, and results
 posted to shared rooms; the warning names them.
 
 **Grant screens.** The gateway's agent page, Console's agent settings and
-Console's managed agent page (Switch cloud agents included) show the agent's
+Console's managed agent page (Switch Cloud agents included) show the agent's
 owner its grants (summary, level, repositories), the addressing warning, and a GitHub grant form (an
 installation of the App, its repositories, read or read and push). Both say
 that the agent acts as the GitHub App, that a GitHub grant replaces the

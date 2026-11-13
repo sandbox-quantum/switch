@@ -162,7 +162,7 @@ describe('ownedMachines', () => {
     ]);
   });
 
-  it('marks the owner’s Switch cloud machine', () => {
+  it('marks the owner’s Switch Cloud machine', () => {
     const [cloud] = ownedMachines([controller({ id: 'ec2', kind: 'ec2' })], {
       thisComputer: null,
       sshHosts: [],

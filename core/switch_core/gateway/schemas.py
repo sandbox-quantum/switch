@@ -446,7 +446,7 @@ class AgentDevice(BaseModel):
     id: str
     name: str
     # Whose device it is: two people's devices can share a name, as every
-    # Switch cloud device does.
+    # Switch Cloud device does.
     owner_name: str
     # Removed from Switch. The agent stays placed on it, and runs nowhere,
     # until its owner moves it.

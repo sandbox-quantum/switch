@@ -107,7 +107,7 @@ export interface AgentDevice {
   id: string;
   name: string;
   // Whose device it is: two people's devices can share a name, as every
-  // Switch cloud device does.
+  // Switch Cloud device does.
   owner_name: string;
   // Removed from Switch: the agent stays placed on it, and runs nowhere,
   // until its owner moves it.

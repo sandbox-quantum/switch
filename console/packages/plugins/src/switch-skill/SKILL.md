@@ -997,7 +997,7 @@ is up. Say in the proposal that this takes a few minutes, and when checking
 that it came up (below), allow up to ten. A cloud machine its owner stopped is
 not woken: `create_agent` is refused with `controller_offline`. A workspace
 that never used a cloud machine has none listed; the person sets one up by
-choosing Switch cloud in Switch Console's New agent.
+choosing Switch Cloud in Switch Console's New agent.
 
 **Relay a refusal as it is.** When the machine cannot take the agent, nothing
 is created and the error says why, with a reason code: `controller_offline`

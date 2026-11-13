@@ -50,7 +50,7 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
   const serverId = workspacesStore.activeServerId;
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const [filter, setFilter] = useState<Filter>('all');
-  // The Cloud filter is shown only where the server runs Switch cloud machines.
+  // The Cloud filter is shown only where the server runs Switch Cloud machines.
   const cloudOffered = useFeatureFlags(serverId)['hosted_agents'] ?? false;
   const categories = (Object.keys(MACHINE_CATEGORY_LABELS) as MachineCategory[]).filter(
     (category) => category !== 'cloud' || cloudOffered
