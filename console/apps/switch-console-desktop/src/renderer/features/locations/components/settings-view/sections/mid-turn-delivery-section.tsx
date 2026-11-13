@@ -4,6 +4,10 @@ import { rpc } from '@renderer/lib/ipc';
 import { Switch } from '@renderer/lib/ui/switch';
 import { SettingRow } from './setting-row';
 
+export const MID_TURN_TITLE = 'Steer messages sent while it works';
+export const MID_TURN_DESCRIPTION =
+  'A message from whoever started the turn, or from you, in that turn’s thread (anywhere in a direct chat) reaches the running turn instead of waiting for it to end. The agent reads it at its next step: Claude Code after the tool call or answer in progress. Other people’s messages, and agents that cannot steer, always queue. Off: every message waits for the turn to end.';
+
 export function MidTurnDeliverySection({
   locationId,
   agentId,
@@ -49,12 +53,12 @@ export function MidTurnDeliveryRow({
   if (!agent || agent.midTurnDelivery === undefined) return null;
   return (
     <SettingRow
-      title="Steer messages while working"
+      title={MID_TURN_TITLE}
       info={null}
-      description="Same-thread messages from the turn starter or agent owner can steer a supported provider. Turn this off to always queue messages."
+      description={MID_TURN_DESCRIPTION}
       control={
         <Switch
-          aria-label="Steer messages while working"
+          aria-label={MID_TURN_TITLE}
           checked={agent.midTurnDelivery === 'steer'}
           disabled={mutation.isPending}
           onCheckedChange={(checked) => mutation.mutate(checked ? 'steer' : 'queue')}

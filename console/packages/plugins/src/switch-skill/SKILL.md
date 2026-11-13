@@ -222,6 +222,19 @@ Two annotations tell you when that matters:
   none arrives or interrupts you on its own — it rides along on the next line
   you are sent for that room.
 
+### Messages sent while you are working
+
+On Claude Code, Codex and OpenCode, a message can reach you **during** a turn
+rather than after it ends: a correction ("no, use the other file") arrives as
+a new `[Switch]` line in the middle of your work. Read it at your next step and
+change course; you are still in the same turn, so one reply covers both the
+original request and the correction. It comes only from the person who started
+the turn, or your owner, in that turn's thread (anywhere in a direct room).
+Everyone else's messages, other threads, and agents' messages wait for the turn
+to end, as before. A steered message never answers an approval you are waiting
+on: the person answers the request itself. Your owner can turn this off with
+the `mid_turn_delivery` setting, and then every message waits.
+
 ## When to call `read_context` again
 
 Once on arrival, and then **whenever something tells you the room moved
@@ -523,7 +536,8 @@ none of it is needed to take part in a conversation.
   either), `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
   `"anyone"` — and `mid_turn_delivery`: `"steer"` (the default) lets a
   message sent while it works reach the running turn, `"queue"` always waits
-  for the turn to end (see "Messages sent while you are working"). With "can manage agents": `name` (rename it — see below). On a
+  for the turn to end (see "Messages sent while you are working"). With "can
+  manage agents": `name` (rename it — see below). On a
   managed agent (one `list_managed_agents` shows), and only with "can manage
   agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing

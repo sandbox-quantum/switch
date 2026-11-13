@@ -159,6 +159,12 @@ export interface AgentDetail extends AgentSummary {
    * Only the owner changes it.
    */
   can_manage_agents: boolean;
+  /**
+   * What a message sent while the agent works does: "steer" hands it to the
+   * running turn where its sender may, "queue" always waits. Absent from a
+   * server that predates it.
+   */
+  mid_turn_delivery?: "steer" | "queue";
   // Its owner's alone: letting it manage their agents, and granting it their
   // service connections (only where the server runs them, and only to an
   // agent run from a known agent type). Seeing and removing the grants it
@@ -801,6 +807,17 @@ export async function updateAgentAddressingPolicy(
     `/agents/${agentId}/addressing-policy`,
     "PUT",
     { policy },
+  );
+}
+
+export async function updateAgentMidTurnDelivery(
+  agentId: string,
+  mode: "steer" | "queue",
+): Promise<AgentDetail> {
+  return jsonRequest<AgentDetail>(
+    `/agents/${agentId}/mid-turn-delivery`,
+    "PUT",
+    { mid_turn_delivery: mode },
   );
 }
 
