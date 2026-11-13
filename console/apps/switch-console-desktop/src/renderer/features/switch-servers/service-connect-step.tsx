@@ -1,5 +1,5 @@
 import { ExternalLink } from 'lucide-react';
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   canCloseConnectFlow,
   connectFlowReducer,
@@ -14,9 +14,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import { RadioGroup, RadioGroupItem } from '@renderer/lib/ui/radio-group';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type {
+  AccessLevel,
+  ConnectionCatalogEntry,
+} from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceCalls } from './service-calls';
+
+const LEVEL_CHOICES: Record<AccessLevel, { label: string; detail: string }> = {
+  read: { label: 'Read only', detail: 'Agents can look at what you can, and change nothing.' },
+  write: {
+    label: 'Read and write',
+    detail: 'Agents can also create and change things as you.',
+  },
+};
 
 /**
  * Connecting a service through Switch's generic sign-in: the browser signs in
@@ -43,6 +55,9 @@ export function ServiceConnectStep({
     initialConnectFlow
   );
   const { connected, flowId, flow, busy, warning, error } = state;
+  // Nothing is chosen until the person does: write is never the default.
+  const [access, setAccess] = useState<AccessLevel | null>(null);
+  const levels = connection.access_levels;
   const closable = canCloseConnectFlow(state);
   useCloseGuard(!closable);
   // Callers build their calls as they render; polling follows the flow, not them.
@@ -89,7 +104,7 @@ export function ServiceConnectStep({
     try {
       dispatch({
         type: 'started',
-        flowId: await calls.startSignIn(service),
+        flowId: await calls.startSignIn(service, levels ? access : null),
       });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
@@ -146,6 +161,30 @@ export function ServiceConnectStep({
                 Switch can no longer use your {connection.name} sign-in. Connect again.
               </p>
             )}
+            {levels && (!connected || error) && (
+              <fieldset className="space-y-2">
+                <legend className="mb-2 text-sm font-medium">
+                  What may agents do in {connection.name} as you?
+                </legend>
+                <RadioGroup
+                  value={access ?? ''}
+                  onValueChange={(value) => setAccess(value as AccessLevel)}
+                  className="gap-2"
+                >
+                  {levels.map((level) => (
+                    <label key={level} className="flex items-start gap-2 text-sm">
+                      <RadioGroupItem value={level} className="mt-0.5" />
+                      <span>
+                        {LEVEL_CHOICES[level].label}
+                        <span className="block text-xs text-foreground-muted">
+                          {LEVEL_CHOICES[level].detail}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </RadioGroup>
+              </fieldset>
+            )}
             {connected && (
               <p className="text-xs text-foreground-muted">
                 Disconnecting removes the sign-in Switch keeps, and every agent's access to{' '}
@@ -184,7 +223,10 @@ export function ServiceConnectStep({
               </Button>
             )}
             {(!connected || error) && (
-              <Button disabled={busy || !connection.connectable} onClick={() => void start()}>
+              <Button
+                disabled={busy || !connection.connectable || (levels !== null && access === null)}
+                onClick={() => void start()}
+              >
                 Connect {connection.name} <ExternalLink className="size-4" />
               </Button>
             )}

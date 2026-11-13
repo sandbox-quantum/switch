@@ -1,0 +1,85 @@
+slug: dropbox
+name: Dropbox
+category: File storage
+description: Find, read and organize the files in your Dropbox, as you.
+enabled: true
+publisher: Dropbox
+links:
+  documentation: https://www.dropbox.com/developers/documentation
+  support: https://help.dropbox.com
+  privacy: https://www.dropbox.com/privacy
+adapter: oauth
+auth:
+  type: oauth
+  # Dropbox returns one long-lived refresh token and keeps it: a refresh
+  # answers a new access token alone (measured), so the refresh token is
+  # reused, never replaced.
+  refresh: reusable
+  oauth:
+    # Each server's operator registers a Dropbox app and names its settings in
+    # DROPBOX_CLIENT_CONFIG_PATH. Dropbox's authorization server advertises
+    # dynamic registration, but it is for clients Dropbox has trusted, not for
+    # Core.
+    registration: static
+    client_settings: DROPBOX
+    # Dropbox takes https redirects, and localhost ones, matched exactly. Core's
+    # own callback needs GATEWAY_PUBLIC_URL; nothing listens on people's
+    # computers.
+    redirect: [core]
+    # Without it Dropbox answers a short-lived access token alone. Offline
+    # also returns the refresh token (measured).
+    authorization_params:
+      token_access_type: offline
+    # Dropbox revokes with a POST that takes an access token as its bearer
+    # and no body, not RFC 7009's token in a form. Revoking one access token
+    # ended its whole sign-in (measured with two sign-ins of one account): its
+    # other access tokens and its refresh token, and not the other sign-in.
+    revocation_url: https://api.dropboxapi.com/2/auth/token/revoke
+    revocation_bearer: true
+    # Dropbox keeps a new app in development, limited to its owner until
+    # "Enable additional users" is switched on in the app console.
+    unchecked: >-
+      Switch can't check the redirect URL, the app's permissions, or that it
+      lets people other than its owner connect. Have someone else connect once
+      to confirm.
+  identity:
+    # get_current_account takes no parameters: Dropbox answers a POST without
+    # a body (measured).
+    method: POST
+    url: https://api.dropboxapi.com/2/users/get_current_account
+    account_id: account_id
+    label: email
+# Dropbox's access tokens live 4 hours (measured: 14400 seconds, new and
+# refreshed).
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    - { name: dropbox, url: "https://mcp.dropbox.com/mcp" }
+access:
+  # The person picks when connecting: a pass-through grant hands an agent the
+  # sign-in's own token, so what the sign-in was given is all it can reach.
+  choose: true
+  # Dropbox enforces scopes, not its MCP server: the server lists the same
+  # tools to every connection, and one that needs a scope the sign-in lacks
+  # is refused with "insufficient scope: need [files.content.write]"
+  # (measured on a read sign-in, folder creation). files.content.write is
+  # what Dropbox's documented API requires to create, copy, move and delete
+  # files and folders and to restore revisions; of those, only folder creation
+  # was tried through the server.
+  # Not asked for: sharing.read, sharing.write, file_requests.read and
+  # file_requests.write. A shared link is a way into a file for whoever
+  # holds it, and a file request opens a folder to uploads, so listing,
+  # creating or changing them is left refused, as the server's tools for them
+  # need the scopes.
+  read:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+  write:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+      - files.content.write
+tools: { mode: pass_through }

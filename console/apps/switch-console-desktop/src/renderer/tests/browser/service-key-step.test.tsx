@@ -52,6 +52,7 @@ function keyed(status: ConnectionCatalogEntry['status']): ConnectionCatalogEntry
     token_lifetime: 3600,
     agent_access_note: null,
     loopback_ports: null,
+    access_levels: null,
     external_identity: status === 'connected' ? 'Datadog key · datadoghq.eu' : null,
     consent: null,
     workspace_enabled: null,

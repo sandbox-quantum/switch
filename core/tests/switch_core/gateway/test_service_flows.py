@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.app_credentials import UNREADABLE
 from switch_core.connections.broker import Principal, ServiceBroker, ServiceError
@@ -68,11 +69,13 @@ class World:
         vendor: FakeOAuthServer,
         flows: ServiceFlows,
         broker: ServiceBroker,
+        adapter: OAuthAdapter,
     ) -> None:
         self.harness = harness
         self.vendor = vendor
         self.flows = flows
         self.broker = broker
+        self.adapter = adapter
 
 
 def _world(
@@ -85,14 +88,15 @@ def _world(
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
     organization_apps: object = None,
+    choose: bool = False,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
-    _write_example(
-        root,
-        entry.replace("redirect: [loopback, core]", f"redirect: {redirect}{ports}"),
-    )
+    entry = entry.replace("redirect: [loopback, core]", f"redirect: {redirect}{ports}")
+    if choose:
+        entry = entry.replace("access:\n", "access:\n  choose: true\n")
+    _write_example(root, entry)
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
     assert oauth is not None
@@ -109,15 +113,12 @@ def _world(
         ),
         scopes=["read:items", "write:items"],
     )
+    adapter = OAuthAdapter(catalog["example"].definition, client, vendor.client())
     broker = ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=catalog,
-        adapters={
-            "example": OAuthAdapter(
-                catalog["example"].definition, client, vendor.client()
-            )
-        },
+        adapters={"example": adapter},
         organization_apps=organization_apps,  # type: ignore[arg-type]
         disabled=disabled or {},
         store=STORE,
@@ -132,7 +133,7 @@ def _world(
     harness.gateway_app.state.service_flows = flows
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)
-    return World(harness, vendor, flows, broker)
+    return World(harness, vendor, flows, broker, adapter)
 
 
 class Console:
@@ -144,10 +145,15 @@ class Console:
         self.state = secrets.token_urlsafe(32)
         self.secret = secrets.token_urlsafe(32)
 
-    async def start(self, service: str = "example", port: int = PORT) -> httpx.Response:
+    async def start(
+        self, service: str = "example", port: int = PORT, access: str | None = None
+    ) -> httpx.Response:
+        body = {"port": port, "state": self.state, "completion_secret": self.secret}
+        if access is not None:
+            body["access"] = access
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows",
-            json={"port": port, "state": self.state, "completion_secret": self.secret},
+            json=body,
             cookies=cookies_for(self.user),
         )
 
@@ -417,6 +423,132 @@ class TestLoopback:
             assert connected.json()["consent"] == "read"
         connection = await _connection(session_factory, ada.id)
         assert connection is not None and connection.consent == "read"
+
+
+class TestChoosingTheLevel:
+    """An entry that lets the person choose asks the vendor for that level and
+    no more, and never picks write for them."""
+
+    async def _connect(self, world: World, console: Console, access: str):
+        started = await console.start(access=access)
+        assert started.status_code == 200, started.text
+        query = parse_qs(urlsplit(started.json()["url"]).query)
+        code = _listener_code(
+            world.vendor.authorize(started.json()["url"]), console.state
+        )
+        return query, await console.complete(code)
+
+    async def test_reading_asks_for_the_read_scopes_alone(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", choose=True)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            query, completed = await self._connect(world, Console(client, ada), "read")
+        assert query["scope"] == ["read:items"]
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["consent"] == "read"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.consent, connection.granted_scopes) == (
+            "read",
+            ["read:items"],
+        )
+        assert all("write:items" not in q["scope"] for q in world.vendor.authorizations)
+
+    async def test_writing_asks_for_every_scope_of_the_write_level(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", choose=True)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            query, completed = await self._connect(world, Console(client, ada), "write")
+        assert query["scope"] == ["read:items write:items"]
+        assert completed.json()["consent"] == "write"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None and connection.consent == "write"
+
+    async def test_no_choice_is_refused_not_taken_as_write(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", choose=True)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start()
+        assert refused.status_code == 422
+        assert "read or also write" in refused.json()["detail"]
+        assert await _flow_ids(session_factory) == set()
+        assert world.vendor.authorizations == []
+
+    async def test_a_level_that_is_neither_read_nor_write_is_refused(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", choose=True)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start(access="admin")
+        assert refused.status_code == 422
+        assert await _flow_ids(session_factory) == set()
+
+    async def test_an_entry_with_no_choice_refuses_one(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start(access="read")
+        assert refused.status_code == 422
+        assert "no choice of access level" in refused.json()["detail"]
+        assert await _flow_ids(session_factory) == set()
+
+    async def test_asking_to_write_but_granted_reading_connects_read_only(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", choose=True)
+        ada = await add_member(session_factory, "ada")
+        mint = world.vendor.mint
+        world.vendor.mint = lambda scopes: mint(["read:items"])  # type: ignore[method-assign]
+        async with world.harness.client() as client:
+            _, completed = await self._connect(world, Console(client, ada), "write")
+        assert completed.json()["consent"] == "read"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None and connection.consent == "read"
+
+    async def test_asking_to_read_but_granted_writing_keeps_nothing(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", choose=True)
+        ada = await add_member(session_factory, "ada")
+        mint = world.vendor.mint
+        world.vendor.mint = lambda scopes: mint(["read:items", "write:items"])  # type: ignore[method-assign]
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            _, completed = await self._connect(world, console, "read")
+            status = (await console.status()).json()
+        assert completed.status_code == 400
+        assert "not asked for" in completed.json()["detail"]
+        assert status["status"] == "failed"
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_a_refresh_asks_for_no_scope_and_the_connection_stays_read(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", choose=True)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await self._connect(world, Console(client, ada), "read")
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        secret = ConnectionSecret(
+            json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
+        )
+        refreshed = await world.adapter.refresh(secret)
+        request = world.vendor.token_requests[-1]
+        assert request["grant_type"] == "refresh_token" and "scope" not in request
+        assert refreshed.values["scope"] == "read:items"
+        assert world.vendor.live_access[refreshed.access_token or ""] == ["read:items"]
+        again = await _connection(session_factory, ada.id)
+        assert again is not None and again.consent == "read"
 
 
 class TestLongCodes:

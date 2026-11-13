@@ -46,6 +46,7 @@ const EXAMPLE: ConnectionCatalogEntry = {
   token_lifetime: null,
   agent_access_note: null,
   loopback_ports: null,
+  access_levels: null,
   key: null,
   external_identity: null,
   consent: null,
@@ -121,7 +122,7 @@ async function signIn(): Promise<void> {
   switchServers.startServiceConnection.mockResolvedValue('flow-1');
   await vi.waitFor(() => expect(button(/^connect example/i, dialog())).toBeDefined());
   await act(async () => button(/^connect example/i, dialog())!.click());
-  expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example');
+  expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example', null);
 }
 
 it('says what limits agent access before the sign-in starts', async () => {
@@ -240,4 +241,57 @@ it('counts a cancel of a sign-in the server already dropped as cancelled', async
   await vi.waitFor(() => expect(button(/^connect example/i, dialog())).toBeDefined());
   expect(dialog().querySelector('[role="alert"]')).toBeNull();
   expect(closable()).toBe(true);
+});
+
+const CHOOSING: ConnectionCatalogEntry = { ...EXAMPLE, access_levels: ['read', 'write'] };
+
+const RADIOS = '[role="radio"]';
+
+/** The radio whose accessible name (its aria-labelledby label) matches. */
+function level(label: RegExp): HTMLElement {
+  const option = [...document.querySelectorAll<HTMLElement>(RADIOS)].find((r) =>
+    label.test(document.getElementById(r.getAttribute('aria-labelledby') ?? '')?.textContent ?? '')
+  );
+  if (!option) throw new Error(`no access option matching ${label}`);
+  return option;
+}
+
+function chooser() {
+  return (
+    <ServiceConnectStep
+      calls={serverServiceCalls('server')}
+      connection={CHOOSING}
+      onBack={() => {}}
+    />
+  );
+}
+
+it('offers no choice of access for a service that has none', async () => {
+  await render(connectStep());
+  expect(document.querySelectorAll(RADIOS)).toHaveLength(0);
+});
+
+it('chooses nothing for the person, and will not connect until they have', async () => {
+  await render(chooser());
+  expect(level(/read only/i).getAttribute('aria-checked')).toBe('false');
+  expect(level(/read and write/i).getAttribute('aria-checked')).toBe('false');
+  expect(button(/^connect example/i, dialog())!.disabled).toBe(true);
+  expect(switchServers.startServiceConnection).not.toHaveBeenCalled();
+});
+
+it.each([
+  [/read only/i, 'read'],
+  [/read and write/i, 'write'],
+])('connects at the level the person chose: %s', async (label, access) => {
+  switchServers.startServiceConnection.mockResolvedValue('flow-1');
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'pending',
+    account: null,
+    error: null,
+    warning: null,
+  });
+  await render(chooser());
+  await act(async () => level(label).click());
+  await act(async () => button(/^connect example/i, dialog())!.click());
+  expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example', access);
 });

@@ -23,6 +23,7 @@ import type {
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import {
+  type AccessLevel,
   type ConnectionAgent,
   type ConnectionCatalogEntry,
   type WorkspaceService,
@@ -4219,6 +4220,7 @@ export async function getConnectionCatalog(
     token_lifetime: entry.token_lifetime,
     agent_access_note: entry.agent_access_note,
     loopback_ports: entry.loopback_ports,
+    access_levels: entry.access_levels,
     key: entry.key,
     external_identity: entry.external_identity,
     consent: entry.consent,
@@ -4243,6 +4245,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         token_lifetime: null,
         agent_access_note: null,
         loopback_ports: null,
+        access_levels: null,
         key: null,
         external_identity: null,
         consent: null,
@@ -4567,7 +4570,7 @@ const serviceFlows = (service: string) =>
 export async function startServiceConnection(
   server: SwitchServer,
   service: string,
-  input: { port: number; state: string; completion_secret: string }
+  input: { port: number; state: string; completion_secret: string; access?: AccessLevel }
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');

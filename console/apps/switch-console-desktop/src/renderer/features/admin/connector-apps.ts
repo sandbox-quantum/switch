@@ -55,6 +55,7 @@ export interface SecretField {
 
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
+const DROPBOX = 'dropbox';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -358,6 +359,28 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === DROPBOX)
+    return [
+      {
+        text: "In Dropbox's App Console, create an app with Scoped access and the Full Dropbox access type. Use a Dropbox account your organization owns: the app belongs to whoever creates it.",
+        copy: [],
+        link: { label: 'Open App Console', href: 'https://www.dropbox.com/developers/apps' },
+        items: [],
+      },
+      {
+        text: 'On its Permissions tab, tick exactly these, then submit:',
+        copy: [],
+        link: null,
+        items: app.scopes ?? [],
+      },
+      redirectStep('On its Settings tab, add this under Redirect URIs:', redirectUris(app)),
+      {
+        text: "Copy its App key (the Client ID) and App secret (the Client secret). Until you switch on Enable additional users, only the app's owner can connect.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === GOOGLE)
     return [
       {
@@ -442,6 +465,7 @@ const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
+  [DROPBOX]: 'switchCore.dropboxClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */

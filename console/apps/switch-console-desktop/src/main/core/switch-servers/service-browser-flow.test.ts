@@ -1,7 +1,10 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { focusMainWindow } from '@main/app/window';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type {
+  AccessLevel,
+  ConnectionCatalogEntry,
+} from '@shared/core/switch-servers/connection-catalog';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelServiceConnection,
@@ -32,7 +35,10 @@ const server = {
 } as SwitchServer;
 const flows: [string, string][] = [];
 /** The service as the server lists it: on any port, or only on `ports`. */
-function listed(ports: number[] | null): ConnectionCatalogEntry[] {
+function listed(
+  ports: number[] | null,
+  levels: AccessLevel[] | null = null
+): ConnectionCatalogEntry[] {
   return [
     {
       slug: 'example',
@@ -49,6 +55,7 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       token_lifetime: 28_800,
       agent_access_note: null,
       loopback_ports: ports,
+      access_levels: levels,
       key: null,
       external_identity: null,
       consent: null,
@@ -64,7 +71,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.resetAllMocks();
 });
-async function start(service = 'example') {
+async function start(service = 'example', access: AccessLevel | null = null) {
   vi.mocked(cancelServiceConnection).mockResolvedValue(undefined);
   vi.mocked(completeServiceConnection).mockResolvedValue({
     warning: null,
@@ -77,7 +84,7 @@ async function start(service = 'example') {
     mode: 'loopback',
   }));
   const open = vi.fn().mockResolvedValue(undefined);
-  const id = await startServiceBrowserFlow(server, service, open);
+  const id = await startServiceBrowserFlow(server, service, open, access);
   flows.push([service, id]);
   const input = vi.mocked(startServiceConnection).mock.calls[0]![2];
   return { id, input, open, url: `http://127.0.0.1:${input.port}/switch-services/callback` };
@@ -196,9 +203,14 @@ it('cancels the server flow if the browser cannot open', async () => {
     mode: 'loopback',
   }));
   await expect(
-    startServiceBrowserFlow(server, 'example', async () => {
-      throw new Error('Private shell detail');
-    })
+    startServiceBrowserFlow(
+      server,
+      'example',
+      async () => {
+        throw new Error('Private shell detail');
+      },
+      null
+    )
   ).rejects.toThrow('Could not open the sign-in page in your browser.');
   const { state } = vi.mocked(startServiceConnection).mock.calls[0]![2];
   expect(cancelServiceConnection).toHaveBeenCalledWith(server, 'example', state);
@@ -238,11 +250,47 @@ it('says which ports to free when every one is taken, and starts nothing', async
   const busy = await occupy(43873);
   try {
     vi.mocked(getConnectionCatalog).mockResolvedValue(listed([43873]));
-    await expect(startServiceBrowserFlow(server, 'example', vi.fn())).rejects.toThrow(
+    await expect(startServiceBrowserFlow(server, 'example', vi.fn(), null)).rejects.toThrow(
       'Example takes a sign-in back only on port 43873 of this computer, and all are in use.'
     );
     expect(startServiceConnection).not.toHaveBeenCalled();
   } finally {
     await new Promise((resolve) => busy.close(resolve));
   }
+});
+
+it('sends no access to a service that offers no choice', async () => {
+  const { input } = await start();
+  expect(input).not.toHaveProperty('access');
+});
+
+it.each<AccessLevel>(['read', 'write'])('sends the %s level the person chose', async (level) => {
+  vi.mocked(getConnectionCatalog).mockResolvedValue(listed(null, ['read', 'write']));
+  const { input } = await start('example', level);
+  expect(input.access).toBe(level);
+});
+
+it('does not connect a service that lets the person choose until they have', async () => {
+  vi.mocked(getConnectionCatalog).mockResolvedValue(listed(null, ['read', 'write']));
+  const open = vi.fn();
+  await expect(startServiceBrowserFlow(server, 'example', open, null)).rejects.toThrow(
+    'Choose what Example may do before connecting.'
+  );
+  expect(startServiceConnection).not.toHaveBeenCalled();
+  expect(open).not.toHaveBeenCalled();
+});
+
+it('refuses a level the service does not offer', async () => {
+  vi.mocked(getConnectionCatalog).mockResolvedValue(listed(null, ['read']));
+  await expect(startServiceBrowserFlow(server, 'example', vi.fn(), 'write')).rejects.toThrow(
+    'Choose what Example may do before connecting.'
+  );
+  expect(startServiceConnection).not.toHaveBeenCalled();
+});
+
+it('refuses a choice for a service that has none to make', async () => {
+  await expect(startServiceBrowserFlow(server, 'example', vi.fn(), 'read')).rejects.toThrow(
+    'Example has no choice of access to make.'
+  );
+  expect(startServiceConnection).not.toHaveBeenCalled();
 });

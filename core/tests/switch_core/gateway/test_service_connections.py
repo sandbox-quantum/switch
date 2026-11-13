@@ -155,6 +155,12 @@ class TestConnections:
             28800,
         )
         assert atlassian["loopback_ports"] == [39231, 39232, 39233, 39234, 39235]
+        # Only an entry whose catalog lets the person choose advertises levels.
+        assert entries["dropbox"]["access_levels"] == ["read", "write"]
+        assert {slug for slug, entry in entries.items() if entry["access_levels"]} == {
+            "dropbox"
+        }
+
         # Their own connection is theirs to disconnect; there is nothing to
         # disconnect where they have none.
         assert (github["can_revoke"], asana["can_revoke"]) == (True, False)

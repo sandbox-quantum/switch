@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
         "gitlab",
         "notion",
@@ -41,6 +42,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "gitlab",
         "google-workspace",
@@ -51,6 +53,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
@@ -284,6 +287,60 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_dropbox_entry_signs_in_as_the_live_test_found_it_must():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox's dynamic registration is for clients it has trusted, so each
+    # server's operator registers an app; sign-ins come back to Core.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    assert oauth.loopback_ports is None
+    # Without offline, Dropbox hands out a short-lived access token alone.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    # Dropbox answers a new access token on a refresh and keeps the old
+    # refresh token; its access tokens live 4 hours.
+    assert definition.auth.refresh == "reusable"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        14400,
+    )
+    # Dropbox revokes with an access token as the bearer, at its own endpoint.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (
+        "https://api.dropboxapi.com/2/auth/token/revoke",
+        False,
+    )
+    assert oauth.revocation_bearer is True
+    assert oauth.unchecked is not None and "other than its owner" in oauth.unchecked
+    identity = definition.auth.identity
+    assert identity is not None
+    # get_current_account takes no parameters: a POST without a body.
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    # An OAuth entry's tools pass through; the scopes carry the levels.
+    assert definition.tools.mode == "pass_through"
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # Never the scopes that share files or open folders to uploads.
+    asked = {*definition.access.read.scopes, *definition.access.write.scopes}
+    assert not any(scope.startswith(("sharing.", "file_requests.")) for scope in asked)
 
 
 def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
@@ -629,6 +686,52 @@ def test_rejects_write_without_read(catalog_copy):
         load_catalog(catalog_copy)
 
 
+def test_an_oauth_entry_may_let_the_person_choose_the_level(catalog_copy):
+    _write_example(
+        catalog_copy, OAUTH_ENTRY.replace("access:\n", "access:\n  choose: true\n")
+    )
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.choose is True
+
+
+def test_the_level_is_not_chosen_unless_the_entry_says_so(catalog_copy):
+    _write_example(catalog_copy)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.choose is False
+
+
+def test_a_choice_needs_a_write_level_to_choose(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("access:\n", "access:\n  choose: true\n").replace(
+            '  write: { scopes: ["read:items", "write:items"] }\n', ""
+        ),
+    )
+    with pytest.raises(CatalogError, match="needs a write level"):
+        load_catalog(catalog_copy)
+
+
+def test_only_an_oauth_entry_lets_the_person_choose(catalog_copy):
+    path = catalog_copy / "github" / "connection.yaml"
+    text = path.read_text()
+    assert "\naccess:\n" in text
+    path.write_text(text.replace("\naccess:\n", "\naccess:\n  choose: true\n", 1))
+    with pytest.raises(CatalogError, match="only an oauth entry lets the person"):
+        load_catalog(catalog_copy)
+
+
+def test_dropbox_lets_the_person_choose_between_its_two_levels():
+    access = load_catalog(CATALOG_ROOT)["dropbox"].definition.access
+    assert access is not None and access.choose is True
+    assert access.read.scopes == [
+        "account_info.read",
+        "files.metadata.read",
+        "files.content.read",
+    ]
+    assert access.write is not None
+    assert access.write.scopes == [*access.read.scopes, "files.content.write"]
+
+
 def test_a_placeholder_may_describe_its_levels(catalog_copy):
     path = catalog_copy / "asana" / "connection.yaml"
     path.write_text(
@@ -701,6 +804,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -743,6 +847,53 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+GET_METHOD = "    method: GET\n"
+
+
+def test_loads_a_post_identity_with_no_body(catalog_copy):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(GET_METHOD, "    method: POST\n"))
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", None)
+
+
+def test_loads_a_post_identity_with_a_static_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            GET_METHOD, '    method: POST\n    body: { fields: ["id"] }\n'
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.body == {"fields": ["id"]}
+
+
+def test_rejects_a_get_identity_with_a_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            GET_METHOD, '    method: GET\n    body: { fields: ["id"] }\n'
+        ),
+    )
+    with pytest.raises(CatalogError, match="only a POST identity call sends a body"):
+        load_catalog(catalog_copy)
+
+
+def test_an_identity_without_a_method_is_a_get(catalog_copy):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(GET_METHOD, ""))
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("GET", None)
+
+
+@pytest.mark.parametrize("replacement", ["    method: PUT\n", "    method: get\n"])
+def test_rejects_an_identity_with_an_unknown_method(catalog_copy, replacement):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(GET_METHOD, replacement))
+    with pytest.raises(CatalogError, match="auth.identity.method"):
+        load_catalog(catalog_copy)
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,
@@ -753,6 +904,33 @@ def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     )
     oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
     assert oauth is not None and oauth.prompt == "consent select_account"
+
+
+def test_takes_token_access_type_as_an_authorization_param(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_params: { token_access_type: offline }\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+
+
+def test_refuses_an_authorization_param_core_sets_itself(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_params: { redirect_uri: https://example.test/cb }\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="authorization_params"):
+        load_catalog(catalog_copy)
 
 
 def test_loads_a_static_client_with_its_endpoints(catalog_copy):
@@ -783,7 +961,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -913,6 +1091,7 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
 
 GET_IDENTITY = (
     "  identity:\n"
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n"

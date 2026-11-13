@@ -245,7 +245,9 @@ async def check_oauth_client(
         ),
     )
     error = _body(response).get("error")
-    if error == "invalid_grant":
+    # Dropbox follows the code with a reason: "invalid_client: Invalid client_id…".
+    code = error.partition(":")[0] if isinstance(error, str) else error
+    if code == "invalid_grant":
         oauth = definition.auth.oauth
         assert oauth is not None
         return CheckResult(
@@ -260,7 +262,7 @@ async def check_oauth_client(
             ],
             settings={},
         )
-    if error == "redirect_uri_mismatch":
+    if code == "redirect_uri_mismatch":
         return CheckResult(
             [
                 Check(
@@ -274,7 +276,7 @@ async def check_oauth_client(
             ],
             settings={},
         )
-    if error in ("invalid_client", "unauthorized_client"):
+    if code in ("invalid_client", "unauthorized_client"):
         return CheckResult(
             [
                 Check(

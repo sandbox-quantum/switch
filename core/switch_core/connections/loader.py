@@ -63,7 +63,9 @@ AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 class OAuthClient(BaseModel):
@@ -77,8 +79,12 @@ class OAuthClient(BaseModel):
     `authorization_url` and `token_url`, both are discovered from the MCP
     server's metadata. `revocation_url` is where a disconnect revokes the
     sign-in, where the vendor has one; `revocation_discovered` revokes at the
-    authorization server's advertised revocation endpoint instead. A vendor
-    with neither needs `remove_access`: where the person removes Switch
+    authorization server's advertised revocation endpoint instead.
+    `revocation_bearer` is for a vendor whose revocation is a POST to
+    `revocation_url` with an access token as the bearer and no body, not RFC
+    7009's token in a form (Dropbox's); revoking an access token there ends
+    its sign-in, and so every token issued on it. A vendor with neither
+    needs `remove_access`: where the person removes Switch
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
@@ -98,8 +104,8 @@ class OAuthClient(BaseModel):
     `select_account`, to let the person choose the account), one value or
     several separated by spaces, as OAuth writes it.
     So are `authorization_params`, which only a vendor-specific key may name
-    (`access_type: offline`, for a vendor that hands out a refresh token only
-    when asked), never one Core sets itself.
+    (`access_type: offline` or Dropbox's `token_access_type: offline`, for a
+    vendor that hands out a refresh token only when asked), never one Core sets itself.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -120,6 +126,7 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    revocation_bearer: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
@@ -158,6 +165,8 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if self.revocation_bearer and self.revocation_url is None:
+            raise ValueError("revocation_bearer is a call to the named revocation_url")
         if self.revocation_ends_grant and (
             self.revocation_url is None and not self.revocation_discovered
         ):
@@ -179,11 +188,19 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Read account identity from an authenticated GET, an MCP tool result,
-    or the vendor's RFC 7662 introspection answer for the token."""
+    """Read account identity from an authenticated request to `url` (a GET,
+    or a POST), an MCP tool result, or the vendor's RFC 7662 introspection
+    answer for the token.
+
+    A POST may carry a static JSON `body`, and sends no body without one; a
+    GET never carries one. This differs from `ApiKeyIdentity`, whose POST must
+    have a body: some vendors answer a POST that takes no parameters.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"] = "GET"
     url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
     introspection: bool = False
     account_id: (
@@ -206,6 +223,10 @@ class ConnectionIdentity(BaseModel):
             self.account_id
         ):
             raise ValueError("account_id lists a path twice")
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
+        if self.method != "GET" and self.url is None:
+            raise ValueError("only a url identity call has a method")
         return self
 
 
@@ -555,7 +576,16 @@ class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     read: LevelAccess
     write: LevelAccess | None = None
+    # The person picks read or read-and-write when they connect, instead of
+    # being asked for the write level whenever the service has one.
+    choose: bool = False
     unscoped: bool = False
+
+    @model_validator(mode="after")
+    def _a_choice_has_two_levels(self) -> "ConnectionAccess":
+        if self.choose and self.write is None:
+            raise ValueError("choose offers read or write, so it needs a write level")
+        return self
 
     @model_validator(mode="after")
     def _scopes_match_consent(self) -> "ConnectionAccess":
@@ -654,6 +684,8 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        if self.access is not None and self.access.choose and self.adapter != "oauth":
+            raise ValueError("only an oauth entry lets the person choose the level")
         if self.access is not None and self.access.unscoped and self.adapter != "oauth":
             raise ValueError("only an oauth entry can have unscoped access")
         if self.adapter == "github":

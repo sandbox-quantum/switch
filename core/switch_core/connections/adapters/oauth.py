@@ -70,6 +70,9 @@ from switch_core.outbound import (
 )
 
 MAX_METADATA_BYTES = 64 * 1024
+# A stored access token with less life than this is replaced before it is used
+# to revoke: it could lapse on the way.
+BEARER_REVOCATION_MARGIN_SECONDS = 30
 # The MCP identity call's limits: its whole time, the bytes of one response
 # and of all of them, the tools/list pages it reads, and the tool's result.
 MCP_IDENTITY_SECONDS: float = 15
@@ -787,12 +790,13 @@ class OAuthAdapter:
             assert self._identity.url is not None
             response = await self._send(
                 self._http.build_request(
-                    "GET",
+                    self._identity.method,
                     self._identity.url,
                     headers={
                         "Authorization": f"Bearer {access_token}",
                         "Accept": "application/json",
                     },
+                    json=self._identity.body,
                 )
             )
             if response.status_code == 401:
@@ -1065,6 +1069,9 @@ class OAuthAdapter:
                 f"Switch has stopped using the {self._name} sign-in but cannot "
                 f"revoke it, so it still works. {self._oauth.remove_access}"
             )
+        if self._oauth.revocation_bearer:
+            await self._revoke_by_bearer(secret)
+            return
         endpoints = await self.endpoints()
         url = (
             endpoints.revocation
@@ -1102,6 +1109,52 @@ class OAuthAdapter:
         raise ServiceAdapterError(
             f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
         )
+
+    async def _revoke_by_bearer(self, secret: ConnectionSecret) -> None:
+        """Revoke a sign-in at a vendor that takes an access token as the
+        bearer of a POST with no body (Dropbox), which ends the token's whole
+        sign-in. A stored token that is past its expiry, or that the vendor no
+        longer takes, is replaced by one the refresh token fetches; that token
+        serves this call alone and is never stored. A refresh token the vendor
+        no longer knows is a sign-in already gone."""
+        url = self._oauth.revocation_url
+        assert url is not None
+        token = (
+            secret.access_token
+            if secret.expires_at > time.time() + BEARER_REVOCATION_MARGIN_SECONDS
+            else None
+        )
+        replaced = False
+        while True:
+            if token is None:
+                if not secret.values.get("refresh_token"):
+                    raise ServiceAdapterError(
+                        f"The {self._name} sign-in holds no token to revoke it with."
+                    )
+                try:
+                    renewed = await self.refresh(secret)
+                except ReauthorizationRequiredError:
+                    return
+                token, replaced = renewed.access_token, True
+                if token is None:
+                    raise ServiceAdapterError(
+                        f"{self._name} returned no access token to revoke the "
+                        "sign-in with."
+                    )
+            response = await self._send(
+                self._http.build_request(
+                    "POST", url, headers={"Authorization": f"Bearer {token}"}
+                )
+            )
+            if response.status_code == 200:
+                return
+            if response.status_code == 401 and not replaced:
+                token = None
+                continue
+            raise ServiceAdapterError(
+                f"{self._name} refused to revoke the sign-in "
+                f"(HTTP {response.status_code})."
+            )
 
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]

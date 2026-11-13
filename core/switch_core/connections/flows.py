@@ -68,6 +68,11 @@ class FlowError(Exception):
     """The flow cannot go on; the message is for the person."""
 
 
+class AccessChoiceError(FlowError):
+    """The request's access level does not fit the entry: a level asked of an
+    entry that has no choice, or none given where the person must choose."""
+
+
 @dataclass(frozen=True)
 class ServiceFlow:
     """A service sign-in as its row stands.
@@ -160,6 +165,7 @@ class ServiceFlows:
         port: int,
         completion_secret: str,
         owner_label: str,
+        access: AccessLevel | None = None,
     ) -> ServiceFlow:
         mode = self.mode(definition)
         if mode is None:
@@ -175,13 +181,26 @@ class ServiceFlows:
                 f"{', '.join(str(p) for p in ports)} of this computer. Close "
                 "whatever is using them, and connect again."
             )
-        access = definition.access
-        assert access is not None
-        # Connecting asks for everything a grant may need: write where the
-        # service has it. The grant is then on or off.
-        consent: AccessLevel = "write" if access.write is not None else "read"
-        level = access.write or access.read
-        assert level.scopes is not None and access.read.scopes is not None
+        levels = definition.access
+        assert levels is not None
+        consent: AccessLevel
+        if levels.choose:
+            if access is None:
+                raise AccessChoiceError(
+                    f"Choose whether {definition.name} may only read or also write."
+                )
+            consent = access
+        else:
+            if access is not None:
+                raise AccessChoiceError(
+                    f"{definition.name} has no choice of access level."
+                )
+            # Connecting asks for everything a grant may need: write where the
+            # service has it. The grant is then on or off.
+            consent = "write" if levels.write is not None else "read"
+        level = levels.write if consent == "write" else levels.read
+        assert level is not None and level.scopes is not None
+        assert levels.read.scopes is not None
         try:
             stored = await self._flows.start(
                 kind=KIND,
@@ -199,11 +218,13 @@ class ServiceFlows:
                 owner_label=owner_label,
                 details={
                     "name": definition.name,
-                    "unscoped": access.unscoped,
+                    "unscoped": levels.unscoped,
                     "consent": consent,
                     "scopes": list(level.scopes),
-                    "read_scopes": list(access.read.scopes),
-                    "write_scopes": list(level.scopes) if consent == "write" else [],
+                    "read_scopes": list(levels.read.scopes),
+                    "write_scopes": (
+                        list(levels.write.scopes or []) if levels.write else []
+                    ),
                 },
                 completion_secret=completion_secret,
             )
@@ -357,6 +378,12 @@ class ServiceFlows:
             return "write"
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
+            if details.get("consent") == "read":
+                raise FlowError(
+                    f"{details['name']} granted write access, which was not asked "
+                    "for, so Switch did not keep the sign-in. Remove it under the "
+                    "account's connected apps, and connect again."
+                )
             return "write"
         if set(details["read_scopes"]) <= granted:
             return "read"

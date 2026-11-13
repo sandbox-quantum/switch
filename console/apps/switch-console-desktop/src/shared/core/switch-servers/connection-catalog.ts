@@ -54,6 +54,9 @@ export function knownUnavailableCode(code: string | null): UnavailableCode | nul
   return UNAVAILABLE_CODES.find((known) => known === code) ?? null;
 }
 
+export const accessLevelSchema = z.enum(['read', 'write']);
+export type AccessLevel = z.infer<typeof accessLevelSchema>;
+
 export const connectionCatalogEntrySchema = z.object({
   slug: z.string(),
   name: z.string(),
@@ -88,6 +91,11 @@ export const connectionCatalogEntrySchema = z.object({
    * vendor that matches the port registered; null for any port.
    */
   loopback_ports: z.array(z.number().int()).nullable(),
+  /**
+   * The levels the person chooses between when they connect, for a service
+   * that lets them; null when connecting asks for the one level it has.
+   */
+  access_levels: z.array(accessLevelSchema).nullable(),
   /** The fields a person pastes to connect it, for a service connected with a key; else null. */
   key: serviceKeyFormSchema.nullable(),
   /** The connected account as people recognise it; null when not connected. */
@@ -115,6 +123,7 @@ export const connectionCatalogSchema = z.object({
         token_lifetime: true,
         agent_access_note: true,
         loopback_ports: true,
+        access_levels: true,
         key: true,
         external_identity: true,
         consent: true,
@@ -143,6 +152,7 @@ export const serviceConnectionsSchema = z.object({
       token_lifetime: z.number().nullable().default(null),
       agent_access_note: z.string().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
+      access_levels: z.array(accessLevelSchema).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),

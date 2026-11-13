@@ -1,5 +1,5 @@
 {
-  "revision": 2,
+  "revision": 3,
   "bodies": {
     "switch_core.gateway.agent_sessions.AnswerBody": [
       "answer",
@@ -168,6 +168,7 @@
       "completion_secret"
     ],
     "switch_core.gateway.service_flows.StartFlow": [
+      "access",
       "completion_secret",
       "port",
       "state"

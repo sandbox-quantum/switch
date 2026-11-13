@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from html import escape
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -31,6 +31,7 @@ from switch_core.connections.broker import (
 from switch_core.connections.flows import (
     INTERRUPTED,
     MAX_CODE_LENGTH,
+    AccessChoiceError,
     FlowError,
     ServiceFlow,
     ServiceFlows,
@@ -98,6 +99,8 @@ class StartFlow(BaseModel):
     port: int = Field(strict=True, ge=1024, le=65535)
     state: str = Field(pattern=TOKEN_PATTERN)
     completion_secret: str = Field(pattern=TOKEN_PATTERN)
+    # Required of an entry that lets the person choose, refused for any other.
+    access: Literal["read", "write"] | None = None
 
 
 class FlowSecret(BaseModel):
@@ -136,7 +139,10 @@ async def start(
             port=body.port,
             completion_secret=body.completion_secret,
             owner_label=f"{user.name} ({user.email}) in {tenant.name}",
+            access=body.access,
         )
+    except AccessChoiceError as error:
+        raise HTTPException(422, str(error)) from None
     except FlowError as error:
         raise HTTPException(409, str(error)) from None
     if flow.mode == "core":

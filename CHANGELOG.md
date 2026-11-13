@@ -947,6 +947,38 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The Dropbox connection.** A person connects Dropbox from Switch Console and
+  a granted agent finds, reads and, if the person allowed writing, creates,
+  copies, moves and deletes files and folders in it, as that person, through
+  Dropbox's MCP server. The person chooses read only or read and write when
+  they connect, and Switch asks Dropbox for that level's permissions alone;
+  to change it they disconnect and connect again. Reading holds `account_info.read`,
+  `files.metadata.read` and `files.content.read`; writing adds
+  `files.content.write`. Sharing links and file requests are not asked for.
+  The server's operator registers a Dropbox app and saves it under Connector
+  apps, or names it in `DROPBOX_CLIENT_CONFIG_PATH` (Helm:
+  `switchCore.dropboxClientSecret`); see `docs/old/dropbox-setup.md`. Without
+  it, Dropbox is listed as not set up. Like Airtable, it needs
+  `GATEWAY_PUBLIC_URL`. Dropbox's MCP server lists its write tools to every
+  connection and Dropbox refuses them where the sign-in lacks the permission.
+  Disconnecting, or connecting again, revokes the old sign-in at Dropbox,
+  which takes its refresh token and every access token made from it, and not
+  the person's other sign-ins; a new `revocation_bearer` setting in an OAuth
+  entry's `oauth` block says a vendor revokes that way (an access token as the
+  bearer of a POST with no body) and nothing changes for the other entries.
+  Where Dropbox cannot be reached the connection still changes, and Switch
+  says the old sign-in could not be revoked. Searching inside files
+  depends on the account's Dropbox plan, and Basic accounts get name search.
+- **Connector apps checks read a vendor's reason.** A token endpoint that
+  follows its error code with a reason (Dropbox's
+  `invalid_client: Invalid client_id or client_secret`) is read by its code,
+  so a wrong secret says so rather than "an answer Switch doesn't recognise".
+- **A connection's identity call names its method.** `auth.identity` in an
+  OAuth catalog entry gains a required `method` (`GET` or `POST`) and an
+  optional `body`, sent only with a `POST`; a `GET` with a body is refused.
+  Dropbox identifies an account with a `POST` that takes no parameters. The
+  shipped entries say `method: GET`. An `authorization_params` key may now
+  also be `token_access_type`, which Dropbox needs to return a refresh token.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A

@@ -156,6 +156,7 @@ import {
 } from '@main/core/telemetry/narrow';
 import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
+import type { AccessLevel } from '@shared/core/switch-servers/connection-catalog';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
   LibraryDeleteResult,
@@ -1645,9 +1646,18 @@ export const workspacesController = createRPCController({
    * vendor, and this Console's listener takes the result back. Resolves to the
    * flow's id.
    */
-  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+  startServiceConnection: (params: {
+    workspaceId: string;
+    service: string;
+    access: AccessLevel | null;
+  }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(
+        server,
+        params.service,
+        (url) => appService.openExternal(url),
+        params.access
+      )
     ),
 
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>

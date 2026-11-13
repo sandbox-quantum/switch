@@ -181,6 +181,13 @@ async def list_service_connections(
                 "key": _key_form(definition),
                 "status": broker.connection_status(standing, connection),
                 "consent": None if connection is None else connection.consent,
+                # The levels a person picks between when they connect, or null
+                # where connecting asks for the one level the entry has.
+                "access_levels": (
+                    ["read", "write"]
+                    if definition.access is not None and definition.access.choose
+                    else None
+                ),
                 "external_identity": (
                     None if connection is None else connection.external_identity
                 ),

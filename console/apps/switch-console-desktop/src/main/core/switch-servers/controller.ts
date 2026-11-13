@@ -25,6 +25,7 @@ import {
   requireWorkspaceForServer,
 } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
+import type { AccessLevel } from '@shared/core/switch-servers/connection-catalog';
 import type {
   SaveConnectorAppInput,
   SaveConnectorAppResult,
@@ -431,9 +432,9 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(serverId, (server) => cancelGitHubBrowserFlow(server, id)),
   disconnectGitHub: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectGitHub(server)),
-  startServiceConnection: (serverId: string, service: string) =>
+  startServiceConnection: (serverId: string, service: string, access: AccessLevel | null) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
-      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url), access)
     ),
   getServiceFlow: (serverId: string, service: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>

@@ -261,12 +261,17 @@ contracts:
     # speaks revision 2 while saying 1; a server older than 0.31.0 also says
     # 1, and is the one case this cannot tell apart.
     #
+    # Revision 3: starting a service sign-in takes an optional `access` (read
+    # or write), which an entry that lets the person choose requires. A server
+    # without it refuses the body, as the strict body takes no field it does
+    # not know. An older client never sends it, so switch-core still accepts 2.
+    #
     # A strict request body changing is the change most easily missed, so
     # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until
     # it is recorded against a raised `speaks`.
     artifacts:
-      switch-core: { speaks: 2, accepts: 2 }
-      switch-console: { speaks: 2, accepts: 1 }
+      switch-core: { speaks: 3, accepts: 2 }
+      switch-console: { speaks: 3, accepts: 1 }
 
   stack-compose:
     description: >-

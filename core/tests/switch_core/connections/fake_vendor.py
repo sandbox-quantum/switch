@@ -355,6 +355,8 @@ class FakeOAuthServer:
         self.introspections: list[dict[str, str]] = []
         self.mcp_calls: list[dict[str, Any]] = []
         self.paths: list[str] = []
+        # (method, body) of each account request, in order.
+        self.identity_requests: list[tuple[str, bytes]] = []
         self.fail: dict[str, tuple[int, Any]] = {}
         self.metadata: dict[str, Any] = {
             "issuer": ISSUER,
@@ -371,6 +373,9 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # Answer the account request with the account itself, not under
+        # "account", as a vendor that names its fields at the top does.
+        self.flat_account = False
         # What introspecting a live token says beside `active`.
         self.introspected: dict[str, Any] = {
             "workspace_id": "ws-1",
@@ -457,10 +462,13 @@ class FakeOAuthServer:
             return httpx.Response(200)
         if where == f"{ISSUER}/introspect" and request.method == "POST":
             return self._introspect(request)
-        if where == IDENTITY_URL and request.method == "GET":
+        if where == IDENTITY_URL and request.method in ("GET", "POST"):
+            self.identity_requests.append((request.method, request.content))
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
-            return _json(200, {"account": self.account})
+            return _json(
+                200, self.account if self.flat_account else {"account": self.account}
+            )
         if where == MCP_URL:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})

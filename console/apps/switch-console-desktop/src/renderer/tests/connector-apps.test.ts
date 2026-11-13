@@ -354,6 +354,18 @@ const AIRTABLE = app({
   workspaces: 0,
 });
 
+const DROPBOX_CALLBACK = `${PUBLIC_URL}/gateway/service-connections/dropbox/flows/callback`;
+
+const DROPBOX = app({
+  ...AIRTABLE,
+  slug: 'dropbox',
+  name: 'Dropbox',
+  configuration_variables: ['DROPBOX_CLIENT_CONFIG_PATH'],
+  redirect_uri: DROPBOX_CALLBACK,
+  redirect_uris: [DROPBOX_CALLBACK],
+  scopes: ['account_info.read', 'files.metadata.read', 'files.content.read', 'files.content.write'],
+});
+
 /** An app whose sign-ins return to Switch Console, on one of several ports. */
 const LOOPBACK = app({
   ...AIRTABLE,
@@ -362,6 +374,28 @@ const LOOPBACK = app({
   redirect_uri: LOOPBACK_REDIRECTS[0]!,
   redirect_uris: LOOPBACK_REDIRECTS,
   needs_public_url: false,
+});
+
+describe('Dropbox', () => {
+  it("walks Dropbox's App Console, with the scopes to tick and its redirect to paste", () => {
+    const steps = setupInstructions(DROPBOX, 'internal', null);
+    expect(steps[0]!.link).toEqual({
+      label: 'Open App Console',
+      href: 'https://www.dropbox.com/developers/apps',
+    });
+    expect(steps.find((s) => s.text.startsWith('On its Permissions tab'))?.items).toEqual(
+      DROPBOX.scopes
+    );
+    expect(steps.flatMap((s) => s.copy)).toEqual([DROPBOX_CALLBACK]);
+    expect(steps.at(-1)!.text).toMatch(/Enable additional users/);
+  });
+
+  it("names Dropbox's Helm value when moving off configuration", () => {
+    const steps = moveChecklist(app({ ...DROPBOX, source: 'configuration' }));
+    expect(steps[1]!.text).toBe(
+      "Remove DROPBOX_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.dropboxClientSecret."
+    );
+  });
 });
 
 describe('Airtable, and an app that sends people back to Switch Console', () => {
