@@ -339,7 +339,7 @@ Each event also carries `flint.insert_id`, a random UUID made for that event
 alone. It identifies the event and nothing else: it is never reused, never
 stored on the machine, and connects no event to any other. And it carries
 `flint.session_id`, a time: when the visit it belongs to began. It groups an
-installation's events into visits, which `flint.client_id` already groups
+installation's events into visits, which `switch_trust.client_id` already groups
 them into installations, and is derived from nothing but the clock.
 
 - **Generated randomly.** Not derived from hardware, MAC address, disk serial, OS
