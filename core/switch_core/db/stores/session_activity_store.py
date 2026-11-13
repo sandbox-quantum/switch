@@ -167,10 +167,13 @@ class AgentSessionActivityStore:
         lease_ttl: timedelta,
         heartbeat_ttl: timedelta,
         text: str,
+        subagent_text: str,
     ) -> list[tuple[str, str, str]]:
         """End, as interrupted, the turns still queued or running that their
-        session can no longer finish, keyed on the session rather than the
-        agent:
+        session can no longer finish, and settle, as failed with
+        `subagent_text`, the subagents still running in that session (a
+        subagent can outlive its turn, so its turn may long have ended). Keyed
+        on the session rather than the agent:
 
         - its session is live when it is placed (`AgentSessionPlacement`) over
           a connection whose process holds its lease, or when a heartbeat for
@@ -225,17 +228,20 @@ class AgentSessionActivityStore:
             AgentSession.lifecycle == "heartbeat",
             AgentSession.last_seen_at > func.now() - literal(heartbeat_ttl),
         )
-        result = await session.execute(
+        gone = and_(
+            ~placed,
+            ~beating_here,
+            or_(
+                and_(quiet(offline_quiet), ~connected, ~beating),
+                quiet(session_quiet),
+            ),
+        )
+        turns = await session.execute(
             update(turn)
             .where(
                 turn.item_id == TURN_ITEM_ID,
                 turn.status.in_(("queued", "running")),
-                ~placed,
-                ~beating_here,
-                or_(
-                    and_(quiet(offline_quiet), ~connected, ~beating),
-                    quiet(session_quiet),
-                ),
+                gone,
             )
             .values(
                 status="interrupted",
@@ -245,10 +251,31 @@ class AgentSessionActivityStore:
             )
             .returning(turn.agent_id, turn.session_id, turn.turn_id)
         )
-        return [
+        ended = {
             (agent_id, session_id, turn_id)
-            for agent_id, session_id, turn_id in result.all()
-        ]
+            for agent_id, session_id, turn_id in turns.all()
+        }
+        subagents = await session.execute(
+            update(turn)
+            .where(
+                turn.kind == "tool-activity",
+                turn.subagent.is_(True),
+                turn.status == "in-progress",
+                gone,
+            )
+            .values(
+                status="failed",
+                text=subagent_text,
+                revision=turn.revision + 1,
+                updated_at=func.now(),
+            )
+            .returning(turn.agent_id, turn.session_id, turn.turn_id)
+        )
+        ended.update(
+            (agent_id, session_id, turn_id)
+            for agent_id, session_id, turn_id in subagents.all()
+        )
+        return sorted(ended)
 
     async def upsert(
         self, session: AsyncSession, item: AgentSessionActivityItem
@@ -269,6 +296,7 @@ class AgentSessionActivityStore:
             key: statement.excluded[key]
             for key in (
                 "kind",
+                "subagent",
                 "revision",
                 "status",
                 "title",
@@ -277,6 +305,7 @@ class AgentSessionActivityStore:
                 "room_id",
                 "thread_id",
                 "message_id",
+                "delivery",
                 "occurred_at",
             )
         }

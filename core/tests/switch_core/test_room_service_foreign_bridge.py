@@ -51,7 +51,7 @@ class _FakeProvisioning:
     async def invite_to_room(self, room_id: str, user_id: str) -> None:
         return None
 
-    async def kick_user(self, room_id: str, user_id: str) -> None:
+    async def kick_user(self, room_id: str, user_id: str, **_kwargs: object) -> None:
         return None
 
 
@@ -114,6 +114,11 @@ class _FakeLifecycle:
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
 
 
 class _NoRunningClients:

@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
@@ -16,18 +17,22 @@ from typing import TYPE_CHECKING, TypeVar
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.account_links import is_prompt_token
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE, defuse_label_markup
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
+from switch_core.bridges.agent.commands import stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
+    CardRejectedError,
     MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
     SupportsSharedConnection,
     agent_identity,
 )
+from switch_core.bridges.collaboration.link_prompts import answer_prompt
 from switch_core.bridges.collaboration.models import (
     ChannelInUse,
     ChannelType,
@@ -37,10 +42,19 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
 from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
+from switch_core.chat_account_links import (
+    ACCOUNT_COMMANDS,
+    CODE_REFUSED,
+    LINK_USAGE,
+    NOT_LINKED,
+    confirm_with_code,
+    unlink_account,
+)
 from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
@@ -50,7 +64,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -107,6 +121,17 @@ from switch_core.trust.client import (
     trust_is_active,
     trust_redaction_notice,
 )
+from switch_core.ui_spec import (
+    UI_ACTION_PREFIX,
+    UI_CONTENT_KEY,
+    UI_PRESS_KEY,
+    ButtonProps,
+    UISpec,
+    UISpecError,
+    answerer_name,
+    parse_ui_spec,
+    pressed_button,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -132,6 +157,7 @@ _InboundEventT = TypeVar(
     InboundCommand,
     InboundAgentJoin,
     InboundUserJoin,
+    InboundUserLeave,
     InboundAppJoin,
 )
 
@@ -208,6 +234,41 @@ def _no_agents_notice(slash_hint: str | None) -> str:
     )
 
 
+# Held while a card press is relayed: a mark goes in once its message reaches
+# the send, after which a failure may still have delivered it.
+_PRESS_SENDING: ContextVar[list[bool] | None] = ContextVar(
+    "press_sending", default=None
+)
+
+
+def _mark_sending() -> None:
+    sending = _PRESS_SENDING.get()
+    if sending is not None:
+        sending.append(True)
+
+
+def _inert(text: str) -> str:
+    """Text a card's author wrote, unable to address anyone once it is a
+    person's message: no `@name`, and no `<@U…>` or `<!channel>` for
+    `translate_inbound` to turn into one."""
+    return defuse_label_markup(text).replace("<", "<" + ZERO_WIDTH_SPACE)
+
+
+def _inbound_extra_content(
+    msg: InboundMessage, check: TrustCheckResult | None
+) -> dict[str, object] | None:
+    extra = dict(msg.extra_content)
+    if check is not None and (
+        check.redacted_content is not None or trust_annotation(check) is not None
+    ):
+        # A press repeats its text here; once Switch Trust changed or flagged
+        # that text, the raw copy must not ride along.
+        extra.pop(UI_PRESS_KEY, None)
+    if msg.sender_is_app:
+        extra[SENDER_IS_APP_MARKER] = True
+    return extra or None
+
+
 def _post_source(bridge_id: str, channel_id: str, message_ref: str) -> str:
     """What a platform post's room rows are numbered from: the post's own
     reference on its channel of this bridge, the same each time the platform
@@ -273,6 +334,7 @@ class CollaborationCore:
         self._adapter = adapter
         self._room_store = room_store
         self._external_user_store = external_user_store
+        self._user_store = UserStore()
         self._bridge_message_map_store = bridge_message_map_store
         self._agent_store = agent_store
         self._client_store = client_store
@@ -345,6 +407,13 @@ class CollaborationCore:
         self._identities_stale = False
         self._identities_owed: set[str] = set()
         self._channel_type_refresh_task: asyncio.Task[None] | None = None
+        # Lining rooms up with their channels' member lists: one pass over
+        # every room at start, and one per channel the app is added to.
+        self._member_sync_tasks: set[asyncio.Task[None]] = set()
+        # Removals Switch asked the platform for, by (channel, person): who
+        # asked, and when. The platform's own leave event for one names that
+        # person as the remover, as Switch's call would have.
+        self._expected_removals: dict[tuple[str, str], tuple[str | None, float]] = {}
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
         self._connections = connections
@@ -438,7 +507,7 @@ class CollaborationCore:
         )
 
     def _traced(
-        self, kind: str, handler: Callable[[_InboundEventT], Awaitable[None]]
+        self, kind: str, handler: Callable[[_InboundEventT], Awaitable[object]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:
         """Give each inbound platform event its own id in the logs, count it,
         and bind the tenant the event belongs to.
@@ -525,14 +594,22 @@ class CollaborationCore:
         # re-run on attach.
         if isinstance(self._adapter, SupportsSharedConnection):
             self._adapter.set_on_attached(self._provision_identities_on_attach)
-        if self._approval_answers is not None:
-            self._adapter.set_interaction_handler(
-                self._traced("interaction", self._handle_inbound_interaction)
-            )
+        # Always, not only where approval cards are drawn: a link prompt's
+        # buttons (CHOO-4121) come back this way on every platform with any.
+        self._adapter.set_interaction_handler(
+            self._traced("interaction", self._handle_inbound_interaction)
+        )
         if self._activity_publisher is not None:
             self._adapter.set_activity_resolver(
                 self._activity_publisher.activity_shown_at
             )
+        self._adapter.set_user_left_handler(
+            self._traced("user_left", self._handle_user_left_channel)
+        )
+        self._adapter.set_member_sync_hooks(
+            bridged_channels=lambda: self._channel_to_room.keys(),
+            request_sync=self._resync_members_requested,
+        )
         await self._adapter.start(
             on_message=self._traced("message", self._handle_inbound_message),
             on_command=self._traced("command", self._handle_inbound_command),
@@ -566,6 +643,9 @@ class CollaborationCore:
             self._channel_type_refresh_task = asyncio.create_task(
                 self._run_channel_type_refresh()
             )
+            # People who joined or left while the bridge was down, or before
+            # Switch was in the channel at all, are only found by asking.
+            self._sync_members_soon(None)
 
     @property
     def active(self) -> bool:
@@ -610,6 +690,9 @@ class CollaborationCore:
             ):
                 self._channel_type_refresh_task.cancel()
             self._channel_type_refresh_task = None
+            for task in list(self._member_sync_tasks):
+                task.cancel()
+            self._member_sync_tasks.clear()
             await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
@@ -922,6 +1005,188 @@ class CollaborationCore:
         if channel_ids:
             await self._adapter.refresh_channel_types(channel_ids)
 
+    #: The most people one pass adds to one room. A channel bigger than this
+    #: (a large workspace's #general) is lined up in part, and the rest count
+    #: as in the room once they speak, as before.
+    MEMBER_SYNC_MAX_ADDS = 500
+    #: Seconds between channels in one pass, so a start over many rooms does
+    #: not crowd out the bot's other calls to its platform.
+    MEMBER_SYNC_PAUSE = 2.0
+
+    def _resync_members_requested(self, channel_ids: list[str]) -> None:
+        """The adapter saw something change who is in these channels (a
+        permission change on Discord): line their rooms up again, where this
+        process holds the bridge."""
+        if self._active:
+            self._sync_members_soon(channel_ids)
+
+    def _sync_members_soon(self, channel_ids: list[str] | None) -> None:
+        """Line rooms up with their channels' members in the background: the
+        channels given, or every live room's when None. Nothing waits on it;
+        `stop` cancels it."""
+        task = asyncio.create_task(self._run_member_sync(channel_ids))
+        self._member_sync_tasks.add(task)
+        task.add_done_callback(self._member_sync_tasks.discard)
+
+    async def _run_member_sync(self, channel_ids: list[str] | None) -> None:
+        """Wrapper for the background member sync; see `_run_agent_identities`
+        for why it exists and unbinds the tenant. One channel failing does not
+        stop the rest."""
+        with no_tenant():
+            try:
+                if channel_ids is None:
+                    async with tenant_session(
+                        self._session_factory, self._bridge_tenant_id
+                    ) as session:
+                        rooms = await self._room_store.get_by_bridge(
+                            session, self._bridge_id
+                        )
+                    channel_ids = sorted(
+                        {
+                            room.external_channel_id
+                            for room in rooms
+                            if room.external_channel_id and room.archived_at is None
+                        }
+                    )
+                for index, channel_id in enumerate(channel_ids):
+                    if index:
+                        # Spread over time: each channel is platform calls the
+                        # bot's replies are waiting behind.
+                        await asyncio.sleep(self.MEMBER_SYNC_PAUSE)
+                    try:
+                        await self.sync_channel_members(channel_id)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "Could not line up %s channel %s's members with its room",
+                            self._bridge_type,
+                            channel_id,
+                        )
+            except asyncio.CancelledError:
+                logger.info(
+                    "%s member sync cancelled before finishing", self._bridge_type
+                )
+                raise
+
+    async def sync_channel_members(self, channel_id: str) -> None:
+        """Make a channel's room hold the people its platform says are in it.
+
+        Anyone in the channel and not in the room is added, as they would be
+        on speaking. Anyone in the room and no longer in the channel is taken
+        out, but only on a listing the adapter says is complete and that names
+        someone: a page that failed, or an empty answer from a bot that lost
+        sight of the channel, would otherwise empty the room. A platform that
+        cannot list members (Telegram) is left to its leave events.
+
+        Agents are never touched: they are not people, and the adapter leaves
+        them out of the listing.
+        """
+        room_ids = self._channel_to_room.get(channel_id)
+        if room_ids is None:
+            return
+        room_id, transport_room_id = room_ids
+        tenant_id = await self._room_tenant(room_id)
+        # Who the room holds is read before the platform is asked: someone who
+        # joins while the listing runs (Slack pages slowly) is added to the
+        # room by their join, and is missing from the listing. Read after it,
+        # they would be taken for gone and removed while still in the channel.
+        with tenant_scope(tenant_id):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                present = {
+                    person.external_user_id
+                    for person in await self._external_user_store.get_by_room(
+                        session, room_id
+                    )
+                    if person.bridge_id == self._bridge_id
+                }
+        listing = await self._adapter.list_channel_members(
+            channel_id, known_people=self._human_actors.keys()
+        )
+        if listing is None:
+            await self._sync_by_asking(channel_id, room_id, tenant_id)
+            return
+        with tenant_scope(tenant_id):
+            joining = [
+                (external_user_id, name)
+                for external_user_id, name in listing.members.items()
+                if external_user_id not in present
+            ]
+            if len(joining) > self.MEMBER_SYNC_MAX_ADDS:
+                logger.warning(
+                    "%s channel %s has %d people not yet in room %s; adding the "
+                    "first %d",
+                    self._bridge_type,
+                    channel_id,
+                    len(joining),
+                    room_id,
+                    self.MEMBER_SYNC_MAX_ADDS,
+                )
+                joining = joining[: self.MEMBER_SYNC_MAX_ADDS]
+            added = 0
+            for external_user_id, name in joining:
+                # An empty name is someone the adapter knew as a person from
+                # `known_people`; their identity exists, so no name is needed.
+                if not name and external_user_id not in self._human_actors:
+                    continue
+                if name and await self._is_registered_agent(name):
+                    continue
+                # Found already in the channel, not arriving now: history
+                # says they are here, and no agent is woken for each one.
+                if await self._ensure_human_in_room(
+                    external_user_id=external_user_id,
+                    external_username=name,
+                    room_id=room_id,
+                    transport_room_id=transport_room_id,
+                    quiet=True,
+                ):
+                    added += 1
+            gone: list[str] = []
+            if listing.complete and listing.members:
+                gone = sorted(present - set(listing.members))
+                if gone:
+                    await self._room_service.remove_people_from_room(room_id, gone)
+        if added or gone:
+            logger.info(
+                "Lined up room %s with %s channel %s: %d added, %d removed",
+                room_id,
+                self._bridge_type,
+                channel_id,
+                added,
+                len(gone),
+            )
+
+    async def _sync_by_asking(
+        self, channel_id: str, room_id: str, tenant_id: str
+    ) -> None:
+        """For a platform that cannot list a channel's members: ask about each
+        person in the room, and take out those the platform says are gone
+        (Telegram). Nobody is added, as the platform cannot say who else is
+        there."""
+        with tenant_scope(tenant_id):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                present = sorted(
+                    {
+                        person.external_user_id
+                        for person in await self._external_user_store.get_by_room(
+                            session, room_id
+                        )
+                        if person.bridge_id == self._bridge_id
+                    }
+                )
+            if not present:
+                return
+            gone = await self._adapter.members_gone(channel_id, present)
+            if gone:
+                await self._room_service.remove_people_from_room(room_id, sorted(gone))
+                logger.info(
+                    "Took %d people who left %s channel %s out of room %s",
+                    len(gone),
+                    self._bridge_type,
+                    channel_id,
+                    room_id,
+                )
+
     async def _record_channel_type(
         self, channel_id: str, channel_type: ChannelType
     ) -> None:
@@ -1106,7 +1371,9 @@ class CollaborationCore:
             msg.channel_id, _LOBBY_DEPRECATION_NOTICE, thread_root_id
         )
 
-    async def _handle_inbound_message(self, msg: InboundMessage) -> None:
+    async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
+        """Write a platform message into its room as its sender, and return
+        the event it became, or None when it was not relayed."""
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
             msg.channel_id,
@@ -1123,13 +1390,13 @@ class CollaborationCore:
             logger.debug(
                 "[BRIDGE-IN] dropping echo from Switch agent %s", msg.sender_name
             )
-            return
+            return None
         if msg.channel_type == "lobby":
             # The Slack app's DM ("lobby") is deprecated as a place to talk to
             # agents: point the user at the docs instead of auto-creating a room
             # and routing the message. Only Slack im/mpim map to "lobby".
             await self._handle_lobby_message(msg)
-            return
+            return None
         # An answer typed in words. Almost no message is one, and the check is a
         # parse before it is a query, so this costs a channel nothing. It does
         # not consume the message: the room still sees what was said.
@@ -1148,7 +1415,7 @@ class CollaborationCore:
                         channel_name=msg.channel_name,
                     )
             if room_ids is None:
-                return
+                return None
 
         room_id, transport_room_id = room_ids
 
@@ -1170,7 +1437,7 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
-            return
+            return None
 
         content = self._adapter.translate_inbound(msg.content)
         if mention_target is not None and (
@@ -1236,12 +1503,13 @@ class CollaborationCore:
                     "can't access it.",
                     AdminMessageType.TRUST_BLOCKED,
                 )
-                return
+                return None
             if check.redacted_content is not None:
                 content = check.redacted_content
             annotation = trust_annotation(check)
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
+            _mark_sending()
             with writes_derived_from(
                 human_actor.client_id,
                 _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
@@ -1252,9 +1520,7 @@ class CollaborationCore:
                     format="markdown",
                     thread_root_id=thread_root_id,
                     metered=True,
-                    extra_content=(
-                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
-                    ),
+                    extra_content=_inbound_extra_content(msg, check),
                 )
             if event_id is None:
                 logger.error(
@@ -1263,7 +1529,7 @@ class CollaborationCore:
                     msg.sender_name,
                     transport_room_id,
                 )
-                return
+                return None
             # Tell the sender what happened only now that the message is
             # actually confirmed to have reached the room — posting this
             # beforehand risks telling them their message was flagged/
@@ -1291,7 +1557,7 @@ class CollaborationCore:
                 transport_event_id=event_id,
                 external_post_id=msg.message_ref,
             )
-            return
+            return event_id
 
         # A message with files is checked as a whole before anything is
         # uploaded: the typed text exactly as above, and each file through the
@@ -1346,7 +1612,7 @@ class CollaborationCore:
                     "can't access it."
                 )
             await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
-            return
+            return None
         if caption_check is not None and caption_check.redacted_content is not None:
             content = caption_check.redacted_content
         caption_annotation = (
@@ -1375,6 +1641,7 @@ class CollaborationCore:
         # into the same group, which then completes.
         source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
         group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
+        _mark_sending()
         for index, attachment in enumerate(msg.attachments):
             media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
@@ -1400,9 +1667,7 @@ class CollaborationCore:
                         else None
                     ),
                     metered=True,
-                    extra_content=(
-                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
-                    ),
+                    extra_content=_inbound_extra_content(msg, caption_check),
                 )
             if event_id is None:
                 logger.error(
@@ -1439,6 +1704,7 @@ class CollaborationCore:
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
             )
+        return first_event_id
 
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
@@ -1530,13 +1796,78 @@ class CollaborationCore:
                 exc_info=True,
             )
 
-    async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
-        room_ids = self._channel_to_room.get(cmd.channel_id)
-        if room_ids is None and cmd.command == "link-account":
-            # Linking an account is about the person, not the channel: answer
-            # it here so a channel that isn't a Switch room doesn't become one.
-            await self._link_account_outside_room(cmd)
+    async def _handle_account_command(self, cmd: InboundCommand) -> None:
+        """A chat account confirming, listing or dropping its own links,
+        answered here rather than in a room (CHOO-4121).
+
+        None of it is about a room, so no room is made or needed for the
+        conversation it was typed in. The account is the one the platform says
+        sent the command, and only it is touched.
+
+        A slash command, a button or a direct conversation reaches this server
+        alone. A command typed in a channel may reach the apps of other Switch
+        servers in the same workspace as well, so there only a server with
+        something to say about the account answers.
+        """
+        only_here = cmd.reply_ref is not None or cmd.channel_type in (
+            "direct",
+            "lobby",
+        )
+        reply: str | None
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            account = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, cmd.sender_id
+            )
+            if cmd.command == "link-account":
+                code = cmd.args.strip()
+                if not code:
+                    reply = LINK_USAGE
+                elif account is None:
+                    # A link is only ever waiting for an account Switch has a
+                    # record of, so a code from one it has none of matches
+                    # nothing.
+                    reply = CODE_REFUSED if only_here else None
+                else:
+                    reply = await confirm_with_code(
+                        session,
+                        external_user_store=self._external_user_store,
+                        user_store=self._user_store,
+                        account=account,
+                        code=code,
+                        only_here=only_here,
+                    )
+            elif account is None:
+                reply = NOT_LINKED if only_here else None
+            else:
+                reply = await unlink_account(
+                    session,
+                    external_user_store=self._external_user_store,
+                    user_store=self._user_store,
+                    account=account,
+                    wanted=cmd.args,
+                    only_here=only_here,
+                )
+        if reply is None:
+            logger.info(
+                "Left %s from %s in channel %s unanswered: nothing on this server "
+                "is about that account, and another Switch server in the "
+                "workspace may have it",
+                cmd.command,
+                cmd.sender_name,
+                cmd.channel_id,
+            )
             return
+        # After the session has closed: a rejected code may have locked the
+        # request it was checked against.
+        await self._adapter.answer_command(cmd, reply)
+
+    async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
+        if cmd.command in ACCOUNT_COMMANDS:
+            await self._handle_account_command(cmd)
+            return
+        room_ids = self._channel_to_room.get(cmd.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(cmd.channel_id, asyncio.Lock())
             async with lock:
@@ -1631,20 +1962,59 @@ class CollaborationCore:
             finally:
                 self._pending_message_maps.pop(event_id, None)
 
-    async def _link_account_outside_room(self, cmd: InboundCommand) -> None:
-        account = await self.ensure_external_user(
-            external_user_id=cmd.sender_id, external_username=cmd.sender_name
+    async def _owner_from_platform_account(
+        self, external_user_id: str | None, channel_id: str
+    ) -> str | None:
+        """The Switch user who linked the platform account `external_user_id`,
+        to own a room that account brought Switch into. None when the platform
+        did not say who, nobody has linked the account, or more than one
+        person has, since then nobody can tell which of them it was.
+
+        Only claimants who still belong to the bridge's workspace count: a
+        former member who linked the account doesn't own a room in a
+        workspace they've left.
+
+        A room left without an owner is changed only by admins, so the cases
+        someone may ask about (an unlinked or shared account) are logged with
+        the reason. A platform that never says who added Switch is expected,
+        and only noted at debug level."""
+        if external_user_id is None:
+            logger.debug(
+                "Channel %s gets a room with no owner: the platform did not say "
+                "who added Switch",
+                channel_id,
+            )
+            return None
+        users = UserStore()
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            account = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            claimants: list[str] = []
+            if account is not None:
+                for user_id in await self._external_user_store.claimant_ids(
+                    session, account.id
+                ):
+                    role = await users.effective_tenant_role(
+                        session, self._bridge_tenant_id, user_id
+                    )
+                    if role is not None:
+                        claimants.append(user_id)
+        if len(claimants) == 1:
+            return claimants[0]
+        logger.warning(
+            "Channel %s gets a room with no owner, so only workspace admins can "
+            "change it: %s",
+            channel_id,
+            "the account that added Switch is not linked to a Switch user in "
+            "this workspace"
+            if not claimants
+            else f"{len(claimants)} Switch users have linked the account that "
+            "added Switch, so it is not clear which one did",
         )
-        reply = await link_account_reply(
-            self._session_factory,
-            self._external_user_store,
-            UserStore(),
-            account,
-            cmd.args,
-        )
-        await self._adapter.admin_message(
-            cmd.channel_id, reply, cmd.root_id or cmd.message_ref
-        )
+        return None
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1680,6 +2050,7 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            added_by_external_user_id=join.added_by_external_user_id,
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1692,11 +2063,15 @@ class CollaborationCore:
                 logger.debug(
                     "App joined channel %s but room already exists", join.channel_id
                 )
+                # Added back to a channel it had left: whoever came and went
+                # meanwhile was not seen.
+                self._sync_members_soon([join.channel_id])
                 return
             await self._create_room_for_channel(
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
+                added_by_external_user_id=join.added_by_external_user_id,
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -1794,6 +2169,7 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        added_by_external_user_id: str | None = None,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -1814,6 +2190,9 @@ class CollaborationCore:
             return existing
 
         agent_ids = await self._resolve_agents_for_channel(channel_id, channel_type)
+        owner_id = await self._owner_from_platform_account(
+            added_by_external_user_id, channel_id
+        )
 
         bridge_name = self._bridge_display_name
         if channel_type == "direct":
@@ -1836,6 +2215,10 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            # Whoever added Switch to the channel owns its room, when the
+            # platform says who and they have linked their account; otherwise
+            # nobody does, and only workspace admins change it.
+            owner_id=owner_id,
             named_after_channel=(
                 channel_name if channel_type != "direct" and channel_name else None
             ),
@@ -1890,6 +2273,9 @@ class CollaborationCore:
                 message_type=AdminMessageType.NO_AGENTS,
             )
 
+        # Whoever is already in the channel is in the room from the start,
+        # not only once they speak.
+        self._sync_members_soon([channel_id])
         return (room.id, room.transport_room_id)
 
     async def _resolve_agents_for_channel(
@@ -2021,10 +2407,12 @@ class CollaborationCore:
         external_username: str,
         room_id: str,
         transport_room_id: str,
+        quiet: bool = False,
     ) -> Actor[ClientConfig] | None:
         """Get-or-create the human actor for this external user and ensure it has
         actually joined the room. Returns the running human actor, or None if it
-        couldn't be brought up or didn't join in time. Idempotent."""
+        couldn't be brought up or didn't join in time. Idempotent. `quiet`
+        writes the arrival to history without waking any agent for it."""
         client_id = self._human_actors.get(external_user_id)
         if client_id is None:
             client_id = await self._create_human_actor(
@@ -2040,7 +2428,12 @@ class CollaborationCore:
             return None
         await human_actor.wait_ready()
         try:
-            await self._room_service.ensure_client_in_room(room_id, client_id)
+            if quiet:
+                await self._room_service.ensure_client_in_room(
+                    room_id, client_id, quiet=True
+                )
+            else:
+                await self._room_service.ensure_client_in_room(room_id, client_id)
         except Exception:
             logger.exception(
                 "Failed to add human actor %s to room %s", client_id, room_id
@@ -2070,6 +2463,19 @@ class CollaborationCore:
         """Someone operated a control on a message this bridge posted."""
         if interaction.action_id == INTERRUPT_ACTION:
             await self._handle_stop_press(interaction)
+            return
+        if is_prompt_token(interaction.value):
+            await answer_prompt(
+                interaction,
+                adapter=self._adapter,
+                session_factory=self._session_factory,
+                tenant_id=self._bridge_tenant_id,
+                external_user_store=self._external_user_store,
+                user_store=self._user_store,
+            )
+            return
+        if interaction.action_id.startswith(UI_ACTION_PREFIX):
+            await self._handle_card_press(interaction)
             return
         if self._approval_answers is None:
             return
@@ -2173,6 +2579,207 @@ class CollaborationCore:
             "message will say when it has."
         )
 
+    async def _handle_card_press(self, interaction: InboundInteraction) -> None:
+        """Someone pressed a button on an agent's card (`ui_spec`).
+
+        Only which message it was on and who the platform says pressed it are
+        taken from the press. The room, the agent and the thread come from the
+        room message the bridge posted as that message, and the button has to
+        be one that message's card drew. The press then goes to the room as the
+        presser's message to the agent, in the card's thread, through the path
+        a typed message takes, so it gets the same identity and Switch Trust
+        checks, once the presser is shown to be someone who may address the
+        author (the check a stop press takes). It addresses the card's author and no one else: what the
+        button says is made inert, and goes structured under `UI_PRESS_KEY`
+        unless Switch Trust changed or flagged it.
+        A card takes one answer, recorded on the bridge's mapping of the
+        card's post before the press is delivered; any later press is refused.
+        """
+
+        async def tell(text: str) -> None:
+            await self._adapter.tell_actor(
+                interaction.channel_id,
+                interaction.sender_id,
+                interaction.sender_name,
+                interaction.thread_ref,
+                text,
+            )
+
+        room_ids = self._channel_to_room.get(interaction.channel_id)
+        card_ref = interaction.message_ref
+        card_event_id = (
+            await self._event_for_external_post(card_ref)
+            if card_ref is not None
+            else None
+        )
+        if room_ids is None or card_ref is None or card_event_id is None:
+            logger.warning(
+                "Ignoring a card press in %s on bridge %s: message %s maps to no "
+                "room message",
+                interaction.channel_id,
+                self._bridge_id,
+                interaction.message_ref,
+            )
+            await tell(
+                "This card is no longer connected to a Switch room, so your "
+                "answer was not sent."
+            )
+            return
+        room_id, transport_room_id = room_ids
+        human_actor = await self._ensure_human_in_room(
+            external_user_id=interaction.sender_id,
+            external_username=interaction.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if human_actor is None or human_actor.transport is None:
+            logger.warning(
+                "Ignoring a card press on %s: no Switch identity for %s on bridge %s",
+                card_event_id,
+                interaction.sender_id,
+                self._bridge_id,
+            )
+            await tell(
+                "Switch couldn't identify your account, so your answer was not sent."
+            )
+            return
+        card = await human_actor.transport.get_event(transport_room_id, card_event_id)
+        spec: UISpec | None = None
+        button: ButtonProps | None = None
+        author: Agent | None = None
+        if card is not None and card.sender_name:
+            try:
+                spec = parse_ui_spec(card.content.get(UI_CONTENT_KEY))
+            except UISpecError:
+                spec = None
+            if spec is not None:
+                async with self._session_factory() as session:
+                    author = await self._agent_store.get_by_name(
+                        session, card.sender_name
+                    )
+            if spec is not None and author is not None:
+                button = pressed_button(spec, interaction.action_id, interaction.value)
+        if card is None or spec is None or author is None or button is None:
+            logger.warning(
+                "Ignoring a card press on %s: %s/%s is not a button an agent's "
+                "card drew there",
+                card_event_id,
+                interaction.action_id,
+                interaction.value,
+            )
+            await tell(
+                "That button isn't on an agent's card in this room, so your "
+                "answer was not sent."
+            )
+            return
+        agent_name = _inert(author.display_name or author.name)
+        try:
+            await self._session_activity_service.authorize_room_control(
+                author.id,
+                room_id,
+                PlatformPerson(human_actor.transport_user_id),
+                doing="answer its card",
+            )
+        except SessionError as error:
+            logger.warning(
+                "Refused a card press on %s from %s: %s",
+                card_event_id,
+                interaction.sender_id,
+                error,
+            )
+            await tell(
+                f"You can't answer this card: you're not allowed to address {agent_name}."
+                if error.code == "NOT_AUTHORIZED"
+                else f"You can't answer this card: {agent_name} is not available."
+            )
+            return
+        channel_type = await self._adapter.get_channel_type(interaction.channel_id)
+        root_id = await self._external_post_for_event(
+            card.thread_root_event_id or card_event_id
+        )
+        async with self._session_factory() as session:
+            answered = await self._bridge_message_map_store.answer_card(
+                session,
+                bridge_id=self._bridge_id,
+                external_post_id=card_ref,
+                answer={
+                    "by": answerer_name(interaction.sender_display_name),
+                    "label": button.label,
+                },
+            )
+            await session.commit()
+        if answered is not None:
+            await tell(
+                f"This card was already answered by {_inert(str(answered['by']))} "
+                f"({_inert(str(answered['label']))})."
+            )
+            return
+        details = f"action: {button.id}" + (
+            f", value: {button.value}" if button.value else ""
+        )
+
+        async def release() -> None:
+            async with self._session_factory() as session:
+                await self._bridge_message_map_store.clear_card_answer(
+                    session, bridge_id=self._bridge_id, external_post_id=card_ref
+                )
+                await session.commit()
+
+        # A failure before the send releases the claim; once the send may have
+        # happened the card stays answered, however the relay ends.
+        sending: list[bool] = []
+        held = _PRESS_SENDING.set(sending)
+        try:
+            delivered = await self._handle_inbound_message(
+                InboundMessage(
+                    channel_id=interaction.channel_id,
+                    channel_type=channel_type,
+                    sender_id=interaction.sender_id,
+                    sender_name=interaction.sender_name,
+                    content=(
+                        f"@{card.sender_name} Clicked “{_inert(button.label)}” "
+                        f"({_inert(details)})"
+                    ),
+                    # Its own post, never the card's, and the same on a retry so the
+                    # room writes it once (`_post_source`).
+                    message_ref=(
+                        f"{card_event_id}#press:{button.id}:{interaction.sender_id}"
+                    ),
+                    root_id=root_id,
+                    extra_content={
+                        UI_PRESS_KEY: {
+                            "action": button.id,
+                            "value": button.value,
+                            "label": button.label,
+                            "card_event_id": card_event_id,
+                        }
+                    },
+                )
+            )
+        except (Exception, asyncio.CancelledError):
+            if not sending:
+                await asyncio.shield(release())
+            raise
+        finally:
+            _PRESS_SENDING.reset(held)
+        if delivered is None:
+            await release()
+            await tell(f"Your answer could not be delivered to {agent_name}.")
+            return
+        await self._adapter.settle_card_press(
+            interaction.model_copy(
+                update={
+                    "sender_display_name": answerer_name(
+                        interaction.sender_display_name
+                    )
+                }
+            ),
+            button.label,
+            author=card.sender_name,
+            spec=spec,
+            body=card.content["body"],
+        )
+
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """An answer to an approval card, typed rather than pressed.
 
@@ -2267,6 +2874,68 @@ class CollaborationCore:
             external_username=join.external_username,
             room_id=room_id,
             transport_room_id=transport_room_id,
+            quiet=join.quiet,
+        )
+
+    #: How long a removal Switch asked for waits for the platform's report of
+    #: it before the report is taken as someone leaving on their own.
+    EXPECTED_REMOVAL_SECONDS = 120.0
+
+    def expect_removals(
+        self,
+        channel_id: str,
+        external_user_ids: Collection[str],
+        removed_by: str | None,
+    ) -> None:
+        """Note that Switch is about to remove these people from the channel
+        at `removed_by`'s request, so the leave the platform reports names
+        them rather than reading as the person leaving."""
+        now = time.monotonic()
+        for external_user_id in external_user_ids:
+            self._expected_removals[(channel_id, external_user_id)] = (removed_by, now)
+
+    def forget_expected_removals(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> None:
+        """Drop expectations for removals the platform refused."""
+        for external_user_id in external_user_ids:
+            self._expected_removals.pop((channel_id, external_user_id), None)
+
+    def _expected_remover(
+        self, channel_id: str, external_user_id: str
+    ) -> tuple[bool, str | None]:
+        """Whether Switch asked for this removal recently, and who asked."""
+        cutoff = time.monotonic() - self.EXPECTED_REMOVAL_SECONDS
+        for key, (_, at) in list(self._expected_removals.items()):
+            if at < cutoff:
+                del self._expected_removals[key]
+        found = self._expected_removals.pop((channel_id, external_user_id), None)
+        return (found is not None, found[0] if found else None)
+
+    async def _handle_user_left_channel(self, leave: InboundUserLeave) -> None:
+        """Called by the adapter when a person leaves a bridged channel or is
+        taken out of it on the platform. They are taken out of the channel's
+        room, which stops their delivery and ends what being in the room let
+        them do.
+
+        Someone Switch never put in the room, or a channel with no room, is
+        nothing to undo. Nor is the platform asked to remove them: it just
+        said they are gone.
+        """
+        room_ids = self._channel_to_room.get(leave.channel_id)
+        if room_ids is None:
+            return
+        room_id, _ = room_ids
+        if leave.external_user_id not in self._human_actors:
+            return
+        asked, remover = self._expected_remover(
+            leave.channel_id, leave.external_user_id
+        )
+        await self._room_service.remove_people_from_room(
+            room_id,
+            [leave.external_user_id],
+            removed_by=remover if asked else leave.removed_by_name,
+            removed_by_kind="user" if asked else "platform",
         )
 
     # ── Human actor lifecycle ─────────────────────────────────────────────────────
@@ -2784,14 +3453,33 @@ class CollaborationCore:
         # Only the marker pages a channel. An `@channel` an agent wrote
         # itself is defused by `translate_outbound` like any other text.
         room_wide = is_room_wide_mention(event_content)
+        text = (
+            self._adapter.render_room_wide_mention(event.body)
+            if room_wide
+            else self._adapter.translate_outbound(event.body)
+        )
+        if UI_CONTENT_KEY in event_content:
+            try:
+                # Re-parsed: the card crossed the transport since it was checked.
+                spec = parse_ui_spec(event_content[UI_CONTENT_KEY])
+                return await self._adapter.send_ui_message(
+                    channel_id,
+                    sender_name,
+                    spec,
+                    text,
+                    thread_root_ref,
+                    room_wide_mention=room_wide,
+                )
+            except (UISpecError, CardRejectedError) as error:
+                logger.error(
+                    "[BRIDGE-OUT] card on %s was not posted; posting its text only: %s",
+                    event.event_id,
+                    error,
+                )
         return await self._adapter.send_message(
             channel_id,
             sender_name,
-            (
-                self._adapter.render_room_wide_mention(event.body)
-                if room_wide
-                else self._adapter.translate_outbound(event.body)
-            ),
+            text,
             thread_root_id=thread_root_ref,
             room_wide_mention=room_wide,
         )

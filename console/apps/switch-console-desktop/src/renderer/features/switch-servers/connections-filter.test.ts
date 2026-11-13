@@ -14,13 +14,23 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     status: 'coming_soon',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: false,
     token_lifetime: null,
+    agent_access_note: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: null,
+    organization_locked: false,
   };
 }
 

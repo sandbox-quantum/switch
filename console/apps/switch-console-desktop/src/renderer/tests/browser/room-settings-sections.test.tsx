@@ -11,11 +11,24 @@ const getRoomDetail = vi.hoisted(() => vi.fn());
 const setRoomAgentJoinEvents = vi.hoisted(() => vi.fn());
 const createRoomRole = vi.hoisted(() => vi.fn());
 const setRoomArchived = vi.hoisted(() => vi.fn());
+const setRoomAdmin = vi.hoisted(() => vi.fn());
 const permissions = vi.hoisted(() => ({
-  value: { canWrite: true, canChangeMembers: true, canManage: true },
+  value: {
+    canWrite: true,
+    canChangeMembers: true,
+    canInviteAgents: true,
+    canAddPeople: true,
+    canRemoveMembers: true,
+    canManage: true,
+    canArchive: true,
+    canManageAdmins: true,
+  } as Record<string, boolean>,
 }));
 const admin = vi.hoisted(() => ({ value: true }));
+// Who owns the room's agent; the viewer is `u-me`.
+const agentOwner = vi.hoisted(() => ({ value: 'u-other' }));
 const setRoomGroup = vi.hoisted(() => vi.fn());
+const listBridgePeople = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -33,13 +46,24 @@ vi.mock('@renderer/lib/ipc', () => ({
       setRoomAgentJoinEvents,
       createRoomRole,
       setRoomArchived,
+      setRoomAdmin,
       updateRoom: vi.fn(),
       syncRoomName: vi.fn(),
       listAgents: vi.fn(() =>
-        Promise.resolve([{ id: 'a-1', name: 'reviewer-bot', iconUrl: null, knownAgentType: null }])
+        Promise.resolve([
+          {
+            id: 'a-1',
+            name: 'reviewer-bot',
+            iconUrl: null,
+            knownAgentType: null,
+            ownerId: agentOwner.value,
+          },
+        ])
       ),
       listRoomGroups: vi.fn(() => Promise.resolve([{ id: 'g-1', name: 'Design' }])),
+      roomAgentCandidates: vi.fn(() => Promise.resolve(null)),
       setRoomGroup,
+      listBridgePeople,
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
   },
@@ -53,6 +77,10 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     roomPermissions: () => permissions.value,
     refreshRoomState: vi.fn(async () => {}),
   },
+}));
+
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { statusFor: () => ({ user: { id: 'u-me' } }) },
 }));
 
 vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
@@ -73,6 +101,7 @@ vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
 
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
 import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
+import { rpc } from '@renderer/lib/ipc';
 
 const ROOM = {
   id: 'room-1',
@@ -86,10 +115,13 @@ const ROOM = {
   externalChannelUrl: null,
   ownerId: 'u-1',
   viewerIsMember: true,
+  viewerIsRoomAdmin: false,
   isConsoleChat: false,
   createdAt: '2026-10-01T09:00:00+00:00',
   agentIds: ['a-1'],
   connectedUserNames: ['ada'],
+  roomAdmins: [],
+  roomAdminCandidates: [],
   linkedChannelName: null,
   readVisibility: 'public',
   writeVisibility: 'private',
@@ -110,6 +142,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
+  agentOwner.value = 'u-other';
   getRoomDetail.mockReset();
   getRoomDetail.mockResolvedValue(ROOM);
   setRoomAgentJoinEvents.mockReset();
@@ -126,11 +159,24 @@ beforeEach(() => {
       Promise.resolve([{ ...params.role, heldBy: [] }])
   );
   setRoomArchived.mockReset();
+  setRoomAdmin.mockReset();
+  setRoomAdmin.mockImplementation(() => Promise.resolve(ROOM));
   setRoomArchived.mockImplementation((params: { archived: boolean }) =>
     Promise.resolve({ ...ROOM, archived: params.archived })
   );
-  permissions.value = { canWrite: true, canChangeMembers: true, canManage: true };
+  permissions.value = {
+    canWrite: true,
+    canChangeMembers: true,
+    canInviteAgents: true,
+    canAddPeople: true,
+    canRemoveMembers: true,
+    canManage: true,
+    canArchive: true,
+    canManageAdmins: true,
+  };
   admin.value = true;
+  listBridgePeople.mockReset();
+  listBridgePeople.mockResolvedValue([]);
   setRoomGroup.mockReset();
   setRoomGroup.mockImplementation(() =>
     Promise.resolve({ ...ROOM, groupId: null, groupName: null })
@@ -191,7 +237,10 @@ async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string
 describe('room settings for someone who may write to the room', () => {
   it('shows access as a control for its manager, and leaves who is in the room to the side', async () => {
     const el = await renderPanel();
-    expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Access"]')).not.toBeNull();
+    // A short name in the control, and what it means spelled out under it.
+    expect(el.textContent).toMatch(/Public|Private/);
+    expect(el.textContent).toMatch(/Only its owner and admins can change/);
     expect(el.textContent).toContain('C123');
     expect(el.textContent).not.toContain('Notify on join');
   });
@@ -199,13 +248,47 @@ describe('room settings for someone who may write to the room', () => {
   it('lists each agent with its presence in the side column, and adds from there', async () => {
     const el = await renderPanel('side');
     expect(el.textContent).toContain('reviewer-bot');
-    expect(el.textContent).toContain('Here now');
+    // A live agent's green dot says it is here; there is no label for it.
+    expect(el.textContent).not.toContain('Here now');
     expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Add people"]')).not.toBeNull();
   });
 
+  it('names who linked each username in the side column, and shows an unlinked username alone', async () => {
+    getRoomDetail.mockResolvedValue({ ...ROOM, connectedUserNames: ['ada', 'bob'] });
+    listBridgePeople.mockResolvedValue([
+      { username: 'ada', externalUserId: 'U1', linkedUserIds: ['u-1'], linkedName: 'Ada Lovelace' },
+      { username: 'bob', externalUserId: 'U2', linkedUserIds: [], linkedName: null },
+    ]);
+    const el = await renderPanel('side');
+    expect(listBridgePeople).toHaveBeenCalledWith({ workspaceId: 'ws-1', bridgeId: 'bridge-1' });
+    expect(el.textContent).toContain('ada (Ada Lovelace)');
+    expect(el.textContent).toContain('bob');
+    expect(el.textContent).not.toContain('bob (');
+  });
+
+  it('shows the usernames alone when who linked them cannot be read, and says so', async () => {
+    listBridgePeople.mockRejectedValue(new Error('offline'));
+    const el = await renderPanel('side');
+    expect(el.textContent).toContain('ada');
+    expect(el.textContent).not.toContain('ada (');
+    expect(el.textContent).toContain('Could not load people’s names');
+  });
+
+  it('says nothing about names when every lookup worked', async () => {
+    const el = await renderPanel('side');
+    expect(el.textContent).not.toContain('Could not load people');
+  });
+
   it('offers no adding or removing in a direct conversation, whose platform fixes who is in it', async () => {
-    permissions.value = { canWrite: true, canChangeMembers: false, canManage: true };
+    permissions.value = {
+      canWrite: true,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canRemoveMembers: false,
+      canManage: true,
+    };
     getRoomDetail.mockResolvedValue({ ...ROOM, channelType: 'direct' });
     const el = await renderPanel('side');
     expect(el.textContent).toContain('reviewer-bot');
@@ -214,6 +297,54 @@ describe('room settings for someone who may write to the room', () => {
     await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
     const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     expect(items.some((item) => /Remove from room/.test(item.textContent ?? ''))).toBe(false);
+  });
+
+  it('lets someone take their own agent out of a room they may not otherwise change', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    agentOwner.value = 'u-me';
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    expect(items.some((item) => /Remove from room/.test(item.textContent ?? ''))).toBe(true);
+  });
+
+  it('lets someone change their own agent’s join notification in a room they may not otherwise change', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    agentOwner.value = 'u-me';
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    await click(el.querySelector<HTMLElement>('[aria-label="reviewer-bot in this room"]')!);
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')];
+    expect(items.some((item) => /when someone joins/.test(item.textContent ?? ''))).toBe(true);
+  });
+
+  it('offers no removing of someone else’s agent to someone who may not change the room', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
   });
 
   it('shows every role an agent holds, matched on its name on the server', async () => {
@@ -304,7 +435,14 @@ describe('putting a room in a group', () => {
 
   it('shows anyone else who may change the room its group, and lets them take it out', async () => {
     admin.value = false;
-    permissions.value = { canWrite: true, canChangeMembers: true, canManage: false };
+    permissions.value = {
+      canWrite: true,
+      canChangeMembers: true,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canRemoveMembers: true,
+      canManage: false,
+    };
     getRoomDetail.mockResolvedValue({ ...ROOM, groupId: 'g-1', groupName: 'Design' });
     const el = await renderPanel();
     expect(el.querySelector('[aria-label="Group"]')).toBeNull();
@@ -328,22 +466,175 @@ describe('putting a room in a group', () => {
 
 describe('room settings for someone who may only read the room', () => {
   it('says who can change it, and offers no changes', async () => {
-    permissions.value = { canWrite: false, canChangeMembers: false, canManage: false };
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canRemoveMembers: false,
+      canManage: false,
+    };
     const el = await renderPanel();
     expect(el.textContent).toContain(
-      'Only Ada or a workspace admin can change this room’s settings.'
+      'Only Ada, a room admin or a workspace admin can change this room’s settings.'
     );
-    expect(el.querySelector('[aria-label="Who can see and change it"]')).toBeNull();
+    expect(el.querySelector('[aria-label="Access"]')).toBeNull();
     expect(button(el, /^Add agent$/)).toBeUndefined();
     expect(button(el, /^Archive$/)).toBeUndefined();
     expect(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.disabled).toBe(true);
   });
 
   it('lists who is in the room without adding or menus', async () => {
-    permissions.value = { canWrite: false, canChangeMembers: false, canManage: false };
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canRemoveMembers: false,
+      canManage: false,
+    };
     const el = await renderPanel('side');
     expect(el.textContent).toContain('reviewer-bot');
     expect(el.querySelector('[aria-label="Add agents"]')).toBeNull();
     expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
+  });
+
+  it('says when it cannot tell which agents may be invited, and offers none', async () => {
+    vi.mocked(rpc.workspaces.roomAgentCandidates).mockRejectedValueOnce(
+      new Error('Switch gateway returned 500')
+    );
+    const el = await renderPanel('side');
+    await click(el.querySelector<HTMLElement>('[aria-label="Add agents"]')!);
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(document.body.textContent).toContain('Switch gateway returned 500');
+    expect(document.body.textContent).not.toContain('already in this room');
+  });
+
+  it('still offers adding agents to someone in the room, and nothing else', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: false,
+      canRemoveMembers: false,
+      canManage: false,
+    };
+    const el = await renderPanel('side');
+    expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Add people"]')).toBeNull();
+    expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
+  });
+});
+
+describe('room admins in the side column', () => {
+  const ADA = { userId: 'u-ada', name: 'Ada Lovelace', grantedBy: 'u-1', grantedAt: '2026-11-01' };
+  const BOB = { userId: 'u-bob', name: 'Bob Stone' };
+
+  beforeEach(() => {
+    listBridgePeople.mockResolvedValue([
+      { username: 'ada', externalUserId: 'U1', linkedUserIds: ['u-ada'], linkedName: 'Ada L.' },
+      { username: 'bob', externalUserId: 'U2', linkedUserIds: ['u-bob'], linkedName: 'Bob' },
+    ]);
+  });
+
+  async function menuItems(el: HTMLElement, label: string): Promise<HTMLElement[]> {
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    await click(el.querySelector<HTMLElement>(`[aria-label="${label} in this room"]`)!);
+    return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  }
+
+  function fold(el: HTMLElement, title: string): HTMLElement | null {
+    return el.querySelector<HTMLElement>(`section[aria-label="${title}"]`);
+  }
+
+  it('marks who is a room admin, matched by who linked the username, and lists them', async () => {
+    getRoomDetail.mockResolvedValue({
+      ...ROOM,
+      connectedUserNames: ['ada', 'bob'],
+      roomAdmins: [ADA],
+      roomAdminCandidates: [BOB],
+    });
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    const people = fold(el, 'People seen here')!;
+    const rows = [...people.querySelectorAll('.group')].map((row) => row.textContent);
+    expect(rows.find((row) => row?.includes('ada ('))).toContain('room admin');
+    expect(rows.find((row) => row?.includes('bob ('))).not.toContain('room admin');
+    expect(fold(el, 'Room admins')!.textContent).toContain('Ada Lovelace');
+  });
+
+  it('lets the owner make someone a room admin, and take them off', async () => {
+    const detail = {
+      ...ROOM,
+      connectedUserNames: ['ada', 'bob'],
+      roomAdmins: [ADA],
+      roomAdminCandidates: [BOB],
+    };
+    getRoomDetail.mockResolvedValue(detail);
+    setRoomAdmin.mockResolvedValue(detail);
+    const el = await renderPanel('side');
+    let items = await menuItems(el, 'bob');
+    await click(items.find((item) => item.textContent === 'Make room admin')!);
+    expect(setRoomAdmin).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-bob',
+      admin: true,
+    });
+
+    items = await menuItems(fold(el, 'Room admins')!, 'Ada Lovelace');
+    await click(items.find((item) => item.textContent === 'Remove room admin')!);
+    expect(setRoomAdmin).toHaveBeenLastCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-ada',
+      admin: false,
+    });
+  });
+
+  it('offers the room’s candidates from Add room admin', async () => {
+    getRoomDetail.mockResolvedValue({ ...ROOM, roomAdmins: [], roomAdminCandidates: [BOB] });
+    const el = await renderPanel('side');
+    expect(fold(el, 'Room admins')!.textContent).toContain('No room admins yet.');
+    await click(el.querySelector<HTMLElement>('[aria-label="Add room admin"]')!);
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('Bob Stone');
+    await click(button(dialog, /Bob Stone/)!);
+    expect(setRoomAdmin).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-bob',
+      admin: true,
+    });
+  });
+
+  it('lets a room admin step down, and choose nobody else', async () => {
+    permissions.value = { ...permissions.value, canManage: false, canManageAdmins: false };
+    getRoomDetail.mockResolvedValue({
+      ...ROOM,
+      viewerIsRoomAdmin: true,
+      roomAdmins: [ADA, { ...ADA, userId: 'u-me', name: 'Me' }],
+      roomAdminCandidates: [],
+    });
+    const el = await renderPanel('side');
+    const admins = fold(el, 'Room admins')!;
+    expect(admins.querySelector('[aria-label="Add room admin"]')).toBeNull();
+    expect(admins.querySelector('[aria-label="Ada Lovelace in this room"]')).toBeNull();
+    const items = await menuItems(admins, 'Me');
+    expect(items.map((item) => item.textContent)).toEqual(['Step down as room admin']);
+    await click(items[0]!);
+    expect(setRoomAdmin).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-me',
+      admin: false,
+    });
+  });
+
+  it('shows no room admins from a server that predates them', async () => {
+    permissions.value = { ...permissions.value, canManageAdmins: false };
+    const el = await renderPanel('side');
+    expect(fold(el, 'Room admins')).toBeNull();
+    expect(el.textContent).not.toContain('room admin');
   });
 });

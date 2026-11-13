@@ -774,7 +774,7 @@ describe("the new layout (gateway_v2)", () => {
         renderAt("/rooms");
         const menu = await openSwitcher();
         fireEvent.click(within(menu).getByRole("menuitem", { name: "Invite people to Acme" }));
-        expect(await screen.findByRole("dialog", { name: "Invite to workspace" })).toBeTruthy();
+        expect(await screen.findByRole("dialog", { name: "Invite users to Acme" })).toBeTruthy();
         cleanup();
       }
     });
@@ -829,12 +829,140 @@ describe("the new layout (gateway_v2)", () => {
     });
   });
 
+  describe("in the Platform area", () => {
+    it("hides the rail and leads back to the workspace, as it spans every one", async () => {
+      mockFetch({ ...signedInAs("operator", { flags: V2 }), "/users": [200, []] });
+      renderAt("/platform/users");
+      const back = await screen.findByRole("link", { name: "Back to workspace" });
+      expect(back.getAttribute("href")).toBe("/");
+      expect(await menuLabels("Platform")).toEqual(["All workspaces", "Users", "Connectors"]);
+      expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
+    });
+  });
+
   it("shows a page that is not built yet as such", async () => {
     mockFetch(signedInAs("member", { flags: V2 }));
     renderAt("/settings/guardrails");
     expect(
       await screen.findByText("This page is part of the new layout and isn't built yet."),
     ).toBeTruthy();
+  });
+});
+
+describe("renaming the workspace (gateway_v2)", () => {
+  const V2: FeatureFlagKey[] = ["gateway_v2"];
+
+  afterEach(() => Reflect.deleteProperty(document, "visibilityState"));
+
+  /** The server as `signedInAs` answers it, holding Acme's name, which a
+   * `PATCH /tenants/t1` changes. Each session read can be held until the
+   * test lets it answer, with the name as it stood when it was asked. */
+  function serverHolding(routes: Routes) {
+    let name = "Acme";
+    const held: (() => void)[] = [];
+    const state = { holdSessionReads: false, renames: [] as string[] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+        const method = init?.method ?? "GET";
+        if (method === "PATCH" && path === "/tenants/t1") {
+          name = JSON.parse(String(init?.body)).name;
+          state.renames.push(name);
+          return new Response(JSON.stringify({ id: "t1", name }), { status: 200 });
+        }
+        const [status, body] = routes[path] ?? [404, { detail: `unmocked ${path}` }];
+        let answered = body;
+        if (path === "/auth/session") {
+          const current = body as Session;
+          const named = (t: TenantMembership) => (t.id === "t1" ? { ...t, name } : t);
+          answered = {
+            ...current,
+            tenant: current.tenant && named(current.tenant),
+            tenants: current.tenants.map(named),
+          };
+          if (state.holdSessionReads) await new Promise<void>((resolve) => held.push(resolve));
+        }
+        if (path === "/tenants/current") answered = { ...(body as object), name };
+        return new Response(JSON.stringify(answered), { status });
+      }),
+    );
+    const release = () => held.splice(0).forEach((answer) => answer());
+    return { state, release };
+  }
+
+  const retention: Routes = {
+    "/tenants/t1/retention": [
+      200,
+      { message_retention_days: null, updated_at: null, updated_by_user_id: null },
+    ],
+  };
+
+  const breadcrumb = () => screen.getByRole("button", { name: /Acme Group/ });
+
+  it("shows a member the name with no way to change it, and says who can", async () => {
+    serverHolding(signedInAs("member", { flags: V2 }));
+    renderAt("/settings/general");
+    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
+    expect((screen.getByLabelText("Workspace name") as HTMLInputElement).value).toBe("Acme");
+    expect(screen.getByText("An org admin or a workspace admin can change this.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Rename workspace" })).toBeNull();
+  });
+
+  it("puts the new name in the breadcrumb and the switcher as soon as it is updated", async () => {
+    const { state } = serverHolding({
+      ...signedInAs("workspace_admin", { flags: V2, tenants: [beta] }),
+      ...retention,
+    });
+    renderAt("/settings/general");
+    fireEvent.click(await screen.findByRole("button", { name: "Rename workspace" }));
+    fireEvent.change(screen.getByLabelText("Workspace name"), {
+      target: { value: "  Research  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    expect(await screen.findByText("Workspace renamed to Research.")).toBeTruthy();
+    // Closing it keeps the name while it fades.
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByText("Workspace renamed to .")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("Workspace renamed to Research.")).toBeNull());
+    expect(state.renames).toEqual(["Research"]);
+    expect((screen.getByLabelText("Workspace name") as HTMLInputElement).value).toBe("Research");
+    expect(breadcrumb().textContent).toContain("Research");
+
+    fireEvent.click(breadcrumb());
+    const switcher = await screen.findByRole("menu", { name: "Workspaces" });
+    expect(within(switcher).getByText("Research")).toBeTruthy();
+    expect(within(switcher).queryByText("Acme")).toBeNull();
+  });
+
+  it("reads the session again after a read already under way, which still has the old name", async () => {
+    const { state, release } = serverHolding({
+      ...signedInAs("org_admin", { flags: V2 }),
+      ...retention,
+    });
+    renderAt("/settings/general");
+    fireEvent.click(await screen.findByRole("button", { name: "Rename workspace" }));
+
+    // Coming back to the tab starts a read, held while the rename is made.
+    state.holdSessionReads = true;
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith("/auth/session")),
+      ).toHaveLength(2),
+    );
+
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Research" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    await waitFor(() => expect(state.renames).toEqual(["Research"]));
+    state.holdSessionReads = false;
+    release();
+
+    expect(await screen.findByText("Workspace renamed to Research.")).toBeTruthy();
+    expect(breadcrumb().textContent).toContain("Research");
   });
 });
 
@@ -914,7 +1042,7 @@ describe("a page that falls behind the server", () => {
     mockFetch(signedInAs("member"));
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
-      expect(screen.queryByText(/Could not check your session with the server/)).toBeNull(),
+      expect(screen.queryByText(/Could not check your session with Switch/)).toBeNull(),
     );
   });
 

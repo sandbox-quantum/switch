@@ -67,7 +67,8 @@ it('adopts the child identity and discovers its sessions using its own credentia
   expect(mocks.emit).toHaveBeenCalledWith(
     'agent:created',
     expect.objectContaining({ id: 'local-child' }),
-    'unknown'
+    'unknown',
+    'adopted'
   );
   expect(mocks.start).toHaveBeenCalledWith('local-child');
 });

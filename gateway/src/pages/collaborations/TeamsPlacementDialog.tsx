@@ -31,6 +31,11 @@ import {
 // 503 until it is running again: something to wait out, not a failure.
 const RESTART_RETRY_MS = 1500;
 const RESTART_RETRIES = 20;
+// A team Switch joins with no default set becomes the default, but the copy of
+// the connection that does it may be in another process and a moment behind
+// the add. The list is shown at once and read again a few times until the
+// default appears.
+const DEFAULT_TEAM_CHECKS = 5;
 
 interface Props {
   /** The bridge to manage teams for, or null when the dialog is closed. */
@@ -75,44 +80,57 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
     retryTimer.current = null;
   }, []);
 
-  const load = useCallback(() => {
-    if (!bridgeId) return;
-    stopLoading();
-    const thisLoad = latestLoad.current;
-    setLoading(true);
-    setRestarting(false);
-    setLoadError(null);
-    const attempt = (retriesLeft: number) => {
-      fetchTeamPlacements(bridgeId)
-        .then((result) => {
-          if (thisLoad !== latestLoad.current) return;
-          setTeams(result.teams);
-          setDefaultTeamId(result.default_team_id);
-          setInCatalog(result.in_catalog);
-          setCatalogProblem(result.catalog_problem);
-          setRestarting(false);
-          setLoading(false);
-        })
-        .catch((e) => {
-          if (thisLoad !== latestLoad.current) return;
-          if (e instanceof ApiError && e.status === 503 && retriesLeft > 0) {
-            setRestarting(true);
-            retryTimer.current = setTimeout(
-              () => attempt(retriesLeft - 1),
-              RESTART_RETRY_MS,
-            );
-            return;
-          }
-          setRestarting(false);
-          setLoadError(e instanceof Error ? e.message : "Failed to load teams");
-          setLoading(false);
-        });
-    };
-    attempt(RESTART_RETRIES);
-  }, [bridgeId, stopLoading]);
+  const load = useCallback(
+    (awaitDefault: boolean) => {
+      if (!bridgeId) return;
+      stopLoading();
+      const thisLoad = latestLoad.current;
+      setLoading(true);
+      setRestarting(false);
+      setLoadError(null);
+      const attempt = (retriesLeft: number, defaultChecksLeft: number) => {
+        fetchTeamPlacements(bridgeId)
+          .then((result) => {
+            if (thisLoad !== latestLoad.current) return;
+            setTeams(result.teams);
+            setDefaultTeamId(result.default_team_id);
+            setInCatalog(result.in_catalog);
+            setCatalogProblem(result.catalog_problem);
+            setRestarting(false);
+            setLoading(false);
+            if (
+              defaultChecksLeft > 0 &&
+              result.default_team_id === null &&
+              result.teams.some((t) => t.has_switch === true)
+            ) {
+              retryTimer.current = setTimeout(
+                () => attempt(RESTART_RETRIES, defaultChecksLeft - 1),
+                RESTART_RETRY_MS,
+              );
+            }
+          })
+          .catch((e) => {
+            if (thisLoad !== latestLoad.current) return;
+            if (e instanceof ApiError && e.status === 503 && retriesLeft > 0) {
+              setRestarting(true);
+              retryTimer.current = setTimeout(
+                () => attempt(retriesLeft - 1, defaultChecksLeft),
+                RESTART_RETRY_MS,
+              );
+              return;
+            }
+            setRestarting(false);
+            setLoadError(e instanceof Error ? e.message : "Failed to load teams");
+            setLoading(false);
+          });
+      };
+      attempt(RESTART_RETRIES, awaitDefault ? DEFAULT_TEAM_CHECKS : 0);
+    },
+    [bridgeId, stopLoading],
+  );
 
   useEffect(() => {
-    if (bridgeId) load();
+    if (bridgeId) load(false);
     return stopLoading;
   }, [bridgeId, load, stopLoading]);
 
@@ -136,7 +154,7 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
         } else {
           await addBridgeToTeam(bridgeId, team.team_id);
         }
-        load();
+        load(!team.has_switch && defaultTeamId === null);
         onChanged();
       } catch (e) {
         setRowError({
@@ -147,7 +165,7 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
         setTogglingTeamId(null);
       }
     },
-    [bridgeId, load, onChanged],
+    [bridgeId, defaultTeamId, load, onChanged],
   );
 
   const handleMakeDefault = useCallback(
@@ -159,7 +177,7 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
         // Choosing a default team is also the decision to turn channel
         // creation on: installed bridges start with it off.
         await setDefaultTeamsTeam(bridgeId, team.team_id);
-        load();
+        load(false);
         onChanged();
       } catch (e) {
         setRowError({
@@ -202,7 +220,8 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
           <Typography variant="body2" color="text.secondary">
             Choose which of your organisation&apos;s teams Switch is in, and which
             one new channels go in by default. Only a team Switch is in can be the
-            default.
+            default, and the first team it joins becomes the default if none is
+            set.
           </Typography>
 
           {loading && (

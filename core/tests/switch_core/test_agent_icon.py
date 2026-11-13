@@ -16,6 +16,8 @@ from switch_core.agent_icon import (
     generated_icon_url,
     initials_icon_url,
     is_third_party_avatar,
+    name_seed,
+    new_icon_url,
     normalise_icon_url,
     refuse_third_party_avatar,
     upgrade_legacy_icon_url,
@@ -241,10 +243,22 @@ def test_generated_icon_escapes_the_seed() -> None:
     assert "seed=a%26b%3Dc%20d&" in url
 
 
-def test_generated_choices_lead_with_the_name_and_stay_put() -> None:
+def test_a_new_icon_never_carries_the_name() -> None:
+    # Switch Console builds the same URL (`agentAvatarUrlForNewAgent`) and its
+    # test pins this same string.
+    assert new_icon_url("pm-agent") == (
+        "https://api.dicebear.com/10.x/gaze/png"
+        "?seed=af076cef2d2acd06e8a21c475ec28b55&size=256&scale=1.1"
+    )
+    assert "acme" not in new_icon_url("acme-merger-bot")
+    assert name_seed("worker") != name_seed("manager")
+
+
+def test_generated_choices_lead_with_the_new_icon_and_stay_put() -> None:
     first = generated_icon_choices("pm-agent", 0)
     assert len(first) == GENERATED_ICON_CHOICES
-    assert first[0] == generated_icon_url("pm-agent")
+    assert first[0] == new_icon_url("pm-agent")
+    assert not any("pm-agent" in url for url in first)
     assert generated_icon_choices("pm-agent", 0) == first
     second = generated_icon_choices("pm-agent", 1)
     assert len(second) == GENERATED_ICON_CHOICES

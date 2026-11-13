@@ -14,8 +14,10 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
+    MACHINE_STOPPED_BY_ADMIN,
     CloudMachineConflict,
     CloudMachineStore,
+    admin_stopped,
     claim_conflict,
     idle_sleeping,
     lock_claims,
@@ -31,6 +33,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
 )
+from switch_core.observability.hosted import record_machine_event
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.telemetry import emit_after_commit
 
@@ -115,7 +118,8 @@ async def machine_summary(
         "machine_id": machine.id,
         "state": state,
         "desired_state": machine.desired_state,
-        "stop_reason": machine.stop_reason,
+        "stop_reason": _wire_stop_reason(machine),
+        "stopped_by_admin": admin_stopped(machine),
         "sleeping": idle_sleeping(machine),
         "revision": machine.revision,
         "instance_type": machine.instance_type,
@@ -132,6 +136,14 @@ async def machine_summary(
         "agents": await managed_agent_ids(session, workspace.controller_id),
         "controller_id": workspace.controller_id,
     }
+
+
+def _wire_stop_reason(machine: CloudMachine) -> str | None:
+    """`stop_reason` as Console builds that predate `stopped_by_admin` can read
+    it: an administrator's stop shows there as the owner's."""
+    if not admin_stopped(machine):
+        return machine.stop_reason
+    return "owner" if machine.desired_state == "stopped" else None
 
 
 class MachineUnavailable(Exception):
@@ -174,7 +186,6 @@ async def ensure_machine(
             )
         ):
             return existing, workspace
-    change = _claim_change(existing, workspace)
     claimed = await machines.claim(
         session,
         factory,
@@ -182,28 +193,15 @@ async def ensure_machine(
         capacity=config.hosted_launch_capacity,
         now=datetime.now(UTC),
     )
-    if change is not None:
+    if claimed.change is not None:
         emit_after_commit(
-            session, current_telemetry(), "cloud_machine_requested", {"change": change}
+            session,
+            current_telemetry(),
+            "cloud_machine_requested",
+            {"change": claimed.change},
         )
-    return claimed
-
-
-def _claim_change(
-    existing: CloudMachine | None, workspace: MachineWorkspace | None
-) -> str | None:
-    """What claiming the owner's machine will change, as `claim` decides it,
-    or None when it only marks a running machine active. The first that
-    applies, when a claim does two of these at once."""
-    if existing is None:
-        return "new"
-    if workspace is None:
-        return "joined_workspace"
-    if existing.desired_state == "retained":
-        return "unretained"
-    if existing.desired_state == "stopped":
-        return "restarted"
-    return None
+        record_machine_event(session, "requested", claimed.change)
+    return claimed.machine, claimed.workspace
 
 
 async def _owned(
@@ -286,6 +284,8 @@ async def lifecycle(
     _machine, workspace = await _owned(session, machine_id, user.id)
     machine = await machines.locked(session, machine_id)
     assert machine is not None
+    if admin_stopped(machine):
+        raise HTTPException(409, MACHINE_STOPPED_BY_ADMIN)
     if machine.revision != body.revision and not (
         idle_sleeping(machine) and machine.revision == body.revision + 1
     ):
@@ -302,21 +302,18 @@ async def lifecycle(
     now = datetime.now(UTC)
     if body.action == "stop":
         if machine.desired_state != "stopped":
-            emit_after_commit(
-                session,
-                current_telemetry(),
-                "cloud_machine_stopped",
-                {"reason": "owner"},
-            )
+            emit_after_commit(session, current_telemetry(), "cloud_machine_stopped", {})
+            record_machine_event(session, "stopped", "owner")
         machines.stop(machine, "owner", now)
     elif body.action == "start":
         if machine.desired_state == "stopped":
             emit_after_commit(
                 session,
                 current_telemetry(),
-                "cloud_machine_woken",
-                {"trigger": "owner", "stopped_by": machine.stop_reason or "unknown"},
+                "cloud_machine_started",
+                {"stopped_by": machine.stop_reason or "unknown"},
             )
+            record_machine_event(session, "woken", "owner")
         machines.start(machine, now)
     else:
         if machine.state != "error":

@@ -5,8 +5,6 @@ import _electronUpdater, {
   type Logger as UpdaterLogger,
 } from 'electron-updater';
 import { resolveAppVersion } from '@main/core/app/utils';
-import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
-import { updateTriggerOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -17,6 +15,7 @@ import {
   RELEASE_REPO_OWNER,
   UPDATE_CHANNEL,
 } from '@shared/app-identity';
+import type { UpdateTrigger } from '@shared/core/telemetry/reporting';
 import {
   updateAvailableEvent,
   updateCheckingEvent,
@@ -54,6 +53,11 @@ const INSTALL_RESTART_GUARD_TIMEOUT_MS = 2 * 60 * 1000;
 const FAKE_STARTUP_DELAY_MS = 1_500;
 /** Dev builds cannot restart into a new binary, so the fake install unwinds. */
 const FAKE_INSTALL_ROLLBACK_MS = 3_000;
+
+/** How a check that finished came out, as its telemetry reports it. */
+function checkResult(info: UpdateInfo | null): 'available' | 'up_to_date' {
+  return info ? 'available' : 'up_to_date';
+}
 
 /** Why an install did not happen, as logged with `event: 'update.install'`. */
 type InstallFailureCode =
@@ -174,18 +178,16 @@ class UpdateService implements IInitializable, IDisposable {
   }
 
   /**
-   * Report the install the previous run handed over. The app going down for the
-   * installer is not proof it came back on the new version: on macOS a
-   * Squirrel.Mac failure relaunches the old bundle without an error. Only a
-   * launch on the version that handed over is a failure. Any other version
-   * means an install happened, by the updater or by hand.
+   * Report the install the previous run handed over, if it failed. The app
+   * going down for the installer is not proof it came back on the new version:
+   * on macOS a Squirrel.Mac failure relaunches the old bundle without an error.
+   * Only a launch on the version that handed over is a failure. Any other
+   * version means an install happened, by the updater or by hand, which
+   * `app_launched` reports.
    */
   private reportHandover({ targetVersion, fromVersion }: PendingHandover): void {
     const current = this.updateState.currentVersion;
-    if (targetVersion === null || current !== fromVersion) {
-      trackEvent('update_install_started', { outcome: 'success' });
-      return;
-    }
+    if (targetVersion === null || current !== fromVersion) return;
     trackEvent('update_install_started', { outcome: 'failure' });
     this.failInstall(
       targetVersion,
@@ -422,33 +424,37 @@ class UpdateService implements IInitializable, IDisposable {
   /**
    * Check for an update.
    *
-   * `trigger` says who asked. A check that arrives while one is already running
-   * joins it rather than starting a second, so it is reported under the trigger
-   * of the check that actually ran — the alternative is counting one check twice.
+   * `trigger` says who asked. A person's check is reported as
+   * `update_check_requested`; the app's own, at launch and every hour, as
+   * `update_checked`, which is not someone using the app. A check that
+   * arrives while one is already running joins it rather than starting a
+   * second: a person's request that joins one is still reported, with the
+   * result of the check it joined, and one of the app's own is not, since the
+   * check it joined is reported already. A trigger nobody named is not
+   * reported.
    */
-  async checkForUpdates(trigger: TelemetryUpdateTrigger = 'user'): Promise<UpdateInfo | null> {
+  async checkForUpdates(trigger: UpdateTrigger | 'unknown'): Promise<UpdateInfo | null> {
     // During an install, an error from a check would read as an installer error.
     if (!this.active || this.installRequested) return null;
-    if (this.currentCheckPromise) return this.currentCheckPromise;
 
-    this.currentCheckPromise = this._performCheck()
-      .then((info) => {
-        trackEvent('update_checked', {
-          trigger: updateTriggerOf(trigger),
-          result: info ? 'available' : 'up_to_date',
-        });
-        return info;
-      })
-      .catch((error: unknown) => {
-        trackEvent('update_checked', { trigger: updateTriggerOf(trigger), result: 'failed' });
-        throw error;
-      })
-      .finally(() => {
-        this.currentCheckPromise = null;
-        this.scheduleNextCheck();
-      });
-
-    return this.currentCheckPromise;
+    const joined = this.currentCheckPromise !== null;
+    this.currentCheckPromise ??= this._performCheck().finally(() => {
+      this.currentCheckPromise = null;
+      this.scheduleNextCheck();
+    });
+    const check = this.currentCheckPromise;
+    if (trigger === 'user') {
+      check.then(
+        (info) => trackEvent('update_check_requested', { result: checkResult(info) }),
+        () => trackEvent('update_check_requested', { result: 'failed' })
+      );
+    } else if (trigger !== 'unknown' && !joined) {
+      check.then(
+        (info) => trackEvent('update_checked', { trigger, result: checkResult(info) }),
+        () => trackEvent('update_checked', { trigger, result: 'failed' })
+      );
+    }
+    return check;
   }
 
   private async _performCheck(): Promise<UpdateInfo | null> {

@@ -27,6 +27,10 @@ import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
+import {
+  invitableAgents,
+  useRoomAgentCandidates,
+} from '@renderer/lib/stores/use-room-agent-candidates';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -142,6 +146,8 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     queryFn: () =>
       rpc.workspaces.listBridgePeople({ workspaceId: workspaceId as string, bridgeId }),
   });
+  // The agents the server's invite rule lets this person put into a new room.
+  const invitableQuery = useRoomAgentCandidates(workspaceId, null);
 
   // Only a running bridge allowed to create channels can back a new room.
   const bridges = (bridgesQuery.data ?? []).filter(
@@ -180,7 +186,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   // app. A Switch Console room is driven through the server: the agents the
   // server says the person may use, and its people.
   const agentCandidates = selectedBridge
-    ? (agentsQuery.data ?? []).filter(
+    ? invitableAgents(agentsQuery.data ?? [], invitableQuery.data).filter(
         (remote) =>
           workspaceId !== null &&
           (managedProviders.has(remote.id) ||
@@ -189,17 +195,26 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               .some((local) => local.switchAgentId === remote.id))
       )
     : addableAgents(agentsQuery.data ?? [], allowedQuery.data ?? []);
-  // A new private channel on an app is made with its creator in it, so they
-  // are shown in it, through the account of theirs it will use, rather than
-  // offered: and said plainly when they have none, as it would be refused.
+  // A new channel on an app is made with its creator in it, so they are shown
+  // in it, through the account of theirs it will use, rather than offered. A
+  // private one says plainly when they have none, as it would be refused; a
+  // public one is made without them then, and on an app where joining a
+  // public channel means more (Teams), so it shows nobody.
   const offeredChannel = optionsForBridge(options, selectedBridge).channel;
   const makesPrivateChannel =
     selectedBridge !== null && offeredChannel.kind === 'new' && offeredChannel.private;
   const myAccount = selectedBridge
     ? (identities ?? []).find((each) => each.bridgeId === selectedBridge.id && each.verified)
     : undefined;
+  const addsMeToPublicChannel =
+    selectedBridge !== null &&
+    offeredChannel.kind === 'new' &&
+    !offeredChannel.private &&
+    selectedBridge.publicChannelAddsCreator &&
+    myAccount !== undefined;
+  const addsMe = makesPrivateChannel || addsMeToPublicChannel;
   const fixed: FixedParticipant[] =
-    makesPrivateChannel && selectedBridge
+    addsMe && selectedBridge
       ? [
           {
             participant: { kind: 'person', id: myUserId ?? 'me', name: 'You', detail: '' },
@@ -214,9 +229,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
       : [];
   const people: Participant[] = selectedBridge
     ? (peopleQuery.data ?? [])
-        .filter(
-          (person) => !(makesPrivateChannel && person.externalUserId === myAccount?.externalUserId)
-        )
+        .filter((person) => !(addsMe && person.externalUserId === myAccount?.externalUserId))
         .map(bridgePersonParticipant)
     : addablePeople(rosterQuery.data ?? [], new Set([myUserId ?? ''])).map(personParticipant);
   const candidates: Participant[] = [
@@ -258,6 +271,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     loaded:
       agentsQuery.isSuccess &&
       !agentsQuery.isFetching &&
+      (selectedBridge === null || !invitableQuery.isPending) &&
       (selectedBridge !== null || (allowedQuery.isSuccess && !allowedQuery.isFetching)),
   });
   const startingAgentName =
@@ -453,6 +467,14 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             {(agentsQuery.isError || (!selectedBridge && allowedQuery.isError)) && (
               <p className="text-xs text-destructive">
                 {failureText(agentsQuery.error ?? allowedQuery.error, 'Could not load the agents.')}
+              </p>
+            )}
+            {selectedBridge && invitableQuery.isError && (
+              <p className="text-xs text-destructive">
+                {failureText(
+                  invitableQuery.error,
+                  'Could not work out which agents you can invite.'
+                )}
               </p>
             )}
             {(selectedBridge ? peopleQuery.isError : rosterQuery.isError) && (

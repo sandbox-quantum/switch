@@ -2,7 +2,10 @@
 
 Connections are listed and disconnected by the person who holds them; grants
 are listed, set and removed by the agent's owner, on their own connection.
-Someone else's agent answers 404, as a missing one does. The credential broker
+Someone else's agent answers 404, as a missing one does. A workspace's admins
+also see everyone connected to a service and every agent granted it, and may
+end someone else's connection; nobody, admins included, grants on a
+connection that is not their own. The credential broker
 (`connections/broker.py`) makes every change and runs the checks; this module
 turns its refusals into the gateway's `{"detail": ...}`.
 """
@@ -14,18 +17,27 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import parse_policy
 from switch_core.connections.broker import (
     KEY_CONSENT,
+    CheckedKey,
     ServiceBroker,
     ServiceError,
     effective_tools,
     get_service_broker,
 )
-from switch_core.connections.loader import CATALOG, AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    CATALOG,
+    AccessLevel,
+    ApiKeyField,
+    ConnectionDefinition,
+    ConnectionMethod,
+    PasteMethod,
+    PasteMethodName,
+)
 from switch_core.db.models import (
     Agent,
     ServiceConnection,
@@ -35,7 +47,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, require_tenant_admin
 from switch_core.gateway.dependencies import get_session
 from switch_core.gateway.known_agents import known_agent_for
 
@@ -73,7 +85,13 @@ async def _grant_view(
 ) -> dict:
     entry = CATALOG.get(grant.service)
     access: AccessLevel = "write" if grant.access == "write" else "read"
+    connection = await STORE.get_connection(session, grant.owner_id, grant.service)
     return {
+        # Made for another account than the one connected now, so it gives
+        # no access (`grant_account_changed`) until it is made again.
+        "account_changed": (
+            connection is None or grant.account_id != connection.account_id
+        ),
         "service": grant.service,
         "name": grant.service if entry is None else entry.definition.name,
         "access": grant.access,
@@ -102,19 +120,32 @@ async def list_service_connections(
         connection.service: connection
         for connection in await STORE.list_connections(session, user.id)
     }
-    switched_off = await broker.workspace_disabled(session)
+    switches = await broker.workspace_switches(session)
     entries = []
     for entry in CATALOG.values():
         definition = entry.definition
         connection = connections.get(definition.slug)
         standing = await broker.standing(session, definition.slug)
         unavailable = standing.unavailable
+        reconnect = (
+            None
+            if connection is None
+            else broker.reconnect_reason(standing, connection)
+        )
         entries.append(
             {
                 "slug": definition.slug,
                 "name": definition.name,
                 "category": definition.category,
                 "description": definition.description,
+                "publisher": definition.publisher,
+                "links": None
+                if definition.links is None
+                else definition.links.model_dump(),
+                # The vendor's MCP servers its agents' sessions call, if any.
+                "mcp_urls": []
+                if definition.mcp is None
+                else [server.url for server in definition.mcp.servers],
                 "enabled": definition.enabled,
                 "auth_type": definition.auth.type,
                 "connectable": standing.connectable,
@@ -131,8 +162,23 @@ async def list_service_connections(
                 # Whose app it signs in through here: "organization" where the
                 # workspace's organization saved its own, else "server".
                 "app_source": standing.source,
+                # Why it can be granted for reading only here, for a form to
+                # say beside the write choice it disables; null where writing
+                # can be granted too.
+                "read_only_reason": broker.read_only(standing, definition.slug),
                 # Whether a workspace admin left it on for this workspace.
-                "workspace_enabled": definition.slug not in switched_off,
+                "workspace_enabled": switches is None
+                or switches[definition.slug].enabled,
+                # Whether the workspace's organization locked it on or off,
+                # out of the workspace admin's reach.
+                "organization_locked": switches is not None
+                and switches[definition.slug].locked,
+                # Which setting `workspace_enabled` comes from, as the
+                # workspace's own switches name it (`Decider`); null on a
+                # server without the workspace switch.
+                "decided_by": None
+                if switches is None
+                else switches[definition.slug].decided_by,
                 # A grant hands the agent the owner's own token: it is on or
                 # off, at the connection's level, and lasts the token's life.
                 "pass_through": (
@@ -141,6 +187,11 @@ async def list_service_connections(
                 ),
                 "token_lifetime": (
                     None if definition.token is None else definition.token.max_lifetime
+                ),
+                # What limits agent access beyond that lifetime, for people
+                # to read; null for most services.
+                "agent_access_note": (
+                    None if definition.token is None else definition.token.note
                 ),
                 # The ports Switch Console's listener may take a sign-in back
                 # on, for a vendor that matches them; null for any port.
@@ -152,7 +203,23 @@ async def list_service_connections(
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
+                # What a person picks before signing in, for an OAuth entry
+                # that asks (a vendor's site), each from its fixed list; null
+                # for any other.
+                "sign_in_choices": _sign_in_choices(definition),
+                # What a person may paste in place of signing in (a token,
+                # or keys), each with its fields; picked choices (a site) are
+                # the sign-in's. Empty for a service that takes none here.
+                "paste": [
+                    _paste_form(method)
+                    for method in broker.paste_methods(definition.slug)
+                ],
                 "status": broker.connection_status(standing, connection),
+                # Why the connection must be reconnected, as a code and a
+                # sentence, where its status says it must: `token_refused`
+                # asks for a new pasted credential. Null otherwise.
+                "reconnect_code": None if reconnect is None else reconnect[0],
+                "reconnect_reason": None if reconnect is None else reconnect[1],
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
                     None if connection is None else connection.external_identity
@@ -160,9 +227,45 @@ async def list_service_connections(
                 # Whether the caller may disconnect it: their own connection,
                 # the only one listed here, while they have one.
                 "can_revoke": connection is not None,
+                # How the person connected (`oauth`, `token` or `keys`), and
+                # what they picked from the entry's lists to (a site); null
+                # when not connected.
+                "method": None if connection is None else connection.method,
+                "choices": None if connection is None else dict(connection.choices),
+                # What a connection made with a credential pasted in place of
+                # a sign-in reaches, said in place of its level; null for any
+                # other, a key connection included.
+                "access_note": (
+                    None
+                    if connection is None
+                    or connection.method == "oauth"
+                    or definition.adapter != "oauth"
+                    else _pasted_reach(connection.method)
+                ),
             }
         )
     return {"connections": entries}
+
+
+def _pasted_reach(method: str) -> str:
+    return (
+        "Reaches what your token allows."
+        if method == "token"
+        else "Reaches what your keys allow."
+    )
+
+
+def _paste_form(method: PasteMethod) -> dict[str, Any]:
+    return {
+        "method": method.name,
+        "label": method.label,
+        "fields": [_field(field) for field in method.fields],
+        "help_url": method.help_url,
+        # `vendor`: it ends on the date it was made to end; `never`: only
+        # the vendor can revoke it.
+        "expires": method.expires,
+        "access_note": _pasted_reach(method.name),
+    }
 
 
 @router.get("/service-connections/{service}/agents")
@@ -170,12 +273,11 @@ async def list_service_agents(
     service: str,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> list[dict[str, Any]]:
-    """The person's own agents in this workspace, whether each has a grant
-    on `service`, and whether others can address it."""
-    entry = CATALOG.get(service)
-    if entry is None or not entry.definition.enabled:
-        raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    """The person's own agents in this workspace, each with its grant on
+    `service` if it has one, and whether others can address it."""
+    _enabled_entry(service)
     agents = list(
         await session.scalars(
             select(Agent)
@@ -183,24 +285,157 @@ async def list_service_agents(
             .order_by(Agent.name)
         )
     )
-    granted = set(
-        await session.scalars(
-            select(ServiceGrant.agent_id).where(
+    grants = {
+        grant.agent_id: grant
+        for grant in await session.scalars(
+            select(ServiceGrant).where(
                 ServiceGrant.tenant_id == require_tenant_id(),
                 ServiceGrant.owner_id == user.id,
                 ServiceGrant.service == service,
             )
         )
-    )
-    return [
+    }
+    connection = await STORE.get_connection(session, user.id, service)
+    account = None if connection is None else connection.account_id
+    entries = []
+    for agent in agents:
+        grant = grants.get(agent.id)
+        entries.append(
+            {
+                "agent_id": agent.id,
+                "name": agent.display_name or agent.name,
+                "granted": grant is not None,
+                # Made for another account than the one connected now.
+                "account_changed": grant is not None and grant.account_id != account,
+                # What it is granted, for a page that shows and changes it.
+                "grant": None
+                if grant is None
+                else await _grant_view(session, broker, agent, grant),
+                # Whether Switch Console starts it, and so may grant it a
+                # service: one on its own runtime cannot be.
+                "grantable": known_agent_for(agent) is not None,
+                "addressing_open": await _others_can_address(session, agent, user),
+            }
+        )
+    return entries
+
+
+def _enabled_entry(service: str) -> None:
+    entry = CATALOG.get(service)
+    if entry is None or not entry.definition.enabled:
+        raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+
+
+@router.get("/service-connections/{service}/workspace")
+async def service_in_workspace(
+    service: str,
+    admin: Annotated[User, Depends(require_tenant_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, Any]:
+    """Who in this workspace uses `service`, for its admins: everyone
+    connected, with how many of their agents are granted it, and every agent
+    granted it, whoever owns it."""
+    _enabled_entry(service)
+    tenant_id = require_tenant_id()
+    standing = await broker.standing(session, service)
+    granted = {
+        owner_id: count
+        for owner_id, count in (
+            await session.execute(
+                select(ServiceGrant.owner_id, func.count(ServiceGrant.id))
+                .where(
+                    ServiceGrant.tenant_id == tenant_id,
+                    ServiceGrant.service == service,
+                )
+                .group_by(ServiceGrant.owner_id)
+            )
+        ).tuples()
+    }
+    people = [
         {
-            "agent_id": agent.id,
-            "name": agent.display_name or agent.name,
-            "granted": agent.id in granted,
-            "addressing_open": await _others_can_address(session, agent, user),
+            "user_id": person.id,
+            "name": person.name,
+            # As its owner sees it: one made through an app since replaced
+            # needs reconnecting.
+            "status": broker.connection_status(standing, connection),
+            "connected_at": connection.created_at.isoformat(),
+            "agents": granted.get(person.id, 0),
+            # Someone else's: an admin's own is disconnected, not revoked.
+            "can_revoke": person.id != admin.id,
         }
-        for agent in agents
+        for connection, person in (
+            await session.execute(
+                select(ServiceConnection, User)
+                .join(User, User.id == ServiceConnection.user_id)
+                .where(
+                    ServiceConnection.tenant_id == tenant_id,
+                    ServiceConnection.service == service,
+                )
+                .order_by(User.name, User.id)
+            )
+        ).tuples()
     ]
+    agents = []
+    for grant, agent, owner in (
+        await session.execute(
+            select(ServiceGrant, Agent, User)
+            .join(
+                Agent,
+                (Agent.tenant_id == ServiceGrant.tenant_id)
+                & (Agent.id == ServiceGrant.agent_id),
+            )
+            .join(User, User.id == ServiceGrant.owner_id)
+            .where(ServiceGrant.tenant_id == tenant_id, ServiceGrant.service == service)
+            .order_by(Agent.name, Agent.id)
+        )
+    ).tuples():
+        agents.append(
+            {
+                "agent_id": agent.id,
+                "name": agent.display_name or agent.name,
+                "owner_id": owner.id,
+                "owner_name": owner.name,
+                "grant": await _grant_view(session, broker, agent, grant),
+                # Whether others than its owner can address it, and so have
+                # it act as its owner on this connector.
+                "addressing_open": await _others_can_address(session, agent, owner),
+            }
+        )
+    return {"people": people, "agents": agents}
+
+
+@router.delete("/service-connections/{service}/people/{user_id}", response_model=None)
+async def revoke_service_connection(
+    service: str,
+    user_id: str,
+    admin: Annotated[User, Depends(require_tenant_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, Any] | JSONResponse:
+    """End someone else's connection, for a workspace admin: the grants on it
+    go with it, and what was issued is revoked. Their own, an admin
+    disconnects as anyone does."""
+    if user_id == admin.id:
+        raise HTTPException(
+            status_code=409,
+            detail="That is your own connection: disconnect it instead.",
+        )
+    try:
+        warning = await broker.revoke_connection(session, admin.id, user_id, service)
+    except ServiceError as error:
+        return service_refusal(error)
+    return {"warning": warning}
+
+
+def _field(field: ApiKeyField) -> dict[str, Any]:
+    return {
+        "name": field.name,
+        "label": field.label,
+        "secret": field.secret,
+        "help": field.help,
+        "choices": field.choices,
+    }
 
 
 def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:
@@ -208,18 +443,16 @@ def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:
     if definition.adapter != "api_key" or sign_in is None:
         return None
     return {
-        "fields": [
-            {
-                "name": field.name,
-                "label": field.label,
-                "secret": field.secret,
-                "help": field.help,
-                "choices": field.choices,
-            }
-            for field in sign_in.fields
-        ],
+        "fields": [_field(field) for field in sign_in.fields],
         "help_url": sign_in.help_url,
     }
+
+
+def _sign_in_choices(definition: ConnectionDefinition) -> list[dict[str, Any]] | None:
+    oauth = definition.auth.oauth
+    if definition.adapter != "oauth" or oauth is None or not oauth.choices:
+        return None
+    return [_field(field) for field in oauth.choices]
 
 
 class KeyBody(BaseModel):
@@ -247,11 +480,95 @@ async def connect_with_key(
     except ServiceError as error:
         return service_refusal(error)
     name = CATALOG[service].definition.name
+    linked = await _link_pasted(
+        session,
+        broker,
+        user,
+        service,
+        checked,
+        method="keys",
+        taken=f"This {name} key's account",
+    )
+    if isinstance(linked, JSONResponse):
+        return linked
+    return {"warning": linked, "external_identity": checked.label}
+
+
+class PasteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    method: PasteMethodName
+    fields: dict[str, str]
+    # What the person picked for the entry's choices (a site); {} for an
+    # entry that offers none.
+    choices: dict[str, str]
+
+
+@router.put("/service-connections/{service}/paste", response_model=None)
+async def connect_with_paste(
+    service: str,
+    body: PasteBody,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, Any] | JSONResponse:
+    """Connect a service that signs in with OAuth by pasting a credential in
+    its place (`method`: a token, or keys, as the services list's `paste`
+    offers), at the site picked in `choices`.
+
+    The credential is checked at the service's MCP server before anything is
+    stored, and never sent back. The connection is named by the account the
+    vendor says the credential acts as, or by the credential where it will
+    not say. It reaches whatever the credential allows at the vendor, so its
+    consent is `write` and a grant on it is on or off. Pasting again, or
+    signing in, replaces it in place. The grants keep working where the
+    vendor names the same account. Where the connection is named by the
+    credential, a new credential is another account, so each agent must be
+    granted again (`grant_account_changed`).
+    """
+    try:
+        await broker.require_workspace_enabled(session, service)
+        checked = await broker.check_paste(
+            session, service, body.method, body.fields, body.choices
+        )
+    except ServiceError as error:
+        return service_refusal(error)
+    linked = await _link_pasted(
+        session,
+        broker,
+        user,
+        service,
+        checked,
+        method=body.method,
+        taken=f"This {CATALOG[service].definition.name} account",
+    )
+    if isinstance(linked, JSONResponse):
+        return linked
+    return {
+        "warning": linked,
+        "external_identity": checked.label,
+        "method": body.method,
+        "choices": checked.choices,
+    }
+
+
+async def _link_pasted(
+    session: AsyncSession,
+    broker: ServiceBroker,
+    user: User,
+    service: str,
+    checked: CheckedKey,
+    *,
+    method: ConnectionMethod,
+    taken: str,
+) -> str | None | JSONResponse:
+    """Link a pasted credential its vendor accepted to `user`, unless its
+    account is linked to someone else here (`taken` names it, for the
+    refusal); the warning `connect` returns, or the refusal."""
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"service-link:{require_tenant_id()}:{service}"},
     )
-    taken = await session.scalar(
+    holder = await session.scalar(
         select(ServiceConnection.user_id).where(
             ServiceConnection.tenant_id == require_tenant_id(),
             ServiceConnection.service == service,
@@ -259,20 +576,20 @@ async def connect_with_key(
             ServiceConnection.account_id == checked.account_id,
         )
     )
-    if taken is not None:
+    if holder is not None:
         return JSONResponse(
             status_code=409,
             content={
                 "detail": (
-                    f"This {name} key's account is already linked to another "
-                    "Switch user in this workspace. Remove that link first."
+                    f"{taken} is already linked to another Switch user in this "
+                    "Switch workspace. Remove that link first."
                 ),
                 "code": "account_linked_elsewhere",
                 "retryable": False,
             },
         )
     try:
-        warning = await broker.connect(
+        return await broker.connect(
             session,
             user_id=user.id,
             service=service,
@@ -282,10 +599,11 @@ async def connect_with_key(
             external_identity=checked.label,
             secret=checked.secret,
             oauth_client_id=None,
+            method=method,
+            choices=checked.choices,
         )
     except ServiceError as error:
         return service_refusal(error)
-    return {"warning": warning, "external_identity": checked.label}
 
 
 @router.delete("/service-connections/{service}", response_model=None)

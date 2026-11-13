@@ -24,25 +24,30 @@ import {
   type RemoteRoomRole,
   type RoomAccess,
   roomAccessOf,
-  visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
 import { useArchiveRoomConfirm } from './archive-room-confirm';
 import { roomDetailKey } from './room-participants';
 
 /**
- * The room's read and write access as people read them. Write access is who
- * may change the room in Switch — its settings, who is in it, its resources —
- * not who may post: posting in a bridged room is up to its channel. A room
- * nobody else may read is still readable by whoever takes part in it.
+ * The room's access as people read it: who may see it. Changing a room in
+ * Switch is its owner's and admins' and adding to it is for whoever takes
+ * part, whichever it is.
  */
 export const ACCESS_LABELS: Record<RoomAccess, string> = {
-  public: 'Everyone in the workspace can see and change it',
-  read_only: 'Everyone can see it; owner and admins change it',
-  private: 'Only those taking part and admins see it; owner and admins change it',
+  public: 'Public',
+  private: 'Private',
+};
+
+/** What each access setting means, in full: shown under the choice and on
+ * hover, in the same words as the gateway's room pages. */
+export const ACCESS_HELPERS: Record<RoomAccess, string> = {
+  public: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
+  private:
+    'Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.',
 };
 
 /** The access settings in the order they are offered, most open first. */
-export const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
+export const ACCESS_ORDER: RoomAccess[] = ['public', 'private'];
 const NO_GROUP = '__none__';
 
 /** One write's progress, for a control that saves the moment it changes. */
@@ -100,7 +105,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
         ? 'Could not take the room out of its group.'
         : 'Could not change the room’s group.'
     );
-  const access = roomAccessOf(room.readVisibility, room.writeVisibility);
+  const access = roomAccessOf(room.readVisibility);
 
   async function write(
     setState: (state: WriteState) => void,
@@ -120,7 +125,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
   return (
     <div className="grid grid-cols-2 gap-4">
       <div className="flex flex-col gap-1.5">
-        <span className="text-sm text-foreground-muted">Who can see and change it</span>
+        <span className="text-sm text-foreground-muted">Access</span>
         {permissions.canManage ? (
           <Select
             value={access}
@@ -132,13 +137,13 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
                   rpc.workspaces.updateRoom({
                     workspaceId,
                     roomId: room.id,
-                    ...visibilityForAccess(next as RoomAccess),
+                    readVisibility: next as RoomAccess,
                   }),
                 'Could not change who can see this room.'
               )
             }
           >
-            <SelectTrigger className="w-full" aria-label="Who can see and change it">
+            <SelectTrigger className="w-full" aria-label="Access">
               <SelectValue>{ACCESS_LABELS[access]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -152,17 +157,13 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
         ) : (
           <span className="text-sm text-foreground">{ACCESS_LABELS[access]}</span>
         )}
-        <span className="min-h-4 text-xs text-foreground-muted">
-          {accessState.phase === 'idle' ? (
-            permissions.canManage ? (
-              'Only the room’s owner and workspace admins change this.'
-            ) : (
-              'The room’s owner or a workspace admin can change this.'
-            )
-          ) : (
-            <WriteStatus state={accessState} />
-          )}
+        <span className="text-xs text-foreground-muted">
+          {ACCESS_HELPERS[access]}
+          {permissions.canManage && room.bridgeId
+            ? ' Changing it here leaves the channel as it is.'
+            : ''}
         </span>
+        {accessState.phase !== 'idle' && <WriteStatus state={accessState} />}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -534,7 +535,7 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const confirmArchive = useArchiveRoomConfirm();
-  if (!permissions.canWrite) return null;
+  if (!permissions.canArchive) return null;
 
   async function toggle() {
     setBusy(true);

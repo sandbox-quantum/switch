@@ -44,6 +44,9 @@ export class SwitchServersStore {
   /** Server ids with an auth-config fetch in flight, so several recovery
    * signals arriving at once collapse into a single request. */
   private readonly authConfigInFlight = new Set<string>();
+  /** The last failed sign-in per server id, for that server's sign-in form
+   * only: the page-level `error` is shown on every server's page. */
+  private readonly signInErrors = new Map<string, string>();
   /** Server ids whose last connection-status read failed. Authoritative for
    * page-level reachability whenever a status read has ever run for that
    * server: {@link isUnreachable} defers to this over
@@ -158,6 +161,10 @@ export class SwitchServersStore {
 
   authConfigFor(serverId: string): SwitchAuthConfig | null {
     return this.authConfigs.get(serverId) ?? null;
+  }
+
+  signInError(serverId: string): string | null {
+    return this.signInErrors.get(serverId) ?? null;
   }
 
   isConnected(serverId: string): boolean {
@@ -631,6 +638,7 @@ export class SwitchServersStore {
       this.authConfigWanted.delete(serverId);
       this.statusUnreachable.delete(serverId);
       this.authConfigUnreachable.delete(serverId);
+      this.signInErrors.delete(serverId);
     });
     // The removed id also sits in the server view's saved params, where it
     // outlives the record and would be read back — as a page for a server
@@ -659,13 +667,10 @@ export class SwitchServersStore {
   }
 
   async passwordLogin(serverId: string, email: string, password: string): Promise<boolean> {
-    this.clearError();
+    runInAction(() => this.signInErrors.delete(serverId));
     const result = await rpc.switchServers.passwordLogin({ serverId, email, password });
     if (!result.success) {
-      runInAction(() => {
-        this.error = result.error.message;
-        this.errorDetail = null;
-      });
+      runInAction(() => this.signInErrors.set(serverId, result.error.message));
       return false;
     }
     // Signing in is when the server first says which workspaces the account
@@ -675,21 +680,21 @@ export class SwitchServersStore {
   }
 
   /** Resolves the new account's machine status once signed in, or null when
-   * the account was not created (the reason is in `error`). */
+   * the account was not created (the reason is in `signInError`). */
   async signup(params: SignupParams): Promise<SignupMachine | null> {
-    this.clearError();
+    runInAction(() => this.signInErrors.delete(params.serverId));
     let result: Awaited<ReturnType<typeof rpc.switchServers.signup>>;
     try {
       result = await rpc.switchServers.signup(params);
     } catch (cause) {
-      this.setError(cause, 'Could not create the account.');
+      const { headline, detail } = describeFailure(cause, 'Could not create the account.');
+      runInAction(() =>
+        this.signInErrors.set(params.serverId, detail ? `${headline} (${detail})` : headline)
+      );
       return null;
     }
     if (!result.success) {
-      runInAction(() => {
-        this.error = result.error.message;
-        this.errorDetail = null;
-      });
+      runInAction(() => this.signInErrors.set(params.serverId, result.error.message));
       return null;
     }
     // Signed in now, and as with a sign-in the account's workspaces are known.
@@ -699,15 +704,12 @@ export class SwitchServersStore {
 
   /** `provider`: one of the server's sign-in options, or null for its one SSO button. */
   async oidcLogin(serverId: string, provider: string | null): Promise<boolean> {
-    this.clearError();
+    runInAction(() => this.signInErrors.delete(serverId));
     const result = await rpc.switchServers.oidcLogin(serverId, provider);
     if (!result.success) {
       // A user-cancelled window is not an error worth shouting about.
       if (result.error.kind !== 'cancelled') {
-        runInAction(() => {
-          this.error = result.error.message;
-          this.errorDetail = null;
-        });
+        runInAction(() => this.signInErrors.set(serverId, result.error.message));
       }
       return false;
     }
@@ -745,6 +747,12 @@ export class SwitchServersStore {
    */
   async deleteAccount(serverId: string, email: string): Promise<void> {
     await rpc.switchServers.deleteAccount({ serverId, email });
+    await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
+  }
+
+  /** Wipe the signed-in test account on `serverId`, as `deleteAccount` does. */
+  async resetTestAccount(serverId: string, email: string): Promise<void> {
+    await rpc.switchServers.resetTestAccount({ serverId, email });
     await Promise.all([this.refreshStatus(serverId), workspacesStore.refresh()]);
   }
 

@@ -43,6 +43,7 @@ from tests.switch_core.gateway.test_connector_apps import (
     GOOGLE,
     PUBLIC,
     World,
+    _github_body,
     _google_body,
     _tenant_id,
     _user,
@@ -317,6 +318,70 @@ class TestSaving:
         assert checked.status_code == 200, checked.text
         assert checked.json()["ok"] is True
 
+    async def test_a_check_keeps_what_github_says_and_follows_a_change(
+        self, world: World, session_factory
+    ) -> None:
+        organization_apps = await _install(world)
+        admin = await _org_admin(session_factory, "org-admin")
+        cookies = cookies_for(admin)
+        world.github.permissions = {"contents": "read", "pull_requests": "read"}
+
+        async def github_entry(client) -> dict[str, object]:
+            listed = await client.get(ORGANIZATION_APPS, cookies=cookies)
+            assert listed.status_code == 200, listed.text
+            [entry] = [e for e in listed.json()["apps"] if e["slug"] == "github"]
+            return entry
+
+        async with world.harness.client() as client:
+            saved = await client.put(
+                f"{ORGANIZATION_APPS}/github", json=_github_body(world), cookies=cookies
+            )
+            assert saved.status_code == 200, saved.text
+            [before] = await _rows(session_factory)
+            # Checked again unchanged, it stays read-only, and nothing is written.
+            again = await client.post(
+                f"{ORGANIZATION_APPS}/github/check", cookies=cookies
+            )
+            assert again.status_code == 200, again.text
+            assert again.json()["ok"] is True
+            [unchanged] = await _rows(session_factory)
+            assert unchanged.updated_at == before.updated_at
+            assert (await github_entry(client))["read_only"] is True
+            assert organization_apps.changes == [(TENANT_ZERO_ID, "github")]
+            assert len(await _audit(session_factory)) == 1
+
+            # The App is given write at GitHub: the next check stores that,
+            # and every process hears of it.
+            world.github.permissions = {"contents": "write", "pull_requests": "write"}
+            granted = await client.post(
+                f"{ORGANIZATION_APPS}/github/check", cookies=cookies
+            )
+            assert granted.status_code == 200, granted.text
+            assert (await github_entry(client))["read_only"] is False
+            assert organization_apps.changes == [(TENANT_ZERO_ID, "github")] * 2
+
+            # Permissions a save would refuse are not stored by a check.
+            world.github.permissions = {"contents": "write"}
+            refused = await client.post(
+                f"{ORGANIZATION_APPS}/github/check", cookies=cookies
+            )
+            assert refused.status_code == 200, refused.text
+            assert refused.json()["ok"] is False
+        [row] = await _rows(session_factory)
+        assert row.settings["permissions"] == {
+            "contents": "write",
+            "pull_requests": "write",
+        }
+        assert row.updated_by == admin.id
+        assert organization_apps.changes == [(TENANT_ZERO_ID, "github")] * 2
+        # The save, then one event for the check that stored a change.
+        events = await _audit(session_factory)
+        assert [event.action for event in events] == [
+            OrganizationAuditAction.CONNECTOR_APP_SAVED
+        ] * 2
+        assert events[1].actor_user_id == admin.id
+        assert events[1].details["fields_changed"] == ["permissions"]
+
 
 class TestRemoving:
     async def test_removing_goes_back_to_the_servers_app(
@@ -343,7 +408,11 @@ class TestRemoving:
             after = await _google(client, cookies)
         assert during["app_source"] == "organization"
         assert removed.status_code == 200, removed.text
-        assert removed.json() == {"connected_members": 0, "workspaces": 0}
+        assert removed.json() == {
+            "connected_members": 0,
+            "workspaces": 0,
+            "agent_grants": 0,
+        }
         assert again.status_code == 404
         assert after["app_source"] == "server"
         assert after["configured"] is True
@@ -375,6 +444,8 @@ async def _connected(session_factory, name: str, tenant: str, client_id: str) ->
             external_identity=f"{name}@example.invalid",
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
             oauth_client_id=client_id,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 
@@ -411,7 +482,11 @@ class TestTheServersAppAlongside:
         [server] = [a for a in servers.json()["apps"] if a["slug"] == GOOGLE]
         assert server["stale_connections"] == 0
         assert (server["connected_members"], server["workspaces"]) == (1, 1)
-        assert impact.json() == {"connected_members": 1, "workspaces": 1}
+        assert impact.json() == {
+            "connected_members": 1,
+            "workspaces": 1,
+            "agent_grants": 0,
+        }
         [own] = [a for a in organizations.json()["apps"] if a["slug"] == GOOGLE]
         assert (own["connected_members"], own["workspaces"]) == (1, 1)
 

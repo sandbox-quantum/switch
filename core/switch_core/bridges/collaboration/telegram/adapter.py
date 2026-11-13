@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, Literal, NamedTuple
@@ -43,6 +44,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    CardRejectedError,
     ChannelNotBindable,
     MessagePartlySent,
     PlatformAdapter,
@@ -64,6 +66,8 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -71,6 +75,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -106,6 +111,7 @@ from switch_core.bridges.collaboration.telegram.install import (
     ALREADY_OUT,
     is_connect_press,
 )
+from switch_core.bridges.collaboration.telegram.ui_card import ui_spec_to_html
 from switch_core.observability.catalogue import BRIDGE_THROTTLE_HELD
 from switch_core.observability.metrics import metrics
 from switch_core.room_wide_mention import (
@@ -113,6 +119,14 @@ from switch_core.room_wide_mention import (
     defuse_mass_mention_words_in_prose,
 )
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import (
+    ANSWERER_NAME_MAX,
+    UI_POSITION_PREFIX,
+    ButtonProps,
+    LinkButtonProps,
+    UISpec,
+    card_buttons,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +165,12 @@ _MAX_CALLBACK_BYTES = 64
 # turn ids are, and the prefix is the only part of the payload this bridge can
 # make smaller.
 _INTERRUPT_PREFIX = "sx"
+
+# And what a press on an agent's card (`ui_spec`) hands back: the button's
+# position on the card (`card_buttons`). Its action and value can be longer
+# than the payload allows, so core reads them off the card the press is on.
+_UI_CARD_PREFIX = "su"
+_UI_CARD_ROW = 3
 
 # Bot API 9.4 gave an inline button a colour, and `danger` is the red one it
 # reserves for a destructive action. python-telegram-bot did not take the field
@@ -234,18 +254,36 @@ def _parse_interrupt(data: str) -> str | None:
     return turn_id
 
 
+def _settled_line(name: str, label: str) -> str:
+    return (
+        f"\n✅ {html.escape(name, quote=False)} chose {html.escape(label, quote=False)}"
+    )
+
+
+def _ui_card_keyboard(
+    groups: list[list[InlineKeyboardButton]],
+) -> InlineKeyboardMarkup | None:
+    rows = [
+        g[i : i + _UI_CARD_ROW] for g in groups for i in range(0, len(g), _UI_CARD_ROW)
+    ]
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
 def _press_action(data: str) -> tuple[str, str] | None:
     """The Switch action a press carries and what it names, or None if not ours.
 
-    Two keyboards arrive here and they name different things — a card's button
-    names the card, a stop names the turn — but they leave by the same door,
-    because what happens next is the same for both: hand the press to the
-    shared inbound path, then close the press on the presser's own client with
-    whatever came back.
+    Three keyboards arrive here and they name different things — a card's
+    button names the card, an agent card's button its position on the card, a
+    stop names the turn — but they leave by the same door, because what happens
+    next is the same for all: hand the press to the shared inbound path, then
+    close the press on the presser's own client with whatever came back.
     """
     turn_id = _parse_interrupt(data)
     if turn_id is not None:
         return INTERRUPT_ACTION, turn_id
+    prefix, separator, card_position = data.partition(":")
+    if prefix == _UI_CARD_PREFIX and separator:
+        return f"{UI_POSITION_PREFIX}{card_position}", ""
     press = _parse_callback(data)
     if press is None:
         return None
@@ -265,6 +303,30 @@ def _button_label(control: Control) -> str:
     if len(label) > _MAX_BUTTON_LABEL:
         label = label[: _MAX_BUTTON_LABEL - 1].rstrip() + "…"
     return f"{control.position}. {label}"
+
+
+def _prompt_keyboard(prompt: DirectPrompt) -> InlineKeyboardMarkup:
+    """A direct prompt's buttons: the numbers side by side, and the last
+    label, which declines, on a row of its own and red, so a thumb reaching
+    for a number cannot land on it."""
+    *numbers, decline = prompt.labels
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    text=label, callback_data=_callback_data(prompt.token, position)
+                )
+                for position, label in enumerate(numbers, start=1)
+            ],
+            [
+                InlineKeyboardButton(
+                    text=decline,
+                    callback_data=_callback_data(prompt.token, len(prompt.labels)),
+                    api_kwargs={"style": _DANGER_STYLE},
+                )
+            ],
+        ]
+    )
 
 
 # Switch's own in-room prefix, plus Telegram's native one.
@@ -1177,6 +1239,133 @@ class TelegramAdapter(PlatformAdapter):
         body = self._attribute(sender_name, agent.body_label, content)
         return await self._send_text(channel_id, body, thread_root_id)
 
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as one HTML message with its buttons as an inline keyboard.
+
+        The card replaces the body, as on Slack: the body repeats the card's
+        key facts for readers that cannot draw it, and the notification
+        preview starts with the agent's name and the card's title either way.
+
+        A card that does not fit one message, or that Telegram refuses, raises
+        `CardRejectedError` before anything is posted, so the caller sends
+        `fallback_text`.
+        """
+        text, groups = await self._ui_card(sender_name, spec)
+        # A card with Buttons gains a line naming who answered it.
+        answer = max(
+            (
+                len(_settled_line("&" * ANSWERER_NAME_MAX, b.label))
+                for b in card_buttons(spec)
+            ),
+            default=0,
+        )
+        if len(text) + answer > MAX_MESSAGE:
+            raise CardRejectedError(
+                f"The card is {len(text)} characters of Telegram HTML, and "
+                f"{answer} more kept for its answer, over {MAX_MESSAGE}"
+            )
+        positions = {b.id: i for i, b in enumerate(card_buttons(spec), 1)}
+        rows: list[list[InlineKeyboardButton]] = []
+        for group in groups:
+            row = []
+            for button in group:
+                if not isinstance(button, ButtonProps):
+                    row.append(InlineKeyboardButton(text=button.label, url=button.url))
+                    continue
+                style = button.style if button.style in ("primary", "danger") else None
+                row.append(
+                    InlineKeyboardButton(
+                        text=button.label,
+                        callback_data=f"{_UI_CARD_PREFIX}:{positions[button.id]}",
+                        api_kwargs={"style": style} if style else None,
+                    )
+                )
+            rows.append(row)
+        anchor = await self._anchor_kwargs(channel_id, thread_root_id)
+        try:
+            sent = await self._require_bot().send_message(
+                chat_id=self._chat_id(channel_id),
+                text=text,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=_ui_card_keyboard(rows),
+                **anchor,
+            )
+        except (BadRequest, Forbidden, ChatMigrated) as error:
+            raise CardRejectedError(str(error)) from error
+        except TelegramError as error:
+            # Not raised: the post may have landed, and a retry as text would
+            # then post the message twice.
+            logger.error(
+                "Failed to send a card to Telegram chat %s: %s", channel_id, error
+            )
+            return None
+        return self._ref(sent)
+
+    async def _ui_card(
+        self, sender_name: str, spec: UISpec
+    ) -> tuple[str, list[list[ButtonProps | LinkButtonProps]]]:
+        """The card's attributed HTML, and its buttons as one group per `Actions`."""
+        agent = await self.agent_rendering(sender_name)
+        card, groups = ui_spec_to_html(spec, self.translate_outbound)
+        text = self._attribute(
+            sender_name, agent.body_label, self.defuse_mass_mentions(card)
+        )
+        return text, groups
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Redraw the card from its room message with who chose what under it;
+        a card takes one answer, so only its link buttons stay."""
+        ref = interaction.message_ref
+        if ref is None:
+            logger.warning(
+                "Cannot mark the card press in %s as done: the press names no "
+                "message, so its buttons stay pressable",
+                interaction.channel_id,
+            )
+            return
+        card, groups = await self._ui_card(author, spec)
+        text = card + _settled_line(interaction.sender_display_name, label)
+        links = [
+            [
+                InlineKeyboardButton(text=b.label, url=b.url)
+                for b in group
+                if isinstance(b, LinkButtonProps)
+            ]
+            for group in groups
+        ]
+        chat_id, message_id = self._parse_message_ref(ref)
+        try:
+            await self._require_bot().edit_message_text(
+                chat_id=self._chat_id(chat_id or interaction.channel_id),
+                message_id=int(message_id),
+                text=self._clamp(text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=_ui_card_keyboard(links),
+            )
+        except TelegramError as error:
+            logger.error(
+                "Failed to mark the card press on Telegram message %s: %s", ref, error
+            )
+
     async def send_attachment(
         self,
         channel_id: str,
@@ -1361,6 +1550,84 @@ class TelegramAdapter(PlatformAdapter):
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
         return _STAND_IN_ACCOUNTS.get(external_user_id)
+
+    def direct_prompt_unavailable(self) -> str | None:
+        if self._shared:
+            return (
+                "The Switch Telegram app can't take an answer in a direct "
+                "message, so use the code instead."
+            )
+        if self._bot is None:
+            return "Switch's Telegram bot isn't connected right now, so use the code instead."
+        return None
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message one person in their private chat with the bot, whose id is
+        their own.
+
+        Each button carries the prompt's token and its position in the payload
+        a card's buttons carry, so `_handle_callback_query` reads a press on it
+        as it reads one on a card.
+
+        Telegram lets a bot message only someone who has started a chat with it
+        and not blocked it. Not sent at all from the shared app: the webhook
+        route finds an update's organisation by its chat, and a person's chat
+        with the bot belongs to none, so a press there would reach no bridge.
+        """
+        if self._shared:
+            raise DirectMessageUnavailable(
+                "The Switch Telegram app can't take an answer in a direct "
+                "message, so use the code instead."
+            )
+        bot = self._require_bot()
+        try:
+            sent = await bot.send_message(
+                chat_id=int(external_user_id),
+                text=self.translate_outbound(prompt.text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=_prompt_keyboard(prompt),
+            )
+        except (Forbidden, BadRequest) as refused:
+            if isinstance(refused, BadRequest) and (
+                "chat not found" not in str(refused).lower()
+            ):
+                raise
+            raise DirectMessageUnavailable(
+                f"Telegram only lets @{self._bot_username} message people who "
+                "have started a chat with it and haven't blocked it, so use the "
+                "code instead. To be messaged next time, open a chat with "
+                f"@{self._bot_username} from that account first."
+            ) from refused
+        return self._ref(sent)
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The private chat with the bot. Telegram links a message only in a
+        group or channel, not in a private chat."""
+        if not self._bot_username:
+            return None
+        return f"https://t.me/{self._bot_username}"
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        try:
+            chat_id, message_id = self._parse_message_ref(message_ref)
+            await self._require_bot().edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=self.translate_outbound(text),
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_markup=None,
+            )
+        except Exception as error:
+            logger.warning(
+                "Could not replace Telegram prompt %s: %s. It was answered: %s",
+                message_ref,
+                error,
+                text,
+            )
 
     async def admin_message(
         self,
@@ -2613,6 +2880,10 @@ class TelegramAdapter(PlatformAdapter):
                     channel_id=str(chat.id),
                     sender_id=str(user.id),
                     sender_name=name,
+                    sender_display_name=" ".join(
+                        part for part in (user.first_name, user.last_name) if part
+                    )
+                    or name,
                     action_id=action_id,
                     value=value,
                     message_ref=self._ref(message),
@@ -2759,6 +3030,11 @@ class TelegramAdapter(PlatformAdapter):
             await self._handle_new_members(
                 new_members, chat_id, channel_type, channel_name
             )
+            return
+
+        left = getattr(message, "left_chat_member", None)
+        if left is not None:
+            await self._handle_member_left(left, author, chat_id)
             return
 
         if author is None:
@@ -2969,6 +3245,70 @@ class TelegramAdapter(PlatformAdapter):
                     channel_name=channel_name,
                 )
             )
+
+    #: Pause between membership checks, well inside Telegram's limits.
+    _MEMBER_CHECK_PAUSE = 0.1
+
+    async def members_gone(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> set[str] | None:
+        """Who of these has left the group, or been removed, by asking
+        Telegram about each person.
+
+        Telegram cannot list a group's members, but answers for one person,
+        which catches anyone who left while Switch was not running. Its docs
+        only promise that answer to a bot that administers the group; where
+        it is refused, nobody is counted as gone.
+        """
+        if self._bot is None:
+            return None
+        gone: set[str] = set()
+        for index, external_user_id in enumerate(external_user_ids):
+            if index:
+                await asyncio.sleep(self._MEMBER_CHECK_PAUSE)
+            try:
+                member = await self._bot.get_chat_member(
+                    chat_id=self._chat_id(channel_id), user_id=int(external_user_id)
+                )
+            except Exception:
+                logger.debug(
+                    "Could not read %s's membership of Telegram chat %s",
+                    external_user_id,
+                    channel_id,
+                    exc_info=True,
+                )
+                continue
+            if _no_longer_a_member(member):
+                gone.add(external_user_id)
+        return gone
+
+    async def _handle_member_left(self, member: Any, author: Any, chat_id: str) -> None:
+        """Someone left the group, or was taken out of it.
+
+        Telegram says so with a service message naming who went
+        (`left_chat_member`), sent by whoever removed them, or by the person
+        themselves when they left. It reaches the bot wherever it sees the
+        chat's messages, which is the only way Switch hears of a departure
+        here: Telegram cannot list a group's members, and tells only an admin
+        bot of other people's status changes.
+
+        The bot itself leaving is told by `my_chat_member`, not here.
+        """
+        if member.id == self._bot_user_id:
+            return
+        removed_by = (
+            self._display_name(author)
+            if author is not None and author.id != member.id
+            else None
+        )
+        await self._user_left(
+            InboundUserLeave(
+                channel_id=chat_id,
+                external_user_id=str(member.id),
+                external_username=self._display_name(member),
+                removed_by_name=removed_by,
+            )
+        )
 
     async def _handle_start(
         self, text: str, chat_id: str, channel_type: ChannelType
@@ -3732,3 +4072,14 @@ class TelegramAdapter(PlatformAdapter):
                 "Failed to send message to Telegram chat %s: %s", channel_id, e
             )
             return None
+
+
+def _no_longer_a_member(member: Any) -> bool:
+    """Whether Telegram's answer for one person says they are out of the
+    group: they left, were removed, or are restricted and no longer in it.
+    A restricted person keeps the status `restricted` after leaving, and
+    only `is_member` says they went (Bot API, ChatMemberRestricted)."""
+    status = getattr(member, "status", None)
+    if status in ("left", "kicked"):
+        return True
+    return status == "restricted" and getattr(member, "is_member", True) is False

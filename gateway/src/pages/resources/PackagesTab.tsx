@@ -1,124 +1,81 @@
-import { Alert, Box, CircularProgress } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid";
-import { useEffect, useMemo, useState } from "react";
+import { Box } from "@mui/material";
+import { useMemo } from "react";
 import { useNavigate } from "react-router";
-import DataTable, { TableEmptyState } from "../../components/DataTable";
-import { AccessChip } from "../../components/AccessControls";
-import type { PackageDetail } from "../../data/api";
-import { usePackages } from "../../data/hooks";
-import ResourceFiltersBar from "./ResourceFiltersBar";
-import { formatDate } from "../../theme/format";
+import DataTable, {
+  type SelectFilter,
+  type TableColumn,
+  TableEmptyState,
+} from "../../components/DataTable";
+import { useAuth } from "../../data/AuthContext";
+import { type PackageDetail, loadPackages } from "../../data/api";
+import { useLoad } from "../workspace/useLoad";
+import {
+  ListBody,
+  accessColumn,
+  countColumn,
+  createdColumn,
+  descriptionColumn,
+  nameColumn,
+  ownerColumn,
+  resourceSearchText,
+  useRefetchOnRefresh,
+} from "./resourceList";
 
 interface Props {
   refreshKey: number;
 }
 
+const NOUN = { one: "package", other: "packages" };
+
+const SELECT_FILTERS: SelectFilter[] = [{ field: "owner_name", label: "Owner", allLabel: "All owners" }];
+
+const SEARCH = { label: "Search packages", text: resourceSearchText };
+
+const packagePath = (pkg: { id: string }) => `/resources/packages/${pkg.id}`;
+
 export default function PackagesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { data: pkgs, loading, error, refetch } = usePackages();
-  const [search, setSearch] = useState("");
-  const [ownerId, setOwnerId] = useState<string>("");
+  const { session } = useAuth();
+  const { data, error, loading, refetch } = useLoad(loadPackages);
+  useRefetchOnRefresh(refreshKey, refetch);
+  const rows = useMemo(() => data ?? [], [data]);
+  const workspace = session?.tenant?.name ?? "this workspace";
 
-  useEffect(() => {
-    refetch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
-
-  const owners = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of pkgs ?? []) m.set(p.owner_id, p.owner_name ?? p.owner_id);
-    return [...m.entries()].map(([id, name]) => ({ id, name }));
-  }, [pkgs]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (pkgs ?? []).filter((p) => {
-      if (ownerId && p.owner_id !== ownerId) return false;
-      if (q && !p.name.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [pkgs, search, ownerId]);
-
-  const columns = useMemo<GridColDef<PackageDetail>[]>(
+  const columns = useMemo<TableColumn<PackageDetail>[]>(
     () => [
-      { field: "name", headerName: "Name", flex: 1, minWidth: 180 },
-      { field: "description", headerName: "Description", flex: 2, minWidth: 280 },
-      {
-        field: "read_visibility",
-        headerName: "Access",
-        width: 110,
-        renderCell: ({ row }) => <AccessChip pair={row} />,
-      },
-      {
-        field: "owner_name",
-        headerName: "Owner",
-        width: 150,
-        renderCell: ({ value, row }) => value ?? row.owner_id,
-      },
-      {
-        field: "references_count",
-        headerName: "References",
-        width: 110,
-        type: "number",
-      },
-      {
-        field: "documents_count",
-        headerName: "Documents",
-        width: 110,
-        type: "number",
-      },
-      {
-        field: "attached_rooms_count",
-        headerName: "Rooms",
-        width: 90,
-        type: "number",
-      },
-      {
-        field: "created_at",
-        headerName: "Created",
-        width: 116,
-        valueFormatter: (value) => formatDate(value as string),
-      },
+      nameColumn<PackageDetail>(packagePath),
+      descriptionColumn(),
+      accessColumn(rows),
+      ownerColumn(rows),
+      countColumn("references_count", "References", 110),
+      countColumn("documents_count", "Documents", 110),
+      countColumn("attached_rooms_count", "Rooms", 90),
+      createdColumn(),
     ],
-    [],
+    [rows],
   );
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <ResourceFiltersBar
-        search={search}
-        onSearchChange={setSearch}
-        ownerId={ownerId}
-        onOwnerChange={setOwnerId}
-        owners={owners}
-      />
-
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
-      )}
-
-      {loading ? (
-        <CircularProgress />
-      ) : (
+      <ListBody what="packages" loaded={data !== null} error={error} loading={loading} onRetry={refetch}>
         <DataTable
-          rows={filtered}
+          rows={rows}
           columns={columns}
           fillHeight
+          noun={NOUN}
+          search={SEARCH}
+          selectFilters={SELECT_FILTERS}
+          initialSort={{ field: "created_at", sort: "desc" }}
           emptyState={
-            search || ownerId ? (
-              <TableEmptyState title="No packages match these filters">
-                Clear the search or owner to see every one.
-              </TableEmptyState>
-            ) : (
-              <TableEmptyState title="No packages yet">Create one to bundle references and documents for a room.</TableEmptyState>
-            )
+            <TableEmptyState title="No packages yet">
+              Yours and the public ones in {workspace} show here. Create one to bundle references and
+              documents for a room.
+            </TableEmptyState>
           }
-          onRowClick={(params) => navigate(`/resources/packages/${params.id}`)}
+          onRowClick={(params) => navigate(packagePath(params.row))}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />
-      )}
+      </ListBody>
     </Box>
   );
 }

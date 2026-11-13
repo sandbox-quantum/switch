@@ -3,8 +3,9 @@
  * displayed by the components: each app's state, the one sentence and button
  * that go with it, the order, which actions it offers, and the wording of
  * every dialog. Labels follow what Google and GitHub call things, so the
- * operator can copy values across. The gateway dashboard's page reads the
- * same rules from its own copy, until that page is retired.
+ * operator can copy values across. The gateway dashboard's Connectors page
+ * keeps its own copy of the same rules (`gateway/src/pages/connector-apps/
+ * connectorApps.ts`), so a change to one is made to the other.
  */
 import {
   redirectUris,
@@ -55,6 +56,7 @@ export interface SecretField {
 
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
+const GITLAB = 'gitlab';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -239,6 +241,20 @@ export function usedBy(app: ConnectorApp): string {
   return `Used by ${peopleIn(app)}`;
 }
 
+/** "Contents", "Contents and Pull requests", "A, B and C". */
+function joined(names: string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
+/** What a GitHub App short of the write permissions means; null for any other app. */
+export function readOnlySentence(
+  app: Pick<ConnectorApp, 'read_only' | 'lacks_write'>
+): string | null {
+  if (!app.read_only) return null;
+  return `Agents can read only: the App lacks ${joined(app.lacks_write)} write. Write grants are refused.`;
+}
+
 /** Google's choice of who may connect; it changes only the instructions. */
 export function asksWhoConnects(app: Pick<ConnectorApp, 'slug'>): boolean {
   return app.slug === GOOGLE;
@@ -398,12 +414,16 @@ export function setupInstructions(
       },
     ];
   const redirects = redirectUris(app);
-  return [
+  const steps = [
     redirectStep(
       `Register an OAuth client for Switch at ${app.name}, with ${redirects.length > 1 ? 'these redirect URIs' : 'this redirect URI'}:`,
       redirects
     ),
   ];
+  // A vendor refuses a sign-in that asks for a scope its app lacks.
+  if (app.scopes.length > 0)
+    steps.push({ text: 'Give it exactly these scopes:', copy: [], link: null, items: app.scopes });
+  return steps;
 }
 
 export const UPDATE_SECRET_NOTE = 'Nobody is disconnected.';
@@ -416,7 +436,7 @@ export function switchWarning(app: ConnectorApp, impact: ConnectorAppImpact): st
   if (app.kind === 'github_app')
     lines.push('They will also need to choose their repositories again.');
   lines.push(
-    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid for up to an hour.`
+    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid until they expire.`
   );
   return lines;
 }
@@ -438,6 +458,7 @@ const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
+  [GITLAB]: 'switchCore.gitlabClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
@@ -455,10 +476,7 @@ export function moveChecklist(app: ConnectorApp): ChecklistItem[] {
 
 export const sentBackTo = (publicUrl: string): string => `People are sent back to ${publicUrl}.`;
 
-/**
- * Whether an app can be set up or changed here now: a vendor that sends people
- * back to the server needs the public URL first.
- */
+/** Something the operator confirms is so, and what goes wrong when it isn't. */
 export interface Confirmation {
   label: string;
   /** What goes wrong when it isn't so. */
@@ -474,6 +492,11 @@ export function confirmBeforeCheck(app: Pick<ConnectorApp, 'slug'>): Confirmatio
   };
 }
 
+/**
+ * Whether the app can't be set up or changed here now: a vendor that sends
+ * people back to the server needs the public URL first, and the server may
+ * say why it can't have the app at all (`setup_blocked`).
+ */
 export function changeBlocked(app: ConnectorApp, publicUrl: string | null): boolean {
   return (publicUrl === null && app.needs_public_url) || app.setup_blocked !== null;
 }
@@ -498,14 +521,15 @@ export const STATE_BADGE = {
 } as const satisfies Record<CardState, string>;
 
 /**
- * The tile's one line: what needs doing, or who it serves. The long account
- * of where a configured app comes from is the profile's.
+ * The tile's one line: what needs doing, that agents can only read through
+ * it, or who it serves. The long account of where a configured app comes
+ * from is the profile's.
  */
 export function tileStanding(app: ConnectorApp, checkFailure: string | null): string {
   const needs = attention(app, checkFailure);
   if (needs !== null) return needs.sentence;
   if (cardState(app, checkFailure) === 'not_set_up') return notSetUpSentence(app);
-  return usedBy(app);
+  return readOnlySentence(app) ?? usedBy(app);
 }
 
 /**

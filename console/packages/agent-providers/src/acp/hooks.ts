@@ -1,4 +1,9 @@
-import type { ProviderCapabilities, RuntimeMode, StdioMcpServerSpec } from '../adapter';
+import type {
+  McpServerSpec,
+  ProviderCapabilities,
+  RuntimeMode,
+  StdioMcpServerSpec,
+} from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -7,9 +12,10 @@ import type {
   UserInputQuestion,
 } from '../events';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
-import type { ProviderLogger } from '../transport/stdio-json-rpc';
+import type { ProviderLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 import type {
   AcpAgentCapabilities,
+  AcpConfigOption,
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
@@ -29,6 +35,8 @@ export interface AcpLaunch {
    * prompt, say).
    */
   rejectOutputLine?: (line: string) => string | undefined;
+  /** Removes what `launch` prepared for this process, once the process is gone. */
+  cleanup?: () => Promise<void>;
 }
 
 export interface AcpLaunchInput {
@@ -43,6 +51,12 @@ export interface AcpLaunchInput {
   runtimeMode?: RuntimeMode;
   /** The native id of the conversation to resume, for hooks with `resumeOnLaunch`. */
   resumeSessionId?: string;
+  /**
+   * The session's MCP servers; none for a sign-in check. Only a provider with
+   * `mcpServersAtLaunch` uses them here: every other agent is given them in
+   * `session/new`.
+   */
+  mcpServers?: Record<string, McpServerSpec>;
 }
 
 /**
@@ -110,6 +124,13 @@ export interface AcpProviderHooks {
   capabilities: ProviderCapabilities;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
+  /**
+   * The agent ignores the MCP servers a client sends in `session/new` and
+   * reads its own configuration instead, so `launch` writes the session's
+   * servers there. `session/new` is then sent an empty list, and the
+   * MCP-over-HTTP check is skipped: the agent's own MCP client connects.
+   */
+  mcpServersAtLaunch?: boolean;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
@@ -205,6 +226,21 @@ export interface AcpProviderHooks {
    */
   sessionMode?(runtimeMode: RuntimeMode, modes: AcpSessionModes | undefined): string | undefined;
   /**
+   * Session config options to set for Switch's runtime mode, for an agent
+   * whose permission level is a config option rather than a mode (Junie's
+   * brave mode). Given the options the new session offers; each value must be
+   * one its option offers, or the session does not start.
+   */
+  sessionConfigOptions?(
+    runtimeMode: RuntimeMode,
+    options: AcpConfigOption[]
+  ): Record<string, string>;
+  /**
+   * Permission option kinds that outlive the session on this agent (Junie's
+   * `allow_always` writes its allowlist for every later run). Never offered.
+   */
+  persistentPermissionKinds?: readonly string[];
+  /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
    * without it starts a fresh conversation with `legacyMessage`.
@@ -246,6 +282,12 @@ export interface AcpProviderHooks {
    */
   toolTitle?(toolCall: AcpToolCall): string | undefined;
   /**
+   * The ACP `kind` of a tool call, for an agent that doesn't label its tools
+   * (Cline marks every one `other`). Consulted before the call's own `kind`;
+   * it decides which approval a call needs and the card it shows as.
+   */
+  toolKind?(toolCall: AcpToolCall): string | undefined;
+  /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.
    */
@@ -269,10 +311,15 @@ export interface AcpSignedInQuery {
   request<T>(method: string, params: unknown): Promise<T>;
 }
 
+/** The agent's connection, for a sign-in check that must ask it more than `initialize`. */
+export type AcpConnection = Pick<StdioJsonRpcClient, 'request' | 'onNotification'>;
+
 export interface AcpSignInInput extends SignInCheckInput {
   handshake(): Promise<AcpInitializeResult>;
   /** A request to the process `handshake` started; fails when it has not run. */
   request<T>(method: string, params: unknown): Promise<T>;
+  /** The connection `handshake` opened; throws before it has. */
+  connection(): AcpConnection;
 }
 
 export interface AcpAdapterOptions {

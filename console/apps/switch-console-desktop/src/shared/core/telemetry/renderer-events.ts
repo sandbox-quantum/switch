@@ -1,5 +1,4 @@
 import type { CommandId } from '@shared/commands';
-import type { OnboardingStepId } from '@shared/core/onboarding/checklist';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -40,12 +39,6 @@ export type RendererTelemetryEvents = {
    * running window, because they fail differently.
    */
   deeplink_opened: { resolved: boolean; cold_start: boolean };
-  /** Someone began a step of the first-run checklist. */
-  onboarding_step_started: { step_id: OnboardingStepId };
-  /** The checklist was dismissed without finishing it. */
-  onboarding_checklist_dismissed: Record<never, never>;
-  /** Every step of the checklist is done. */
-  onboarding_completed: Record<never, never>;
   /**
    * The add-server wizard reached a step. Where people stop is the question.
    *
@@ -81,7 +74,6 @@ export type RendererTelemetryEvents = {
       | 'install'
       | 'sign_in'
       | 'check_again'
-      | 'created'
       | 'create_failed'
       | 'opened_existing'
       | 'intro_opened'
@@ -98,11 +90,13 @@ export type RendererTelemetryEvents = {
       | 'kiro'
       | 'mistral-vibe'
       | 'goose'
+      | 'qwen'
+      | 'droid'
+      | 'cline'
+      | 'junie'
       | 'openhands'
       | 'none';
   };
-  /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */
-  buddy_message_sent: { nth: '1' | '2' | '3' | '4' | '5' | '6+' };
   /** A screen failed and the error boundary caught it. */
   renderer_crashed: Record<never, never>;
 };

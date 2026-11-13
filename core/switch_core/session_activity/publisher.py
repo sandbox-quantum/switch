@@ -75,6 +75,7 @@ from switch_core.db.models import (
     BridgeMessageMap,
     Message,
     Room,
+    SteeredMessageMark,
     TurnStatusPost,
 )
 from switch_core.db.session_scope import tenant_session
@@ -85,6 +86,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_activity_post_store import (
     ApprovalRequestPostStore,
+    SteeredMessageMarkStore,
     TurnStatusPostStore,
 )
 from switch_core.db.stores.session_activity_store import (
@@ -264,6 +266,7 @@ class AgentSessionActivityPublisher:
         self._activity = AgentSessionActivityStore()
         self._card_posts = ApprovalRequestPostStore()
         self._turn_posts = TurnStatusPostStore()
+        self._steered_marks_store = SteeredMessageMarkStore()
         self._lanes: tuple[deque[_Key], ...] = (deque(), deque(), deque())
         self._pending: dict[_Key, int] = {}
         self._wake = asyncio.Event()
@@ -561,6 +564,7 @@ class AgentSessionActivityPublisher:
                 )
             ).all()
             marked = await self._turn_posts.marked(db, self._bridge_id)
+            steered = await self._steered_marks_store.marked(db, self._bridge_id)
         for agent_id, session_id, request_id in requests:
             self._enqueue(("approval", agent_id, session_id, request_id), _SOON)
         for agent_id, session_id, turn_id, changed, running, drawn_at in turns:
@@ -570,6 +574,8 @@ class AgentSessionActivityPublisher:
                 self._enqueue(("turn", agent_id, session_id, turn_id), _SOON)
         for post in marked:
             self._enqueue(("turn", post.agent_id, post.session_id, post.turn_id), _SOON)
+        for mark in steered:
+            self._enqueue(("turn", mark.agent_id, mark.session_id, mark.turn_id), _SOON)
 
     # ── Where a room's publications go ────────────────────────────────────────
 
@@ -743,6 +749,16 @@ class AgentSessionActivityPublisher:
                 return
             decided_by, responder = await answerer_of(db, row, self._bridge_id)
             turn_row = await self._turn_row(db, agent_id, session_id, row.turn_id)
+            if (
+                post is None
+                and _known_root_turn(turn_row)
+                and not self._adapter.broadcasts_thread_replies
+            ):
+                # Asked in the channel, and this platform cannot show a
+                # threaded card there as well: the card belongs where the
+                # question was, not in a thread whose answers are the only
+                # ones it would hear.
+                target = replace(target, thread_ref=None)
             online = self._agent_online(agent_id)
             asking = post is None and row.state == "open"
             recipient = (
@@ -1157,6 +1173,13 @@ class AgentSessionActivityPublisher:
                 await self._platform_ref(db, target.channel_id, view.row.message_id)
                 or target.thread_ref
             )
+            steered_refs = {
+                message_id: await self._platform_ref(db, target.channel_id, message_id)
+                for message_id in view.steered_messages
+            }
+            steered_marks = await self._steered_marks_store.of_turn(
+                db, self._bridge_id, agent_id, session_id, turn_id
+            )
             post = await self._turn_posts.get(
                 db, self._bridge_id, agent_id, session_id, turn_id, for_update=False
             )
@@ -1216,6 +1239,7 @@ class AgentSessionActivityPublisher:
         else:
             await self._redraw_turn(key, post, view, target, content, state, drawn)
             await self._marks(key, post, view, target, waiting_behind=bool(unended))
+        await self._steered_marks(key, view, target, steered_refs, steered_marks)
         if post is not None:
             await self._attention(post, view, target, error_summary, recipient, drawn)
         if post is not None and not view.ended:
@@ -1558,6 +1582,130 @@ class AgentSessionActivityPublisher:
             self._unsure_marks.add(key)
         else:
             self._unsure_marks.discard(key)
+
+    async def _steered_marks(
+        self,
+        key: _Key,
+        view: TurnView,
+        target: _Target,
+        refs: dict[str, str | None],
+        stored: list[SteeredMessageMark],
+    ) -> None:
+        """Put the working marker on each message steered into the turn while
+        it runs, and take it off when the turn ends.
+
+        A steered message has no turn of its own to carry a marker, so without
+        this a person who corrected the agent mid-turn would see nothing on
+        their message. Recorded before the platform is asked, as `_marks` does.
+        """
+        if not self._adapter.supports_activity_reactions:
+            return
+        held = {mark.message_id: mark for mark in stored}
+        if view.ended:
+            for mark in held.values():
+                if mark.marked and not await self._release_steered_mark(
+                    mark, target.agent_name
+                ):
+                    self._retry_later(key)
+            return
+        for message_id, ref in refs.items():
+            existing = held.get(message_id)
+            # Not on the platform yet: the next change to the turn tries again.
+            if ref is None or (existing is not None and existing.marked):
+                continue
+            mark = SteeredMessageMark(
+                tenant_id=self._tenant_id,
+                bridge_id=self._bridge_id,
+                agent_id=view.row.agent_id,
+                session_id=view.row.session_id,
+                turn_id=view.turn.turn_id,
+                message_id=message_id,
+                external_channel_id=target.channel_id,
+                reaction_message_ref=ref,
+                marked=True,
+            )
+            await self._record_steered_mark(mark)
+            try:
+                await self._adapter.mark_activity(
+                    target.channel_id,
+                    ref,
+                    agent_name=target.agent_name,
+                    mark="working",
+                    on=True,
+                    force=True,
+                )
+            except ActivityMarkRefused as refusal:
+                logger.warning("%s The steered message goes without the mark.", refusal)
+                mark.marked = False
+                await self._record_steered_mark(mark)
+            except Exception:
+                logger.warning(
+                    "Could not add the working reaction on steered message %s in %s; "
+                    "it is taken off with the turn either way.",
+                    ref,
+                    target.channel_id,
+                    exc_info=True,
+                )
+
+    async def _release_steered_mark(
+        self, mark: SteeredMessageMark, agent_name: str
+    ) -> bool:
+        """Take a steered message's marker off, unless another turn still holds it.
+
+        False when the platform could not be asked, so it is tried again.
+        """
+        async with tenant_session(self._sessions, self._tenant_id) as db:
+            probe = TurnStatusPost(
+                bridge_id=mark.bridge_id,
+                agent_id=mark.agent_id,
+                session_id=mark.session_id,
+                turn_id=mark.turn_id,
+                external_channel_id=mark.external_channel_id,
+                reaction_message_ref=mark.reaction_message_ref,
+            )
+            per_agent = self._adapter.activity_reactions_per_agent
+            turns = await self._turn_posts.other_holders(
+                db, probe, "working", same_agent=per_agent
+            )
+            others = [
+                other
+                for other in await self._steered_marks_store.holders(
+                    db,
+                    mark.bridge_id,
+                    mark.external_channel_id,
+                    mark.reaction_message_ref,
+                )
+                if (other.agent_id, other.session_id, other.turn_id)
+                != (mark.agent_id, mark.session_id, mark.turn_id)
+                and (not per_agent or other.agent_id == mark.agent_id)
+            ]
+        if not turns and not others:
+            try:
+                await self._adapter.mark_activity(
+                    mark.external_channel_id,
+                    mark.reaction_message_ref,
+                    agent_name=agent_name,
+                    mark="working",
+                    on=False,
+                    force=True,
+                )
+            except ActivityMarkRefused as refusal:
+                logger.error("%s The working marker may stay on the message.", refusal)
+            except Exception:
+                logger.warning(
+                    "Could not remove the working reaction on steered message %s in %s.",
+                    mark.reaction_message_ref,
+                    mark.external_channel_id,
+                    exc_info=True,
+                )
+                return False
+        mark.marked = False
+        await self._record_steered_mark(mark)
+        return True
+
+    async def _record_steered_mark(self, mark: SteeredMessageMark) -> None:
+        async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
+            await self._steered_marks_store.record(db, mark)
 
     async def _release_mark(self, post: TurnStatusPost, agent_name: str) -> bool:
         """Take this turn's marker off, unless another turn still holds the same one.

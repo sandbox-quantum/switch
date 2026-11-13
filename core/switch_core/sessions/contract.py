@@ -117,11 +117,15 @@ class Item(_Model):
     turn_id: Id
     revision: Counter
     kind: Literal["user-message", "assistant-message", "tool-activity"]
+    subagent: bool = False
     status: Literal["in-progress", "completed", "failed", "declined"]
     title: str
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    # For a user message sent while another turn ran: "steered" into that
+    # turn, or "queued" behind it. None for every other item.
+    delivery: Literal["steered", "queued"] | None = None
 
 
 class ApprovalOption(_Model):
@@ -252,6 +256,12 @@ class TurnUpsert(_Model):
 
 
 TURN_ENDED = frozenset({"completed", "interrupted", "error"})
+
+# The text Switch gives a subagent it settles because the agent's session went
+# away while the subagent was still running, so nothing said how it ended.
+ORPHANED_SUBAGENT_TEXT = (
+    "Ended by Switch: the agent's session went away before this subagent finished."
+)
 
 
 class ItemUpsert(_Model):

@@ -15,6 +15,7 @@ import {
   moveChecklist,
   peopleIn,
   primaryAction,
+  readOnlySentence,
   removeWarning,
   secretSummary,
   sentBackTo,
@@ -54,6 +55,8 @@ function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
     needs_public_url: true,
     scopes: [],
     setup_blocked: null,
+    read_only: false,
+    lacks_write: [],
     install_url: null,
     updated_by_name: 'Ada',
     updated_at: '2026-10-15T10:00:00Z',
@@ -144,7 +147,7 @@ describe('card state', () => {
 
 describe('set-up blocked by the server', () => {
   const BLOCKED =
-    'GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.';
+    'GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http one (localhost, 127.0.0.1 or ::1), to send people back to Switch.';
 
   it("is the card's one sentence, with Set up as the fix", () => {
     const github = {
@@ -254,7 +257,7 @@ describe('wording', () => {
   it("warns before switching apps, GitHub's repositories included", () => {
     expect(switchWarning(app(), { connected_members: 12, workspaces: 3 })).toEqual([
       'Everyone connected through the current app (12 people in 3 workspaces) will need to reconnect, and their agents lose Google Workspace until they do.',
-      "If the old app's secret leaked, also delete it at Google: tokens already handed to agents stay valid for up to an hour.",
+      "If the old app's secret leaked, also delete it at Google: tokens already handed to agents stay valid until they expire.",
     ]);
     expect(switchWarning(GITHUB, { connected_members: 2, workspaces: 1 })).toContain(
       'They will also need to choose their repositories again.'
@@ -392,6 +395,20 @@ describe('Airtable, and an app that sends people back to Switch Console', () => 
     expect(texts.at(-1)).toMatch(/support email, privacy policy URL and terms of service URL/);
   });
 
+  it("lists the scopes to give another vendor's app, and none when it asks for none", () => {
+    const scopes = ['mcp', 'read_api', 'read_user', 'api'];
+    const scoped = app({ ...AIRTABLE, slug: 'example', name: 'Example', scopes });
+    const steps = setupInstructions(scoped, 'internal', PUBLIC_URL);
+    expect(steps.map((s) => s.text)).toEqual([
+      'Register an OAuth client for Switch at Example, with this redirect URI:',
+      'Give it exactly these scopes:',
+    ]);
+    expect(steps[1]!.items).toEqual(scopes);
+    expect(setupInstructions(app({ ...scoped, scopes: [] }), 'internal', PUBLIC_URL)).toHaveLength(
+      1
+    );
+  });
+
   it('an app that sends people back to Switch Console needs no public URL, and raises no banner', () => {
     expect(changeBlocked(LOOPBACK, null)).toBe(false);
     expect(changeBlocked(NONE, null)).toBe(true);
@@ -415,6 +432,19 @@ describe('Airtable, and an app that sends people back to Switch Console', () => 
   it("names Airtable's Helm value when moving off configuration", () => {
     expect(moveChecklist(app({ ...AIRTABLE, source: 'configuration' }))[1]!.text).toBe(
       "Remove AIRTABLE_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.airtableClientSecret."
+    );
+  });
+
+  it("names GitLab's Helm value when moving off configuration", () => {
+    const gitlab = app({
+      ...AIRTABLE,
+      slug: 'gitlab',
+      name: 'GitLab',
+      source: 'configuration',
+      configuration_variables: ['GITLAB_CLIENT_CONFIG_PATH'],
+    });
+    expect(moveChecklist(gitlab)[1]!.text).toBe(
+      "Remove GITLAB_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.gitlabClientSecret."
     );
   });
 
@@ -460,6 +490,35 @@ describe('a tile', () => {
     // Checking and moving off configuration are the profile's.
     expect(tileAction(app(), null)).toBeNull();
     expect(tileAction(CONFIGURED, null)).toBeNull();
+  });
+});
+
+describe('a GitHub App that lets agents read only', () => {
+  const READ_ONLY = app({ ...GITHUB, read_only: true, lacks_write: ['Contents', 'Pull requests'] });
+
+  it('names what it lacks to write, and that write grants are refused', () => {
+    expect(readOnlySentence(READ_ONLY)).toBe(
+      'Agents can read only: the App lacks Contents and Pull requests write. Write grants are refused.'
+    );
+    expect(readOnlySentence(app({ ...GITHUB, read_only: true, lacks_write: ['Contents'] }))).toBe(
+      'Agents can read only: the App lacks Contents write. Write grants are refused.'
+    );
+    expect(readOnlySentence(GITHUB)).toBeNull();
+  });
+
+  it('says so on its tile, which is still ready: the operator chose it', () => {
+    expect(tileStanding(READ_ONLY, null)).toBe(readOnlySentence(READ_ONLY));
+    expect(cardState(READ_ONLY, null)).toBe('ready');
+    // What needs doing comes first.
+    expect(tileStanding(READ_ONLY, 'GitHub refused the key.')).toBe('GitHub refused the key.');
+  });
+
+  it('reads a server older than this as one whose App can write', () => {
+    const { read_only, lacks_write, ...older } = READ_ONLY;
+    void read_only;
+    void lacks_write;
+    const parsed = connectorAppSchema.parse(older);
+    expect([parsed.read_only, parsed.lacks_write]).toEqual([false, []]);
   });
 });
 

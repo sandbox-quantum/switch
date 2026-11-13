@@ -37,6 +37,9 @@ export const roomMessageSchema = z.object({
       .enum(['admin', 'member', 'owner'])
       .nullish()
       .transform((role) => (role === 'owner' ? 'admin' : role)),
+    // The agent's setting for messages sent while it works: absent (a server
+    // from before steering) or a value a newer server adds reads as queue.
+    mid_turn_delivery: z.enum(['steer', 'queue']).nullish().catch('queue'),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
     routed: z.boolean().nullish(),
@@ -207,6 +210,13 @@ export function roomCommand(input: {
    * opening words (`opening_message`), if any, are told.
    */
   firstOfConversation: boolean;
+  /**
+   * The session's provider can take a message into its running turn. With
+   * the agent's setting at "steer", the message asks to be steered: it joins
+   * whatever turn is running when the session takes it, whoever sent it and
+   * from wherever.
+   */
+  canSteer: boolean;
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -280,6 +290,22 @@ export function roomCommand(input: {
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: {
+      type: 'message.send',
+      text,
+      attachments,
+      delivery: input.canSteer && payload.mid_turn_delivery === 'steer' ? 'steer' : 'queue',
+    },
   };
+}
+
+/**
+ * What the person wrote, out of the prompt `roomCommand` built around it: the
+ * text between its message markers. Null for text that is not a room prompt,
+ * such as a message typed in the session itself.
+ */
+export function roomMessageWords(text: string): string | null {
+  const found =
+    /BEGIN SWITCH MESSAGE ([0-9a-f]{16})\n([\s\S]*?)\nEND SWITCH MESSAGE \1(?:\n|$)/.exec(text);
+  return found ? found[2]! : null;
 }

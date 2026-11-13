@@ -15,6 +15,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.chats.service import ChatError
 from switch_core.db.models import Agent, Room
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -32,6 +33,7 @@ def _protocol(chats: _Harness) -> SimpleNamespace:
         agent_store=AgentStore(),
         user_store=UserStore(),
         room_store=RoomStore(),
+        external_user_store=ExternalUserStore(),
         room_group_store=RoomGroupStore(),
         room_service=chats.room_service,
         client_lifecycle=chats.lifecycle,

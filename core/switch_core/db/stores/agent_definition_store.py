@@ -25,6 +25,18 @@ class Placement:
     controller_revoked_at: datetime | None
 
 
+@dataclass(frozen=True)
+class PlacedDevice:
+    """The device (agent controller) a managed agent is placed on, as a list
+    of agents shows it: its name, who owns it, and whether it was removed."""
+
+    agent_id: str
+    controller_id: str
+    name: str
+    owner_id: str
+    revoked: bool
+
+
 def _placement_hash() -> ColumnElement[int]:
     """What a binding is made of (`management/bindings.py`), so a fingerprint
     of it changes exactly when some binding would."""
@@ -164,6 +176,33 @@ class AgentDefinitionStore:
             for agent_id, controller_id, desired_state, name, revoked_at, _, _ in rows
         ]
         return placements, (int(rows[0][5]), int(rows[0][6]))
+
+    async def devices(
+        self, session: AsyncSession, tenant_id: str
+    ) -> dict[str, PlacedDevice]:
+        """The device each placed agent is on, keyed by agent id, in one
+        statement. An agent placed nowhere has no key."""
+        result = await session.execute(
+            select(
+                AgentDefinition.agent_id,
+                AgentController.id,
+                AgentController.name,
+                AgentController.owner_id,
+                AgentController.revoked_at,
+            )
+            .join(AgentController, _placed_on())
+            .where(*_placed_in(tenant_id))
+        )
+        return {
+            agent_id: PlacedDevice(
+                agent_id=agent_id,
+                controller_id=controller_id,
+                name=name,
+                owner_id=owner_id,
+                revoked=revoked_at is not None,
+            )
+            for agent_id, controller_id, name, owner_id, revoked_at in result.all()
+        }
 
     async def placements_fingerprint(
         self, session: AsyncSession, tenant_id: str

@@ -43,11 +43,13 @@ const item = z.strictObject({
   turnId: id,
   revision,
   kind: z.enum(['user-message', 'assistant-message', 'tool-activity']),
+  subagent: z.boolean().optional(),
   status: z.enum(['in-progress', 'completed', 'failed', 'declined']),
   title: z.string(),
   text: z.string(),
   attachments: z.array(attachmentSchema),
   origin: origin.nullable(),
+  delivery: z.enum(['steered', 'queued']).optional(),
 });
 const option = z.strictObject({
   optionId: id,

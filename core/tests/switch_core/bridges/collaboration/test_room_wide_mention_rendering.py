@@ -34,6 +34,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.webex.adapter import (
+    WebexAdapter,
+    WebexConnectionConfig,
+)
 from switch_core.room_wide_mention import room_wide_mention_content
 from switch_core.transport import InboundMessage, RoomRef
 from tests.switch_core.bridges.collaboration.outbound_fakes import (
@@ -82,12 +86,17 @@ def _telegram() -> TelegramAdapter:
     )
 
 
+def _webex() -> WebexAdapter:
+    return WebexAdapter(config=WebexConnectionConfig(bot_token="token"))
+
+
 ADAPTERS = {
     "slack": _slack,
     "mattermost": _mattermost,
     "discord": _discord,
     "teams": _teams,
     "telegram": _telegram,
+    "webex": _webex,
 }
 
 
@@ -106,6 +115,8 @@ ADAPTERS = {
         # Every member is notified of every message anyway, so an inert token
         # says who it was for without linking to a public `@everyone` handle.
         ("telegram", f"@{ZWSP}everyone deploy at five"),
+        # Webex's own `<@all>`, the one mention markup a body may not carry.
+        ("webex", "<@all> deploy at five"),
     ],
 )
 def test_a_marked_message_opens_with_the_platforms_own_mention(
@@ -123,6 +134,7 @@ def test_a_marked_message_opens_with_the_platforms_own_mention(
         ("discord", True),
         ("teams", False),
         ("telegram", True),
+        ("webex", True),
     ],
 )
 def test_what_each_platform_reports_back(platform: str, notifies: bool) -> None:

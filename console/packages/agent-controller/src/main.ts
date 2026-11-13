@@ -10,10 +10,12 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
-  SESSION_STARTED_KIND,
-  type SessionStartedNotice,
 } from '@switch-console/agent-providers';
-import { withWindowsAgyBinDir, withWindowsGitBashDir } from '@switch-console/plugins/agents';
+import {
+  withWindowsAgyBinDir,
+  withWindowsCodexBinDir,
+  withWindowsGitBashDir,
+} from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -400,7 +402,10 @@ function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
     if (process.platform === 'win32') {
       process.env.PATH = withWindowsGitBashDir(
-        withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+        withWindowsCodexBinDir(
+          withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+          process.env.LOCALAPPDATA
+        ),
         {
           localAppData: process.env.LOCALAPPDATA,
           programFiles: process.env.ProgramFiles,
@@ -671,19 +676,6 @@ async function runCommand(args: string[]): Promise<number> {
         rechecks,
         refreshPath,
         providerSeed,
-        // Only Switch Console's own controller has a parent listening on IPC.
-        sessionStarted: (started) => {
-          if (!process.send || !process.connected) return;
-          const notice: SessionStartedNotice = { kind: SESSION_STARTED_KIND, ...started };
-          // With a callback, a channel that closed meanwhile is reported here
-          // rather than as an `error` event on the process, which nothing handles.
-          process.send(notice, undefined, undefined, (error) => {
-            if (error)
-              log.warn('Could not tell Switch Console a session started', {
-                error: errorMessage(error),
-              });
-          });
-        },
         tools: () => toolStatuses(process.env.PATH, process.platform, cliToolsBase()),
         fetch,
         openWebSocket: nodeWebSocket,

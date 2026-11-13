@@ -329,6 +329,9 @@ it('is signed in when the settings its sessions start from name a model, read wi
       env,
       handshake,
       request: handshake,
+      connection: () => {
+        throw new Error('the CLI is never run');
+      },
     });
   const home = await mkdtemp(join(tmpdir(), 'openhands-'));
   const persisted = join(home, 'persisted');

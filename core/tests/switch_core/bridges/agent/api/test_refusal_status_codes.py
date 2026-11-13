@@ -25,6 +25,7 @@ from switch_core.bridges.agent.app import log_http_exceptions, log_validation_er
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.room_invites import NOT_IN_ROOM_REFUSAL
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_public_room,
     _make_user,
@@ -91,7 +92,7 @@ async def test_a_refused_invite_is_403(
     )
 
     assert resp.status_code == 403
-    assert resp.json() == {"detail": "Not authorized to change this room's membership"}
+    assert resp.json() == {"detail": NOT_IN_ROOM_REFUSAL}
 
 
 async def test_a_non_member_looking_up_a_room_is_403(

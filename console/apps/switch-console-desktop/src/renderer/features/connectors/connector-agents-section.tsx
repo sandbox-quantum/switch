@@ -43,8 +43,11 @@ import {
   addableAgents,
   agentsSummary,
   agentsUnlistedText,
+  noAddableAgentsText,
   noAgentsText,
   offersAddAgent,
+  staleGrantsText,
+  usesService,
 } from './grant-agents';
 
 /**
@@ -79,7 +82,8 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
   const remote = useWorkspaceAgents(workspaceId);
   const iconFor = (agentId: string) =>
     remote.data?.find((agent) => agent.id === agentId)?.iconUrl ?? null;
-  const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
+  const usedBy = agents.data?.filter(usesService) ?? [];
+  const stale = agents.data?.filter((agent) => agent.granted && !usesService(agent)) ?? [];
   const { navigate } = useNavigate();
   const managed = useManagedAgents(serverId);
   const local = agentsStore.agentsInWorkspace(workspaceId);
@@ -214,6 +218,14 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
           })}
         </div>
       )}
+      {stale.length > 0 && (
+        <p className="text-xs text-foreground-muted">
+          {staleGrantsText(
+            stale.map((agent) => agent.name),
+            name
+          )}
+        </p>
+      )}
       {removal.error && (
         <p role="alert" className="text-xs text-destructive">
           Not turned off — {removal.error}
@@ -287,6 +299,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
   const [warning, setWarning] = useState<string | null>(null);
   const candidates = addableAgents(agents, filter);
   const query = filter.trim();
+  const noAddable = noAddableAgentsText(agents, name, query);
   const reach = connectedGitHub(github.data);
   const resources = isGitHub ? (choice ? githubGrantResources(choice) : null) : {};
   const noRepositories = reach !== null && reach.installations.length === 0;
@@ -323,6 +336,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
         <GitHubAddAgentChoice
           github={reach}
           choice={choice}
+          readOnlyReason={connection.read_only_reason}
           onChange={setChoice}
           choosing={choosing}
           onChoosingChange={setChoosing}
@@ -379,11 +393,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
       )}
 
       {candidates.length === 0 ? (
-        <p className="px-1 py-2 text-sm text-foreground-muted">
-          {query === ''
-            ? `Every one of your agents already uses ${name}.`
-            : `No agent here matches “${query}”.`}
-        </p>
+        noAddable !== null && <p className="px-1 py-2 text-sm text-foreground-muted">{noAddable}</p>
       ) : (
         <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
           {candidates.map((agent) => {

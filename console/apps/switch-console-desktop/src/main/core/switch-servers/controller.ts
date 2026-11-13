@@ -29,6 +29,7 @@ import type {
   SaveConnectorAppInput,
   SaveConnectorAppResult,
 } from '@shared/core/switch-servers/connector-apps';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import {
   type InviteServer,
   SWITCH_CLOUD_NAME,
@@ -90,6 +91,7 @@ import {
   listCloudMachines,
   disconnectGitHub,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectService,
   acceptInvitation,
   acceptPendingInvitation,
@@ -101,6 +103,7 @@ import {
   createRegistrationKey,
   deleteApiKey,
   deleteMyAccount,
+  resetMyTestAccount,
   fetchMyApiKeys,
   revealApiKey,
   updateMyName,
@@ -348,14 +351,14 @@ export const switchServersController = createRPCController({
       server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', {
-        server_kind: 'external',
+        server_kind: serverKindOf({ managed: false, managementKind: null, url: params.url }),
         outcome: 'failure',
         failure_reason: serverAddFailureOf(error),
       });
       throw error;
     }
     trackEvent('server_added', {
-      server_kind: 'external',
+      server_kind: serverKindOf(server),
       outcome: 'success',
       failure_reason: 'none',
     });
@@ -430,9 +433,9 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(serverId, (server) => cancelGitHubBrowserFlow(server, id)),
   disconnectGitHub: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectGitHub(server)),
-  startServiceConnection: (serverId: string, service: string) =>
+  startServiceConnection: (serverId: string, service: string, choices: Record<string, string>) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
-      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, service, choices, (url) => appService.openExternal(url))
     ),
   getServiceFlow: (serverId: string, service: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
@@ -445,6 +448,10 @@ export const switchServersController = createRPCController({
   connectServiceWithKey: (serverId: string, service: string, fields: Record<string, string>) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
       connectServiceWithKey(server, service, fields)
+    ),
+  connectServiceWithPaste: (serverId: string, service: string, paste: ServicePaste) =>
+    withReachableServerWorkspaceSession(serverId, (server) =>
+      connectServiceWithPaste(server, service, paste)
     ),
   disconnectService: (serverId: string, service: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectService(server, service)),
@@ -774,6 +781,13 @@ export const switchServersController = createRPCController({
   deleteAccount: async (params: { serverId: string; email: string }): Promise<void> => {
     const server = await requireReachableServer(params.serverId);
     await deleteMyAccount(server, params.email);
+    await forgetSession(params.serverId);
+  },
+
+  /** Wipe the signed-in test account on the server, then forget its session here. */
+  resetTestAccount: async (params: { serverId: string; email: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await resetMyTestAccount(server, params.email);
     await forgetSession(params.serverId);
   },
 

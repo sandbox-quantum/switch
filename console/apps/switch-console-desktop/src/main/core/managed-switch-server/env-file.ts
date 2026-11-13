@@ -1,6 +1,6 @@
 import { CANARY_SWITCH_VERSION, COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
-import type { TelemetryFlintEnv } from '../telemetry/config';
+import type { TelemetryEnv } from '../telemetry/config';
 import {
   LOCAL_SERVER_ADMIN_EMAIL,
   LOCAL_SERVER_BIND_ADDR,
@@ -30,7 +30,7 @@ export type LocalServerEnvParams = {
    * The Amplitude project the server's usage lands in: the Console build's
    * own, so a development build's server is as much `local` as the app.
    */
-  telemetryEnvironment: TelemetryFlintEnv;
+  telemetryEnvironment: TelemetryEnv;
   /** Whether the person this server runs for is staff, as Console tells it. */
   telemetryInternal: boolean;
   /** The relay the server sends its usage to: the one the app reports to. */
@@ -55,7 +55,8 @@ export const STABLE_MANAGED_SERVER_FLAGS: readonly string[] = [
  * The flags a server on the canary pin (`CANARY_SWITCH_VERSION`, which dev
  * builds run too) is started with: the stable ones, plus Switch Console rooms
  * (group chats), where switch-buddy continues when no chat app is connected,
- * and buddy's hand-off to a chat app's private channel.
+ * buddy's hand-off to a chat app's private channel, and the new gateway layout
+ * (gateway v2).
  *
  * switch-core refuses to start when `FEATURE_FLAGS_ENABLED` names a flag it
  * does not know, so a flag moves to the stable list in the change that moves
@@ -66,6 +67,7 @@ export const CANARY_MANAGED_SERVER_FLAGS: readonly string[] = [
   ...STABLE_MANAGED_SERVER_FLAGS,
   'group_chats',
   'buddy_slack_handoff',
+  'gateway_v2',
 ];
 
 /**

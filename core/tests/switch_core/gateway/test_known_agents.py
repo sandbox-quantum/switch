@@ -399,6 +399,20 @@ _SESSION_DEPENDENT = CommandCapabilities(
         ),
         ("kiro", "Kiro CLI", [], []),
         (
+            "junie",
+            "Junie CLI",
+            [
+                "Bash",
+                "Edit",
+                "Write",
+                "Read",
+                "Grep",
+                "Glob",
+                "WebSearch",
+            ],
+            [],
+        ),
+        (
             "openhands",
             "OpenHands CLI",
             ["terminal", "file_editor", "task_tracker", "task"],

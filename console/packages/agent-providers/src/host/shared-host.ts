@@ -524,16 +524,42 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
-      await send({ kind: 'activity', row });
-      return true;
+    // Retry new optional fields independently: a server may predate either
+    // usage or child progress. Preserve the tool row and its terminal status.
+    const sendCompatible = async (item: Report): Promise<void> => {
+      let report = item;
+      for (;;) {
+        try {
+          await send(report);
+          return;
+        } catch (error) {
+          if (
+            !(error instanceof RequestError) ||
+            error.status !== 422 ||
+            report.kind !== 'activity'
+          )
+            throw error;
+          if (report.row.usage) {
+            const { usage: _usage, ...row } = report.row;
+            console.warn(
+              `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.delivery) {
+            const { delivery, ...row } = report.row;
+            console.warn(
+              `Switch refused how message ${row.item_id} was delivered, so platforms do not say it was ${delivery}: ${error.message}`
+            );
+            report = { kind: 'activity', row };
+          } else if (report.row.subagent) {
+            const { subagent: _subagent, ...row } = report.row;
+            console.warn(
+              `Switch does not accept subagent metadata; reporting ${row.item_id} as tool activity.`
+            );
+            report = { kind: 'activity', row };
+          } else throw error;
+        }
+      }
     };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
@@ -550,11 +576,10 @@ export async function runSharedHost(
         );
         for (const item of reports) {
           try {
-            await send(item);
+            await sendCompatible(item);
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -896,16 +921,18 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const snapshot = host!.snapshot();
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
-          epoch: host!.snapshot().session.epoch,
+          epoch: snapshot.session.epoch,
           roomId: event.roomId,
           message: message.data,
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
+          canSteer: snapshot.session.capabilities.input === 'steer',
         });
         if (message.data.payload.routed || message.data.payload.follow_up)
           host!.unaskedRoomTurn(command.commandId);
@@ -1180,6 +1207,7 @@ export async function hostSessionProcess(input: {
       grants,
       ask: parent.ask,
       redactions,
+      notices: serviceNotices,
       listTimeoutMs: LIST_TIMEOUT_MS,
       callTimeoutMs: CALL_TIMEOUT_MS,
       fetch,

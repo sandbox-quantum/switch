@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import UTC, datetime
 
 import httpx
@@ -100,9 +101,9 @@ class TestTagging:
         await service.aclose()
 
         assert sink.sent[0].resource == {
-            "flint.client_id": "deployment-uuid",
-            "flint_env": "prod",
-            "flint_internal": "false",
+            "switch_trust.client_id": "deployment-uuid",
+            "switch_trust.env": "prod",
+            "switch_trust.internal": "false",
             "service.version": "1.2.3",
         }
 
@@ -110,7 +111,7 @@ class TestTagging:
     async def test_every_event_says_which_amplitude_project_it_belongs_in(
         self, environment: str
     ) -> None:
-        """The relay sends each event to the Amplitude project its `flint_env`
+        """The relay sends each event to the Amplitude project its `switch_trust.env`
         names, so a development server's usage never lands in production's."""
         sink = _RecordingSink()
         service = TelemetryService(
@@ -126,7 +127,7 @@ class TestTagging:
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
 
-        assert sink.sent[0].resource["flint_env"] == environment
+        assert sink.sent[0].resource["switch_trust.env"] == environment
 
     @pytest.mark.parametrize(("internal", "sent"), [(True, "true"), (False, "false")])
     async def test_every_event_says_whether_the_deployment_is_the_companys_own(
@@ -147,7 +148,7 @@ class TestTagging:
         service.emit("deployment_started", tenant_count=1)
         await service.aclose()
 
-        assert sink.sent[0].resource["flint_internal"] == sent
+        assert sink.sent[0].resource["switch_trust.internal"] == sent
 
     @pytest.mark.parametrize(
         "kind", ["switch_cloud", "managed_by_console", "self_hosted"]
@@ -169,12 +170,20 @@ class TestTagging:
 
         service.emit("deployment_started", tenant_count=1)
         service.emit_at(
-            "usage_period",
+            "usage_day_counted",
             datetime(2026, 11, 2, 12, tzinfo=UTC),
-            period="day",
             room_active=0,
             person_identity_active=0,
+            bot_identity_active=0,
             account_active=0,
+            agent_active=0,
+            message_count=0,
+            turn_human_to_agent=0,
+            turn_agent_to_human=0,
+            turn_agent_to_agent=0,
+            console_account_active=0,
+            console_only_account_active=0,
+            is_partial=False,
             tenant_failed_count=0,
         )
         await service.aclose()
@@ -261,9 +270,9 @@ class TestTheWireFormat:
                 name="switch_core.usage_snapshot",
                 properties={"room_count": 7, "from_template": True, "kind": "user"},
                 resource={
-                    "flint.client_id": "deployment-uuid",
-                    "flint_env": "dev",
-                    "flint_internal": "false",
+                    "switch_trust.client_id": "deployment-uuid",
+                    "switch_trust.env": "dev",
+                    "switch_trust.internal": "false",
                 },
                 timestamp_ns=1_700_000_000_000_000_000,
             )
@@ -283,6 +292,45 @@ class TestTheWireFormat:
         assert record["eventName"] == "switch_core.usage_snapshot"
         attributes = {a["key"]: a["value"] for a in record["attributes"]}
         assert attributes["event.name"] == {"stringValue": "switch_core.usage_snapshot"}
+
+    async def test_identical_events_in_the_same_instant_stay_distinct(self) -> None:
+        """The relay derives Amplitude's dedup key from the attributes, so two
+        identical events with one timestamp would arrive as one without an id
+        of their own."""
+        captured: dict = {}
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http)
+        for _ in range(2):
+            sink.send(
+                TelemetryRecord(
+                    name="switch_core.document_attached_to_room",
+                    properties={},
+                    resource={
+                        "switch_trust.client_id": "deployment-uuid",
+                        "switch_trust.env": "dev",
+                        "switch_trust.internal": "false",
+                    },
+                    timestamp_ns=1_700_000_000_000_000_000,
+                )
+            )
+        await sink.aclose()
+        await http.aclose()
+
+        records = captured["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+        ids = [
+            {a["key"]: a["value"] for a in record["attributes"]}[
+                sink_module.INSERT_ID_ATTRIBUTE
+            ]["stringValue"]
+            for record in records
+        ]
+        assert len(ids) == 2
+        assert ids[0] != ids[1]
+        assert all(len(str(uuid.UUID(each))) == 36 for each in ids)
 
     async def test_a_count_is_a_number_not_a_string(self) -> None:
         """OTLP renders `intValue` as a JSON string, which arrives in analytics
@@ -317,9 +365,9 @@ class TestTheWireFormat:
                     "failed_attempts_before_success": 0,
                 },
                 resource={
-                    "flint.client_id": "deployment-uuid",
-                    "flint_env": "prod",
-                    "flint_internal": "false",
+                    "switch_trust.client_id": "deployment-uuid",
+                    "switch_trust.env": "prod",
+                    "switch_trust.internal": "false",
                 },
                 timestamp_ns=1_700_000_000_000_000_000,
             )
@@ -345,11 +393,11 @@ class TestTheWireFormat:
             for a in body["resourceLogs"][0]["resource"]["attributes"]
         }
 
-        assert resource["flint.client_id"] == {"stringValue": "deployment-uuid"}
+        assert resource["switch_trust.client_id"] == {"stringValue": "deployment-uuid"}
         assert resource["service.name"] == {"stringValue": "switch-core"}
         # The relay sends each event to the Amplitude project this names.
-        assert resource["flint_env"] == {"stringValue": "dev"}
-        assert resource["flint_internal"] == {"stringValue": "false"}
+        assert resource["switch_trust.env"] == {"stringValue": "dev"}
+        assert resource["switch_trust.internal"] == {"stringValue": "false"}
 
     async def test_the_sink_sends_no_service_or_environment_name_a_record_carries(
         self,
@@ -371,9 +419,9 @@ class TestTheWireFormat:
                 resource={
                     "service.name": "acme-corp-switch",
                     "deployment.environment": "acme-corp-prod",
-                    "flint.client_id": "deployment-uuid",
-                    "flint_env": "prod",
-                    "flint_internal": "false",
+                    "switch_trust.client_id": "deployment-uuid",
+                    "switch_trust.env": "prod",
+                    "switch_trust.internal": "false",
                 },
                 timestamp_ns=1,
             )
@@ -512,9 +560,9 @@ def _a_record() -> TelemetryRecord:
         name="switch_core.deployment_started",
         properties={"tenant_count": 1},
         resource={
-            "flint.client_id": "deployment-uuid",
-            "flint_env": "dev",
-            "flint_internal": "false",
+            "switch_trust.client_id": "deployment-uuid",
+            "switch_trust.env": "dev",
+            "switch_trust.internal": "false",
         },
         timestamp_ns=1,
     )
@@ -533,7 +581,7 @@ class TestBatching:
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
         sink = _relay_sink(http)
-        for name in ("switch_core.room_message_sent", "switch_core.agent_message_sent"):
+        for name in ("switch_core.message_sent", "switch_core.agent_message_received"):
             sink.send(TelemetryRecord(name, {}, _a_record().resource, 1))
 
         assert bodies == []
@@ -544,8 +592,8 @@ class TestBatching:
         records = bodies[0]["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
         # Each record keeps its own name, in both places the relay reads it.
         assert [r["eventName"] for r in records] == [
-            "switch_core.room_message_sent",
-            "switch_core.agent_message_sent",
+            "switch_core.message_sent",
+            "switch_core.agent_message_received",
         ]
         assert [r["body"]["stringValue"] for r in records] == [
             r["eventName"] for r in records

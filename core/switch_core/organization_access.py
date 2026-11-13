@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.accounts.transfer import hand_over_everything
@@ -25,7 +25,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import Tenant, TenantMember
+from switch_core.db.models import RoomAdmin, Tenant, TenantMember
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -182,6 +182,14 @@ async def remove_membership(
             "handed_over_to": heir,
             "handed_over": handed,
         },
+    )
+    # Room admin goes with the workspace: someone still in a channel through
+    # a claimed account must not keep changing its room.
+    await session.execute(
+        delete(RoomAdmin).where(
+            RoomAdmin.tenant_id == membership.tenant_id,
+            RoomAdmin.user_id == membership.user_id,
+        )
     )
     await session.delete(membership)
     return MembershipRemoval(revoked=revoked, heir=heir, handed=handed)

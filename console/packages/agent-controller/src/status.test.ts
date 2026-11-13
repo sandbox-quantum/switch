@@ -839,6 +839,7 @@ describe('StatusCollector', () => {
       protocol: 2,
       assignment_revision: 7,
       updated_by: 'self',
+      started_at: '2026-01-01T12:00:00.000Z',
     });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
     expect(first.tools).toEqual([
@@ -864,6 +865,8 @@ describe('StatusCollector', () => {
       observed({ alive: true, health: { ...health('connecting')!, since: 'later' } })
     );
     const second = await collector.collect(assignment);
+    // The process start, not the report's time: it only changes on a restart.
+    expect(second.controller.started_at).toBe('2026-01-01T12:00:00.000Z');
     expect(second.agents[0]!.since).toBe('2026-01-01T11:30:00Z');
     expect(statusFingerprint(second)).toBe(statusFingerprint(first));
 

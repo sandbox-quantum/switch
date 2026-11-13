@@ -27,25 +27,28 @@ used*, never *what is done with it*.
 
 ## 2. A real event, in full
 
-This is the complete wire payload for one event — nothing is omitted or
-abbreviated:
+These are all the fields one event carries, flattened out of the OTLP log
+record it travels in (which also repeats the event's name as the record's own
+name and body). Nothing else is sent with it:
 
 ```json
 {
   "resource": {
     "service.name": "switch-console",
     "service.version": "0.9.14",
-    "flint.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
-    "flint_env": "prod",
-    "flint_internal": "false",
+    "switch_trust.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
+    "switch_trust.env": "prod",
+    "switch_trust.internal": "false",
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
-  "event.name": "session_started",
+  "event.name": "switch_console.session_started",
   "timeUnixNano": "1789572278158000000",
   "severityText": "INFO",
   "attributes": {
     "build": "stable",
+    "flint.insert_id": "9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3",
+    "flint.session_id": 1789571950042,
     "agent_type": "claude",
     "location": "local",
     "outcome": "success",
@@ -74,12 +77,14 @@ machine, in what repository, or what the prompt said.
 | `service.name` | constant | `switch-console` |
 | `service.version` | app version | `0.9.14`, `1.0.2` |
 | `build` | release channel | `dev`, `canary`, `stable` |
-| `flint_env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
-| `flint_internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address**. Once an installation has been signed in with one, it stays `true`, so staff usage stays labelled after that account signs out | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
+| `switch_trust.env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
+| `switch_trust.internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address**. Once an installation has been signed in with one, it stays `true`, so staff usage stays labelled after that account signs out | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
-| `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
-| `event.name` | the event | `session_started` |
+| `switch_trust.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
+| `flint.insert_id` | a random UUID made for this one event, so that two events alike in every field and sent in the same millisecond are not taken for one. A new one every event; kept nowhere | `9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3` |
+| `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events that are not someone using the app — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_checked`, `update_install_started`, `renderer_crashed`, a `telemetry_consent_changed` from the first-run notice, and a `session_ended` for a session that went because the app removed its agent by itself — which neither start nor prolong a visit | `1789571950042`, `-1` |
+| `event.name` | the event, prefixed with the product | `switch_console.session_started` |
 | timestamp | event time | `1789572278158000000` |
 
 That is the entire ambient set. No hostname, no username, no account, no machine
@@ -89,13 +94,13 @@ id, no IP field, no Switch identity.
 
 | Field | Complete set of possible values |
 |---|---|
-| `outcome` | `success`, `failure` (on `session_ended`: `normal`, `failed`; on `bridge_identity_claimed`, also `pending`) |
-| `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
+| `outcome` | `success`, `failure` (on `session_ended`, always `normal`; on `update_install_started`, always `failure`; on `bridge_identity_claimed`, also `pending`) |
+| `agent_type` | the AI provider, one of those the app has registered — today `claude`, `codex`, `opencode`, `cursor`, `antigravity`, `deepseek-harness`, `pi`, `copilot`, `kiro`, `mistral-vibe`, `goose`, `qwen`, `droid`, `cline`, `junie` — or `unknown` for any value that is not one of them (on `agent_cli_action` and `host_setup_step`, also a tool that is not an agent's CLI). **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
-| `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name). **Never a server name or URL.** |
+| `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name), `unknown` (a server added by address while this build's own Switch Cloud address cannot be read). **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
-| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
-| `target` | `local`, `remote`, `unknown` |
+| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `machine_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
+| `target` | `local`, `remote` |
 
 ### 3.3 Every event and its fields
 
@@ -103,68 +108,48 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch after its version changed) / `same` |
+| `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch on a newer version; switching between the canary and stable builds, or going back to an older version, is `same`) / `same` · `from_version`: `0.40.1`, or `unknown` when the previous launch did not record one · `update_trigger`: `restart_button` (the app restarted itself to install the update) / `other` (installed on quit, or by hand) / `unknown` (that could not be read) — both are `none` unless `install_kind` is `updated` |
 | `renderer_crashed` | *(no fields)* |
-| `update_checked` | `trigger`: `user` / `startup` / `scheduled` · `result`: `available` / `up_to_date` / `failed` |
+| `update_check_requested` | `result`: `available` / `up_to_date` / `failed` — someone asked for an update check, from the menu or a Check button |
+| `update_checked` | `trigger`: `startup` (as a window loads) / `scheduled` (the hourly check) · `result`: `available` / `up_to_date` / `failed` — the app checked for an update on its own. Sent so the updater's health can be watched; a check that joins one already running is not sent again |
 | `update_download_started` | *(no fields)* — Download was pressed for an available update |
 | `update_downloaded` | `outcome`: `success` / `failure` |
-| `update_install_started` | `outcome`: `success` / `failure` |
-| `update_installed` | `from_version`: `0.40.1`, or `unknown` when the previous launch did not record one · `trigger`: `restart_button` (the app restarted itself to install it) / `other` (installed on quit, or by hand) — sent on the first launch after the version changed |
-| `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
-| `setting_changed` | `setting_key`, one of exactly 12: `localLocation`, `sessions`, `defaultAgent`, `notifications`, `theme`, `openIn`, `interface`, `browserPreview`, `browser`, `changesViewMode`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
+| `update_install_started` | `outcome`: `failure` — an update install that was started and did not finish (the app never went down for the installer, or came back on the old version). One that worked is the next `app_launched`, with `install_kind` `updated` |
+| `telemetry_consent_changed` | sharing was turned on · `source`: `first_run` (the first-run notice, which records sharing as on as soon as it is shown) / `settings` (turned on later, in Settings) · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
+| `setting_changed` | `setting_key`, one of exactly 10: `localLocation`, `sessions`, `defaultAgent`, `notifications`, `theme`, `openIn`, `interface`, `browserPreview`, `browser`, `changesViewMode`. Sent only when the stored value actually changed. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |
 
 **Navigation and onboarding**
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | `view_id`, one of exactly 21: `home`, `location`, `session`, `chat`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture`, `switchBuddy`, `admin` |
+| `view_opened` | a screen someone opened (not the one a launch resumes on) · `view_id`, one of exactly 24: `home`, `location`, `session`, `chat`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `machine`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `library`, `libraryItem`, `templates`, `templateDetail`, `templateUse`, `templateCapture`, `switchBuddy`, `admin` |
 | `command_executed` | `command_id`, one of exactly 9: `app.settings`, `app.newLocation`, `app.addServer`, `app.toggleTheme`, `app.navigateBack`, `app.navigateForward`, `session.pin`, `session.nextSession`, `session.prevSession` · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
-| `onboarding_step_started` | `step_id`, one of exactly 4: `addServer`, `agentProviders`, `onboardAgents`, `createRoom` |
-| `onboarding_checklist_dismissed` | *(no fields)* |
-| `onboarding_completed` | *(no fields)* |
 | `add_server_step` | `step`: `choose` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
 | `onboarding_page` | `page`: `welcome` / `how_to_run` / `local_setup` / `server_address` / `sign_in` / `choose_workspace` / `create_workspace` / `meet_buddy` / `provider_setup` · `path`: `none` / `cloud` / `local` / `external` — which page of the first run opened, and how the install is running Switch once chosen |
-| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `created` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `deepseek-harness` / `pi` / `copilot` / `kiro` / `mistral-vibe` / `openhands` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none |
-| `buddy_message_sent` | `nth`: `1` / `2` / `3` / `4` / `5` / `6+` — the how-manyth message sent to one's own switch-buddy. **The message is never sent.** |
+| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `deepseek-harness` / `pi` / `copilot` / `kiro` / `mistral-vibe` / `goose` / `qwen` / `droid` / `cline` / `junie` / `openhands` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none. A new buddy is reported once, as `agent_created` with `entry_point` `switch_buddy` |
 
 **Agents and sessions**
 
 | Event | Fields, with example values |
 |---|---|
 | `agent_created` | `agent_type`: `codex` · `location`: `remote` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `name_conflict` / `credentials_conflict` / `already_configured` / `invalid_name` / `directory_unusable` / `not_configured` / `agent_not_on_server` / `refused` / `invalid` / `error` · `entry_point`: `sidebar` |
-| `agent_removed` | `agent_type` · `location` · `delete_in_switch`: `true` · `trigger`: `user` / `server_teardown` · `outcome` · `failure_reason`: `none` / `not_linked_to_switch` / `gateway_unauthorized` / `gateway_http` / `gateway_network` / `error` |
+| `agent_attached` | `agent_type` · `location` — an agent already set up in a folder on a host was loaded into this app (Load existing agents); nothing was created |
+| `subagent_adopted` | `agent_type` · `location` — one of an agent's sessions started a subagent, and this app took it on as an agent of its own |
+| `agent_removed` | `agent_type` · `location` · `delete_in_switch`: `true` · `trigger`: `user` / `server_teardown` / `unknown` · `outcome` · `failure_reason`: `none` / `not_linked_to_switch` / `gateway_unauthorized` / `gateway_http` / `gateway_network` / `error` |
+| `agent_pruned` | `agent_type` · `location` · `cause`: `gone_from_server` (its Switch server no longer has it) / `managed_agent_deleted` (the managed agent it had moved to was deleted from this app) · `outcome` — the agent was removed from this app automatically, not by a person removing it |
 | `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `process_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` · `duration_ms`: `8421` |
-| `session_started` | `agent_type`: `claude` · `location`: `local` · `outcome`: `success` · `failure_reason`: `none` / `agent_not_found` / `already_exists` / `spawn_failed` · `entry_point`: `command_palette` · `start_source`: `user` / `auto` / `adopted` / `unknown` · `has_initial_prompt`: `true` (**a boolean — never the prompt**) · `connected_to_room`: `false` |
-| `session_ended` | `agent_type` · `location` · `outcome`: `normal` / `failed` |
-| `session_attached` | `agent_type` · `outcome` |
-| `session_provision_retried` | `agent_type` · `location` · `trigger`: `auto` / `retry_button` · `outcome` |
-| `managed_session_started` | `agent_type`: `claude` · `start_source`: `user` / `room` / `automation` / `unknown` — a session of an agent on the agent controller this app runs on this computer started |
-| `activation_milestone` | `milestone`: `server_ready` / `agent_ready` / `first_agent_session` · `path`: `buddy` / `manual` / `unknown` — a step towards an agent doing work, the first time this installation reaches it |
+| `session_started` | `agent_type`: `claude` · `location`: `local` · `outcome`: `success` · `failure_reason`: `none` / `agent_not_found` / `already_exists` / `spawn_failed` · `entry_point`: `command_palette` · `start_source`: `user` / `auto` (the app's local automation API) / `unknown` · `has_initial_prompt`: `true` (**a boolean — never the prompt**) · `connected_to_room`: `false` |
+| `session_discovered` | `agent_type` · `location` — a session this app found running on a host and took on, rather than started: one started in a room, say, or from another computer |
+| `session_ended` | `agent_type` · `location` · `outcome`: `normal` — a session deleted or archived here, or removed with its agent. One removed because the app removed its agent by itself (`agent_pruned`) is in no visit, with `flint.session_id` `-1` |
+| `session_provision_retried` | `agent_type` · `location` · `trigger`: `retry_button` (Retry pressed) / `session_click` (the session clicked in the sidebar or a session list) · `outcome` — someone asked for a session that was not running to be set up again |
+| `session_reopened` | `agent_type` · `location` · `outcome` — the app set a session up again on its own, typically the one a launch resumes on |
 
 Note the shape of `failure_reason` everywhere: a short enumerated code such as
 `permission_denied` or `docker_daemon_down`. It is **never** an exception message,
 a stack trace, or a command's stderr — those are mapped to `error` if they don't
 match a known code.
-
-`managed_session_started` counts sessions this app has no session of its own
-for: those of the agents it runs on the agent controller on this computer. That
-controller tells the app, over the channel between the two processes on this
-machine, once the agent's Switch server has taken the session's start, and the
-app reports it under the same consent setting as everything else. The session's
-id is used only to count a start told twice once, and goes no further. A
-controller on another machine — an SSH host, or one run on its own — sends
-nothing here, because it cannot ask this setting.
-
-`activation_milestone` marks three steps the first time an installation reaches
-each: `server_ready` (signed in to a server, or a server this app runs started),
-`agent_ready` (an agent created) and `first_agent_session` (a session of one of
-its agents started, here or on the controller above). Each is sent once for the
-life of the installation, and only by one that was installed on a version that
-sends them. `path` says which way it went at Meet switch-buddy: `buddy` if the
-buddy was started, `manual` if it was skipped, `unknown` before either; it is
-recorded on this machine and sent only on these events.
 
 `duration_ms` on `agent_cli_action` is how long the operation took, in whole
 milliseconds, measured on a monotonic clock around the operation itself. Like
@@ -190,13 +175,13 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 
 | Event | Fields, with example values |
 |---|---|
-| `bridge_connected` | `bridge`: `collaboration` · `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
-| `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `mattermost` · `outcome` |
+| `bridge_connected` | `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
+| `bridge_disconnected` | `bridge_platform`: `mattermost` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome`: `success` (linked) / `pending` (waiting for a one-time code to be posted from the account, which is what confirms the link) / `failure` |
 | `bridge_identity_confirmed` | `bridge_platform` · `link_kind`: `new` (a link that was waiting on its code) / `existing` (a link made before links had to be confirmed, which worked all along) / `unknown` — sent when the code is posted and the link confirmed, after asking the server that it is |
 | `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `network` / `forbidden` / `not_found` / `conflict` / `server_error` / `error` · `source`: `dialog` / `template` |
 | `room_deleted` | `server_kind` · `outcome` |
-| `room_agents_added` | `agent_count`: `2` · `direction`: `agents_to_room` / `room_to_agents` |
+| `room_agents_added` | `agent_count`: `2` · `direction`: `agents_to_room` / `room_to_agents` / `unknown` · `outcome` · `failure_reason`: `none` / `unreachable` / `unauthenticated` / `network` / `forbidden` / `not_found` / `conflict` / `invalid` / `server_error` / `error` |
 
 A room creation tells us *"someone made a Slack-bridged room with 3 agents and it
 worked"*. It does not tell us the room name, the channel, the workspace, or which
@@ -204,14 +189,32 @@ agents.
 
 `source` says whether the room came from the Create room dialog or from a
 template. A template run reports each room it made, and each agent as
-`agent_created` with `entry_point` `template` — or, for switch-buddy, `onboarding`
-from the first run and `switch_buddy` from its chat later. What a run does not
+`agent_created` with `entry_point` `template` — or, for switch-buddy,
+`switch_buddy`, whether it was set up in the first run or from its chat later.
+What a run does not
 already say — a room's platform, agent count and whether it has instructions, the
 provider of an agent the server chose — is read back from the server once it
 exists, only when sharing is on, and only while the run's workspace is still the
 one open: the app never switches back to it just to describe the run. A template
 run that fails reports nothing: it made nothing, and how many rooms it would have
 made is not known.
+
+**Chats**
+
+| Event | Fields, with example values |
+|---|---|
+| `chat_created` | `server_kind` · `kind`: `direct` / `group` (as the server made it) / `unknown` (the create failed) · `agent_count`: `1` · `person_count`: `0` · `on_messaging_app`: `false` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `refused` (the server turned the request down) / `rate_limited` (the server asked the app to slow down) / `request_reused` (the request's id was already used for a different request) / `network` (no answer, or the request timed out) / `server_error` / `error` |
+| `chat_message_sent` | `server_kind` · `has_attachment`: `true` · `in_thread`: `false` · `mentions`: `none` / `agent` / `person` / `both` · `outcome` · `failure_reason` |
+| `chat_member_changed` | `server_kind` · `change`: `added` / `removed` · `member_kind`: `person` / `agent` · `outcome` · `failure_reason` |
+| `chat_control_sent` | `server_kind` · `command`: `interrupt` / `reset` / `compact` / `retry` · `outcome` · `failure_reason` |
+| `chat_approval_answered` | `server_kind` · `outcome` · `failure_reason` |
+
+A message sent tells us *"someone sent a message in a thread, with a file, that
+named an agent"*. It does not tell us the text, the file, the chat, or which
+agent or person was named. `mentions` is the kind of who was named, never who.
+A refusal is reported as `refused`, not with the server's code or message.
+Reopening a chat that already exists is not reported as a new one, and a retry
+of something already reported as done is not counted twice.
 
 **Remote hosts**
 
@@ -259,13 +262,19 @@ the instructions; `agent_count` not the agents; `result_count` not the query;
 `setting_key` not the value; `resolved`/`cold_start` not the link;
 `picked_from_ssh_config` not the host.
 
-**Consent.** Opt-out: telemetry is on by default. A non-dismissible notice on
-first run states what is shared and what never is, and carries the off switch;
-the same toggle lives in Settings → General. The setting is re-read before every
-single event rather than cached, so turning it off stops transmission
-immediately, with no further requests and no queued backlog. Dev builds never
-transmit regardless of the setting. Opting out is itself not reported — the one
-thing we do not measure is someone asking not to be measured.
+**Consent.** Opt-out: telemetry is on by default. The first-run welcome page
+carries one line saying that anonymous usage data is shared, with a link to this
+document and a Turn off link beside it; the page that starts a Switch server on
+this machine carries the same switch, and the toggle lives in Settings →
+Preferences. Because the default is on, events are sent from the first launch,
+before anyone has read that line, and the line records sharing as on as soon as
+it is shown. The setting is re-read before every single event rather than
+cached, so turning it off stops transmission immediately, with no further
+requests and no queued backlog. Running the app from source sends nothing
+whatever the setting, unless a developer opts that run in to test what it
+sends (it is then filed as `local`); a packaged build that is not a release
+does send, filed as `dev` (§3.1). Opting out is itself not reported — the one thing we do not measure is
+someone asking not to be measured.
 
 ### 4.1 The same answer governs a server the Console runs
 
@@ -339,9 +348,16 @@ hold it back again.
 
 ## 5. The identifier
 
-Exactly one identifier is attached: `flint.client_id`, e.g.
+Exactly one lasting identifier is attached: `switch_trust.client_id`, e.g.
 `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` — a random UUID generated on the machine
 the first time telemetry runs, stored in the app's local database.
+
+Each event also carries `flint.insert_id`, a random UUID made for that event
+alone. It identifies the event and nothing else: it is never reused, never
+stored on the machine, and connects no event to any other. And it carries
+`flint.session_id`, a time: when the visit it belongs to began. It groups an
+installation's events into visits, which `switch_trust.client_id` already groups
+them into installations, and is derived from nothing but the clock.
 
 - **Generated randomly.** Not derived from hardware, MAC address, disk serial, OS
   account, network, email, licence, or any Switch identity.
@@ -365,8 +381,8 @@ an anonymous installation counter, not an identity.
 1. **App → our relay.** One plain HTTPS POST per event (OTLP logs format; no
    batching, no retries, 10-second timeout) to `telemetry.switchagents.ai`, an
    endpoint we operate. No third-party analytics SDK runs inside the app, and no
-   vendor credential is shipped in the app. Released builds cannot be pointed at
-   a different endpoint — the override exists only in dev builds.
+   vendor credential is shipped in the app. No packaged build can be pointed at
+   a different endpoint — the override exists only when running from source.
 2. **Relay → destinations.** The relay forwards to **Amplitude** and **Datadog**,
    holding the vendor keys server-side.
 3. **Storage and analysis** happen in those two products.
@@ -428,10 +444,11 @@ this document is verified against the Console source directly.
   workspace and channel names, error text — are precisely the ones replaced by
   enums, counts and booleans. §3 lists every permitted value; none of them is
   user-supplied.
-- **No join key exists.** The only stable value is a locally generated random
+- **No join key exists.** The only lasting value is a locally generated random
   UUID present in no other system (§5).
-- **Field entropy is very low.** Every field is drawn from a short fixed
-  vocabulary — 2 to 30 possible values — so any event is one of a small number of
+- **Field entropy is very low.** Apart from the install id, the event's own
+  random id and the time its visit began (§5), every field is drawn from a short
+  fixed vocabulary — 2 to 30 possible values — so any event is one of a small number of
   shapes. Fingerprinting by field combination fails because the combinations are
   not distinctive.
 - **The IP is controlled at a single point** and is neither logged, forwarded,

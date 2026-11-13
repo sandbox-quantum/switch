@@ -5,6 +5,9 @@ import {
   groupTurns,
   isThinking,
   placeRequests,
+  ORPHANED_SUBAGENT_TEXT,
+  subagentStatus,
+  turnSubagents,
   placeTurns,
   toolState,
   type TurnActivity,
@@ -15,6 +18,7 @@ import {
   AgentActivities,
 } from '@renderer/features/chats/stores/chat-activity-store';
 import {
+  chatActivityItemSchema,
   type ChatActivityItem,
   type ChatApproval,
   type RoomActivity,
@@ -27,6 +31,15 @@ const warn = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/utils/logger', () => ({ log: { warn } }));
 
 let clock = 0;
+
+it('keeps child rows readable by the older Console activity schema', () => {
+  const oldSchema = chatActivityItemSchema.omit({ subagent: true });
+  const child = row('t1', 'child', { kind: 'tool-activity', subagent: true });
+  expect(chatActivityItemSchema.parse(child)).toHaveProperty('subagent', true);
+  const oldView = oldSchema.parse(child);
+  expect(oldView.kind).toBe('tool-activity');
+  expect(oldView).not.toHaveProperty('subagent');
+});
 function row(
   turnId: string,
   itemId: string,
@@ -1069,5 +1082,34 @@ describe('AgentActivities', () => {
     await activity.readReasoning(turns);
     expect(activity.reasoningError).toBeNull();
     activities.release(activity);
+  });
+});
+
+describe('child activity', () => {
+  it('keeps children separate from tools, prioritizes live children and avoids false thinking', () => {
+    const done = row('t1', 'child-a', {
+      kind: 'tool-activity',
+      subagent: true,
+      status: 'completed',
+      title: 'Review',
+    });
+    const live = row('t1', 'child-b', {
+      kind: 'tool-activity',
+      subagent: true,
+      status: 'in-progress',
+      title: 'Test',
+    });
+    const turn = turnOf([done, live], 'running');
+    expect(turnSubagents(turn).map((item) => item.itemId)).toEqual(['child-b', 'child-a']);
+    expect(turnTools(turn)).toEqual([]);
+    expect(isThinking(turn)).toBe(false);
+    expect(subagentStatus(done)).toBe('done');
+    // A background subagent outlives its turn: still at work is still running.
+    expect(subagentStatus(live)).toBe('running');
+    expect(subagentStatus({ ...live, status: 'declined' })).toBe('stopped');
+    expect(subagentStatus({ ...live, status: 'failed' })).toBe('failed');
+    expect(subagentStatus({ ...live, status: 'failed', text: ORPHANED_SUBAGENT_TEXT })).toBe(
+      'not confirmed finished'
+    );
   });
 });
