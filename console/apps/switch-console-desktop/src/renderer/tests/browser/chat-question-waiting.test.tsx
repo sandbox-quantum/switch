@@ -16,10 +16,13 @@ import { stubChatHost } from '@switch-console/chat-ui/testing';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+
+// Drafts are kept in local storage, which other test files share: start with none.
+beforeEach(() => localStorage.clear());
 
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
