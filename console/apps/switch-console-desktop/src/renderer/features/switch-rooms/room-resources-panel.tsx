@@ -75,6 +75,8 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
           canAttach: chat.canManage,
           canRemoveMembers: chat.canManage,
           canManage: chat.canManage,
+          canArchive: chat.canManage,
+          canManageAdmins: false,
           canUnlink: chat.canManage,
         }
       : room !== null
@@ -87,6 +89,8 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
             canAttach: false,
             canRemoveMembers: false,
             canManage: false,
+            canArchive: false,
+            canManageAdmins: false,
             canUnlink: false,
           };
   const canWrite = permissions.canWrite;

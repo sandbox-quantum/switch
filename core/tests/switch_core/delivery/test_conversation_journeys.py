@@ -468,7 +468,9 @@ class TestJourneys:
         assert "is no longer assigned" in unassigned
         assert await room.reached(question) == set()
         # Assigning is a room setting, and bob is not the room's owner.
-        assert refused.startswith("Only the room's owner or a workspace admin")
+        assert refused.startswith(
+            "Only the room's owner, a room admin or a workspace admin"
+        )
         assert await room.reached(after) == set()
 
 

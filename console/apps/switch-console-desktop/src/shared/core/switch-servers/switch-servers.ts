@@ -369,6 +369,8 @@ export type RemoteRoomSummary = {
   ownerId: string | null;
   /** The signed-in user is a member of the room. False from a server that does not say. */
   viewerIsMember: boolean;
+  /** The signed-in user is one of the room's room admins. False from a server that does not say. */
+  viewerIsRoomAdmin: boolean;
   /** A Switch Console chat: only its members can open it. False from a server that does not say. */
   isConsoleChat: boolean;
   /**
@@ -394,9 +396,13 @@ export type RemoteRoomSummary = {
     /** Adding people and attaching resources: being in the room, or a workspace admin. */
     canAddPeople: boolean;
     canAttach: boolean;
-    /** Taking agents out: the room's owner or a workspace admin. */
+    /** Taking agents out: the room's owner, a room admin or a workspace admin. */
     canRemoveMembers: boolean;
     canManage: boolean;
+    /** Archiving and unarchiving: the room's owner, a room admin or a workspace admin. */
+    canArchive: boolean;
+    /** Choosing the room's room admins: the room's owner or a workspace admin. */
+    canManageAdmins: boolean;
     canUnlink: boolean;
   };
   /** The messaging app connection it is on, when the server says (the list does). Unlike
@@ -445,6 +451,11 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   ownerName: string | null;
   /** The bridge the room is linked through; null for a room with no messaging app. */
   bridgeId: string | null;
+  /** The room's room admins, longest-standing first. Empty from a server that predates them. */
+  roomAdmins: RemoteRoomAdmin[];
+  /** Who the viewer could make a room admin: the Switch users taking part in the
+   * room, less its owner and its room admins. Empty unless `canManageAdmins`. */
+  roomAdminCandidates: { userId: string; name: string }[];
   /** Each member agent's presence in this room, by agent id: `live`,
    * `awaiting_manual_poll`, `disconnected` or `no_session`. An agent the server
    * says nothing about is missing rather than guessed at. */
@@ -462,6 +473,19 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   /** Whether untagged messages here are routed by the workspace's decision
    * service. Undefined from a server that predates decision routing. */
   autoRoute?: RoomAutoRoute;
+};
+
+/**
+ * One of a room's room admins (mirrors the gateway `RoomAdminEntry`): a person
+ * in the room its owner, or a workspace admin, let change it as the owner does.
+ */
+export type RemoteRoomAdmin = {
+  userId: string;
+  /** Null when the server does not know their name. */
+  name: string | null;
+  /** Who made them one; null once that account is gone. */
+  grantedBy: string | null;
+  grantedAt: string;
 };
 
 /**

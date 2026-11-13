@@ -76,10 +76,16 @@ class AuditAction(StrEnum):
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
     WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
     OWNERSHIP_TRANSFERRED = "ownership.transferred"
+    ROOM_ADMIN_ADDED = "room_admin.added"
+    ROOM_ADMIN_REMOVED = "room_admin.removed"
     RETENTION_POLICY_SET = "retention_policy.set"
     RETENTION_POLICY_CLEARED = "retention_policy.cleared"
     PERSON_ERASURE_REQUESTED = "person_erasure.requested"
     PERSON_ERASURE_COMPLETED = "person_erasure.completed"
+    # A workspace admin made a Public room on a private channel Private, from
+    # the clean-up of rooms made before rooms followed their channel
+    # (`private_channel_rooms.py`).
+    ROOM_MADE_PRIVATE = "room.made_private"
 
 
 class OrganizationAuditAction(StrEnum):

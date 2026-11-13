@@ -535,7 +535,7 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const confirmArchive = useArchiveRoomConfirm();
-  if (!permissions.canWrite) return null;
+  if (!permissions.canArchive) return null;
 
   async function toggle() {
     setBusy(true);

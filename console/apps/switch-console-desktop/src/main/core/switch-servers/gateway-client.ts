@@ -101,6 +101,7 @@ import {
   type RemoteBridge,
   type RemoteBridgeType,
   type RemoteExternalUser,
+  type RemoteRoomAdmin,
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
@@ -3575,6 +3576,7 @@ type RoomSummaryJson = {
   external_channel_url?: string | null;
   owner_id?: string | null;
   viewer_is_member?: boolean;
+  viewer_is_room_admin?: boolean;
   is_console_chat?: boolean;
   /** Its people are its Switch members; absent from a server too old to count them. */
   people_are_members?: boolean;
@@ -3589,6 +3591,10 @@ type RoomSummaryJson = {
   can_attach?: boolean;
   can_remove_members?: boolean;
   can_manage?: boolean;
+  /** Absent from a server that predates room admins, where archiving took `can_manage`. */
+  can_archive?: boolean;
+  /** Absent from a server that predates room admins. */
+  can_manage_admins?: boolean;
   can_unlink?: boolean;
   group_id?: string | null;
   group_name?: string | null;
@@ -3609,6 +3615,7 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     externalChannelUrl: r.external_channel_url ?? null,
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
+    viewerIsRoomAdmin: r.viewer_is_room_admin ?? false,
     isConsoleChat: r.is_console_chat ?? false,
     ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
@@ -3633,6 +3640,9 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
             canAttach: r.can_attach ?? r.can_write,
             canRemoveMembers: r.can_remove_members ?? r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
+            // Archiving took managing the room until room admins.
+            canArchive: r.can_archive ?? r.can_manage,
+            canManageAdmins: r.can_manage_admins ?? false,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,
           },
@@ -3653,6 +3663,9 @@ type RoomDetailJson = RoomSummaryJson & {
   instructions?: string | null;
   agent_ids?: string[];
   connected_user_names?: string[];
+  /** Absent from a server that predates room admins. */
+  room_admins?: RoomAdminJson[];
+  room_admin_candidates?: { user_id: string; name: string }[];
   /** Absent from a server that predates it; kept absent rather than read as
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
@@ -3671,6 +3684,23 @@ type RoomDetailJson = RoomSummaryJson & {
   /** Absent from a server that predates decision routing. */
   auto_route?: RoomAutoRouteJson;
 };
+
+/** The gateway `RoomAdminEntry` wire shape. */
+type RoomAdminJson = {
+  user_id: string;
+  name?: string | null;
+  granted_by?: string | null;
+  granted_at: string;
+};
+
+function mapRoomAdmin(a: RoomAdminJson): RemoteRoomAdmin {
+  return {
+    userId: a.user_id,
+    name: a.name ?? null,
+    grantedBy: a.granted_by ?? null,
+    grantedAt: a.granted_at,
+  };
+}
 
 /** The server's visibility words; anything else reads as private, the narrower of the two. */
 function visibilityOf(value: string | undefined): RoomVisibility {
@@ -3704,6 +3734,11 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     instructions: r.instructions ?? null,
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
+    roomAdmins: (r.room_admins ?? []).map(mapRoomAdmin),
+    roomAdminCandidates: (r.room_admin_candidates ?? []).map((p) => ({
+      userId: p.user_id,
+      name: p.name,
+    })),
     channelOnDelete: r.channel_on_delete,
     linkedChannelName: r.linked_channel_name ?? null,
     readVisibility: visibilityOf(r.read_visibility),
@@ -3874,6 +3909,27 @@ export async function setRoomArchived(
     server,
     `/rooms/${encodeURIComponent(roomId)}/${archived ? 'archive' : 'unarchive'}`,
     { authenticated: true, method: 'POST' }
+  );
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Make a person in the room one of its room admins, or take them off
+ * (`PUT|DELETE /rooms/{id}/admins/{userId}`). Choosing them takes the room's
+ * owner or a workspace admin; a room admin may take themselves off. The
+ * server refuses someone who cannot be one (an agent, or someone not in the
+ * room) in its own words.
+ */
+export async function setRoomAdmin(
+  server: SwitchServer,
+  roomId: string,
+  userId: string,
+  admin: boolean
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/admins/${encodeURIComponent(userId)}`,
+    { authenticated: true, method: admin ? 'PUT' : 'DELETE' }
   );
   return mapRoomDetail((await res.json()) as RoomDetailJson);
 }

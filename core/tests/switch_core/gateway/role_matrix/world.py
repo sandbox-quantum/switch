@@ -38,6 +38,7 @@ from switch_core.db.models import (
     Reference,
     ReferenceType,
     Room,
+    RoomAdmin,
     RoomGroup,
     RoomLink,
     RoomRole,
@@ -380,13 +381,21 @@ class World:
         """A private room of the owner's that the member takes part in, through
         an agent of theirs in it: the room policy's "in the room" tier, with
         the owner's reference attached and the owner's agent in it."""
+        return await self._joined_room("joined-room", room_admin=False)
+
+    async def administered_room(self) -> str:
+        """`joined_room`, where the owner has made the member a room admin:
+        the room policy's "room admin" tier."""
+        return await self._joined_room("administered-room", room_admin=True)
+
+    async def _joined_room(self, kind: str, *, room_admin: bool) -> str:
         reference_id = await self.reference()
         agent_id = await self.agent()
 
         async def make(session: AsyncSession) -> str:
             room = Room(
-                transport_room_id=f"!{self.name('joined-room')}:test",
-                name=self.name("joined-room"),
+                transport_room_id=f"!{self.name(kind)}:test",
+                name=self.name(kind),
                 description="",
                 owner_id=self.owner_id,
                 **_PRIVATE,
@@ -411,9 +420,18 @@ class World:
                     room_id=room.id, reference_id=reference_id
                 )
             )
+            if room_admin:
+                session.add(
+                    RoomAdmin(
+                        room_id=room.id,
+                        user_id=self.id_of(Persona.MEMBER),
+                        granted_by=self.owner_id,
+                    )
+                )
+                await session.flush()
             return room.id
 
-        return str(await self._once("joined_room", make))
+        return str(await self._once(kind, make))
 
     async def direct_room(self) -> str:
         """A DM the bridge adopted: anyone may read it, and its owner and

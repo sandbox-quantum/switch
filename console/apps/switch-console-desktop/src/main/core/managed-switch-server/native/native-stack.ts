@@ -17,7 +17,7 @@ import {
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
 import {
-  currentFlintEnv,
+  currentTelemetryEnv,
   resolveTelemetryConfig,
   sameMachineServerTelemetryEndpointFor,
   TELEMETRY_RELAY_ORIGIN,
@@ -409,7 +409,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       callbackPort: ports.gateway,
       secrets,
       telemetryEnabled,
-      telemetryEnvironment: currentFlintEnv(),
+      telemetryEnvironment: currentTelemetryEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
       telemetryEndpoint: nativeServerTelemetryEndpoint(),
       gatewayUiDir: install.gatewayUiDir,

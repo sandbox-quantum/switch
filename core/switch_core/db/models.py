@@ -3913,6 +3913,44 @@ class ChatOwnerGrant(TenantScoped, Base):
     )
 
 
+class RoomAdmin(TenantScoped, Base):
+    """A person the room's owner, or a workspace admin, made a room admin.
+
+    A room admin changes the room as its owner does, apart from what stays
+    with the owner and workspace admins: deleting it, handing it to someone
+    else, changing who can see it, and choosing its room admins
+    (`room_policy`). Only a person can be one, and only while they take part
+    in the room: leaving it, or being handed the room, takes them off.
+    """
+
+    __tablename__ = "room_admins"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "room_id", "user_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_admins_room",
+            ondelete="CASCADE",
+        ),
+        Index("ix_room_admins_user", "tenant_id", "user_id"),
+    )
+
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_room_admins_user"),
+        nullable=False,
+    )
+    granted_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_room_admins_granted_by"),
+        nullable=True,
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # `create_all` builds the schema for tests; the trigger has to come with it or
 # the delivery tests would exercise a table that announces nothing. Real
 # databases get the same DDL from a migration.
