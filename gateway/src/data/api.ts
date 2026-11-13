@@ -40,31 +40,46 @@ export interface RoomSummary {
   // The viewer takes part in it: owns it, is in it (in Switch Console or
   // through a platform account they claimed), or owns an agent in it.
   viewer_is_member: boolean;
+  // The viewer is one of the room's room admins: its owner, or a workspace
+  // admin, made them one. Absent from servers that predate room admins.
+  viewer_is_room_admin?: boolean;
   // Made in Switch Console as a chat: its people are its members, named by
   // their Switch name, rather than accounts on a messaging app. Absent from
   // servers that predate it.
   is_console_chat?: boolean;
   // What the viewer may do, as the server's room policy decides it.
-  // `can_write` (owner or workspace admin) covers the room's settings,
-  // roles, group and linked rooms; `can_manage` (the same) covers its access,
-  // archiving and deleting it. `can_attach`, `can_invite_agents` and
+  // `can_write` (owner, room admin or workspace admin) covers the room's
+  // settings, roles, group and linked rooms; `can_manage` (owner or workspace
+  // admin) covers its access and deleting it; `can_archive` (owner, room
+  // admin or workspace admin) covers archiving it, and is absent from servers
+  // that predate room admins, which read it from `can_manage`;
+  // `can_manage_admins` (owner or workspace admin) covers choosing its room
+  // admins. `can_attach`, `can_invite_agents` and
   // `can_add_people` (anyone in the room) cover attaching resources and
   // adding agents and people, though each agent's own "who can address me"
   // setting can still refuse a particular one;
-  // `can_remove_members` (owner or workspace admin) covers taking them out,
-  // and neither membership flag is set on a direct or group chat. A person
-  // may also take out their own agent. `can_unlink` (owner or workspace
-  // admin) covers unlinking a reference, document or package; a resource's
+  // `can_remove_members` (owner, room admin or workspace admin) covers taking
+  // them out, and neither membership flag is set on a direct or group chat. A
+  // person may also take out their own agent. `can_unlink` (owner, room admin
+  // or workspace admin) covers unlinking a reference, document or package; a resource's
   // own owner may also unlink theirs while in the room. `can_transfer`
   // (managing it, and never for a chat) covers handing it to someone else.
   can_write: boolean;
   can_manage: boolean;
+  can_archive?: boolean;
+  can_manage_admins?: boolean;
   can_attach: boolean;
   can_invite_agents: boolean;
   can_add_people: boolean;
   can_remove_members: boolean;
   can_unlink: boolean;
   can_transfer: boolean;
+}
+
+/** Whether the viewer may archive or unarchive the room. Servers that
+ * predate room admins send no `can_archive`, and archiving took managing it. */
+export function canArchiveRoom(room: RoomSummary): boolean {
+  return room.can_archive ?? room.can_manage;
 }
 
 export interface AgentSummary {
@@ -270,6 +285,21 @@ export interface RoomRoleDetail extends RoomRoleSpec {
   held_by: string[];
 }
 
+/** One of a room's room admins. `name` is null when the account has no name
+ * to show; `granted_by` is who made them one, null once that account is gone. */
+export interface RoomAdminEntry {
+  user_id: string;
+  name: string | null;
+  granted_by: string | null;
+  granted_at: string;
+}
+
+/** A Switch user who takes part in a room. */
+export interface RoomPerson {
+  user_id: string;
+  name: string;
+}
+
 export interface RoomDetail extends RoomSummary {
   transport_room_id: string;
   /** @deprecated Alias of `transport_room_id`, carried for the compatibility window. */
@@ -289,6 +319,13 @@ export interface RoomDetail extends RoomSummary {
   channel_on_delete: ChannelRetirement | null;
   /** Absent on servers that predate decision routing. */
   auto_route?: RoomAutoRoute;
+  /** The room's room admins, longest-standing first. Absent on servers that
+   * predate room admins. */
+  room_admins?: RoomAdminEntry[];
+  /** Who the viewer could make a room admin: the workspace members in the
+   * room other than its owner and its room admins. Filled only when
+   * `can_manage_admins`; absent on servers that predate it. */
+  room_admin_candidates?: RoomPerson[];
 }
 
 /** What deleting a room does to its platform channel when asked to: archived
@@ -572,6 +609,27 @@ export async function archiveRoom(roomId: string): Promise<RoomDetail> {
 
 export async function unarchiveRoom(roomId: string): Promise<RoomDetail> {
   return jsonRequest<RoomDetail>(`/rooms/${roomId}/unarchive`, "POST");
+}
+
+export async function fetchRoomAdmins(roomId: string): Promise<RoomAdminEntry[] | null> {
+  return fetchJson<RoomAdminEntry[]>(`/rooms/${roomId}/admins`);
+}
+
+/** Make a person in the room one of its room admins. The server refuses
+ * (400, with its reason) anyone who can't be one. */
+export async function addRoomAdmin(roomId: string, userId: string): Promise<RoomDetail> {
+  return jsonRequest<RoomDetail>(
+    `/rooms/${roomId}/admins/${encodeURIComponent(userId)}`,
+    "PUT",
+  );
+}
+
+/** Take someone off the room's room admins, or step down as one. */
+export async function removeRoomAdmin(roomId: string, userId: string): Promise<RoomDetail> {
+  return jsonRequest<RoomDetail>(
+    `/rooms/${roomId}/admins/${encodeURIComponent(userId)}`,
+    "DELETE",
+  );
 }
 
 export async function updateRoomProtection(

@@ -119,6 +119,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "pending_attachment_groups": "deleted",
     "pending_decisions": "deleted",
     "role_leases": "deleted",
+    "room_admins": "deleted",
     "room_agents": "deleted",
     "room_documents": "deleted",
     "room_links": "deleted",

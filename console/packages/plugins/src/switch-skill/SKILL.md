@@ -160,7 +160,7 @@ does, and there is no polling tool to call.
   sends every message to one agent and `!unassign-agent` stops it;
   `!follow-ups off` turns the two follow-ups off and `!follow-ups on` turns
   them back on. Each command on its own says what is set now; changing one is
-  for the room's owner or a workspace admin.
+  for the room's owner, a room admin or a workspace admin.
 
   In a room where people turned on automatic routing (`!auto-route on`), a
   message that tags nobody and that no follow-up or assigned agent caught goes
@@ -176,8 +176,8 @@ does, and there is no polling tool to call.
   only if you are the room's triage agent, and otherwise nobody), and
   answering a routed message does not make the person's next untagged message
   a follow-up to you: it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
-  own says which it is and whether it can act. The room's owner or a
-  workspace admin may turn it on or off, from the room or from its toggle in
+  own says which it is and whether it can act. The room's owner, a room
+  admin or a workspace admin may turn it on or off, from the room or from its toggle in
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
@@ -187,8 +187,8 @@ does, and there is no polling tool to call.
   decision service and changes nothing, and the room works as it does without
   it. When the decision service fails, the message goes to nobody and Switch
   posts "Auto-route is unavailable right now; tag an agent to reach it." in
-  the room, at most once an hour. The room's owner or a workspace admin can
-  name a triage agent for those messages with `!auto-route fallback @agent`
+  the room, at most once an hour. The room's owner, a room admin or a
+  workspace admin can name a triage agent for those messages with `!auto-route fallback @agent`
   (`!auto-route fallback off` clears it; it can't be the room's assigned
   agent); anyone else who tries is told who can. If you are that agent,
   such a message reaches you marked as a fallback: auto-route was unavailable,
@@ -500,7 +500,15 @@ none of it is needed to take part in a conversation.
 have linked their chat account; otherwise it has none) and workspace or
 organization admins change a room: its name,
 description, instructions, roles, links, aliases, archiving, visibility, and
-taking agents or people out. Anyone in the room (your owner takes part when
+taking agents or people out. The owner can make other people in the room
+**room admins**, who change it the same way, apart from deleting it, changing
+who can see it, handing it on, and choosing room admins: those stay with the
+owner and workspace admins. A room admin may take out anyone but the owner,
+other room admins included. An agent of a room admin acts as one. People
+manage them in the room with `!add-room-admin @person`,
+`!remove-room-admin @person` and `!list-room-admins`, or in Switch Console
+and the gateway; only a person in the room with a Switch account can be one,
+never an agent, and leaving the room ends it. Anyone in the room (your owner takes part when
 an agent of theirs is in it) may add to it: bring in agents and people, attach
 resources, write room documents. Everyone else may only read a room they can
 see. You may take out or alias yourself, or another agent of your owner's
@@ -646,13 +654,13 @@ carrying a display name addresses no one.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when your owner is the
-  room's owner or a workspace admin, or when that agent is your owner's and
+  room's owner, one of its room admins or a workspace admin, or when that agent is your owner's and
   takes requests from you (or you can manage agents); otherwise it is refused
   with the reason, so relay that rather than retrying.
   Confirm with the person asking before removing anything. People do the same
   in a room with `!remove-agent @agent-name` (a slash command where
   `/invite-agent` is one, `/remove_agent` on Telegram), under the same rule:
-  the room's owner or a workspace admin, or the agent's own owner. As with inviting, the tool is refused in a direct or
+  the room's owner, a room admin or a workspace admin, or the agent's own owner. As with inviting, the tool is refused in a direct or
   group conversation, where the command still works.
 - **`add_users_to_room`** — add human users to an existing room, the
   counterpart to `invite_agent_to_room`. Name each person by their username on
@@ -887,8 +895,8 @@ it was set in.
   - `!list-aliases` — list the room's aliases (`@alias` → agent).
   - `!set-alias @agent-name @alias` — give an agent an alias (agent first).
   - `!remove-alias @alias` (or `@agent-name`) — clear one.
-  - Setting or clearing one is for the room's owner or a workspace admin, or
-    the aliased agent's own owner.
+  - Setting or clearing one is for the room's owner, a room admin or a
+    workspace admin, or the aliased agent's own owner.
 - **Via MCP.** `create_room` takes an `aliases` map to seed them; `update_room`
   takes the same map to set or change them, with `""` clearing an agent's.
 - **Rules.** An alias may contain only letters, digits, `.`, `-`, `_` so it
@@ -951,7 +959,7 @@ read in an IANA `timezone`. It is posted whether or not anyone is online.
 - **`create_room_schedule`** — set one up. It is posted as you, so each agent
   it names answers it as it would answer you, and you may name yourself for a
   reminder of your own. You must be in the room, and your owner must be allowed
-  to manage it (its owner or a workspace admin). Confirm with the user first,
+  to manage it (its owner, a room admin or a workspace admin). Confirm with the user first,
   as for creating a room: a schedule keeps posting after the conversation ends.
 - **`update_room_schedule`**, **`pause_room_schedule`**,
   **`delete_room_schedule`** — change one you set up. One a person set up is
@@ -1145,7 +1153,7 @@ whether a holder is reachable in this room right now.
 
 The tools above consume roles someone else defined; these author them. All
 three act on the **connected room** and need your owner to be the room's
-owner or a workspace admin, so they are moderation tools — use them when setting a room up, not in passing.
+owner, one of its room admins or a workspace admin, so they are moderation tools — use them when setting a room up, not in passing.
 
 - **`define_role(name, instructions, exclusive=False)`** — add a role. `name`
   must be unique within the room. `instructions` is the bundle `assume_role`

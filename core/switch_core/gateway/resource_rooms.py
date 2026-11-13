@@ -85,8 +85,12 @@ async def resource_rooms(
     `resource_owner_id`, from it (`room_policy`)."""
     room_ids = [rid for rid, _ in rooms]
     taking_part: set[str] = set()
+    administered: set[str] = set()
     if not reader.is_admin and reader.id is not None:
         taking_part = await room_store.involved_room_ids(session, reader.id, room_ids)
+        administered = await room_store.admin_room_ids(
+            session, reader.id, list(taking_part)
+        )
     by_id = await room_store.get_many(session, room_ids)
     owns_it = owns(reader, resource_owner_id)
     return [
@@ -95,7 +99,11 @@ async def resource_rooms(
             room_name=name,
             can_unlink=rid in by_id
             and room_policy.allows(
-                RoomCaller(reader, in_room=rid in taking_part),
+                RoomCaller(
+                    reader,
+                    in_room=rid in taking_part,
+                    room_admin=rid in administered,
+                ),
                 by_id[rid],
                 "unlink",
                 owns_target=owns_it,

@@ -498,6 +498,19 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/rooms/{room_id}/unarchive": post(
         f"{G}/rooms/{{room}}/unarchive", owner_or_admins()
     ),
+    "GET /gateway/rooms/{room_id}/admins": get(
+        f"{G}/rooms/{{room}}/admins", owner_or_admins()
+    ),
+    "PUT /gateway/rooms/{room_id}/admins/{target_user_id}": put(
+        f"{G}/rooms/{{room}}/admins/{{member_target}}",
+        owner_or_admins(ok=400),
+        why="Let through, then refused: the person isn't in the room.",
+    ),
+    "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}": delete(
+        f"{G}/rooms/{{room}}/admins/{{member_target}}",
+        owner_or_admins(),
+        why="Taking off someone who isn't a room admin changes nothing.",
+    ),
     "POST /gateway/rooms/{room_id}/sync-name": post(
         f"{G}/rooms/{{room}}/sync-name",
         owner_or_admins(ok=409),

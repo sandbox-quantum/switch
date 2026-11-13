@@ -17,6 +17,7 @@ import {
   deleteRoomRole,
   fetchArchivedRooms,
   fetchBridgePeople,
+  setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -1123,6 +1124,18 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       setRoomArchived(server, params.roomId, params.archived)
+    ),
+
+  /** Make a person in the room a room admin, or take them off (`admin: false`).
+   * Refusals propagate in the gateway's own words. */
+  setRoomAdmin: (params: {
+    workspaceId: string;
+    roomId: string;
+    userId: string;
+    admin: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAdmin(server, params.roomId, params.userId, params.admin)
     ),
 
   /** The archived rooms the signed-in user can see. */

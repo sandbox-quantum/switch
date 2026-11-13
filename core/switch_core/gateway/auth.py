@@ -14,7 +14,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
-from switch_core import room_policy
+from switch_core import room_admins, room_policy
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
@@ -1412,18 +1412,22 @@ async def decide_room_action(
     *,
     owns_target: bool = False,
 ) -> RoomDecision:
-    """`room_policy.decide` for a gateway caller. Whether they are in the room
-    is asked only when the answer could change the outcome."""
+    """`room_policy.decide` for a gateway caller. Whether they are in the room,
+    and one of its room admins, is asked only when the answer could change the
+    outcome."""
     outside = room_policy.decide(
         RoomCaller(principal, in_room=False), room, action, owns_target=owns_target
     )
     if outside.allowed:
         return outside
-    in_room = await takes_part_in_room(session, room_store, room.id, principal.id)
-    if not in_room:
+    where = await room_admins.standing(session, room_store, room.id, principal.id)
+    if not where.in_room:
         return outside
     return room_policy.decide(
-        RoomCaller(principal, in_room=True), room, action, owns_target=owns_target
+        RoomCaller(principal, in_room=True, room_admin=where.room_admin),
+        room,
+        action,
+        owns_target=owns_target,
     )
 
 

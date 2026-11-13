@@ -1,9 +1,9 @@
 """A room's schedules: the messages Switch posts to its agents on a timer.
 
 Seeing them takes the right to read the room. Changing them takes the right
-to manage it (its owner or a workspace admin), the gate `can_manage` reports
-for the room, not the right to write in it: on a room open for writing that
-would let anyone pause or delete everyone's schedules. Whoever last
+to change its settings (its owner, a room admin or a workspace admin), the
+gate `can_write` reports for the room, as the agent tools ask it: anyone in
+the room could otherwise pause or delete everyone's schedules. Whoever last
 sets what a schedule says, or to whom, becomes its author: it is posted on
 their behalf, so nobody can make a schedule speak for someone else.
 """
@@ -135,7 +135,7 @@ async def create_room_schedule(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomScheduleDetail:
-    await require_room_access(session, room_store, room_id, user, "delete", is_admin)
+    await require_room_access(session, room_store, room_id, user, "configure", is_admin)
     next_run_at = await _checked_first_run(session, room_store, room_id, body)
     schedule = await STORE.create(
         session,
@@ -166,7 +166,7 @@ async def update_room_schedule(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomScheduleDetail:
-    await require_room_access(session, room_store, room_id, user, "delete", is_admin)
+    await require_room_access(session, room_store, room_id, user, "configure", is_admin)
     schedule = await _schedule_in(session, room_id, schedule_id)
     schedule.next_run_at = await _checked_first_run(session, room_store, room_id, body)
     schedule.author_id = user.id
@@ -193,7 +193,7 @@ async def pause_room_schedule(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomScheduleDetail:
     """Pause a schedule, or resume it from now: runs missed while paused are not sent."""
-    await require_room_access(session, room_store, room_id, user, "delete", is_admin)
+    await require_room_access(session, room_store, room_id, user, "configure", is_admin)
     schedule = await _schedule_in(session, room_id, schedule_id)
     if not body.paused and schedule.paused:
         try:
@@ -221,7 +221,7 @@ async def delete_room_schedule(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> Response:
-    await require_room_access(session, room_store, room_id, user, "delete", is_admin)
+    await require_room_access(session, room_store, room_id, user, "configure", is_admin)
     await STORE.delete(session, await _schedule_in(session, room_id, schedule_id))
     await session.commit()
     return Response(status_code=204)

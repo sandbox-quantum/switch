@@ -239,6 +239,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/rooms/{room_id}/agents/{agent_id}",
       "auth": "session",
       "flags": []
@@ -838,6 +843,11 @@
     },
     {
       "route": "GET /gateway/rooms/{room_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/admins",
       "auth": "session",
       "flags": []
     },
@@ -1701,6 +1711,11 @@
     },
     {
       "route": "PUT /gateway/room-groups/{group_id}/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/admins/{target_user_id}",
       "auth": "session",
       "flags": []
     },

@@ -16,12 +16,20 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent import commands
-from switch_core.bridges.agent.commands import _cmd_follow_ups, _cmd_set_alias
+from switch_core.bridges.agent.commands import (
+    _cmd_add_room_admin,
+    _cmd_follow_ups,
+    _cmd_list_room_admins,
+    _cmd_remove_room_admin,
+    _cmd_set_alias,
+)
+from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
     ApiKey,
     Client,
+    ClientRoom,
     Room,
     TenantMember,
     User,
@@ -116,6 +124,7 @@ class _World:
             _room_role_store=RoomRoleStore(),
             _fake_resolve_sender=_resolve_sender,
             _follow_the_conversation_enabled=True,
+            tenant_id=TENANT_ZERO_ID,
         )
 
     async def follow_ups(self, *, as_: list[str], choice: str) -> bool:
@@ -138,6 +147,41 @@ class _World:
         await _cmd_set_alias(self.host(), RoomRef(room_id="!t:test"), event, False)  # type: ignore[arg-type]
         async with self.session_factory() as session:
             return await RoomStore().get_agent_id_by_alias(session, self.room_id, alias)
+
+    async def room_admin_command(
+        self, command: str, *, as_: list[str], args: str
+    ) -> str:
+        self.sender = as_
+        event = SimpleNamespace(
+            command=command, args=args, thread_id=None, user_id="@s:test"
+        )
+        handler = {
+            "add-room-admin": _cmd_add_room_admin,
+            "remove-room-admin": _cmd_remove_room_admin,
+            "list-room-admins": _cmd_list_room_admins,
+        }[command]
+        await handler(self.host(), RoomRef(room_id="!t:test"), event, False)  # type: ignore[arg-type]
+        return self.posted[-1]
+
+    async def admins(self) -> list[str]:
+        async with self.session_factory() as session:
+            return [
+                a.user_id for a in await RoomStore().list_admins(session, self.room_id)
+            ]
+
+    async def join(self, user_id: str, name: str) -> None:
+        """Put `user_id` in the room through a Switch Console member client."""
+        async with self.session_factory() as session:
+            client = Client(
+                transport_user_id=f"@{name}-{uuid.uuid4().hex[:6]}:test",
+                display_name=name,
+                type=MEMBER_CLIENT_TYPE,
+                user_id=user_id,
+            )
+            session.add(client)
+            await session.flush()
+            session.add(ClientRoom(client_id=client.id, room_id=self.room_id))
+            await session.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -191,8 +235,8 @@ class TestRoomSettings:
 
         assert await world.follow_ups(as_=[member], choice="off") is True
         assert world.posted[-1] == (
-            "Only the room's owner or a workspace admin can change this room's "
-            "settings. Nothing was changed."
+            "Only the room's owner, a room admin or a workspace admin can change "
+            "this room's settings. Nothing was changed."
         )
 
     async def test_an_unlinked_chat_account_is_told_to_link(
@@ -240,3 +284,104 @@ class TestAliases:
         theirs = await _agent_of(session_factory, world.room_id, member)
 
         assert await world.set_alias(as_=[owner], agent=theirs, alias="theirs")
+
+
+class TestRoomAdmins:
+    async def _with_member(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[_World, str, str, str]:
+        world, owner = await _world(session_factory)
+        name = f"max-{uuid.uuid4().hex[:6]}"
+        member = await _user(session_factory, name, "member")
+        await world.join(member, name)
+        return world, owner, member, name
+
+    async def test_the_owner_makes_someone_in_the_room_one_who_then_changes_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world, owner, member, name = await self._with_member(session_factory)
+
+        reply = await world.room_admin_command(
+            "add-room-admin", as_=[owner], args=f"@{name}"
+        )
+
+        assert reply.startswith(f"**{name}** is now a room admin")
+        assert await world.admins() == [member]
+        assert await world.follow_ups(as_=[member], choice="off") is False
+
+    async def test_someone_else_in_the_room_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world, _, member, name = await self._with_member(session_factory)
+
+        reply = await world.room_admin_command(
+            "add-room-admin", as_=[member], args=f"@{name}"
+        )
+
+        assert reply == (
+            "Only the room's owner or a workspace admin can choose this room's "
+            "room admins. Nothing was changed."
+        )
+        assert await world.admins() == []
+
+    async def test_a_room_admin_cannot_choose_others_but_can_step_down(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world, owner, member, name = await self._with_member(session_factory)
+        other_name = f"bea-{uuid.uuid4().hex[:6]}"
+        other = await _user(session_factory, other_name, "member")
+        await world.join(other, other_name)
+        await world.room_admin_command("add-room-admin", as_=[owner], args=f"@{name}")
+
+        refused = await world.room_admin_command(
+            "add-room-admin", as_=[member], args=f"@{other_name}"
+        )
+        assert "Nothing was changed" in refused
+        stepped = await world.room_admin_command(
+            "remove-room-admin", as_=[member], args=f"@{name}"
+        )
+        assert stepped == f"**{name}** is no longer a room admin."
+        assert await world.admins() == []
+
+    async def test_someone_not_in_the_room_cannot_be_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world, owner = await _world(session_factory)
+        name = f"out-{uuid.uuid4().hex[:6]}"
+        await _user(session_factory, name, "member")
+
+        reply = await world.room_admin_command(
+            "add-room-admin", as_=[owner], args=f"@{name}"
+        )
+
+        assert reply == f"Nobody in this room goes by `{name}`. Nothing was changed."
+
+    async def test_list_names_the_owner_and_room_admins(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world, owner, _, name = await self._with_member(session_factory)
+        await world.room_admin_command("add-room-admin", as_=[owner], args=f"@{name}")
+
+        listing = await world.room_admin_command("list-room-admins", as_=[], args="")
+
+        assert listing.splitlines() == [
+            "**Owner:** room-owner",
+            "**Room admins:**",
+            f"- {name}",
+        ]
+
+    async def test_a_name_two_people_share_is_refused_as_ambiguous(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world, owner = await _world(session_factory)
+        name = f"sam-{uuid.uuid4().hex[:6]}"
+        for _ in range(2):
+            twin = await _user(session_factory, name, "member")
+            await world.join(twin, name)
+
+        reply = await world.room_admin_command(
+            "add-room-admin", as_=[owner], args=f"@{name}"
+        )
+
+        assert reply.startswith(f"More than one person in this room goes by `{name}`")
+        assert await world.admins() == []

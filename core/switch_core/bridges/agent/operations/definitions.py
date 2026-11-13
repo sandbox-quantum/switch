@@ -1711,8 +1711,8 @@ async def remove_users_from_room(room_id: str, user_names: list[str]) -> dict[st
     Each person is taken out of the room's platform channel and then the
     Switch room, which stops what reaches them and ends what being in the
     room let them do. The room's history records that you removed them. Only
-    the room's owner or a workspace admin may (an agent acts with its owner's
-    rights). A direct or group conversation is refused: its platform fixes who
+    the room's owner, a room admin or a workspace admin may (an agent acts
+    with its owner's rights). A direct or group conversation is refused: its platform fixes who
     is in it. Confirm with the person asking first.
 
     The room follows its channel, so someone the platform will not remove
