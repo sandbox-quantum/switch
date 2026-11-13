@@ -101,6 +101,7 @@ import '@renderer/index.css';
 import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { chatDraftKey, unsavedChatKey } from '@switch-console/chat-ui/stores/chat-drafts';
 import { runInAction } from 'mobx';
+import { ConsoleChatHost } from '@renderer/features/chats/console-chat-host';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { AgentChats, openAgentChat } from '@renderer/features/managed-agents/agent-chats';
@@ -108,6 +109,15 @@ import { roomEmbedSlotStore } from '@renderer/features/switch-rooms/room-embed-s
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { appState } from '@renderer/lib/stores/app-state';
+
+/** A root that draws everything under Console's chat host, as the app does. */
+function hosted(root: Root): Root {
+  return {
+    ...root,
+    render: (node) => root.render(<ConsoleChatHost>{node}</ConsoleChatHost>),
+    unmount: () => root.unmount(),
+  };
+}
 
 const AGENT: ManagedAgentView = {
   serverId: 'server-1',
@@ -147,7 +157,7 @@ beforeEach(() => {
   container.style.width = '1100px';
   container.style.height = '700px';
   document.body.appendChild(container);
-  root = createRoot(container);
+  root = hosted(createRoot(container));
 });
 
 afterEach(() => {
@@ -305,7 +315,7 @@ it('lets the room go when a section is picked or the page is left', async () => 
 
   act(() => root.unmount());
   expect(roomEmbedSlotStore.slot).toBeNull();
-  root = createRoot(container);
+  root = hosted(createRoot(container));
 });
 
 it("opens a room on its conversation even where it can't be drawn here, and one with none on its settings", async () => {
@@ -442,7 +452,7 @@ it('lists an unsent New chat kept from before a restart, with its draft, and reo
 
     // Emptied before the restart: there is nothing to come back to.
     act(() => root.unmount());
-    root = createRoot(container);
+    root = hosted(createRoot(container));
     localStorage.removeItem(chatDraftKey({ ...scope, roomId: 'unsaved-chat:kept-request' }));
     navigation.reset({ serverId: 'server-1', agentId: 'agent-2', name: 'pm-agent' });
     localStorage.setItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!, 'emptied');

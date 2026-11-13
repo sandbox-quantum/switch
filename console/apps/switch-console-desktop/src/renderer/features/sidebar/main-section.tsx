@@ -1,7 +1,7 @@
-import { DoorOpen, MessageCircle, X } from 'lucide-react';
+import { RoomRow } from '@switch-console/chat-ui/components/chat-row';
+import { MessageCircle, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
-import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
@@ -10,7 +10,6 @@ import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
-import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useCurrentViewId } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -118,7 +117,7 @@ const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummar
         <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms on this server.</p>
       )}
       {rooms.map((room) => (
-        <RoomListRow
+        <RoomRow
           key={room.id}
           roomId={room.id}
           room={room}
@@ -129,36 +128,6 @@ const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummar
     </div>
   );
 });
-
-export function RoomListRow({
-  roomId,
-  room,
-  isActive,
-  onOpen,
-}: {
-  roomId: string;
-  room: Pick<RemoteRoomSummary, 'name' | 'bridgeType' | 'bridgeDisplayName'>;
-  isActive: boolean;
-  onOpen: () => void;
-}) {
-  return (
-    <SidebarMenuRow
-      isActive={isActive}
-      title={room.bridgeDisplayName ? `${room.name} · ${room.bridgeDisplayName}` : room.name}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onOpen}
-      className="h-[30px] py-0 text-[13px]"
-    >
-      {hasBridgeIcon(room.bridgeType) ? (
-        <BridgeIcon bridgeType={room.bridgeType} size={17} className="shrink-0" />
-      ) : (
-        <DoorOpen className="size-[17px] shrink-0 text-[var(--fg-icon)]" />
-      )}
-      <span className="min-w-0 flex-1 truncate">{room.name}</span>
-      <UnreadBadge roomId={roomId} />
-    </SidebarMenuRow>
-  );
-}
 
 /**
  * One sentence about what is coming for these agents, under them, closed for

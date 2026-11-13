@@ -1,5 +1,5 @@
+import { type AgentLine, AgentProfileHeader } from '@switch-console/chat-ui/components/agent-page';
 import { Cloud, Laptop, type LucideIcon, Plug, ServerOff, Settings } from 'lucide-react';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
@@ -15,15 +15,7 @@ export const agentSectionLabel = (section: AgentSection): string =>
   SECTION_BUTTONS.find((item) => item.section === section)!.label;
 
 /** Where an agent runs, as the one line under its name says it. */
-export type AgentMachineLine = {
-  icon: LucideIcon;
-  /** The machine, as the line names it. */
-  text: string;
-  /** How the agent is doing there when that needs saying; null when it runs fine. */
-  status: string | null;
-  /** Hover text, saying more than fits on the line. */
-  title: string;
-};
+export type AgentMachineLine = AgentLine;
 
 /**
  * The machine a managed agent runs on, and how the agent is doing there when
@@ -79,37 +71,14 @@ export function AgentProfile({
   onSelect: ((section: AgentSection) => void) | null;
   onOpenMachine: (() => void) | null;
 }) {
-  const MachineIcon = machine.icon;
   return (
-    <div className="flex flex-col items-center px-2 pt-4 pb-6 text-center">
-      <span className="flex size-24 shrink-0 items-center justify-center rounded-[22%] bg-background-2">
-        <AgentAvatar name={name} iconUrl={iconUrl} serverId={serverId} size={76} />
-      </span>
-      <h2 className="mt-4 max-w-full truncate text-base font-semibold text-foreground">{name}</h2>
-      <p
-        className="mt-0.5 flex max-w-full items-center gap-1.5 text-sm text-foreground-muted"
-        title={machine.title}
-      >
-        {onOpenMachine ? (
-          // A quiet link, as the app's others are: muted until hovered, so the
-          // line reads as a fact first and a way to the machine second. Only
-          // the machine is the link, not how the agent is doing on it.
-          <button
-            type="button"
-            onClick={onOpenMachine}
-            className="flex min-w-0 cursor-pointer items-center gap-1.5 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:underline focus-visible:outline-none"
-          >
-            <MachineIcon className="size-3.5 shrink-0" aria-hidden />
-            <span className="truncate">{machine.text}</span>
-          </button>
-        ) : (
-          <>
-            <MachineIcon className="size-3.5 shrink-0" aria-hidden />
-            <span className="truncate">{machine.text}</span>
-          </>
-        )}
-        {machine.status && <span className="shrink-0">· {machine.status}</span>}
-      </p>
+    <AgentProfileHeader
+      name={name}
+      iconUrl={iconUrl}
+      serverId={serverId}
+      line={machine}
+      onOpenLine={onOpenMachine}
+    >
       <div role="toolbar" aria-label="Agent" className="mt-5 flex items-center gap-2">
         {SECTION_BUTTONS.filter((item) => sections.includes(item.section)).map((item) => {
           const active = selected === item.section;
@@ -137,6 +106,6 @@ export function AgentProfile({
           );
         })}
       </div>
-    </div>
+    </AgentProfileHeader>
   );
 }

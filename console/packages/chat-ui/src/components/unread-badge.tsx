@@ -1,9 +1,9 @@
 import { observer } from 'mobx-react-lite';
-import { chatsStore } from '../stores/chats';
+import { useChatHost } from '../host';
 
 /** How many of a room's messages wait to be read, as a small count; nothing when none do. */
 export const UnreadBadge = observer(function UnreadBadge({ roomId }: { roomId: string }) {
-  const count = chatsStore.unread(roomId);
+  const count = useChatHost().chats.unread(roomId);
   if (count === 0) return null;
   return (
     <span
