@@ -1,7 +1,64 @@
+# A draft, left disabled: docs/design/microsoft-365-investigation.md says what
+# it waits on. It has no auth.identity because none of Switch's identity modes
+# can read a Work IQ token's account (the token's audience is Work IQ, so
+# Microsoft Graph's /me and Entra's userinfo refuse it).
 slug: microsoft-365
 name: Microsoft 365
 category: Productivity
-description: Work with OneDrive, Outlook, Word and Excel.
+description: Read Outlook mail and calendar, OneDrive, SharePoint and Teams, as you.
 enabled: false
+adapter: oauth
 auth:
   type: oauth
+  # Entra hands out a new refresh token with each refresh, but does not revoke
+  # the old one.
+  refresh: reusable
+  oauth:
+    # Entra has no dynamic registration. Each server's operator registers a
+    # multitenant Entra app (AzureADMultipleOrgs) with a client secret, and an
+    # administrator of every tenant that connects grants it admin consent:
+    # every Work IQ permission requires it.
+    registration: static
+    client_settings: MICROSOFT_365
+    redirect: [core]
+    # Named, not discovered: Entra's metadata does not list
+    # code_challenge_methods_supported, so discovery would refuse it, though
+    # Entra takes PKCE with S256. Named endpoints send no RFC 8707 `resource`,
+    # which the MCP authorization spec requires; Entra's v2.0 endpoint takes
+    # the token's audience from the scope's prefix instead. Unmeasured.
+    # `organizations`: Work IQ is for work accounts, never personal ones.
+    authorization_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize
+    token_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/token
+    # Entra answers a made-up code with invalid_grant before it looks at the
+    # client (measured with a client id that does not exist), so the check
+    # passes any client.
+    unchecked: >-
+      Switch can't check the client id, secret or redirect URI with Microsoft.
+      Connect once to confirm.
+    # Entra has no token revocation endpoint, and people cannot revoke
+    # permissions an administrator consented to.
+    remove_access: >-
+      Microsoft has no way for Switch to revoke a sign-in. Ask your Microsoft
+      365 administrator to remove Switch's consent in Microsoft Entra. Until
+      then the sign-in stays usable.
+    prompt: select_account
+# Entra documents access tokens as lasting 60-90 minutes by default; not
+# measured.
+token: { kind: pass_through, max_lifetime: 5400 }
+mcp:
+  servers:
+    - { name: work-iq, url: "https://workiq.svc.cloud.microsoft/mcp" }
+access:
+  # Read only: WorkIQ.Act and WorkIQAgent.Ask both carry write access, and
+  # Work IQ's write policy is tenant-wide, not per app.
+  # Entra hands out a refresh token only for offline_access, and an ID token
+  # with oid and preferred_username only for openid and profile, but documents
+  # its token response's `scope` as the access token's scopes alone, so
+  # Switch's comparison of the two would find this level not granted.
+  read:
+    scopes:
+      - openid
+      - profile
+      - offline_access
+      - api://workiq.svc.cloud.microsoft/WorkIQ.Read
+tools: { mode: pass_through }
