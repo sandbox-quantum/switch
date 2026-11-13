@@ -261,10 +261,9 @@ class TestResults:
             "name": "Datadog",
             "category": "Observability",
             "description": (
-                "Query Datadog metrics, logs, traces, monitors and incidents, "
-                "with your keys."
+                "Query Datadog metrics, logs, traces, monitors and incidents, as you."
             ),
-            "auth_type": "api_key",
+            "auth_type": "oauth",
             "enabled": on_by_default,
             "decided_by": "workspace_default",
             "organization_locked": False,
@@ -274,13 +273,10 @@ class TestResults:
             "workspace_set": False,
             "updated_at": None,
             "app_source": "server",
-            # The harness's Datadog key has no expiry, so it is never handed
-            # out: why, whatever the switch says.
-            "unavailable_reason": (
-                "Datadog keys do not expire and only Datadog can revoke them, "
-                "so Switch does not hand them to agents."
-            ),
-            "unavailable_code": "key_never_expires",
+            # The harness has no Datadog app, so nobody can sign in to it:
+            # why, whatever the switch says.
+            "unavailable_reason": "Datadog is not set up here.",
+            "unavailable_code": "not_set_up",
             "connected_members": 0,
             "granted_agents": 0,
         }

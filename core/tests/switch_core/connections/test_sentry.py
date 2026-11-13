@@ -437,7 +437,7 @@ async def test_sentry_discovery_sign_in_identity_refresh_and_revocation(
             renewed.values["expires_at"] - time.time()
             > timedelta(days=29).total_seconds()
         )
-        await adapter.revoke_connection(renewed)
+        await adapter.revoke_connection(renewed, "oauth")
     assert bearers == {"Bearer SYNTHETIC"}
     assert [form.get("grant_type") for form in token_requests] == [
         "authorization_code",

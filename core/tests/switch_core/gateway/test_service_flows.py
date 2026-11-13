@@ -924,7 +924,7 @@ class TestCoreCallback:
         )
         reason = "Example refused Switch's client."
 
-        async def refused(self: OAuthAdapter) -> str:
+        async def refused(self: OAuthAdapter, choices: object) -> str:
             raise ServiceAdapterError(reason)
 
         ada = await add_member(session_factory, "ada")
