@@ -20,7 +20,7 @@ which controllers the other processes hold, before the bridge serves.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -134,6 +134,7 @@ def build_management(
     status_interval_seconds: int,
     server_url: str | None,
     third_party_avatars: bool,
+    feature_flags: Mapping[str, bool],
     controller_release: ControllerRelease | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
@@ -182,6 +183,7 @@ def build_management(
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
             third_party_avatars=third_party_avatars,
+            feature_flags=feature_flags,
             controller_release=controller_release,
         ),
         signals=signals,
@@ -246,6 +248,7 @@ def create_management(
         status_interval_seconds=config.controller_status_interval_seconds,
         server_url=config.gateway_public_url,
         third_party_avatars=config.third_party_avatars_enabled,
+        feature_flags=config.feature_flags,
         controller_release=config.controller_release,
         session_factory=session_factory,
         presence=presence,

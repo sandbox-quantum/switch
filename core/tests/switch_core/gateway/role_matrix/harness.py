@@ -298,6 +298,7 @@ def _management(
         status_interval_seconds=STATUS_INTERVAL,
         server_url=SERVER_URL,
         third_party_avatars=True,
+        feature_flags=settings.feature_flags,
         controller_release=None,
         session_factory=session_factory,
         presence=protocol.connections.controllers,

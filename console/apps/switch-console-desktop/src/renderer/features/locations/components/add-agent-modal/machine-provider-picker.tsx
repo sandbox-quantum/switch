@@ -1,21 +1,27 @@
 import { CircleAlert } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
+import type { FeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
-  agentProviders,
+  offeredAgentProviders,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
 import { autoSelectedAgentType } from './agent-type-auto-selection';
 import { GiveMachineLogin, loginKindsFor } from './give-machine-login';
 
-/** Each provider, and whether the machine last reported it installed and logged in. */
+/**
+ * Each provider the server offers (its `flags`), and whether the machine last
+ * reported it installed and logged in.
+ */
 export function machineProviderOptions(
-  machine: OwnedMachine
+  machine: OwnedMachine,
+  flags: FeatureFlags
 ): { id: AgentProviderId; name: string; ready: boolean; problem: string | null }[] {
-  return agentProviders().map((provider) => {
+  return offeredAgentProviders(flags).map((provider) => {
     const reported = machine.providers.find((entry) => entry.provider === provider.id);
     return {
       id: provider.id,
@@ -44,7 +50,8 @@ export function MachineProviderPicker({
   /** The user's default agent; undefined while it loads. */
   defaultAgent: string | undefined;
 }) {
-  const options = useMemo(() => machineProviderOptions(machine), [machine]);
+  const flags = useFeatureFlags(serverId);
+  const options = useMemo(() => machineProviderOptions(machine, flags), [machine, flags]);
   const ready = useMemo(
     () => options.filter((option) => option.ready).map((option) => option.id),
     [options]

@@ -518,7 +518,9 @@ switchCore:
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
   # switch_buddy, buddy_slack_handoff, decision_routing,
   # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
-  # Matrix, Rocket.Chat, Webex), gateway_v2
+  # Matrix, Rocket.Chat, Webex), additional_agent_providers (DeepSeek
+  # Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code, Factory
+  # Droid, Cline, Junie), gateway_v2
   # (development and staging only until the new dashboard layout is finished).
   featureFlags:
     enabled: []

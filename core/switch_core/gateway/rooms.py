@@ -92,6 +92,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
+from switch_core.providers.registry import offered_provider_ids
 from switch_core.room_invites import (
     InviteRefused,
     invitable_agent_ids,
@@ -868,7 +869,12 @@ async def run_template_document(
             else None
         )
         plan = plan_template(
-            body.template, body.filled, inputs, builtins=builtins, machines=machines
+            body.template,
+            body.filled,
+            inputs,
+            builtins=builtins,
+            machines=machines,
+            providers=offered_provider_ids(config.feature_flags),
         )
     except AgentsNotCreated as error:
         return _refused_run(error)

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import ntpath
 import posixpath
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -102,7 +102,11 @@ from switch_core.management.schemas import (
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
 from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import ProcessLeases, read_leases
-from switch_core.providers.registry import provider_ids
+from switch_core.providers.registry import (
+    ProviderNotOffered,
+    provider_ids,
+    require_offered_provider,
+)
 from switch_core.user_changes import MACHINE, MANAGED_AGENT, UserChangePublisher
 
 _INSTALLS = TemplateInstallStore()
@@ -131,6 +135,9 @@ class ManagementSettings:
     # `THIRD_PARTY_AVATARS_ENABLED`. Off, a new agent with no chosen icon
     # stores none rather than the generated one, which carries its name.
     third_party_avatars: bool
+    # The deployment's feature flags (`FEATURE_FLAGS_ENABLED`), for the
+    # providers a new agent may name.
+    feature_flags: Mapping[str, bool]
     # The controller release every controller is told to run; None when the
     # deployment names none, and then controllers are told nothing.
     controller_release: ControllerRelease | None
@@ -174,6 +181,15 @@ class ManagementService:
 
     def now(self) -> datetime:
         return self._clock()
+
+    def _require_offered(self, provider: str) -> None:
+        """Refuses a provider this deployment's feature flags leave off, for
+        anything that would start using it; an agent already on it is not
+        checked."""
+        try:
+            require_offered_provider(provider, self.settings.feature_flags)
+        except ProviderNotOffered as exc:
+            raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
 
     async def leases(self, session: AsyncSession) -> ProcessLeases:
         """Every switch-core process's lease, which a controller's state
@@ -1296,6 +1312,7 @@ class ManagementService:
     ) -> None:
         """The checks `create_managed_agent` makes before it registers
         anything, raising as it would, with nothing created."""
+        self._require_offered(request.definition.provider)
         await self._check_target(
             session,
             tenant_id,
@@ -1320,6 +1337,7 @@ class ManagementService:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
         refusal leaves nothing behind."""
+        self._require_offered(request.definition.provider)
         controller = await self._check_target(
             session,
             tenant_id,
@@ -1460,6 +1478,11 @@ class ManagementService:
         while the definition is still at that revision (`DefinitionChanged`
         otherwise), for a change worked out from what it was."""
         definition = DefinitionV1.model_validate(target.definition)
+        if (
+            existing is None
+            or existing.definition.get("provider") != definition.provider
+        ):
+            self._require_offered(definition.provider)
         moved = existing is None or existing.controller_id != target.controller_id
         to_running = target.desired_state == "running" and (
             existing is None or existing.desired_state != "running"

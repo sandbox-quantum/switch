@@ -31,6 +31,7 @@ vi.mock('@renderer/features/switch-buddy/create-buddy', () => ({
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
   rpc: {
+    featureFlags: { get: async () => ({ success: false }) },
     providers: {
       install: state.install,
       startLogin: vi.fn(),
