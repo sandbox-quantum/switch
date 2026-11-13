@@ -90,6 +90,8 @@ def _require_matching_keypair(
 
 # A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
 _SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+# Where a service's sign-ins come back (`connections/loader.py`, RedirectMode).
+_RedirectMode = Literal["loopback", "core"]
 
 # The version shape the controller's package script accepts: a release's
 # x.y.z, or a dev build's x.y.z-<prerelease> (0.31.1-dev.412.gabc1234).
@@ -395,6 +397,34 @@ class SwitchConfig(BaseSettings):
     # ask for some scopes, e.g. {"google-workspace": "drive-file"}. Unknown
     # services or profiles stop the server.
     service_access_profiles: dict[str, str] = Field(default_factory=dict)
+    # Where a service's sign-ins come back, for a catalog entry that lists more
+    # than one way (Atlassian's, Datadog's), as JSON:
+    # {"<slug>": "loopback" | "core"}.
+    # `loopback` is Switch Console's listener on the person's computer; `core`
+    # is this server's own callback,
+    # `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<slug>/flows/callback`,
+    # which a vendor may refuse until its admin allow-lists it (Atlassian: each
+    # site's admin; Datadog: each organization's admin). A service not named comes back the first way its entry
+    # lists. A slug not in the catalog, or a way its entry does not list, stops
+    # the server; `core` without GATEWAY_PUBLIC_URL is a warning at startup,
+    # and that service signs in through loopback where its entry lists it.
+    # Core's callback is registered with a vendor only where sign-ins use it,
+    # so naming `core` for a service whose client Core registers itself, or no
+    # longer naming it, registers a new client, and every connection to that
+    # service on this server must be reconnected once. Set the same value on
+    # every replica: they share one registered client per service.
+    service_sign_in_redirect: dict[str, _RedirectMode] = Field(default_factory=dict)
+    # Whether a connector that takes a credential pasted in place of its
+    # sign-in offers one that never expires (its catalog method says
+    # `expires: never`, such as API and application keys), and hands it to
+    # agents. Off, such a method is not offered, cannot be connected, and a
+    # connection made with one while it was on must be reconnected another
+    # way; a pasted credential its vendor ends (`expires: vendor`, a token
+    # made with an end date) is offered either way. A never-expiring key can
+    # only be revoked at the vendor: disconnecting or removing a grant
+    # forgets it in Switch but leaves it working. An `api_key` catalog entry
+    # stays refused either way.
+    allow_non_expiring_keys: bool = False
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -654,6 +684,16 @@ class SwitchConfig(BaseSettings):
     # unset, the raw `switchdash://` deeplink is posted as-is. Also the
     # `--server` an agent controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
+    #
+    # Connectors send people back here after they sign in at the vendor. A
+    # GitHub App saved under Connector apps is called back at
+    # `<this>/gateway/provider-connections/github/callback`, and GitHub calls
+    # back only to https, or to loopback http (localhost, 127.0.0.1 or ::1), as
+    # a server Switch Console runs has; any other http address leaves GitHub
+    # unavailable here. A connector that signs in through Core's own callback
+    # (Google Workspace, Airtable) is called back at
+    # `<this>/gateway/service-connections/<service>/flows/callback`. Unset,
+    # neither can be set up under Connector apps.
     gateway_public_url: str | None = None
 
     # Extra origins Switch web's cookie requests may come from, beyond
@@ -1579,6 +1619,15 @@ class SwitchConfig(BaseSettings):
                 raise ValueError(
                     f"SERVICE_ACCESS_PROFILES names an invalid profile for {slug}: "
                     f"{profile!r}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_service_sign_in_redirect(self) -> "SwitchConfig":
+        for slug in self.service_sign_in_redirect:
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"SERVICE_SIGN_IN_REDIRECT names an invalid service: {slug!r}"
                 )
         return self
 

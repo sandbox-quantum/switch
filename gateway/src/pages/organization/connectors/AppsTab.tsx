@@ -199,6 +199,7 @@ export default function AppsTab({
                   return next;
                 })
               }
+              onChecked={() => onChanged(null)}
               onChanged={onChanged}
             />
             {opened.scopes.length > 0 && (

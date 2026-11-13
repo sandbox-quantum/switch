@@ -52,6 +52,7 @@
     "release_role",
     "remove_agent_from_room",
     "remove_agent_service",
+    "remove_users_from_room",
     "request_agent_deletion",
     "run_template",
     "save_template",
@@ -1514,6 +1515,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/rooms/{room_id}/users/remove",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/service-connections/{service}/flows",
       "auth": "session",
       "flags": [
@@ -1522,6 +1528,13 @@
     },
     {
       "route": "POST /gateway/service-connections/{service}/flows/{flow_id}/complete",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "POST /gateway/service-connections/{service}/flows/{flow_id}/fail",
       "auth": "session",
       "flags": [
         "service_connections"
@@ -1728,6 +1741,13 @@
     },
     {
       "route": "PUT /gateway/service-connections/{service}/key",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "PUT /gateway/service-connections/{service}/paste",
       "auth": "session",
       "flags": [
         "service_connections"

@@ -136,7 +136,11 @@ class _Harness:
 
     async def run(self, args: str) -> None:
         event = SimpleNamespace(
-            command="remove-agent", args=args, thread_id=None, user_id="@sender:x"
+            command="remove-agent",
+            args=args,
+            thread_id=None,
+            user_id="@sender:x",
+            user_name="sender",
         )
         await _cmd_remove_agent(
             self.client,  # type: ignore[arg-type]

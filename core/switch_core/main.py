@@ -112,6 +112,10 @@ from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.oauth_clients import (
+    check_sign_in_redirects,
+    sign_in_redirect_warnings,
+)
 from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
@@ -1376,6 +1380,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         keyring=config.keyring,
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
+        redirects=config.service_sign_in_redirect,
     )
     connector_apps = build_connector_apps(
         config,
@@ -2469,6 +2474,7 @@ def build_service_broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=config.service_connections_enabled,
         public_url=config.gateway_public_url,
+        allow_non_expiring_keys=config.allow_non_expiring_keys,
     )
 
 
@@ -2708,6 +2714,11 @@ def main() -> None:
         process_id,
     )
     for warning in deprecated_env_names():
+        logger.warning(warning)
+    check_sign_in_redirects(CATALOG, config.service_sign_in_redirect)
+    for warning in sign_in_redirect_warnings(
+        CATALOG, config.service_sign_in_redirect, config.gateway_public_url
+    ):
         logger.warning(warning)
 
     if config.db_migrate_on_boot:

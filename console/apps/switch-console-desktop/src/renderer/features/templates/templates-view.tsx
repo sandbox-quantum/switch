@@ -1,23 +1,23 @@
 import {
-  Bot,
-  Boxes,
+  ChevronDown,
   CircleAlert,
-  DoorOpen,
+  ClipboardPaste,
+  DoorClosed,
   FileText,
+  FileUp,
   Loader2,
-  MoreVertical,
-  Trash2,
+  Plus,
   Upload,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
+import { LIST_PAGE_WIDTH } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -25,7 +25,6 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -34,7 +33,17 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { cn } from '@renderer/utils/utils';
+import { useRecentTemplateIds } from './recent-templates';
+import { KIND_ICON, TemplateCard } from './template-card';
+import {
+  matchesFilter,
+  scopeCounts,
+  TEMPLATE_SCOPES,
+  type TemplateKind,
+  type TemplateScope,
+  toggleKind,
+} from './template-filters';
 
 function useServerId(): string {
   return useParams('templates').params.serverId;
@@ -44,43 +53,13 @@ const TemplatesTitlebar = observer(function TemplatesTitlebar() {
   return <ServerSectionTitlebar serverId={useServerId()} icon={FileText} label="Templates" />;
 });
 
-type Kind = 'agent' | 'room' | 'group';
-type KindFilter = 'all' | Kind;
+const KIND_CHIPS: readonly { value: TemplateKind; label: string }[] = [
+  { value: 'agent', label: 'Agents' },
+  { value: 'room', label: 'Rooms' },
+  { value: 'group', label: 'Groups' },
+];
 
-const SCOPE_OPTIONS = [
-  { value: 'all', label: 'All' },
-  { value: 'mine', label: 'Mine' },
-] as const;
-
-const KIND_OPTIONS = [
-  { value: 'all', label: 'All' },
-  { value: 'room', label: 'Rooms', icon: DoorOpen },
-  { value: 'agent', label: 'Agents', icon: Bot },
-  { value: 'group', label: 'Groups', icon: Boxes },
-] as const satisfies readonly {
-  value: KindFilter;
-  label: string;
-  icon?: typeof Bot;
-}[];
-
-const KIND_ICON: Record<Kind, typeof Bot> = {
-  agent: Bot,
-  room: DoorOpen,
-  group: Boxes,
-};
-
-/** One card in the listing: a template on the workspace, official or saved by someone. */
-type TemplateListEntry = {
-  id: string;
-  kind: Kind;
-  name: string;
-  description: string;
-  server: StoredTemplateSummary;
-};
-
-function kindOf(kind: string): Kind {
-  return kind === 'agent' || kind === 'group' ? kind : 'room';
-}
+const RECENT_SHOWN = 3;
 
 function readFileAsText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -95,118 +74,144 @@ function hasFiles(e: React.DragEvent): boolean {
   return Array.from(e.dataTransfer.types).includes('Files');
 }
 
-function OwnerRow({ name, mine }: { name: string; mine: boolean }) {
-  const initial = (name.trim()[0] ?? '?').toUpperCase();
+function ScopeTabs({
+  value,
+  onChange,
+  counts,
+  showYours,
+}: {
+  value: TemplateScope;
+  onChange: (scope: TemplateScope) => void;
+  counts: Record<TemplateScope, number>;
+  /** Only someone signed in has templates to call theirs. */
+  showYours: boolean;
+}) {
+  const scopes = TEMPLATE_SCOPES.filter((s) => showYours || s.value !== 'yours');
   return (
-    <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-      <span
-        aria-hidden
-        className="flex size-4.5 items-center justify-center rounded-full bg-background-2 text-[10px] font-medium text-foreground"
-      >
-        {initial}
-      </span>
-      {mine ? 'You' : name}
-    </span>
+    <div role="tablist" aria-label="Whose templates" className="flex gap-6 border-b border-border">
+      {scopes.map((scope) => {
+        const active = scope.value === value;
+        return (
+          <button
+            key={scope.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(scope.value)}
+            className={cn(
+              '-mb-px flex items-center gap-2 border-b-2 px-1 pb-2.5 text-sm font-medium transition-colors',
+              active
+                ? 'border-foreground text-foreground'
+                : 'border-transparent text-foreground/70 hover:text-foreground'
+            )}
+          >
+            {scope.label}
+            <span className="rounded-md bg-background-2 px-1.5 text-[11px] leading-4 text-foreground">
+              {counts[scope.value]}
+            </span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
-function TemplateCard({
-  item,
-  meId,
-  busy,
-  onOpen,
-  onUse,
-  onDelete,
+function FilterChip({
+  pressed,
+  onClick,
+  children,
 }: {
-  item: TemplateListEntry;
-  meId: string | null;
-  busy: boolean;
-  onOpen: () => void;
-  onUse: () => void;
-  /** Null when the signed-in user may not delete it. */
-  onDelete: (() => void) | null;
+  pressed: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
 }) {
-  const Icon = KIND_ICON[item.kind];
-  const official = item.server.official;
-  const mine = !official && meId !== null && item.server.ownerId === meId;
   return (
-    <div className="group relative flex min-h-[168px] flex-col rounded-[11px] border border-border bg-background transition-colors hover:border-border-1">
-      <button
-        type="button"
-        aria-label={`Open ${item.name}`}
-        className="focus-visible:ring-ring absolute inset-0 cursor-pointer rounded-[11px] focus-visible:ring-2 focus-visible:outline-none"
-        onClick={onOpen}
-      />
-      <div className="pointer-events-none flex flex-1 flex-col gap-2 p-4">
-        <div className={`flex items-center gap-2${onDelete ? ' pr-7' : ''}`}>
-          <Icon className="size-4.5 shrink-0 text-foreground-muted" />
-          <h3 className="min-w-0 truncate font-medium text-foreground">{item.name}</h3>
-          {official && (
-            <Badge variant="outline" title="Comes with Switch">
-              Official
-            </Badge>
-          )}
-          {mine && <Badge variant="secondary">Yours</Badge>}
-        </div>
-        <p className="line-clamp-3 text-sm text-foreground-muted">
-          {item.description || <span className="italic">No description.</span>}
-        </p>
-        <div className="mt-auto flex flex-col gap-1.5 pt-1 pr-16">
-          {!official && <OwnerRow name={item.server.creator} mine={mine} />}
-        </div>
-      </div>
-      {onDelete && (
-        <div className="absolute top-2.5 right-2.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="size-7 p-0"
-                  aria-label={`${item.name} actions`}
-                >
-                  <MoreVertical className="size-4" />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem variant="destructive" onClick={onDelete}>
-                <Trash2 className="size-4" />
-                Delete template…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+    <button
+      type="button"
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={cn(
+        'flex h-9 items-center gap-[7px] rounded-lg border px-3 text-sm font-medium transition-colors',
+        pressed
+          ? 'border-foreground/40 bg-background-2 text-foreground'
+          : 'border-border bg-background text-foreground/70 hover:bg-background-1 hover:text-foreground'
       )}
-      {/* On top of the overlay: the one action that does not need the page. */}
-      <div className="absolute right-3 bottom-3">
-        <Button size="sm" variant="outline" onClick={onUse} disabled={busy}>
-          {busy ? 'Opening…' : 'Use'}
-        </Button>
-      </div>
-    </div>
+    >
+      {children}
+    </button>
+  );
+}
+
+function CreateTemplateMenu({
+  onImportFile,
+  onPaste,
+  onFromRoom,
+}: {
+  onImportFile: () => void;
+  onPaste: () => void;
+  /** Null when there is no workspace to read rooms from. */
+  onFromRoom: (() => void) | null;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button>
+            <Plus className="size-4" />
+            Create template
+            <ChevronDown className="size-4" />
+          </Button>
+        }
+      />
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onClick={onImportFile}>
+          <FileUp className="size-4" />
+          Import a file…
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onPaste}>
+          <ClipboardPaste className="size-4" />
+          Paste or write YAML
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onFromRoom ?? undefined} disabled={onFromRoom === null}>
+          <DoorClosed className="size-4" />
+          From a room…
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-6">
+      <h3 className="text-sm font-medium text-foreground">{title}</h3>
+      {children}
+    </section>
   );
 }
 
 const TemplatesPanel = observer(function TemplatesPanel() {
   const serverId = useServerId();
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const meId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
+  const me = switchServersStore.statusFor(serverId)?.user ?? null;
+  const meId = me?.id ?? null;
   const { navigate } = useNavigate();
+  const pickRoom = useShowModal('pickRoomToCaptureModal');
+  const confirm = useShowModal('confirmActionModal');
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const [templates, setTemplates] = useState<StoredTemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [scopeChosen, setScope] = useState<TemplateScope>('all');
+  // With nobody signed in there is no Yours tab to be on.
+  const scope = scopeChosen === 'yours' && meId === null ? 'all' : scopeChosen;
   // A caller can open the listing with a kind preselected; the deployer can clear it.
   const initialKind = useParams('templates').params.kind;
-  const [kind, setKind] = useState<KindFilter>(initialKind ?? 'all');
+  const [kinds, setKinds] = useState<readonly TemplateKind[]>(initialKind ? [initialKind] : []);
   // Navigating here without the param, as the sidebar does, shows every kind.
-  useEffect(() => setKind(initialKind ?? 'all'), [initialKind]);
-  const [mineChosen, setOnlyMine] = useState(false);
-  // With nobody signed in there is no Mine to show, nor a control to leave it: All it is.
-  const onlyMine = mineChosen && meId !== null;
+  useEffect(() => setKinds(initialKind ? [initialKind] : []), [initialKind]);
   const [dragging, setDragging] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
@@ -276,36 +281,33 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     };
   }, [workspaceId, reloadKey]);
 
-  const templatesShown = useMemo(() => {
-    const onWorkspace: TemplateListEntry[] = (searchHits ?? templates).map((t) => ({
-      id: t.id,
-      kind: kindOf(t.kind),
-      name: t.name,
-      description: t.description,
-      server: t,
-    }));
-    const needle = query.trim().toLowerCase();
-    const matches = (t: TemplateListEntry) =>
-      (kind === 'all' || t.kind === kind) &&
-      (needle.length === 0 ||
-        t.name.toLowerCase().includes(needle) ||
-        t.description.toLowerCase().includes(needle) ||
-        t.server.creator.toLowerCase().includes(needle));
-    const mine = (t: TemplateListEntry) => meId !== null && t.server.ownerId === meId;
-    // One list: the badges on each card (Official, Yours, who saved it) say
-    // where it comes from.
-    return onWorkspace.filter((t) => matches(t) && (!onlyMine || mine(t)));
-  }, [templates, searchHits, query, kind, onlyMine, meId]);
+  const counts = useMemo(() => scopeCounts(templates, meId), [templates, meId]);
+  const shown = useMemo(
+    () => (searchHits ?? templates).filter((t) => matchesFilter(t, { scope, kinds, query, meId })),
+    [templates, searchHits, scope, kinds, query, meId]
+  );
+  const filtering = query.trim().length > 0 || kinds.length > 0;
 
-  const confirm = useShowModal('confirmActionModal');
-  const me = switchServersStore.statusFor(serverId)?.user ?? null;
+  const recentIds = useRecentTemplateIds(
+    workspaceId === null ? null : { workspaceId, userId: meId }
+  );
+  // Opened ones that are gone, or not on this tab, are left out rather than shown stale.
+  const recent = useMemo(() => {
+    if (filtering) return [];
+    const byId = new Map(templates.map((t) => [t.id, t]));
+    return recentIds
+      .map((id) => byId.get(id))
+      .filter((t): t is StoredTemplateSummary => t !== undefined)
+      .filter((t) => matchesFilter(t, { scope, kinds: [], query: '', meId }))
+      .slice(0, RECENT_SHOWN);
+  }, [filtering, recentIds, templates, scope, meId]);
+
   // The server says who may delete (an admin may remove an official room template from the
   // workspace); an older server leaves it out, and the owner-or-admin guess stands in.
-  const canDelete = (item: TemplateListEntry) =>
-    item.server.canManage ??
-    (!item.server.official &&
-      ((meId !== null && item.server.ownerId === meId) || me?.role === 'admin'));
-  const deleteTemplate = (item: TemplateListEntry) =>
+  const canDelete = (item: StoredTemplateSummary) =>
+    item.canManage ??
+    (!item.official && ((meId !== null && item.ownerId === meId) || me?.role === 'admin'));
+  const deleteTemplate = (item: StoredTemplateSummary) =>
     confirm({
       title: `Delete ${item.name}?`,
       description: 'It is removed from this workspace for everyone. This cannot be undone.',
@@ -328,9 +330,6 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       },
     });
 
-  const handleUse = (item: TemplateListEntry) =>
-    navigate('templateUse', { serverId, templateId: item.id });
-
   const importFile = async (file: File) => {
     try {
       const yamlText = await readFileAsText(file);
@@ -344,18 +343,21 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     }
   };
 
-  const grid = 'grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]';
-  const filtering = query.trim().length > 0 || kind !== 'all' || onlyMine;
-  const open = (item: TemplateListEntry) =>
-    navigate('templateDetail', { serverId, templateId: item.id });
-  const card = (item: TemplateListEntry) => (
+  const captureFromRoom =
+    workspaceId === null
+      ? null
+      : () =>
+          pickRoom({
+            workspaceId,
+            onSuccess: ({ roomId }) => navigate('templateCapture', { serverId, roomId }),
+          });
+
+  const grid = 'grid grid-cols-3 gap-6';
+  const card = (item: StoredTemplateSummary) => (
     <TemplateCard
       key={item.id}
-      item={item}
-      meId={meId}
-      busy={false}
-      onOpen={() => open(item)}
-      onUse={() => handleUse(item)}
+      template={item}
+      onOpen={() => navigate('templateDetail', { serverId, templateId: item.id })}
       onDelete={canDelete(item) ? () => deleteTemplate(item) : null}
     />
   );
@@ -366,16 +368,28 @@ const TemplatesPanel = observer(function TemplatesPanel() {
       title="Templates"
       description="Templates create a complete room setup - agents, roles, documents - from a single configuration."
       action={
-        <Button size="sm" onClick={() => navigate('templateImport', { serverId })}>
-          <Upload className="size-4" />
-          Import template
-        </Button>
+        <CreateTemplateMenu
+          onImportFile={() => fileInput.current?.click()}
+          onPaste={() => navigate('templateImport', { serverId })}
+          onFromRoom={captureFromRoom}
+        />
       }
     >
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".yaml,.yml"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void importFile(file);
+        }}
+      />
       {/* The whole page takes a dropped file: the import view is one step
         away, and a file in hand should not have to find a target first. */}
       <div
-        className="relative"
+        className="relative space-y-6"
         onDragEnter={(e) => {
           if (hasFiles(e)) setDragging((n) => n + 1);
         }}
@@ -394,100 +408,103 @@ const TemplatesPanel = observer(function TemplatesPanel() {
         }}
       >
         {dragging > 0 && (
-          <div className="border-primary pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[11px] border-2 border-dashed bg-[var(--sel-soft)]/90">
+          <div className="border-primary pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl border-2 border-dashed bg-[var(--sel-soft)]/90">
             <span className="flex items-center gap-2 text-sm font-medium text-foreground">
               <Upload className="size-4" />
               Drop the template file to import it
             </span>
           </div>
         )}
+
+        {noProvider && (
+          <Alert>
+            <CircleAlert />
+            <AlertDescription>
+              No agent provider is set up on this computer yet. A template creates an agent that
+              runs here, so it needs an agent CLI such as Claude Code, Codex or OpenCode installed
+              first.
+            </AlertDescription>
+            <AlertAction>
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => navigate('settings', { tab: 'clis-models' })}
+              >
+                Set up agent providers
+              </Button>
+            </AlertAction>
+          </Alert>
+        )}
+
+        <ScopeTabs value={scope} onChange={setScope} counts={counts} showYours={meId !== null} />
+
+        <div className="space-y-3">
+          <SearchInput
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search templates"
+            aria-label="Search templates by name, description and author"
+            containerClassName="w-full"
+            className="h-9"
+          />
+
+          <div
+            className="flex flex-wrap items-center gap-2"
+            aria-label="Show templates of these kinds"
+          >
+            {KIND_CHIPS.map(({ value, label }) => {
+              const Icon = KIND_ICON[value];
+              return (
+                <FilterChip
+                  key={value}
+                  pressed={kinds.includes(value)}
+                  onClick={() => setKinds((current) => toggleKind(current, value))}
+                >
+                  <Icon className="size-4" aria-hidden />
+                  {label}
+                </FilterChip>
+              );
+            })}
+          </div>
+        </div>
+
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="size-5 animate-spin text-foreground-muted" />
           </div>
+        ) : listError ? (
+          <div className="flex flex-col items-start gap-2 rounded-2xl border border-border px-4 py-4">
+            <p className="text-sm text-foreground-muted">{listError}</p>
+            <Button size="sm" variant="outline" onClick={reload}>
+              Try again
+            </Button>
+          </div>
         ) : (
-          <div className="space-y-8">
-            {noProvider && (
-              <Alert>
-                <CircleAlert />
-                <AlertDescription>
-                  No agent provider is set up on this computer yet. A template creates an agent that
-                  runs here, so it needs an agent CLI such as Claude Code, Codex or OpenCode
-                  installed first.
-                </AlertDescription>
-                <AlertAction>
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    onClick={() => navigate('settings', { tab: 'clis-models' })}
-                  >
-                    Set up agent providers
-                  </Button>
-                </AlertAction>
-              </Alert>
+          <div className="space-y-10 pt-2">
+            {recent.length > 0 && (
+              <Section title="Recent">
+                <div className={grid}>{recent.map(card)}</div>
+              </Section>
             )}
-
-            <ListToolbar
-              // Whose templates first, as on Rooms and Connectors; only someone
-              // signed in has any to call theirs.
-              scope={
-                meId !== null && (
-                  <SegmentedControl
-                    value={onlyMine ? 'mine' : 'all'}
-                    onChange={(next) => setOnlyMine(next === 'mine')}
-                    options={SCOPE_OPTIONS}
-                    ariaLabel="Whose templates"
-                  />
-                )
-              }
-              search={
-                <SearchInput
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search name and description…"
-                  aria-label="Search templates by name and description"
-                  containerClassName="w-full"
-                  className="h-8"
-                />
-              }
-              filters={
-                <SegmentedControl
-                  value={kind}
-                  onChange={setKind}
-                  options={KIND_OPTIONS}
-                  ariaLabel="Show templates of one kind"
-                />
-              }
-            />
-
-            {templatesShown.length > 0 ? (
-              <div className={grid}>{templatesShown.map(card)}</div>
-            ) : listError ? (
-              <div className="flex flex-col items-start gap-2 rounded-[11px] border border-border px-4 py-4">
-                <p className="text-sm text-foreground-muted">{listError}</p>
-                <Button size="sm" variant="outline" onClick={reload}>
-                  Try again
-                </Button>
-              </div>
-            ) : filtering ? (
+            {shown.length > 0 ? (
+              recent.length > 0 ? (
+                <Section title="All results">
+                  <div className={grid}>{shown.map(card)}</div>
+                </Section>
+              ) : (
+                <div className={grid}>{shown.map(card)}</div>
+              )
+            ) : filtering || scope !== 'all' ? (
               <p className="text-sm text-foreground-muted">
-                {onlyMine
-                  ? 'None of yours match. Import a template and it shows up here as yours.'
+                {scope === 'yours' && !filtering
+                  ? 'None of yours yet. Create a template and it shows up here.'
                   : 'No template matches.'}
               </p>
             ) : (
-              <div className="flex flex-col items-start gap-3 rounded-[11px] border border-dashed border-border px-4 py-5">
+              <div className="flex flex-col items-start gap-3 rounded-2xl border border-dashed border-border px-4 py-5">
                 <p className="text-sm text-foreground-muted">
-                  No template here yet. Import one, and everyone on this workspace finds it here.
+                  No template here yet. Create one, and everyone on this workspace finds it here.
                 </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => navigate('templateImport', { serverId })}
-                >
-                  <Upload className="size-3.5" />
-                  Import a template
-                </Button>
               </div>
             )}
           </div>
@@ -498,9 +515,13 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 });
 
 export const templatesView = {
-  WrapView: ({ children }: { children: React.ReactNode; serverId: string; kind?: Kind }) => (
-    <>{children}</>
-  ),
+  WrapView: ({
+    children,
+  }: {
+    children: React.ReactNode;
+    serverId: string;
+    kind?: TemplateKind;
+  }) => <>{children}</>,
   TitlebarSlot: TemplatesTitlebar,
   MainPanel: TemplatesPanel,
   canActivate: (params: unknown): GuardResult => {
@@ -511,4 +532,4 @@ export const templatesView = {
     if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
     return { ok: true };
   },
-} satisfies ViewDefinition<{ serverId: string; kind?: Kind }>;
+} satisfies ViewDefinition<{ serverId: string; kind?: TemplateKind }>;

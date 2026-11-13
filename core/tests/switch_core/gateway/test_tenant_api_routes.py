@@ -206,6 +206,7 @@ def _app(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -1601,6 +1602,8 @@ class TestMemberRoutes:
                     json.dumps({"access_token": "SYNTHETIC-USER-TOKEN"})
                 ),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             session.add(
                 ServiceTokenIssuance(
@@ -1646,7 +1649,7 @@ class TestMemberRoutes:
             session_factory=session_factory,
             keyring=_KEYRING,
             catalog=CATALOG,
-            adapters={"github": GitHubAdapter(github, AsyncMock())},  # type: ignore[arg-type]
+            adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},  # type: ignore[arg-type]
             organization_apps=None,
             disabled={},
             store=ServiceConnectionStore(),
@@ -1654,6 +1657,7 @@ class TestMemberRoutes:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            allow_non_expiring_keys=False,
         )
         async with _client(app, token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")

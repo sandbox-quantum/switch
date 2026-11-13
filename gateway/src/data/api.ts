@@ -287,7 +287,7 @@ export interface RoomDetail extends RoomSummary {
   agent_ids: string[];
   agent_statuses: Record<string, string>;
   roles: RoomRoleDetail[];
-  // Agent ids configured to receive room_join events in this room.
+  // Agent ids configured to receive room_join and room_leave events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
   // What deleting the room can do to its platform channel, as that platform's
@@ -340,7 +340,7 @@ export interface CreateRoomInput {
   agent_names?: string[];
   // Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
   include_subagents_for?: string[];
-  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join
+  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join and room_leave
   // events in this room.
   join_event_listeners?: string[];
   user_names?: string[];
@@ -2935,7 +2935,13 @@ export interface ServiceConnection {
   server_setup_needed: boolean;
   /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
   app_source: "organization" | "server";
-  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  /**
+   * Why it can be granted for reading only here (its GitHub App lacks the
+   * write permissions), said beside the write choice it disables; null where
+   * writing can be granted too.
+   */
+  read_only_reason: string | null;
+  status: "not_connected" | "active" | "needs_reauthorization";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
@@ -3096,8 +3102,10 @@ export async function fetchGitHubConnection(): Promise<GitHubConnection> {
 }
 
 /**
- * Owner-only addressing: the owner, and agents the owner runs. What the grant
- * screens offer when anyone can address an agent with grants.
+ * Owner-only addressing: the owner alone, none of the owner's agents, as
+ * Switch Console sends it. What the grant screens offer when others can
+ * address an agent with grants: an agent the owner runs could pass on a
+ * request someone else gave it.
  */
 export const OWNER_ONLY_POLICY: AddressingPolicy = {
   rules: [
@@ -3107,7 +3115,7 @@ export const OWNER_ONLY_POLICY: AddressingPolicy = {
       users: [],
       agents: [],
       owner: true,
-      owner_agents: true,
+      owner_agents: false,
     },
   ],
 };
@@ -3157,6 +3165,13 @@ export interface ConnectorApp {
   scopes: string[];
   /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
   setup_blocked: string | null;
+  /**
+   * A GitHub App short of the write permissions, as GitHub last answered:
+   * agents can only read through it, and a write grant is refused.
+   */
+  read_only: boolean;
+  /** The permissions it lacks to write, as the App's settings page names them. */
+  lacks_write: string[];
   install_url: string | null;
   /** When the app saved here was first saved; null with none saved. */
   created_at: string | null;

@@ -267,6 +267,12 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
         def set_channel_rename_handler(self, handler: Any) -> None:
             pass
 
+        def set_user_left_handler(self, handler: Any) -> None:
+            pass
+
+        def set_member_sync_hooks(self, **hooks: Any) -> None:
+            pass
+
         def set_agent_presentation_resolver(self, resolver: Any) -> None:
             installed.append(resolver)
 
@@ -280,6 +286,7 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
     bridge = _bridge(_agent("worker", "Worker Bee"))
     bridge._adapter = _Adapter()  # type: ignore[assignment]
     bridge._identity_task = None
+    bridge._member_sync_tasks = set()
 
     async def _noop() -> None:
         return None

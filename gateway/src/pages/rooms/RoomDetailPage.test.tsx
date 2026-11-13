@@ -131,7 +131,7 @@ function nameField() {
 
 function joinEventsSwitch() {
   return screen.getByRole<HTMLInputElement>("switch", {
-    name: "Notify planner when someone joins",
+    name: "Notify planner when someone joins or leaves",
   });
 }
 

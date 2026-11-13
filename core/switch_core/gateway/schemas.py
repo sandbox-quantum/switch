@@ -164,7 +164,7 @@ class RoomDetail(RoomSummary):
     agent_ids: list[str]
     agent_statuses: dict[str, str]
     roles: list[RoomRoleDetail] = []
-    # Agent ids configured to receive `room_join` events in this room.
+    # Agent ids configured to receive `room_join` and `room_leave` events in this room.
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
@@ -188,7 +188,7 @@ class RoomCreateRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
     bridge_id: str | None = None
@@ -226,17 +226,28 @@ class RoomAgentsRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
 
 
 class RoomAgentUpdateRequest(BaseModel):
-    # Whether this agent receives `room_join` events in the room.
+    # Whether this agent receives `room_join` and `room_leave` events in the room.
     receives_join_events: bool
 
 
 class RoomUsersRequest(BaseModel):
     user_names: list[str]
+
+
+class RoomUsersRemoved(BaseModel):
+    """The room after people were taken out of it, and who did not go:
+    `not_in_room`, names nobody in the room goes by; `platform_refused`,
+    people the platform would not remove from its channel, who stay in the
+    room until someone removes them there."""
+
+    room: RoomDetail
+    not_in_room: list[str] = []
+    platform_refused: list[str] = []
 
 
 class RoomProtectionRequest(BaseModel):

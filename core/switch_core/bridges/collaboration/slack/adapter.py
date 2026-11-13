@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, ClassVar, Literal, NoReturn
@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
+    ChannelMembers,
     ChannelNotUsable,
     ChannelType,
     CreatedChannel,
@@ -58,6 +59,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -654,6 +656,10 @@ class SlackAdapter(PlatformAdapter):
         self._team_id: str = ""
         self._tenant_id: str | None = None
         self._user_cache: dict[str, SlackUser] = {}
+        # Whether each Slack user seen in a channel's member list is a bot (an
+        # app's bot user, Slackbot) or a deactivated account, so lining a room
+        # up with its channel asks Slack once per person, not on every pass.
+        self._not_a_person: dict[str, bool] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._seen_ts: OrderedDict[str, None] = OrderedDict()
         self._seen_ts_max = 1000
@@ -2883,6 +2889,164 @@ class SlackAdapter(PlatformAdapter):
                     failed.append(user_id)
         return failed
 
+    async def remove_users_from_channel(
+        self, channel_id: str, user_external_ids: list[str]
+    ) -> list[str]:
+        """Take people out of a channel with `conversations.kick`.
+
+        Someone already gone is success. Slack refuses to remove anyone from
+        #general and anyone the app may not remove (a workspace owner, for
+        one); those come back as failed, for the caller to say so.
+        """
+        if not self._web_client:
+            raise RuntimeError(
+                "Cannot remove users from channel: Slack client not connected"
+            )
+        failed: list[str] = []
+        for user_id in user_external_ids:
+            try:
+                await self._web_client.conversations_kick(
+                    channel=channel_id, user=user_id
+                )
+            except SlackApiError as e:
+                if e.response.get("error") != "not_in_channel":
+                    logger.error(
+                        "Failed to remove Slack user %s from channel %s: %s",
+                        user_id,
+                        channel_id,
+                        e,
+                    )
+                    failed.append(user_id)
+        return failed
+
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
+        """The people in a channel, from `conversations.members`, page by page.
+
+        Bots (Slackbot, every app's bot user, this app's own) and deactivated
+        accounts are left out. Telling them apart takes a look at each member
+        Switch does not already know as a person (`known_people`), done once
+        per person per run (`_describe_users`). Anyone Slack would not
+        describe is left out, and the listing is then marked incomplete, as is
+        one whose pages stopped short: a person missing from it is not proof
+        they left.
+        """
+        if not self._web_client:
+            raise RuntimeError(
+                "Cannot list channel members: Slack client not connected"
+            )
+        ids: list[str] = []
+        complete = True
+        cursor: str | None = None
+        try:
+            while True:
+                page = await self._web_client.conversations_members(
+                    channel=channel_id, limit=200, cursor=cursor
+                )
+                ids.extend(str(member) for member in page.get("members") or [])
+                cursor = (page.get("response_metadata") or {}).get(
+                    "next_cursor"
+                ) or None
+                if not cursor:
+                    break
+        except SlackApiError as e:
+            logger.warning(
+                "Could not list every member of Slack channel %s: %s", channel_id, e
+            )
+            complete = False
+
+        known = set(known_people)
+        members: dict[str, str] = {}
+        unknown: list[str] = []
+        for user_id in ids:
+            if user_id == self._bot_user_id:
+                continue
+            if user_id in known:
+                # A person already: asking Slack again is what made a start
+                # over a big workspace cost thousands of calls.
+                members[user_id] = ""
+            elif user_id not in self._not_a_person:
+                unknown.append(user_id)
+        if unknown and not await self._describe_users(unknown):
+            complete = False
+        for user_id in ids:
+            if user_id in members or user_id == self._bot_user_id:
+                continue
+            excluded = self._not_a_person.get(user_id)
+            if excluded is None:
+                complete = False
+                continue
+            if not excluded:
+                members[user_id] = self._user_cache[user_id].name
+        return ChannelMembers(members=members, complete=complete)
+
+    #: Up to this many members to look up one at a time; more than that and
+    #: the whole workspace's user list is read instead, a page per 200.
+    _DESCRIBE_ONE_BY_ONE = 40
+    #: Pause between one-at-a-time lookups: `users.info` allows about 100 a
+    #: minute, shared with everything else the bot does.
+    _DESCRIBE_PAUSE = 0.7
+
+    async def _describe_users(self, user_ids: list[str]) -> bool:
+        """Learn whether each of these Slack users is a person, into
+        `_not_a_person` and `_user_cache`. Returns False if any lookup failed.
+
+        A few are looked up one by one, paced; many are found in one paged
+        read of the workspace's users, which is far fewer calls than one per
+        member of a big channel.
+        """
+        assert self._web_client is not None
+
+        def learn(user: dict[str, Any]) -> None:
+            user_id = str(user.get("id", ""))
+            if not user_id:
+                return
+            excluded = bool(
+                user.get("is_bot") or user.get("deleted") or user_id == "USLACKBOT"
+            )
+            self._not_a_person[user_id] = excluded
+            if not excluded and user_id not in self._user_cache:
+                name = user.get("name", user_id)
+                self._user_cache[user_id] = SlackUser(
+                    name=name,
+                    display_name=(
+                        user.get("profile", {}).get("display_name", "")
+                        or user.get("real_name", "")
+                        or name
+                    ),
+                )
+                self._remember_mention_target(name, user_id)
+
+        ok = True
+        if len(user_ids) <= self._DESCRIBE_ONE_BY_ONE:
+            for index, user_id in enumerate(user_ids):
+                if index:
+                    await asyncio.sleep(self._DESCRIBE_PAUSE)
+                try:
+                    result = await self._web_client.users_info(user=user_id)
+                except SlackApiError as e:
+                    logger.warning("Could not describe Slack user %s: %s", user_id, e)
+                    ok = False
+                    continue
+                learn({"id": user_id, **result["user"]})
+            return ok
+        cursor: str | None = None
+        try:
+            while True:
+                page = await self._web_client.users_list(limit=200, cursor=cursor)
+                for user in page.get("members") or []:
+                    learn(user)
+                cursor = (page.get("response_metadata") or {}).get(
+                    "next_cursor"
+                ) or None
+                if not cursor:
+                    break
+        except SlackApiError as e:
+            logger.warning("Could not read every Slack user in the workspace: %s", e)
+            ok = False
+        return ok
+
     # ── Agent identity ───────────────────────────────────────────────────────
 
     def set_bridge_id(self, bridge_id: str) -> None:
@@ -3809,10 +3973,14 @@ class SlackAdapter(PlatformAdapter):
                 await self._handle_member_joined_channel(event)
             elif event_subtype in self._RENAME_SUBTYPES:
                 await self._handle_channel_renamed(event)
+            elif event_subtype in ("channel_leave", "group_leave"):
+                await self._handle_member_left_channel(event)
             else:
                 await self._handle_message_event(event)
         elif event_type == "member_joined_channel":
             await self._handle_member_joined_channel(event)
+        elif event_type == "member_left_channel":
+            await self._handle_member_left_channel(event)
         elif event_type == "subteam_updated":
             await self._handle_subteam_updated(event.get("subteam") or {})
 
@@ -3930,6 +4098,26 @@ class SlackAdapter(PlatformAdapter):
                 external_username=user.name,
                 channel_name=channel_name,
             )
+        )
+
+    async def _handle_member_left_channel(self, event: dict[str, object]) -> None:
+        """Someone left the channel or was taken out of it.
+
+        Slack says so with the channel's own "X has left the channel" post
+        (subtype `channel_leave`, or `group_leave` on an older private
+        channel), which arrives over the message subscription every install
+        already has, and with `member_left_channel` where that event is
+        subscribed. Either may come, or both: taking someone out twice is
+        nothing the second time. Neither names who removed them.
+
+        The app itself leaving is not a person leaving, and is left alone.
+        """
+        user_id = str(event.get("user", ""))
+        channel_id = str(event.get("channel", ""))
+        if not user_id or not channel_id or user_id == self._bot_user_id:
+            return
+        await self._user_left(
+            InboundUserLeave(channel_id=channel_id, external_user_id=user_id)
         )
 
     # Message subtypes we still treat as real posts. file_share carries uploaded

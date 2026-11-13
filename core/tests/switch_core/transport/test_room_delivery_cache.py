@@ -27,7 +27,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning.postgres import PostgresProvisioning
-from switch_core.transport import InboundMedia, InboundMessage
+from switch_core.transport import InboundMedia, InboundMembership, InboundMessage
 from switch_core.transport.cursors import FromHead
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import DELIVERY_PAGE, PostgresTransport
@@ -439,7 +439,10 @@ class TestMembershipIsStillEachClients:
         await room.settled()
 
         assert room.received[0].events == []
-        assert [e.body for e in room.received[1].events] == ["held"]  # type: ignore[attr-defined]
+        handed = room.received[1].events
+        assert [e.body for e in handed if not isinstance(e, InboundMembership)] == [  # type: ignore[attr-defined]
+            "held"
+        ]
 
         # And nothing after it, while the room is still cached for the other.
         await staying.send_message(
@@ -447,7 +450,15 @@ class TestMembershipIsStillEachClients:
         )
         await listener.announce(room.room_id)
         assert room.received[0].events == []
-        assert [e.body for e in room.received[1].events] == ["held", "after"]  # type: ignore[attr-defined]
+        handed = room.received[1].events
+        assert [e.body for e in handed if not isinstance(e, InboundMembership)] == [  # type: ignore[attr-defined]
+            "held",
+            "after",
+        ]
+        # The member who stayed is told the other left.
+        assert [e.membership for e in handed if isinstance(e, InboundMembership)] == [
+            "leave"
+        ]
 
     async def test_a_room_everyone_has_left_is_not_held(
         self,

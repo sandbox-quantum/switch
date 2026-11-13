@@ -827,7 +827,7 @@ function ParticipantsSection({
         onChanged();
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to update join events",
+          err instanceof Error ? err.message : "Failed to update join and leave events",
         );
       } finally {
         setWorking(false);
@@ -1110,7 +1110,7 @@ function AgentRow({
       <Typography variant="caption" color="text.secondary">
         {meta.label}
       </Typography>
-      <Tooltip title="When on, this agent is notified when someone joins the room (room_join events) — useful for a welcome/onboarding agent. Does not affect the agent's presence or status.">
+      <Tooltip title="When on, this agent is notified when someone joins or leaves the room (room_join and room_leave events) — useful for a welcome/onboarding or moderator agent. Does not affect the agent's presence or status.">
         <FormControlLabel
           onClick={(e) => e.stopPropagation()}
           labelPlacement="start"
@@ -1121,7 +1121,7 @@ function AgentRow({
               checked={receivesJoinEvents}
               disabled={!onToggleJoinEvents}
               onChange={(e) => onToggleJoinEvents?.(e.target.checked)}
-              slotProps={{ input: { "aria-label": `Notify ${name} when someone joins` } }}
+              slotProps={{ input: { "aria-label": `Notify ${name} when someone joins or leaves` } }}
             />
           }
           label={
@@ -1130,7 +1130,7 @@ function AgentRow({
                 sx={{ fontSize: 15, color: "text.secondary" }}
               />
               <Typography variant="caption" color="text.secondary">
-                Notify on join
+                Notify on join &amp; leave
               </Typography>
             </Stack>
           }

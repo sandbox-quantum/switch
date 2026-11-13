@@ -23,6 +23,7 @@ import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
+import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
   type ConnectorViewer,
   FIX_LABEL,
@@ -36,13 +37,13 @@ import {
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
-  defaultConnectorsTab,
 } from './connectors-catalog';
 import {
   useConnectorCatalog,
   useReloadConnectors,
   useServerFeatureFlags,
 } from './connectors-queries';
+import { FlagsUnreadable } from './flags-unreadable';
 import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
@@ -60,11 +61,14 @@ const DESCRIPTION = 'Connect external services for your agents. Connectors are e
  * The connector catalog of the workspace in scope on the server. Behind the
  * server's `service_connections` flag: with it off there is no page, and
  * reaching it anyway goes to Your Agents rather than drawing an empty one.
+ * Flags that could never be read are said to be, not taken as off.
  */
 const ConnectorsPanel = observer(function ConnectorsPanel() {
   const serverId = useServerId();
   const { navigate } = useNavigate();
-  const access = connectorsPageAccess(useServerFeatureFlags(serverId));
+  const flags = useServerFeatureFlags(serverId);
+  const access = connectorsPageAccess(flags);
+  const gatewayV2 = flags?.flags.gateway_v2 === true;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const viewer: ConnectorViewer = {
@@ -76,6 +80,12 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
     if (access === 'absent') navigate('serverAgents', { serverId });
   }, [access, navigate, serverId]);
 
+  if (access === 'unreadable')
+    return (
+      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
+        <FlagsUnreadable flags={flags} />
+      </ServerPage>
+    );
   if (access !== 'shown' || workspaceId === null)
     return (
       <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
@@ -84,7 +94,13 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
     );
   // Keyed so a workspace switch starts from the catalog, not another workspace's profile.
   return (
-    <Connectors key={workspaceId} serverId={serverId} workspaceId={workspaceId} viewer={viewer} />
+    <Connectors
+      key={workspaceId}
+      serverId={serverId}
+      workspaceId={workspaceId}
+      viewer={viewer}
+      gatewayV2={gatewayV2}
+    />
   );
 });
 
@@ -99,19 +115,15 @@ function Connectors({
   serverId,
   workspaceId,
   viewer,
+  gatewayV2,
 }: {
   serverId: string;
   workspaceId: string;
   viewer: ConnectorViewer;
+  gatewayV2: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  // Null until the person picks a tab or the catalog first arrives; from then
-  // on it stays put, so a connection made on Discover does not move them.
-  const [chosenTab, setTab] = useState<ConnectorsTab | null>(null);
-  const tab = chosenTab ?? (catalog.data ? defaultConnectorsTab(catalog.data) : 'yours');
-  useEffect(() => {
-    if (chosenTab === null && catalog.data) setTab(defaultConnectorsTab(catalog.data));
-  }, [chosenTab, catalog.data]);
+  const [tab, setTab] = useState<ConnectorsTab>('discover');
   const [query, setQuery] = useState('');
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
@@ -174,6 +186,7 @@ function Connectors({
               workspaceId={workspaceId}
               connection={opened}
               viewer={viewer}
+              gatewayV2={gatewayV2}
               justConnected={
                 justConnected?.slug === opened.slug ? { warning: justConnected.warning } : null
               }
@@ -204,7 +217,7 @@ function Connectors({
         )
       }
     >
-      {/* Which tab opens depends on the catalog, so the tabs wait for it rather than flick over. */}
+      {/* The tabs and the search wait for the catalog: until it arrives they have nothing to narrow. */}
       {catalog.data && (
         <ListToolbar
           scope={
@@ -235,7 +248,7 @@ function Connectors({
           viewer={viewer}
           turningOn={turningOn}
           onOpen={openProfile}
-          onSetUp={(entry) => navigate('admin', { serverId, section: 'apps', app: entry.slug })}
+          onSetUp={(entry) => openConnectorAppSetUp(serverId, entry.slug, gatewayV2, navigate)}
           onTurnOn={(entry) => void turnOn(entry)}
           onConnect={(entry) =>
             connect(entry, 'connect', (warning) => {

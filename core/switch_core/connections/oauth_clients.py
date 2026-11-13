@@ -3,19 +3,23 @@
 Dynamic client registration (RFC 7591): on the first connect to such a
 service, Core registers once for the whole deployment and keeps the vendor's
 answer in `service_oauth_clients`, encrypted with the keyring. Every
-workspace's sign-ins to the service then go through that one client. The
-table is deployment-wide and carries no tenant, so it is read in a session
-bound to none.
+workspace's sign-ins to the service then go through that one client. A
+service whose entry asks for a choice before signing in (a vendor's site)
+registers once per choice, since each may be another authorization server:
+one client per site, none replacing another. The table is deployment-wide
+and carries no tenant, so it is read in a session bound to none.
 
 Where a sign-in may return is fixed at registration: Switch Console's
 listener on 127.0.0.1 (any port, as RFC 8252 lets a native client ask), and
-Core's own callback where the server knows its public address.
+Core's own callback only where sign-ins come back through it, because the
+entry lists no other way or the server names it (`SERVICE_SIGN_IN_REDIRECT`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -31,9 +35,11 @@ from switch_core.connections.adapters.oauth import (
     AuthorizationEndpoints,
     OAuthClientCredentials,
 )
-from switch_core.connections.loader import RedirectMode
+from switch_core.connections.loader import Connection, RedirectMode
 from switch_core.db.models import ServiceOAuthClient
 from switch_core.keys import Keyring
+
+logger = logging.getLogger(__name__)
 
 # Where Switch Console's listener takes a sign-in's code back.
 LOOPBACK_CALLBACK_PATH = "/switch-services/callback"
@@ -51,24 +57,104 @@ def loopback_redirect(port: int) -> str:
     return f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}"
 
 
+def preferred_mode(
+    modes: list[RedirectMode], named: RedirectMode | None
+) -> RedirectMode:
+    """The way back a service's sign-ins take on a server that can offer
+    every way: the one `SERVICE_SIGN_IN_REDIRECT` names, which the server
+    checked its entry lists as it started, else the first the entry lists."""
+    return named if named is not None else modes[0]
+
+
+def sign_in_mode(
+    modes: list[RedirectMode], named: RedirectMode | None, public_url: str | None
+) -> RedirectMode | None:
+    """The way back a service's sign-ins take on this server: the preferred
+    one where this server can offer it, else loopback where the entry lists
+    it, since Core's callback needs the public URL; None where it can offer
+    neither."""
+    preferred = preferred_mode(modes, named)
+    if preferred == "loopback" or public_url is not None:
+        return preferred
+    return "loopback" if "loopback" in modes else None
+
+
+def _listed_modes(entry: Connection) -> list[RedirectMode]:
+    oauth = entry.definition.auth.oauth
+    return [] if oauth is None else oauth.redirect
+
+
+def check_sign_in_redirects(
+    catalog: dict[str, Connection], named: dict[str, RedirectMode]
+) -> None:
+    """Refuse a `SERVICE_SIGN_IN_REDIRECT` that names a service not in the
+    catalog, or a way back its entry does not list."""
+    for slug, mode in named.items():
+        entry = catalog.get(slug)
+        if entry is None:
+            raise ValueError(
+                f"SERVICE_SIGN_IN_REDIRECT names {slug!r}, which is not in the catalog."
+            )
+        allowed = _listed_modes(entry)
+        if mode not in allowed:
+            raise ValueError(
+                f"SERVICE_SIGN_IN_REDIRECT names {mode!r} for {slug}, which "
+                + (
+                    "allows only " + " or ".join(repr(listed) for listed in allowed)
+                    if allowed
+                    else "allows none: it has no OAuth sign-in"
+                )
+                + "."
+            )
+
+
+def sign_in_redirect_warnings(
+    catalog: dict[str, Connection],
+    named: dict[str, RedirectMode],
+    public_url: str | None,
+) -> list[str]:
+    """A warning for each service `SERVICE_SIGN_IN_REDIRECT` sends back
+    through Core whose sign-ins cannot come back that way on this server."""
+    warnings = []
+    for slug, mode in named.items():
+        if mode != "core":
+            continue
+        actual = sign_in_mode(_listed_modes(catalog[slug]), mode, public_url)
+        if actual == "core":
+            continue
+        warnings.append(
+            f"SERVICE_SIGN_IN_REDIRECT names 'core' for {slug}, but "
+            "GATEWAY_PUBLIC_URL is unset, so "
+            + (
+                f"{slug}'s sign-ins come back to Switch Console (loopback) instead."
+                if actual == "loopback"
+                else f"{slug} cannot be connected until it is set."
+            )
+        )
+    return warnings
+
+
 def redirect_uris(
     service: str,
     modes: list[RedirectMode],
+    named: RedirectMode | None,
     public_url: str | None,
     loopback_ports: list[int] | None,
 ) -> list[str]:
-    """Every redirect a registration lists, for the modes this server can use:
-    one per loopback port where the vendor matches the port too, or one with
-    no port, which RFC 8252 lets a native client use on any."""
+    """Every redirect a client lists for `service` on this server: Switch
+    Console's listener where the entry lists loopback, one per loopback port
+    where the vendor matches the port too, or one with no port, which RFC 8252
+    lets a native client use on any; and Core's callback only where sign-ins
+    come back through it. A vendor whose admin must allow-list the callback
+    is never sent it until the server names `core`."""
     uris = []
-    for mode in modes:
-        if mode == "loopback":
-            if loopback_ports is None:
-                uris.append(LOOPBACK_REDIRECT_URI)
-            else:
-                uris.extend(loopback_redirect(port) for port in loopback_ports)
-        elif public_url is not None:
-            uris.append(core_callback(public_url, service))
+    if "loopback" in modes:
+        if loopback_ports is None:
+            uris.append(LOOPBACK_REDIRECT_URI)
+        else:
+            uris.extend(loopback_redirect(port) for port in loopback_ports)
+    if public_url is not None and sign_in_mode(modes, named, public_url) == "core":
+        uris.append(core_callback(public_url, service))
     return uris
 
 
@@ -79,7 +165,8 @@ def client_name(public_url: str | None, server_name: str) -> str:
 
 
 class RegisteredClient:
-    """The client Core registered at `service`'s vendor, registering it once.
+    """The client Core registered at `service`'s vendor for each choice,
+    registering each once.
 
     Registration takes a lock held in the database, so two connects at once,
     on any replica, register one client. A vendor that moves its registration
@@ -113,14 +200,16 @@ class RegisteredClient:
         self._client_name = client_name
         # What the registration asks for, kept beside the vendor's answer.
         self._request = {"redirect_uris": redirect_uris, "scope": " ".join(scopes)}
-        self._known: tuple[str, OAuthClientCredentials] | None = None
+        # By choice: where each was registered, and the client.
+        self._known: dict[str, tuple[str, OAuthClientCredentials]] = {}
         self._lock = asyncio.Lock()
 
-    def known_client_id(self) -> str | None:
-        return None if self._known is None else self._known[1].client_id
+    def known_client_id(self, choice: str) -> str | None:
+        known = self._known.get(choice)
+        return None if known is None else known[1].client_id
 
     async def credentials(
-        self, endpoints: AuthorizationEndpoints
+        self, endpoints: AuthorizationEndpoints, choice: str
     ) -> OAuthClientCredentials:
         endpoint = endpoints.registration
         if endpoint is None:
@@ -129,15 +218,21 @@ class RegisteredClient:
                 "registration, so Switch has no client to sign in with."
             )
         async with self._lock:
-            if self._known is not None and self._known[0] == endpoint:
-                return self._known[1]
+            known = self._known.get(choice)
+            if known is not None and known[0] == endpoint:
+                return known[1]
+            # The empty choice takes the lock a release from before choices
+            # took, so the two register one client between them.
+            lock = f"service-oauth-client:{self._service}" + (
+                f":{choice}" if choice else ""
+            )
             async with self._session_factory() as session:
                 await session.execute(
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                    {"key": f"service-oauth-client:{self._service}"},
+                    {"key": lock},
                 )
                 row = await session.get(
-                    ServiceOAuthClient, self._service, populate_existing=True
+                    ServiceOAuthClient, (self._service, choice), populate_existing=True
                 )
                 stored = (
                     None
@@ -161,6 +256,7 @@ class RegisteredClient:
                         session.add(
                             ServiceOAuthClient(
                                 service=self._service,
+                                choice=choice,
                                 registration_endpoint=endpoint,
                                 oauth_client_id=client.client_id,
                                 encrypted_secret=encrypted,
@@ -171,7 +267,7 @@ class RegisteredClient:
                         row.oauth_client_id = client.client_id
                         row.encrypted_secret = encrypted
                 await session.commit()
-            self._known = (endpoint, client)
+            self._known[choice] = (endpoint, client)
             return client
 
     async def _register(self, endpoint: str) -> dict[str, Any]:
@@ -224,8 +320,10 @@ def _credentials(answer: dict[str, Any]) -> OAuthClientCredentials:
     if method == "none" or not isinstance(secret, str) or not secret:
         return OAuthClientCredentials(client_id, None, authentication=None)
     if method not in ("client_secret_basic", "client_secret_post"):
+        # The method is the vendor's text, so only the log names it.
+        logger.warning("Unsupported client authentication method: %r", method)
         raise ServiceAdapterError(
-            f"The vendor registered Switch to authenticate with {method}, "
-            "which Switch does not support."
+            "The vendor registered Switch with a client authentication method "
+            "that Switch does not support."
         )
     return OAuthClientCredentials(client_id, secret, authentication=method)

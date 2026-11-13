@@ -29,6 +29,7 @@ import {
   type WorkspaceServiceChange,
   connectionAgentsSchema,
   connectionCatalogSchema,
+  knownPasteMethods,
   knownUnavailableCode,
   serviceConnectionsSchema,
   workspaceServiceChangeSchema,
@@ -62,9 +63,12 @@ import {
   SERVICE_CALLBACK_PATH,
   type ServiceFlowStart,
   type ServiceKeyConnected,
+  type ServicePaste,
+  type ServicePasteConnected,
   serviceFlowSchema,
   serviceFlowStartSchema,
   serviceKeyConnectedSchema,
+  servicePasteConnectedSchema,
 } from '@shared/core/switch-servers/service-connection';
 import {
   type ServiceGrants,
@@ -4278,14 +4282,23 @@ export async function getConnectionCatalog(
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
+    read_only_reason: entry.enabled ? entry.read_only_reason : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
     agent_access_note: entry.agent_access_note,
     loopback_ports: entry.loopback_ports,
     key: entry.key,
+    sign_in_choices: entry.sign_in_choices,
+    paste: knownPasteMethods(entry.paste),
     external_identity: entry.external_identity,
+    method: entry.method,
+    access_note: entry.access_note,
+    reconnect_code: entry.reconnect_code,
+    reconnect_reason: entry.reconnect_reason,
+    choices: entry.choices,
     consent: entry.consent,
     workspace_enabled: entry.workspace_enabled,
+    organization_locked: entry.organization_locked,
   }));
 }
 
@@ -4302,14 +4315,23 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         connectable: entry.enabled && entry.slug === 'github',
         unavailable_reason: null,
         unavailable_code: null,
+        read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
         agent_access_note: null,
         loopback_ports: null,
         key: null,
+        sign_in_choices: null,
+        paste: [],
         external_identity: null,
+        method: null,
+        access_note: null,
+        reconnect_code: null,
+        reconnect_reason: null,
+        choices: null,
         consent: null,
         workspace_enabled: null,
+        organization_locked: false,
       }))
   );
 }
@@ -4626,20 +4648,30 @@ const serviceFlows = (service: string) =>
  * the browser. That is normally the server's own address; an older server that
  * still keeps its dashboard on a host of its own may name that host instead, so
  * either is accepted, over HTTPS.
+ *
+ * `choices` are what the person picked before signing in (a vendor's site),
+ * sent only where there are some: a server from before choices refuses a start
+ * that names them.
  */
 export async function startServiceConnection(
   server: SwitchServer,
   service: string,
-  input: { port: number; state: string; completion_secret: string }
+  input: {
+    port: number;
+    state: string;
+    completion_secret: string;
+    choices: Record<string, string>;
+  }
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');
+  const { choices, ...start } = input;
   const value = serviceFlowStartSchema.parse(
     await (
       await gatewayFetch(server, serviceFlows(service), {
         authenticated: true,
         method: 'POST',
-        body: input,
+        body: Object.keys(choices).length > 0 ? { ...start, choices } : start,
       })
     ).json()
   );
@@ -4654,14 +4686,32 @@ export async function startServiceConnection(
           (own) => own !== null && new URL(own).origin === url.origin
         ) &&
         url.pathname === `/gateway${serviceFlows(service)}/authorize` &&
-        url.searchParams.get('state') === value.id
+        url.searchParams.get('state') === value.id &&
+        (value.callback_url === null || isOwnCallback(value.callback_url, url, service))
       : url.protocol === 'https:' &&
         url.searchParams.get('state') === value.id &&
         url.searchParams.get('redirect_uri') ===
-          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}`);
+          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}` &&
+        value.callback_url === null);
   if (!valid) throw new Error('The server returned an invalid sign-in URL.');
   return value;
 }
+
+/**
+ * Whether `callback` is the callback beside Core's authorize step at
+ * `authorize`, as an admin would allow-list it at the vendor: same origin, the
+ * service's own path, nothing else.
+ */
+function isOwnCallback(callback: string, authorize: URL, service: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(callback);
+  } catch {
+    return false;
+  }
+  return url.href === `${authorize.origin}/gateway${serviceFlows(service)}/callback`;
+}
+
 export async function getServiceFlow(server: SwitchServer, service: string, id: string) {
   return serviceFlowSchema.parse(
     await (
@@ -4696,6 +4746,24 @@ export async function completeServiceConnection(
     })
     .parse(await response.json());
 }
+/**
+ * Hand on what the vendor sent the listener in place of a code: the server
+ * fails the flow with it, so it reads failed with the vendor's reason at once.
+ */
+export async function failServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  error: string,
+  description: string | null,
+  completionSecret: string
+) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}/fail`, {
+    authenticated: true,
+    method: 'POST',
+    body: { error, error_description: description, completion_secret: completionSecret },
+  });
+}
 export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
   await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
     authenticated: true,
@@ -4719,6 +4787,25 @@ export async function connectServiceWithKey(
     { authenticated: true, method: 'PUT', body: { fields } }
   );
   return serviceKeyConnectedSchema.parse(await response.json());
+}
+/**
+ * Connect `service`, which people sign in to, with a credential pasted in
+ * place of the sign-in (a token, or keys, as its `paste` offers) at what was
+ * picked for its choices (a site): Switch checks it at the service before
+ * keeping it, and never sends it back. A refusal is thrown as a key's is, its
+ * `detail` written for the person.
+ */
+export async function connectServiceWithPaste(
+  server: SwitchServer,
+  service: string,
+  paste: ServicePaste
+): Promise<ServicePasteConnected> {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}/paste`,
+    { authenticated: true, method: 'PUT', body: paste }
+  );
+  return servicePasteConnectedSchema.parse(await response.json());
 }
 /** Disconnect `service`: its grants go with it, and what was issued is revoked. */
 export async function disconnectService(server: SwitchServer, service: string) {
