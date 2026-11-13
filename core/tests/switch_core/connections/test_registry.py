@@ -66,7 +66,14 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog", "notion", "sentry"}
+    assert set(adapters) == {
+        "github",
+        "atlassian",
+        "datadog",
+        "linear",
+        "notion",
+        "sentry",
+    }
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
