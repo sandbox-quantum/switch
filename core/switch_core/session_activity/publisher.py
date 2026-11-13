@@ -107,6 +107,7 @@ from switch_core.session_activity.listener import AgentSessionActivityListener, 
 from switch_core.sessions.contract import DecidedBy, decided
 from switch_core.sessions.presentation import (
     activity_error_summary,
+    cancel_command,
     notification_recipient,
     request_card_recipient,
 )
@@ -1199,6 +1200,10 @@ class AgentSessionActivityPublisher:
             view.turn,
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
+            # Only a turn a room message started can be cancelled, by its sender.
+            cancel_command=cancel_command(target.agent_name, view.turn.turn_id)
+            if view.turn.status == "queued" and view.row.message_id is not None
+            else None,
         )
         state = status_state(
             view,

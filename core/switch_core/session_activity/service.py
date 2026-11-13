@@ -88,7 +88,9 @@ ORPHANED_TURN_TEXT = (
 )
 
 ITEM_STATUSES: dict[str, frozenset[str]] = {
-    "turn": frozenset({"queued", "running", "completed", "interrupted", "error"}),
+    "turn": frozenset(
+        {"queued", "running", "completed", "interrupted", "error", "cancelled"}
+    ),
     "user-message": frozenset({"in-progress", "completed", "failed", "declined"}),
     "assistant-message": frozenset({"in-progress", "completed", "failed", "declined"}),
     "tool-activity": frozenset({"in-progress", "completed", "failed", "declined"}),

@@ -100,6 +100,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
     Control,
     Drawn,
+    cancel_note,
     offered_controls,
     position_action,
 )
@@ -2080,6 +2081,8 @@ class DiscordAdapter(PlatformAdapter):
             lines = []
             if stopping and content.turn.status == "queued":
                 lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.cancel_command is not None and content.turn.status == "queued":
+                lines.append(cancel_note(content.cancel_command))
             if content.notify_unreachable:
                 lines.append(self.unnotified_notice())
             tail = "".join(f"\n{line}" for line in lines)

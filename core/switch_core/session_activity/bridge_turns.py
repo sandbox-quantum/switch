@@ -41,12 +41,12 @@ class TurnView:
     def elapsed_seconds(self, now: datetime) -> float | None:
         """How long the turn has run, or ran; None where nothing measures it.
 
-        A queued turn has not started. An ended turn measures to when its end
-        was recorded, and one whose end was recorded before its first step
-        (reports arriving out of order) reports no measurement rather than a
-        negative one.
+        A queued turn has not started, nor did a cancelled one. An ended turn
+        measures to when its end was recorded, and one whose end was recorded
+        before its first step (reports arriving out of order) reports no
+        measurement rather than a negative one.
         """
-        if self.turn.status == "queued":
+        if self.turn.status in ("queued", "cancelled"):
             return None
         until = self.row.updated_at if self.ended else now
         elapsed = (until - self.started_at).total_seconds()

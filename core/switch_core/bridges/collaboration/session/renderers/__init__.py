@@ -44,6 +44,7 @@ TURN_STATE = {
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
     "error": "Turn ended with an error.",
+    "cancelled": "Cancelled before the agent started.",
 }
 
 
@@ -280,6 +281,12 @@ INTERRUPT_LABEL = "Stop current work"
 INTERRUPT_QUEUED_NOTE = (
     "Stops what the agent is working on now. This message stays queued."
 )
+
+
+def cancel_note(command: str) -> str:
+    """The line a queued turn's message carries saying how to take that message
+    out of the queue: `command` as the person who asked would type it."""
+    return f"To cancel it before it starts: {command}"
 
 
 @dataclass(frozen=True)

@@ -56,6 +56,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
     Drawn,
     Markup,
+    cancel_note,
     offered_controls,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
@@ -2219,6 +2220,8 @@ class TeamsAdapter(PlatformAdapter):
             lines = []
             if stopping and content.turn.status == "queued":
                 lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.cancel_command is not None and content.turn.status == "queued":
+                lines.append(cancel_note(content.cancel_command))
             if notice:
                 lines.append(notice)
             tail = "".join(f"\n{line}" for line in lines)

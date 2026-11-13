@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -288,6 +289,9 @@ class Command:
 # than by id: Switch keeps neither, and the host fills in its own.
 CURRENT = "current"
 
+# What a typed `!cancel` may name a turn by: some or all of its id.
+_TURN_ID_PREFIX = re.compile(r"[0-9A-Fa-f-]{1,64}")
+
 _CONTROL_BODIES: dict[str, dict[str, str]] = {
     "reset": {"type": "session.reset"},
     "compact": {"type": "session.compact"},
@@ -313,7 +317,7 @@ def room_control_frame(
     surface: str,
     requester_name: str,
     direct: bool,
-    target_message_id: str | None,
+    target: str | None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
@@ -322,16 +326,18 @@ def room_control_frame(
     whether the room is a direct chat, where a reset is meant to leave the
     session with none of the conversation.
     `session_id` is None for a controller-backed agent, whose controller
-    picks the session from the room. `target_message_id` is the message a
-    `retry` runs again, and None for every other control.
+    picks the session from the room. `target` is the message a `retry` runs
+    again, or the turn a `cancel` takes out of the queue, and None for every
+    other control.
     """
     if action == "retry":
-        if target_message_id is None:
+        if target is None:
             raise ValueError("a retry names the message to run again")
-        body: dict[str, str] | None = {
-            "type": "message.retry",
-            "messageId": target_message_id,
-        }
+        body: dict[str, str] | None = {"type": "message.retry", "messageId": target}
+    elif action == "cancel":
+        if target is None:
+            raise ValueError("a cancel names the turn to take out of the queue")
+        body = {"type": "turn.cancel", "turnId": target}
     else:
         body = _CONTROL_BODIES.get(action)
     if body is None:
@@ -533,6 +539,70 @@ async def _retry_refusal(
     return None
 
 
+class CancelRefused(Exception):
+    """Why a typed `!cancel` names no turn it may cancel, as the room is told."""
+
+
+async def _queued_turn(
+    client: AgentRecipient,
+    room_id: str,
+    event: CommandEvent,
+    agent: Agent,
+    prefix: str,
+) -> str:
+    """The turn a typed `!cancel` names: the one queued turn of `agent` in this
+    room whose id starts with `prefix`, sent by whoever asks.
+
+    A card offers the first characters of a turn id; the whole id works too.
+    Only this agent's turns in this room are searched, so a prefix never
+    reaches another room's. The host has the last word: one that started
+    after this was read is refused there, and said so in the room.
+    """
+    if not _TURN_ID_PREFIX.fullmatch(prefix):
+        raise CancelRefused(
+            f"Could not cancel: `{prefix}` is not a message id. Copy the `!cancel` "
+            "line from the waiting message's card."
+        )
+    async with client.session_factory() as session:
+        turns = await AgentSessionActivityStore().turns_with_prefix(
+            session, agent.id, room_id, prefix.lower()
+        )
+        queued = [turn for turn in turns if turn.status == "queued"]
+        if not queued:
+            if any(turn.status == "running" for turn in turns):
+                raise CancelRefused(
+                    f"{agent.name} has already started on that message, so it can't "
+                    f"be cancelled. Use `!interrupt @{agent.name}` to stop it."
+                )
+            if turns:
+                raise CancelRefused(
+                    f"That message isn't waiting for {agent.name} any more: it has "
+                    "finished, or it was cancelled."
+                )
+            raise CancelRefused(
+                f"Could not cancel: no message waiting for {agent.name} in this room "
+                f"has an id starting `{prefix}`."
+            )
+        if len(queued) > 1:
+            ids = ", ".join(f"`{turn.turn_id}`" for turn in queued)
+            raise CancelRefused(
+                f"Could not cancel: `{prefix}` starts {len(queued)} messages waiting "
+                f"for {agent.name} ({ids}). Give more of the id."
+            )
+        [turn] = queued
+        message = (
+            await session.execute(
+                select(Message).where(
+                    Message.room_id == room_id,
+                    Message.transport_event_id == turn.message_id,
+                )
+            )
+        ).scalar_one_or_none()
+    if message is None or message.sender_id != event.user_id:
+        raise CancelRefused("Only whoever sent that message can cancel it.")
+    return turn.turn_id
+
+
 async def _manages_room(
     client: AgentRecipient,
     session: AsyncSession,
@@ -607,7 +677,7 @@ async def _decide_control_command(
             return say(
                 f"Could not send {command}: the room command has no stable message ID."
             )
-        target = retry_target(event.args) if command == "retry" else None
+        target = retry_target(event.args) if command in ("retry", "cancel") else None
         if command == "retry":
             if target is None:
                 return say(
@@ -616,6 +686,16 @@ async def _decide_control_command(
             refusal = await _retry_refusal(client, meta.room_id, event, agent, target)
             if refusal is not None:
                 return say(refusal)
+        if command == "cancel":
+            if target is None:
+                return say(
+                    "Could not cancel: the command names no message. Copy the "
+                    "`!cancel` line from the waiting message's card."
+                )
+            try:
+                target = await _queued_turn(client, meta.room_id, event, agent, target)
+            except CancelRefused as refused:
+                return say(str(refused))
         frame = room_control_frame(
             agent_id=agent.id,
             session_id=placed,
@@ -627,7 +707,7 @@ async def _decide_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
             direct=meta.channel_type == "direct",
-            target_message_id=target,
+            target=target,
         )
 
         async def relay() -> None:
@@ -778,6 +858,31 @@ _RETRY = ControlTexts(
         "from Switch Console."
     ),
 )
+
+
+_CANCEL = ControlTexts(
+    ack="Cancelling that message. If I had already started on it, I'll say so here.",
+    unsupported="I can't cancel a waiting message — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so no message is waiting for me here."
+    ),
+    no_session=(
+        "I can't cancel a message from here — my session wasn't started from "
+        "Switch Console."
+    ),
+)
+
+
+async def _cmd_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    await _dispatch_control_command(client, room, event, "cancel", _CANCEL)
+
+
+async def _decide_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "cancel", _CANCEL)
 
 
 async def _cmd_retry(
@@ -2503,6 +2608,19 @@ COMMANDS: list[Command] = [
         ),
         addressed=_addressed_by_required_first_mention,
         hidden=True,
+    ),
+    Command(
+        "cancel",
+        "Cancel a message still waiting for an agent, before it starts on it. "
+        "Only whoever sent it can. Usage: `!cancel @agent-name <id>`, as the "
+        "waiting message's card shows it.",
+        _cmd_cancel,
+        decide=_decide_cancel,
+        args_spec=(
+            CommandArg("target", "The agent the message is waiting for", required=True),
+            CommandArg("turn", "The id on the waiting message's card", required=True),
+        ),
+        addressed=_addressed_by_required_first_mention,
     ),
     Command(
         "interrupt-all-agents",

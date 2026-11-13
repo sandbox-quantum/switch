@@ -370,6 +370,61 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
 });
 
+function cancel(commandId: string, turnId: string): Command {
+  return { ...message(commandId), body: { type: 'turn.cancel', turnId } };
+}
+
+it('cancels a queued turn before the provider ever sees it', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('waiting'));
+  await host.command(message('after'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+  expect((await host.command(cancel('cancel-waiting', 'waiting'))).status).toBe('applied');
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'waiting')?.status).toBe('cancelled');
+
+  // The turn ahead of it ends, and the next one sent is the one behind it.
+  emit({ type: 'turn.completed', turnId: 'active', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId)).toEqual([
+    'active',
+    'after',
+  ]);
+});
+
+it('refuses to cancel a turn the agent has started, or one not waiting', async () => {
+  const { host, adapter } = await start('claude');
+  await host.command(message('active'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+  const started = await host.command(cancel('cancel-active', 'active'));
+  expect(started).toMatchObject({ status: 'rejected' });
+  expect(started.message).toContain('TURN_STARTED');
+  const unknown = await host.command(cancel('cancel-unknown', 'never-sent'));
+  expect(unknown).toMatchObject({ status: 'rejected' });
+  expect(unknown.message).toContain('NOT_QUEUED');
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'active')?.status).toBe('running');
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+});
+
+it('keeps a cancelled turn cancelled across a restart', async () => {
+  const { host, adapter, root } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('waiting'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await host.command(cancel('cancel-waiting', 'waiting'));
+  await host.shutdown();
+
+  const next = setup('claude');
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.snapshot().turns.find((turn) => turn.turnId === 'waiting')?.status).toBe(
+    'cancelled'
+  );
+  expect(next.adapter.sendTurn).not.toHaveBeenCalled();
+});
+
 it('knows what a turn spent from the moment it reads as ended, and after a restart', async () => {
   const { host, emit, root } = await start('claude');
   const spent = [

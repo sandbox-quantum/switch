@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
+    cancel_note,
 )
 from switch_core.bridges.collaboration.teams.adapter import (
     _PUBLICATION_LIMIT,
@@ -442,3 +443,25 @@ async def test_a_stop_and_an_answer_cannot_be_read_as_each_other() -> None:
     assert read_interrupt_action(stop) == RUNNING_TURN
     assert read_answer_action(answer) == ("tok-1", 2)
     assert ANSWER_VERB != INTERRUPT_VERB
+
+
+# ── Cancelling a queued turn ─────────────────────────────────────────────────
+
+_CANCEL = "!cancel @worker 378893ee"
+
+
+async def test_a_queued_turn_says_how_to_cancel_it_even_with_nothing_to_stop() -> None:
+    """Cancelling is typed, so it needs no control of its own to be offered."""
+    adapter, connector, _ = _handled()
+    await _post(
+        adapter, _activity("queued", interrupt_turn_id=None, cancel_command=_CANCEL)
+    )
+    text = _card_text(_posted(connector))
+    assert cancel_note(_CANCEL) in text
+
+
+async def test_a_started_turn_is_not_offered_a_cancel() -> None:
+    adapter, connector, _ = _handled()
+    await _post(adapter, _activity(cancel_command=_CANCEL))
+    text = _card_text(_posted(connector))
+    assert "!cancel" not in text

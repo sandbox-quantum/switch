@@ -459,7 +459,7 @@ def test_an_interrupt_names_the_current_turn() -> None:
         surface="slack",
         requester_name="louisa",
         direct=False,
-        target_message_id=None,
+        target=None,
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
 
@@ -479,7 +479,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
         surface="switch-web",
         requester_name="louisa",
         direct=False,
-        target_message_id="$m1",
+        target="$m1",
     )
     assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
     with pytest.raises(ValueError):
@@ -494,7 +494,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
             surface="switch-web",
             requester_name="louisa",
             direct=False,
-            target_message_id=None,
+            target=None,
         )
 
 
