@@ -254,6 +254,7 @@ class TestResults:
             "gitlab",
             "google-workspace",
             "linear",
+            "new-relic",
             "notion",
             "sentry",
         }

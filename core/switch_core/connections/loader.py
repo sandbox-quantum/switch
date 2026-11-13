@@ -43,6 +43,11 @@ MAX_SKILL_BYTES = 32 * 1024
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}$"
 HTTPS_URL_PATTERN = r"^https://[^\s/?#]+[^\s#]*$"
 JSON_PATH_PATTERN = r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$"
+# A plain path, never a full URL: starts at /, plain segments separated by a
+# single /, no query, fragment, encoded characters or whitespace. A `.` or
+# `..` segment is refused separately, below, since the character class alone
+# cannot tell one apart from a plain name.
+LOOPBACK_CALLBACK_PATH_PATTERN = r"^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
 # A minted token is made for the one issue, so the broker holds it to the hour
 # every token it hands out was always held to.
 MINTED_MAX_LIFETIME = 3600
@@ -185,7 +190,10 @@ class OAuthClient(BaseModel):
 
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
-    them any port is used. `prompt` is sent with every authorization, for a
+    them any port is used. `loopback_callback_path`: the path a loopback
+    redirect returns on, in place of the server's default
+    (`/switch-services/callback`), for a vendor that insists on one of its
+    own; only meaningful with a loopback redirect. `prompt` is sent with every authorization, for a
     vendor that needs it (`consent`, to consent to a narrower set of scopes;
     `select_account`, to let the person choose the account), one value or
     several separated by spaces, as OAuth writes it.
@@ -208,6 +216,9 @@ class OAuthClient(BaseModel):
     redirect: list[RedirectMode] = Field(min_length=1)
     loopback_ports: list[Annotated[int, Field(ge=1024, le=65535)]] | None = Field(
         default=None, min_length=1, max_length=10
+    )
+    loopback_callback_path: str | None = Field(
+        default=None, pattern=LOOPBACK_CALLBACK_PATH_PATTERN
     )
     prompt: str | None = Field(
         default=None,
@@ -260,6 +271,16 @@ class OAuthClient(BaseModel):
                 raise ValueError("loopback_ports are for a loopback redirect")
             if len(set(self.loopback_ports)) != len(self.loopback_ports):
                 raise ValueError("a loopback port is listed twice")
+        if self.loopback_callback_path is not None:
+            if "loopback" not in self.redirect:
+                raise ValueError("loopback_callback_path is for a loopback redirect")
+            if any(
+                segment in (".", "..")
+                for segment in self.loopback_callback_path.split("/")[1:]
+            ):
+                raise ValueError(
+                    "loopback_callback_path may not contain a . or .. segment"
+                )
         if self.revocation_discovered and (
             self.revocation_url is not None or self.authorization_url is not None
         ):
