@@ -217,9 +217,16 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
   const trimmedName = displayName.trim();
   const missingRequired = formFields.some((field) => isMissingRequired(field, config));
-  // Only what the person can type is named: a field the guide fills in itself
-  // is reported by the guide.
-  const missingMessage = missingFieldsMessage(visibleFields, config);
+  // Only what the person can type is named, the tokens the guide asks for
+  // included: a field the guide fills in itself is reported by the guide.
+  const missingMessage = missingFieldsMessage(
+    formFields.filter(
+      (field) =>
+        !isGuidedPlatform(selectedType?.key) ||
+        !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
+    ),
+    config
+  );
   const canSubmit =
     showForm &&
     workspaceId !== null &&

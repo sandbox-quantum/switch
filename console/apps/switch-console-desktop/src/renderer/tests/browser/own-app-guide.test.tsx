@@ -181,7 +181,10 @@ describe('the Slack guide', () => {
     await settle();
     await settle();
 
-    expect(container!.querySelectorAll('[aria-label$=", done"]')).toHaveLength(3);
+    const marks = container!.querySelectorAll('[aria-label$=", done"]');
+    expect(marks).toHaveLength(3);
+    // Read out as "Step 1, done", not as the tick it shows.
+    expect([...marks].every((mark) => mark.getAttribute('role') === 'img')).toBe(true);
     await waitForImages();
     await page.viewport(720, 1200);
     await page.screenshot({ path: `${SHOTS}/slack-setup-done.png`, element: container! });
@@ -196,6 +199,9 @@ describe('when Slack does not take the app from the link', () => {
     await settle();
 
     expect(document.body.textContent).toContain('Paste a manifest');
+    // What Slack's older screen calls it, and what pasting it does to guests.
+    expect(document.body.textContent).toContain('From an app manifest');
+    expect(document.body.textContent).toContain('delete the agent_view block');
     await act(async () => button('Copy the manifest').click());
     expect(writeText).toHaveBeenCalledWith(SETUP.manifestJson);
     expect(button('Copied')).toBeTruthy();

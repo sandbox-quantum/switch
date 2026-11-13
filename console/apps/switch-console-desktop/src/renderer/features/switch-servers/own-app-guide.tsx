@@ -83,6 +83,7 @@ function Step({
           'mt-px flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium',
           done ? 'bg-foreground-success text-background' : 'bg-foreground text-background'
         )}
+        role="img"
         aria-label={done ? `Step ${n}, done` : `Step ${n}`}
       >
         {done ? '✓' : n}
@@ -167,8 +168,13 @@ function ManifestFallback({ manifestJson }: { manifestJson: string }) {
         >
           api.slack.com/apps
         </button>
-        , click <b>Create New App</b>, choose <b>Paste a manifest</b>, pick your workspace, and
-        paste this app&apos;s manifest.
+        , click <b>Create New App</b>, choose <b>Paste a manifest</b> (on Slack&apos;s older screen,{' '}
+        <b>From an app manifest</b>), pick your workspace, and paste this app&apos;s manifest.
+      </p>
+      <p>
+        If your workspace has guests, delete the <code>agent_view</code> block before pasting. It
+        declares the app an Agent, which blocks guests from it and can&apos;t be undone; Switch
+        doesn&apos;t use it.
       </p>
       <Button
         size="sm"

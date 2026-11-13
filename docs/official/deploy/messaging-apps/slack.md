@@ -27,7 +27,7 @@ You'll need:
 
 ### Create the Slack app from a manifest
 
-Open [Slack API apps](https://api.slack.com/apps), select **Create New App**, then **From an app manifest**. Choose your workspace, paste the manifest below, and create the app.
+Open [Slack API apps](https://api.slack.com/apps), select **Create New App**, then **Paste a manifest** (on Slack's older screen, **From an app manifest**). Choose your workspace, paste the manifest below, and create the app.
 
 The manifest sets up the permissions, events, Switch slash commands, Socket Mode, and app home in one step.
 
