@@ -74,6 +74,8 @@ export function useProviderSetup({
   );
 
   const [login, setLogin] = useState<Login | null>(null);
+  /** The provider whose install last failed, so its card offers a way on. */
+  const [installFailed, setInstallFailed] = useState<string | null>(null);
   /** What the last Check again found, when it found nothing new: said, not left blank. */
   const [checked, setChecked] = useState<string | null>(null);
 
@@ -131,12 +133,17 @@ export function useProviderSetup({
     reportBuddyStep('install', provider.id);
     setWorking('install');
     setError(null);
+    setInstallFailed(null);
     try {
       const result = await rpc.providers.install(provider.id);
-      if (!result.success) setError(installFailure(provider.name, result.error));
+      if (!result.success) {
+        setError(installFailure(provider.name, result.error));
+        setInstallFailed(provider.id);
+      }
       await recheck();
     } catch (cause) {
       setError(failureText(cause, `Could not install ${provider.name}.`));
+      setInstallFailed(provider.id);
     } finally {
       setWorking(null);
     }
@@ -162,6 +169,7 @@ export function useProviderSetup({
     error,
     login,
     checked,
+    installFailed,
     checkAgain,
     signIn,
     cancelSignIn,

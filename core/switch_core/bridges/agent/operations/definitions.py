@@ -72,6 +72,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
     TemplateAgents,
+    opening_rooms_as_made,
     pending_addressing,
     room_ids_of,
 )
@@ -2053,6 +2054,7 @@ async def _provision_as_agent(
             if creator is None
             else await creator.create(tenant_id, owner.id, checked)
         )
+        room_made = opening_rooms_as_made(creator, tenant_id, created, room_addressing)
         try:
             if isinstance(parsed.spec, GroupSpec):
                 group_result = await rooms_yaml.provision_group(
@@ -2062,6 +2064,7 @@ async def _provision_as_agent(
                     creator_name=builtins["$creator"],
                     origin=origin,
                     template_name=template_name,
+                    on_room_made=room_made,
                 )
                 result = group_result.model_dump()
             else:
@@ -2073,6 +2076,7 @@ async def _provision_as_agent(
                     creator_name=builtins["$creator"],
                     origin=origin,
                     template_name=template_name,
+                    on_room_made=room_made,
                 )
                 result = room_result.model_dump()
             if creator is not None and room_addressing:

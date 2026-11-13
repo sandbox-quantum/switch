@@ -23,6 +23,7 @@ import pytest
 from sqlalchemy import delete, func, select, update
 
 from switch_core.addressing import owner_only_policy
+from switch_core.agent_runs import TRACE_OPENING
 from switch_core.db.models import (
     Agent,
     AgentEventRow,
@@ -2354,3 +2355,76 @@ async def test_a_step_reaches_the_activity_streams_of_every_process(
         name, item = await events.next()
         assert (name, item["roomId"], item["turnId"]) == ("activity", room_id, "t1")
         await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_a_kickoff_reads_back_as_the_agent_that_ran_the_template(
+    chats: _Harness,
+) -> None:
+    """Switch posts a template's kickoff for whoever ran it. Switch Console is
+    told whose it is, and gets the run history for the agents apart from the
+    request, so it can show the request as theirs and fold the history away."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    sent_ids = []
+    for txn, text in (("s1", "Kickoff from switch-buddy"), ("s2", "request")):
+        sent = await chats.send(chats.alice, room_id, txn, text)
+        assert sent.status_code == 200, sent.text
+        sent_ids.append(sent.json()["messages"][0]["messageId"])
+
+    buddy = await chats.agent("switch-buddy", owner=chats.alice)
+    async with chats.factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == buddy.id)
+            .values(
+                display_name="Switch Buddy", icon_url="https://example.test/buddy.png"
+            )
+        )
+        await session.commit()
+    on_behalf_of = {
+        "user_id": chats.alice.id,
+        "name": "switch-buddy",
+        "agent_id": buddy.id,
+    }
+    request = f"Sprint room is live.\n\n{TRACE_OPENING}Welcome. So far: ..."
+    async with chats.factory() as session:
+        rows = {
+            row.transport_event_id: row
+            for row in (
+                await session.execute(
+                    select(Message).where(Message.transport_event_id.in_(sent_ids))
+                )
+            ).scalars()
+        }
+        headline, kickoff = (rows[i] for i in sent_ids)
+        # As the platform posts them: no sender client, the marker in content.
+        headline.sender_client_id = None
+        headline.content = {"com.switch.platform": {"on_behalf_of": on_behalf_of}}
+        kickoff.sender_client_id = None
+        kickoff.body = request
+        kickoff.content = {
+            "com.switch.platform": {
+                "on_behalf_of": on_behalf_of,
+                "reply_in_channel": True,
+            }
+        }
+        await session.commit()
+
+    page = await chats.client.get(
+        f"/chats/{room_id}/messages", headers=chats.as_user(chats.alice)
+    )
+    by_id = {m["messageId"]: m for m in page.json()["messages"]}
+    first, second = (by_id[i] for i in sent_ids)
+    assert first["sender"]["kind"] == "system"
+    assert first["kickoff"] is None
+    assert second["sender"]["kind"] == "system"
+    assert second["body"] == "Sprint room is live."
+    assert second["kickoff"] == {
+        "name": "switch-buddy",
+        "agentId": buddy.id,
+        "userId": chats.alice.id,
+        "agentNote": f"{TRACE_OPENING}Welcome. So far: ...",
+        # Its own look, though it is not in the room.
+        "displayName": "Switch Buddy",
+        "iconUrl": "https://example.test/buddy.png",
+    }
