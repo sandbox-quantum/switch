@@ -147,7 +147,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
       );
     const room = archivedSummary(card);
     return room !== undefined && workspaceId !== null
-      ? switchRoomsStore.roomPermissions(workspaceId, room).canWrite
+      ? switchRoomsStore.roomPermissions(workspaceId, room).canArchive
       : false;
   };
   async function setArchived(card: RoomCardData) {

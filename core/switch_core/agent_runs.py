@@ -101,7 +101,8 @@ class AgentOrigin:
 
 
 # How the run so far starts when it is appended to a kickoff (see `_trace`).
-TRACE_OPENING = "This room is part of a run that started in "
+# People read the kickoff too, so it says who the history is for.
+TRACE_OPENING = "Note for the agents: this room is part of a run that started in "
 
 
 def kickoff_fingerprint(text: str) -> str:

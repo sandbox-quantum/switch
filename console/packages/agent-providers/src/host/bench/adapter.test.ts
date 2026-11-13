@@ -9,6 +9,7 @@ describe('the room message a benchmark turn answers', () => {
       sessionId: 'session',
       epoch: 'epoch',
       roomId: '!room:example.test',
+      canSteer: false,
       message: roomMessageSchema.parse({
         type: 'message',
         payload: {

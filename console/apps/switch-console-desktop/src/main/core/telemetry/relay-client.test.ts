@@ -13,7 +13,7 @@ const CONTEXT: TelemetryContext = {
   osType: 'darwin',
   osVersion: '24.3.0',
   build: 'stable',
-  flintEnv: 'prod',
+  telemetryEnv: 'prod',
   internal: 'false',
   timeMs: 1_700_000_000_000,
   sessionId: 1_699_999_000_000,
@@ -22,7 +22,7 @@ const CONTEXT: TelemetryContext = {
 const CONFIG: TelemetryConfig = {
   endpoint: 'https://telemetry.example/v1/logs',
   build: 'stable',
-  flintEnv: 'prod',
+  telemetryEnv: 'prod',
 };
 
 type Attribute = { key: string; value: { stringValue: string } };
@@ -74,7 +74,7 @@ describe('the record that gets built', () => {
       CONTEXT
     );
 
-    expect(resourceAttributes(payload)['flint.client_id']).toBe(CONTEXT.clientId);
+    expect(resourceAttributes(payload)['switch_trust.client_id']).toBe(CONTEXT.clientId);
   });
 
   it('says which app and version it is, for both destinations', () => {
@@ -87,9 +87,9 @@ describe('the record that gets built', () => {
     expect(resourceAttributes(payload)).toEqual({
       'service.name': 'switch-console',
       'service.version': '1.2.3',
-      'flint.client_id': CONTEXT.clientId,
-      flint_env: 'prod',
-      flint_internal: 'false',
+      'switch_trust.client_id': CONTEXT.clientId,
+      'switch_trust.env': 'prod',
+      'switch_trust.internal': 'false',
       'os.type': 'darwin',
       'os.version': '24.3.0',
     });
@@ -244,23 +244,23 @@ describe('the record that gets built', () => {
         { ...CONTEXT, internal }
       );
 
-      expect(resourceAttributes(payload).flint_internal).toBe(internal);
+      expect(resourceAttributes(payload)['switch_trust.internal']).toBe(internal);
       expect(JSON.stringify(payload)).not.toContain('@');
     }
   );
 
   it.each(['prod', 'staging', 'dev', 'local'] as const)(
     'says the event belongs in the %s Amplitude project',
-    (flintEnv) => {
+    (telemetryEnv) => {
       // The relay picks the project from this, beside the client id it already
       // requires on the resource.
       const payload = buildOtlpPayload(
         'app_launched',
         { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
-        { ...CONTEXT, flintEnv }
+        { ...CONTEXT, telemetryEnv }
       );
 
-      expect(resourceAttributes(payload).flint_env).toBe(flintEnv);
+      expect(resourceAttributes(payload)['switch_trust.env']).toBe(telemetryEnv);
     }
   );
 

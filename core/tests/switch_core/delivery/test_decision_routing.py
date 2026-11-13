@@ -988,7 +988,9 @@ class TestTheTriageAgent:
     ) -> None:
         reply = await room.command("bob", "auto-route", "fallback @reviewer", at=5)
 
-        assert reply.startswith("Only the room's owner or a workspace admin")
+        assert reply.startswith(
+            "Only the room's owner, a room admin or a workspace admin"
+        )
         async with world.session_factory() as session:
             assert await RoomStore().auto_route_fallback(session, world.room_id) is None
 

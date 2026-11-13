@@ -57,6 +57,26 @@ function transport() {
 }
 
 describe('session-v1 wire contract', () => {
+  it('reads how a message sent mid-turn was delivered', () => {
+    const upsert = (delivery?: string) =>
+      serverEventSchema.safeParse(
+        event(5, {
+          type: 'item.upsert',
+          item: {
+            ...item(1, 'In blue, please'),
+            itemId: 'user-steer',
+            kind: 'user-message',
+            status: 'completed',
+            ...(delivery === undefined ? {} : { delivery }),
+          } as Item,
+        })
+      );
+    expect(upsert('steered').success).toBe(true);
+    expect(upsert('queued').success).toBe(true);
+    expect(upsert().success).toBe(true);
+    expect(upsert('interrupted').success).toBe(false);
+  });
+
   it('accepts server approval expiry offsets in snapshots and events', () => {
     const expiresAt = '2026-09-11T15:30:00.123456+00:00';
     const snapshot = initial();
@@ -180,6 +200,32 @@ describe('session-v1 client transport', () => {
     );
     expect(vi.mocked(wire.api.submit).mock.calls[0][0]).not.toHaveProperty('origin');
     expect(client.getSnapshot().snapshot?.commandStatuses[0].status).toBe('accepted');
+  });
+  it('asks to steer a Console message when the session can steer', async () => {
+    const wire = transport();
+    const busy = initial();
+    busy.session.capabilities.input = 'steer';
+    // The example snapshot's one turn is running.
+    expect(busy.turns[0].status).toBe('running');
+    vi.mocked(wire.api.snapshot).mockResolvedValue(busy);
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    await client.send('Use the other file instead', 'send');
+    expect(wire.api.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ delivery: 'steer' }) })
+    );
+  });
+  it('queues a Console message when the session cannot steer', async () => {
+    const wire = transport();
+    const busy = initial();
+    busy.session.capabilities.input = 'queue';
+    vi.mocked(wire.api.snapshot).mockResolvedValue(busy);
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    await client.send('Hello', 'send');
+    expect(wire.api.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ delivery: 'queue' }) })
+    );
   });
   it('reconnects reads after an epoch change without resending an uncertain command', async () => {
     vi.useFakeTimers();

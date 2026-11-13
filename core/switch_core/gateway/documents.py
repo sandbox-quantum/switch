@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core import room_policy
+from switch_core import room_admins, room_policy
 from switch_core.authz import Principal, can, can_manage, owns
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Document, Room, User
@@ -17,7 +17,6 @@ from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
     require_room_access,
-    takes_part_in_room,
 )
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -129,12 +128,12 @@ def _room_can_read(reader: Principal, doc: Document) -> bool:
 
 
 def _can_remove(
-    principal: Principal, room: Room, doc: Document, *, takes_part: bool
+    principal: Principal, room: Room, doc: Document, *, where: room_admins.Standing
 ) -> bool:
     """Whether `principal` may remove `doc` from `room`: delete it if it is
     room-scoped, unlink it if it is attached."""
     return room_policy.allows(
-        RoomCaller(principal, in_room=takes_part),
+        RoomCaller(principal, in_room=where.in_room, room_admin=where.room_admin),
         room,
         _removal(doc),
         owns_target=owns(principal, doc.owner_id),
@@ -448,7 +447,7 @@ async def list_room_documents(
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
-    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
+    where = await room_admins.standing(session, room_store, room.id, user.id)
     principal = Principal(user.id, is_admin)
     docs = await resource_service.list_room_documents(session, room_id)
     summaries = await _enrich_summaries(
@@ -457,7 +456,7 @@ async def list_room_documents(
     return [
         RoomDocumentSummary(
             **{**summary.model_dump(), "can_read": _room_can_read(principal, doc)},
-            can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
+            can_remove=_can_remove(principal, room, doc, where=where),
         )
         for summary, doc in zip(summaries, docs, strict=True)
     ]
@@ -569,8 +568,8 @@ async def get_room_document(
     detail = await _enrich_detail(
         session, doc, resource_service, user_store, agent_store, principal
     )
-    takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
+    where = await room_admins.standing(session, room_store, room.id, user.id)
     return RoomDocumentDetail(
         **{**detail.model_dump(), "can_read": _room_can_read(principal, doc)},
-        can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
+        can_remove=_can_remove(principal, room, doc, where=where),
     )
