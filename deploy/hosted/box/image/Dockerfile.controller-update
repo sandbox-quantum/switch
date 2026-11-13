@@ -17,4 +17,11 @@ RUN npm install --global --prefix /opt/switch/controller /tmp/controller.tgz \
 # The controller runs under node --optimize-for-size, on its own command line only (not NODE_OPTIONS).
 # Root-owned, 0755: the box user cannot change it.
 COPY --chown=0:0 --chmod=0755 entrypoint.sh /usr/local/bin/switch-box
+# Nothing setuid or setgid may come in with the controller package: npm runs a package's install scripts as root
+# here, and one could set the bit. Stage 1 stripped the base; this only checks, and fails the build if any is found.
+RUN set -e; \
+    find / -xdev -perm /6000 -type f > /tmp/setid-left.txt; \
+    if [ -s /tmp/setid-left.txt ]; then echo "setuid/setgid files after the controller install:" >&2; cat /tmp/setid-left.txt >&2; exit 1; fi; \
+    rm -f /tmp/setid-left.txt; \
+    echo "no setuid/setgid files after the controller install"
 USER 2000:2000
