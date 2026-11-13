@@ -36,6 +36,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "gitlab",
         "notion",
         "sentry",
+        "trello",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -46,6 +47,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "google-workspace",
         "notion",
         "sentry",
+        "trello",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -55,6 +57,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
+    assert "SKILL.md" in CATALOG["trello"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -1496,3 +1499,53 @@ def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
     raw = path.read_bytes().replace(b"\r\n", b"\n")
     path.write_bytes(raw.replace(b"\n", b"\r\n"))
     assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
+
+
+def test_the_shipped_trello_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["trello"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    # Trello signs in through Atlassian, which matches a loopback port exactly.
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("trello", "https://mcp.trello.com/v1")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = [
+        "read:me",
+        "read:account",
+        "offline_access",
+        "read:board:trello",
+        "read:organization:trello",
+        "read:member:trello",
+        "read:member.inbox:trello",
+        "read:member.planner:trello",
+    ]
+    assert definition.access.read.scopes == read
+    # Atlassian grants no write without every advertised scope, changing
+    # workspaces included.
+    assert set(definition.access.write.scopes or []) == {
+        *read,
+        "write:board:trello",
+        "write:organization:trello",
+        "write:member.inbox:trello",
+        "write:member.planner:trello",
+    }
+    assert len(definition.access.write.scopes or []) == 12
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.atlassian.com/me"
+    assert definition.auth.identity.account_id == "account_id"

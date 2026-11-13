@@ -66,7 +66,14 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog", "notion", "sentry"}
+    assert set(adapters) == {
+        "github",
+        "atlassian",
+        "datadog",
+        "notion",
+        "sentry",
+        "trello",
+    }
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -449,3 +456,23 @@ class TestDisabledServices:
     def test_refuses_a_bad_entry(self, disabled: dict[str, str]) -> None:
         with pytest.raises(ValueError, match="DISABLED_SERVICES"):
             _config(disabled_services=disabled)
+
+
+def test_trello_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["trello"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    assert client._request["scope"] == (
+        "read:me read:account offline_access read:board:trello "
+        "read:organization:trello read:member:trello read:member.inbox:trello "
+        "read:member.planner:trello write:board:trello write:organization:trello "
+        "write:member.inbox:trello write:member.planner:trello"
+    )

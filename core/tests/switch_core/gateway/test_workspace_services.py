@@ -252,6 +252,7 @@ class TestResults:
             "google-workspace",
             "notion",
             "sentry",
+            "trello",
         }
         assert services["datadog"] == {
             "slug": "datadog",
