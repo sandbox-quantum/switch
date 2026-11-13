@@ -27,14 +27,11 @@ from switch_core.gateway.schemas import (
     TrustSettingsUpdateRequest,
 )
 from switch_core.keys import UndecryptableError
+from switch_core.trust.workspace_policy import DEFAULT_TRUST_ENDPOINT
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-# Matches the previous env-var default (`SwitchConfig.switch_trust_endpoint`,
-# since removed) — shown until an operator saves their own.
-DEFAULT_TRUST_ENDPOINT = "https://api.switchagents.ai"
 
 
 def _to_response(

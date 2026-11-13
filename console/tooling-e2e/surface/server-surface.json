@@ -394,6 +394,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/api-keys/workspace",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/api-keys/{key_id}/reveal",
       "auth": "session",
       "flags": []
@@ -666,6 +671,13 @@
       "route": "GET /gateway/management/providers",
       "auth": "session",
       "flags": []
+    },
+    {
+      "route": "GET /gateway/management/workspace",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
     },
     {
       "route": "GET /gateway/messaging-apps",
@@ -1050,6 +1062,11 @@
     },
     {
       "route": "GET /gateway/version",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/workspace/guardrails",
       "auth": "session",
       "flags": []
     },

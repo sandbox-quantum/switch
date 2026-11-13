@@ -33,6 +33,7 @@ import {
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
+import ApiKeysPage from "../pages/api-keys/ApiKeysPage";
 import AgentListPage from "../pages/agents/AgentListPage";
 import AgentsPage from "../pages/agents/AgentsPage";
 import CollaborationsPage from "../pages/collaborations/CollaborationsPage";
@@ -56,7 +57,9 @@ import PackageDetailPage from "../pages/resources/PackageDetailPage";
 import ReferenceDetailPage from "../pages/resources/ReferenceDetailPage";
 import ResourcesPage from "../pages/resources/ResourcesPage";
 import TemplateDetailPage from "../pages/resources/TemplateDetailPage";
+import DevicesPage from "../pages/devices/DevicesPage";
 import CreateRoomPage from "../pages/rooms/CreateRoomPage";
+import WorkspaceGuardrailsPage from "../pages/guardrails/WorkspaceGuardrailsPage";
 import GroupsPage from "../pages/rooms/GroupsPage";
 import RoomDetailPage from "../pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "../pages/rooms/RoomScopedDocumentView";
@@ -262,16 +265,10 @@ export const ROUTES: readonly AppRoute[] = [
     serviceConnections,
     <WorkspaceConnectorsPage />,
   ),
-  settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <RegistrationKeysPage />),
+  settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   redirect("/settings/api-keys", CURRENT, "/registration-keys"),
-  settingsPage(
-    "/settings/guardrails",
-    "workspace",
-    "Guardrails",
-    everyone,
-    <PlannedPage title="Guardrails" />,
-  ),
-  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <MachinesPage />),
+  settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
+  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   redirect("/settings/devices", CURRENT, "/machines"),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
   settingsPage(
