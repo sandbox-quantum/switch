@@ -351,6 +351,7 @@ def _profile(
     display_name: str | None = None,
     icon_url: str | None = None,
     addressing: str | None = None,
+    mid_turn_delivery: str | None = None,
     third_party_avatars: bool = True,
 ) -> AgentProfileUpdate:
     return AgentProfileUpdate.parse(
@@ -358,6 +359,7 @@ def _profile(
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        mid_turn_delivery=mid_turn_delivery,
         third_party_avatars=third_party_avatars,
     )
 
@@ -440,6 +442,29 @@ class TestUpdateAgentDetail:
             assert agent is not None
             assert agent.addressing_policy == stored
 
+    async def test_mid_turn_delivery_is_set_and_read_back(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        req_id, target_id = await _owned_pair(session_factory)
+        assert (await svc.get_agent_detail(req_id, target_id)).mid_turn_delivery == (
+            "steer"
+        )
+
+        detail = await svc.update_agent_detail(
+            req_id, target_id, _profile(mid_turn_delivery="queue")
+        )
+
+        assert detail.mid_turn_delivery == "queue"
+        assert (await svc.get_agent_detail(req_id, target_id)).mid_turn_delivery == (
+            "queue"
+        )
+        # Another change leaves it as it was.
+        await svc.update_agent_detail(req_id, target_id, _profile(description="new"))
+        assert (await svc.get_agent_detail(req_id, target_id)).mid_turn_delivery == (
+            "queue"
+        )
+
     def test_invalid_values_are_refused_before_anything_is_written(self) -> None:
         with pytest.raises(ValueError, match="addressing must be one of"):
             _profile(addressing="everyone")
@@ -447,6 +472,10 @@ class TestUpdateAgentDetail:
             _profile(icon_url="http://localhost/icon.png")
         with pytest.raises(ValueError, match="description must not be blank"):
             _profile(description="   ")
+        with pytest.raises(
+            ValueError, match='mid_turn_delivery must be "steer" or "queue"'
+        ):
+            _profile(mid_turn_delivery="sometimes")
 
     def test_an_avatar_service_icon_is_refused_only_when_the_server_turns_them_off(
         self,

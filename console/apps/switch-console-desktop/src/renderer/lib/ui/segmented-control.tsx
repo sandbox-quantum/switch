@@ -23,7 +23,8 @@ export function SegmentedControl<T extends string>({
 }: {
   value: T;
   onChange: (value: T) => void;
-  options: readonly { value: T; label: string; icon?: LucideIcon }[];
+  /** An option `disabled` is shown and can't be chosen; the caller says why beside it. */
+  options: readonly { value: T; label: string; icon?: LucideIcon; disabled?: boolean }[];
   ariaLabel: string;
   className?: string;
   /**
@@ -54,6 +55,7 @@ export function SegmentedControl<T extends string>({
         <ToggleGroupItem
           key={option.value}
           value={option.value}
+          disabled={option.disabled}
           aria-label={option.label}
           // The hover fill is an overlay, and only on the option that is not
           // already chosen: the default `background-1` is the dialog and panel

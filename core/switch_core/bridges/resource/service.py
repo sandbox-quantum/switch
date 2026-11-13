@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.authz import (
     Principal,
     can,
-    can_manage,
     require,
     require_visibility_change,
     validate_visibility_pair,
@@ -53,16 +52,27 @@ def _reference_type(type_: str) -> str:
     return type_ if is_builtin_type(type_) else "other"
 
 
-def _require_room_document_writer(doc: Document, agent_id: str) -> None:
+def _require_room_document_writer(
+    doc: Document, agent_id: str, *, owner_writes_room: bool
+) -> None:
     """Refuse an agent changing a room-scoped document it may not maintain.
 
-    The agent that wrote a document may change it, and any agent in the room
-    may change one a room template made; the caller checks that the agent is
-    in the room. Anything else is refused, including a document whose writer
-    has since been deleted.
+    The agent that wrote a document may change it. One a room template made
+    may be changed by an agent in the room whose owner may write the room
+    (`owner_writes_room`), as for the room's roles: its instructions reach
+    every agent in the room, whoever owns them. The caller checks that the
+    agent is in the room. Anything else is refused, including a document whose
+    writer has since been deleted.
     """
-    if doc.created_by_agent_id == agent_id or doc.from_template:
+    if doc.created_by_agent_id == agent_id:
         return
+    if doc.from_template:
+        if owner_writes_room:
+            return
+        raise PermissionError(
+            f"Document {doc.id} came from the room's template; only an agent "
+            "whose owner can edit the room can change or delete it"
+        )
     raise PermissionError(
         f"Document {doc.id} was not created by this agent or by the room's "
         "template; only its creating agent can change or delete it"
@@ -249,20 +259,21 @@ class ResourceService:
     ) -> list[ReferenceTypeRow]:
         """The management list: database rows only, never built-ins.
 
-        A principal manages the rows it owns; an admin manages every row, per
-        ``can_manage``. A row shadowed by a built-in stays here, and stays
-        editable and deletable, flagged rather than hidden.
+        Every row the principal may read: its own and the public ones, or
+        every row for an admin. What it may do to each is the caller's to
+        report, row by row, so a public type someone else owns is listed even
+        where it may only be read, and can be edited where it is publicly
+        writable. A row shadowed by a built-in stays here, and stays editable
+        and deletable, flagged rather than hidden.
         """
         rows = (
             await self._reference_types.list_all(session)
             if is_admin
             else await self._reference_types.list_for_user(session, user_id)
         )
-        principal = Principal(user_id, is_admin)
         return [
             ReferenceTypeRow(row=row, shadowed_by_builtin=is_builtin_type(row.type))
             for row in sorted(rows, key=lambda r: r.type)
-            if can_manage(principal, row.owner_id)
         ]
 
     async def resolve_display_names(
@@ -1163,6 +1174,7 @@ class ResourceService:
         *,
         room_id: str,
         agent_id: str,
+        owner_writes_room: bool,
         document_id: str,
         name: str | None = None,
         description: str | None = None,
@@ -1174,7 +1186,9 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        _require_room_document_writer(doc, agent_id)
+        _require_room_document_writer(
+            doc, agent_id, owner_writes_room=owner_writes_room
+        )
         if name is not None:
             if not name.strip():
                 raise ValueError("name must not be empty")
@@ -1204,6 +1218,7 @@ class ResourceService:
         *,
         room_id: str,
         agent_id: str,
+        owner_writes_room: bool,
         document_id: str,
     ) -> None:
         doc = await self._documents.get_room_scoped(session, room_id, document_id)
@@ -1211,7 +1226,9 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        _require_room_document_writer(doc, agent_id)
+        _require_room_document_writer(
+            doc, agent_id, owner_writes_room=owner_writes_room
+        )
         age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
         emit_after_commit(

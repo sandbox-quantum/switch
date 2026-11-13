@@ -13,6 +13,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
+import { useRoomAgentCandidates } from '@renderer/lib/stores/use-room-agent-candidates';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -90,6 +91,12 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   // The agents' own icons live on the server, not in the local row, so the
   // list is joined against the server's summary to draw them.
   const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
+  // And only the ones the server's invite rule lets this person bring in.
+  // Nothing is offered until the server has answered, so nobody picks an
+  // agent the invite would refuse; an older server that can't say offers all.
+  const invitableQuery = useRoomAgentCandidates(workspaceId, roomId);
+  const invitable = invitableQuery.data ? new Set(invitableQuery.data) : null;
+  const invitableKnown = invitableQuery.isSuccess;
   const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
   // Only this install's agents are offered. An agent registered on another
   // Switch Console could be added server-side but could never be shown or driven
@@ -103,9 +110,15 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
           providerId: agent.providerId ?? null,
           iconUrl: remoteById.get(agent.switchAgentId as string)?.iconUrl ?? null,
         }))
-        .filter((a) => !members.has(a.id) && !selected.some((s) => s.id === a.id))
+        .filter(
+          (a) =>
+            !members.has(a.id) &&
+            !selected.some((s) => s.id === a.id) &&
+            invitableKnown &&
+            (invitable === null || invitable.has(a.id))
+        )
     : [];
-  const nothingToAdd = candidates.length === 0 && selected.length === 0;
+  const nothingToAdd = invitableKnown && candidates.length === 0 && selected.length === 0;
 
   const handleSubmit = useCallback(async () => {
     if (!workspaceId || selected.length === 0) return;
@@ -204,14 +217,23 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
                   subtitle={agentProviderLabel(item.providerId)}
                 />
               )}
-              disabled={nothingToAdd}
-              placeholder="Search agents to add..."
+              disabled={nothingToAdd || !invitableKnown}
+              placeholder={invitableQuery.isPending ? 'Loading agents…' : 'Search agents to add...'}
               emptyText="No agents found"
             />
+            {invitableQuery.isError && (
+              <p className="mt-1 text-xs text-destructive">
+                {failureText(
+                  invitableQuery.error,
+                  'Could not work out which agents you can invite.'
+                )}
+              </p>
+            )}
             {nothingToAdd && (
               <p className="mt-1 text-xs text-foreground-muted">
-                Every agent on this copy of Switch Console is already in the room. Agents registered
-                elsewhere can only be added from the gateway.
+                {invitable === null
+                  ? 'Every agent on this copy of Switch Console is already in the room. Agents registered elsewhere can only be added from the gateway.'
+                  : 'No other agents of this copy of Switch Console that you can invite: your own agents, and agents that anyone may address. Agents registered elsewhere can only be added from the gateway.'}
               </p>
             )}
           </Field>

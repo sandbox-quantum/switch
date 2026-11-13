@@ -3,6 +3,7 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
 import type { ServiceGrant } from '@shared/core/switch-servers/service-grants';
 import {
   agentConnectionCards,
+  connectionCardBlockedReason,
   connectionCardDetail,
   connectionCardStatus,
   noConnectorsSetUp,
@@ -27,13 +28,22 @@ function service(
     status: 'connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: null,
     agent_access_note: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
     external_identity: null,
+    choices: null,
     workspace_enabled: null,
+    organization_locked: false,
     consent: null,
     ...overrides,
   };
@@ -75,11 +85,48 @@ describe("an agent's connection cards", () => {
 
   it('names the services you have not connected instead of giving them cards', () => {
     const { cards, unconnected } = agentConnectionCards(
-      [service('atlassian'), service('datadog', { status: 'not_connected' })],
+      [service('datadog'), service('atlassian', { status: 'not_connected' })],
       []
     );
-    expect(cards.map((card) => card.slug)).toEqual(['atlassian']);
-    expect(unconnected).toEqual(['Datadog']);
+    expect(cards.map((card) => card.slug)).toEqual(['datadog']);
+    expect(unconnected).toEqual(['Atlassian']);
+  });
+
+  it('names only what you could connect and then turn on here', () => {
+    const { cards, unconnected } = agentConnectionCards(
+      [
+        service('datadog', {
+          status: 'not_connected',
+          connectable: false,
+          unavailable_code: 'key_never_expires',
+          unavailable_reason: 'Datadog keys do not expire.',
+        }),
+        service('github', {
+          pass_through: false,
+          status: 'not_connected',
+          connectable: false,
+          unavailable_code: 'needs_https',
+          unavailable_reason: 'GitHub needs an https address.',
+        }),
+        service('google', {
+          status: 'not_connected',
+          connectable: false,
+          unavailable_code: 'app_not_set_up',
+          unavailable_reason:
+            'Google is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.',
+        }),
+        service('box', {
+          status: 'not_connected',
+          unavailable_code: 'not_fully_set_up',
+          unavailable_reason: 'Box can be connected but not granted.',
+        }),
+        service('airtable', { status: 'not_connected', workspace_enabled: false }),
+        service('atlassian', { status: 'not_connected' }),
+      ],
+      []
+    );
+    expect(cards).toEqual([]);
+    expect(unconnected).toEqual(['Atlassian']);
   });
 
   it('leaves out coming-soon and switched-off placeholders, and services nothing here can grant', () => {
@@ -126,7 +173,7 @@ describe("an agent's connection cards", () => {
       [
         service('atlassian'),
         service('datadog', { unavailable_reason: 'Maintenance' }),
-        service('google', { status: 'error' }),
+        service('google', { status: 'needs_reauthorization' }),
         service('box'),
       ],
       [grant('atlassian')]
@@ -138,15 +185,88 @@ describe("an agent's connection cards", () => {
     );
     expect(connectionCardDetail(plain)).toBe('What box is.');
   });
+
+  it('shows a grant made for another account as off, and says why', () => {
+    const [changed] = agentConnectionCards(
+      [service('atlassian')],
+      [grant('atlassian', { account_changed: true })]
+    ).cards;
+    expect(connectionCardStatus(changed)).toBe('Off');
+    expect(connectionCardDetail(changed)).toBe(
+      'This was granted for another Atlassian account, so it gives no access now. Turn it on again for the account connected now.'
+    );
+  });
+
+  it('names only the controls a GitHub or other card has for a grant made for another account', () => {
+    const [github, gitlab] = agentConnectionCards(
+      [service('github', { pass_through: false }), service('gitlab', { pass_through: false })],
+      [grant('github', { account_changed: true }), grant('gitlab', { account_changed: true })]
+    ).cards;
+    expect(connectionCardDetail(github)).toBe(
+      'This was granted for another Github account, so it gives no access now. Change it, or remove it.'
+    );
+    expect(connectionCardDetail(gitlab)).toBe(
+      'This was granted for another Gitlab account, so it gives no access now. Remove it.'
+    );
+  });
+
+  it('says when the workspace or the server stops a service, even one turned on', () => {
+    const [off, stopped] = agentConnectionCards(
+      [
+        service('atlassian', { workspace_enabled: false }),
+        service('box', { unavailable_reason: 'Maintenance' }),
+      ],
+      [grant('box')]
+    ).cards;
+    expect(connectionCardDetail(off)).toBe(
+      'Atlassian is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors.'
+    );
+    expect(connectionCardStatus(stopped)).toBe('On');
+    expect(connectionCardDetail(stopped)).toBe('Maintenance');
+  });
+
+  it('gives its drawer the reason the card says, and none for a service nothing stops', () => {
+    const [github, stopped, stale, retired] = agentConnectionCards(
+      [
+        service('github', { name: 'GitHub', pass_through: false, workspace_enabled: false }),
+        service('box', { unavailable_reason: 'Maintenance' }),
+        service('google', { status: 'needs_reauthorization' }),
+      ],
+      [grant('github', { access: 'write' }), grant('box'), grant('retired')]
+    ).cards;
+    expect(connectionCardBlockedReason(github)).toBe(connectionCardDetail(github));
+    expect(connectionCardBlockedReason(github)).toBe(
+      'GitHub is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors.'
+    );
+    expect(connectionCardBlockedReason(stopped)).toBe('Maintenance');
+    expect(connectionCardBlockedReason(stale)).toBeNull();
+    expect(connectionCardBlockedReason(retired)).toBeNull();
+  });
+
+  it('says why a write grant gets nothing where the server lets agents read only', () => {
+    const reason = "Switch's GitHub App lets agents read only.";
+    const github = service('github', { pass_through: false, read_only_reason: reason });
+    const [writes] = agentConnectionCards(
+      [github],
+      [grant('github', { access: 'write', summary: 'Pushes to 1 repository.' })]
+    ).cards;
+    const [reads] = agentConnectionCards(
+      [github],
+      [grant('github', { summary: 'Reads 1 repository.' })]
+    ).cards;
+    expect(connectionCardStatus(writes)).toBe('Read and push');
+    expect(connectionCardDetail(writes)).toBe(reason);
+    expect(connectionCardDetail(reads)).toBe('Reads 1 repository.');
+  });
 });
 
 describe('the note naming unconnected services', () => {
   it('sends them to Connectors', () => {
-    expect(unconnectedNote(['Datadog'])).toBe(
-      'Not connected: Datadog. Connect it from Connectors to turn it on here.'
+    expect(unconnectedNote(['Atlassian'])).toBe(
+      'Not connected: Atlassian. Connect it from Connectors to turn it on here.'
     );
-    expect(unconnectedNote(['Atlassian', 'Datadog'])).toBe(
-      'Not connected: Atlassian, Datadog. Connect them from Connectors to turn them on here.'
+    expect(unconnectedNote(['Atlassian', 'Google Workspace'])).toBe(
+      'Not connected: Atlassian, Google Workspace. Connect them from Connectors to turn them on here.'
     );
   });
 

@@ -56,10 +56,12 @@ from switch_core.sessions.contract import (
 from . import (
     CLOSED,
     NO_OPTIONS,
+    STEERED_MARKER,
     Drawn,
     Markup,
     RequestReference,
     example_value,
+    is_steered,
     surface_label,
     turn_state,
     unanswerable,
@@ -319,6 +321,14 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
+    for item in items:
+        if item.kind != "user-message" or not in_activity_log(item):
+            continue
+        line = _log_line(item, escape=escape)
+        if spent + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        spent += len(line) + 1
     for line in subagent_lines(
         items, fit=lambda text, size: _fit(text, size, escape=escape)
     ):
@@ -400,6 +410,8 @@ def in_activity_log(item: Item) -> bool:
     """
     if item.kind == "tool-activity":
         return True
+    if is_steered(item):
+        return True
     return item.kind == "assistant-message" and bool(item.text)
 
 
@@ -410,6 +422,9 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     its own paragraph breaks removed: a sentence spread over four lines is
     indistinguishable from four things having happened.
     """
+    if item.kind == "user-message":
+        text = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
+        return f"{STEERED_MARKER}: {text or '(attachment)'}"
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"

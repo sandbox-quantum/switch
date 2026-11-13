@@ -26,6 +26,9 @@ import {
   CLOUD_GITHUB_GRANT_NOTES,
   GITHUB_GRANT_NOTES,
   REMOVED_GRANT_NOTE,
+  accountChangedNote,
+  grantCardNote,
+  grantStands,
   grantedRepositoryIds,
   grantedRepositoryNames,
   onOffGrantBlock,
@@ -227,6 +230,9 @@ export function ServiceGrantsRow({
         <GitHubGrantForm
           github={github}
           current={githubGrant}
+          readOnlyReason={
+            services.data?.find((service) => service.slug === 'github')?.read_only_reason ?? null
+          }
           agentName={agentName}
           busy={change.isPending}
           onCancel={githubGrant ? () => setEditing(false) : null}
@@ -262,20 +268,25 @@ export function OnOffGrant({
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
-  const block = onOffGrantBlock(service, grant !== null);
+  const stands = grantStands(grant);
+  const block = onOffGrantBlock(service, stands);
   return (
     <div className="rounded-lg border border-border p-3">
       <div className="flex items-center gap-2">
         <span className="flex-1 text-sm font-medium">{service.name}</span>
-        <Badge variant="outline">{grant ? 'On' : 'Off'}</Badge>
+        <Badge variant="outline">{stands ? 'On' : 'Off'}</Badge>
         <Switch
           aria-label={`${service.name} for ${agentName}`}
-          checked={grant !== null}
+          checked={stands}
           disabled={busy || block?.blocksOn === true}
           onCheckedChange={(on) => (on ? onTurnOn() : onTurnOff())}
         />
       </div>
-      {grant && <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>}
+      {grant && (
+        <p className="mt-1 text-sm text-foreground-muted">
+          {stands ? grant.summary : accountChangedNote(service.name)}
+        </p>
+      )}
       {block && <p className="mt-1 text-sm text-foreground-muted">{block.reason}</p>}
       <p className="mt-1 text-xs text-foreground-muted">{onOffGrantNote(agentName, service)}</p>
     </div>
@@ -302,7 +313,9 @@ export function GrantCard({
     <div className="rounded-lg border border-border p-3">
       <div className="flex items-center gap-2">
         <span className="flex-1 text-sm font-medium">{grant.name}</span>
-        <Badge variant="outline">{grant.access === 'write' ? 'Read and push' : 'Read'}</Badge>
+        <Badge variant="outline">
+          {!grantStands(grant) ? 'Off' : grant.access === 'write' ? 'Read and push' : 'Read'}
+        </Badge>
         {onChange && (
           <Button size="sm" variant="ghost" disabled={busy} onClick={onChange}>
             Change
@@ -318,7 +331,9 @@ export function GrantCard({
           Remove
         </Button>
       </div>
-      <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>
+      <p className="mt-1 text-sm text-foreground-muted">
+        {grantCardNote(grant, onChange !== null)}
+      </p>
       {grant.service === 'github' && (
         <p className="mt-1 text-sm">{grantedRepositoryNames(github, grant.resources).join(', ')}</p>
       )}
@@ -329,6 +344,7 @@ export function GrantCard({
 export function GitHubGrantForm({
   github,
   current,
+  readOnlyReason,
   agentName,
   busy,
   onCancel,
@@ -336,6 +352,8 @@ export function GitHubGrantForm({
 }: {
   github: { data: GitHubConnection | undefined; isError: boolean; error: unknown };
   current: ServiceGrant | null;
+  /** Why the server's App lets agents read only; null where pushing can be granted. */
+  readOnlyReason: string | null;
   agentName: string;
   busy: boolean;
   onCancel: (() => void) | null;
@@ -378,7 +396,14 @@ export function GitHubGrantForm({
           ? `Change which repositories ${agentName} reaches`
           : `Turn GitHub on for ${agentName}`}
       </span>
-      {reach && <GitHubGrantPicker github={reach} value={choice} onChange={setChoice} />}
+      {reach && (
+        <GitHubGrantPicker
+          github={reach}
+          value={choice}
+          readOnlyReason={readOnlyReason}
+          onChange={setChoice}
+        />
+      )}
       <div className="flex gap-2">
         <Button
           size="sm"

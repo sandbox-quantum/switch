@@ -23,6 +23,7 @@ import { useCallback, useMemo, useState } from "react";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type BridgeDetail,
+  type BridgeUpdateInput,
   beginAppInstall,
   updateBridge,
 } from "../../data/api";
@@ -47,12 +48,13 @@ const STATUS_COLOR: Record<string, "success" | "error" | "default"> = {
 
 export default function CollaborationsPage() {
   const { canAdminTenant: isAdmin } = useAuth();
-  const { data: bridges, loading, refetch } = useBridges();
+  const { data: bridges, loading, error: loadError, refetch } = useBridges();
   const { data: installablePlatforms } = useInstallablePlatforms();
   const [deleteTarget, setDeleteTarget] = useState<BridgeDetail | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<BridgeDetail | null>(null);
   const [teamsTarget, setTeamsTarget] = useState<BridgeDetail | null>(null);
@@ -83,24 +85,32 @@ export default function CollaborationsPage() {
     }
   }, [deleteTarget, refetch]);
 
-  const handleToggleGreetings = useCallback(
-    async (bridgeId: string, enabled: boolean) => {
+  const saveSetting = useCallback(
+    async (bridgeId: string, update: BridgeUpdateInput) => {
       setSavingId(bridgeId);
-      await updateBridge(bridgeId, { agent_greetings_enabled: enabled });
-      setSavingId(null);
-      refetch();
+      setSaveError(null);
+      try {
+        await updateBridge(bridgeId, update);
+      } catch (e) {
+        setSaveError(e instanceof Error ? e.message : "Failed to save the change");
+      } finally {
+        setSavingId(null);
+        refetch();
+      }
     },
     [refetch],
   );
 
+  const handleToggleGreetings = useCallback(
+    (bridgeId: string, enabled: boolean) =>
+      saveSetting(bridgeId, { agent_greetings_enabled: enabled }),
+    [saveSetting],
+  );
+
   const handleToggleChannelCreation = useCallback(
-    async (bridgeId: string, enabled: boolean) => {
-      setSavingId(bridgeId);
-      await updateBridge(bridgeId, { channel_creation_enabled: enabled });
-      setSavingId(null);
-      refetch();
-    },
-    [refetch],
+    (bridgeId: string, enabled: boolean) =>
+      saveSetting(bridgeId, { channel_creation_enabled: enabled }),
+    [saveSetting],
   );
 
   // Re-approval is the same install flow the "Add to..." button starts: the
@@ -284,6 +294,12 @@ export default function CollaborationsPage() {
         </Alert>
       )}
 
+      {saveError && (
+        <Alert severity="error" sx={{ mb: 1 }} onClose={() => setSaveError(null)}>
+          {saveError}
+        </Alert>
+      )}
+
       {needsAttention.map((b) => (
         <AttentionBanner
           key={b.bridge_id}
@@ -301,6 +317,8 @@ export default function CollaborationsPage() {
 
       {loading ? (
         <CircularProgress />
+      ) : loadError !== null && bridges === null ? (
+        <Alert severity="error">Could not load the messaging apps. Reload the page to try again.</Alert>
       ) : (
         <DataTable
           rows={rows}
@@ -315,7 +333,7 @@ export default function CollaborationsPage() {
         />
       )}
 
-      <InstalledAppsSection key={installsVersion} onConnectionsChanged={refetch} />
+      <InstalledAppsSection key={installsVersion} onConnectionsChanged={refetch} memberView={false} />
 
       <RegisterMessagingAppDialog
         open={registerOpen}

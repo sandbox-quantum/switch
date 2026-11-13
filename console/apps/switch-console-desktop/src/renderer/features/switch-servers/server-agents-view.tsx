@@ -79,7 +79,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     <ServerPage
       width={880}
       title="Your Agents"
-      description={`Agents on ${server?.name ?? 'this server'}. Add one, set how it is addressed, and start sessions.`}
+      description={`Your agents created and registered on ${server?.name ?? 'this server'}.`}
     >
       {machines.data
         ?.filter((machine) => machine.state !== 'deleted')

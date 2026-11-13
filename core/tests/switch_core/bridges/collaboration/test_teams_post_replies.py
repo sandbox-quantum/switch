@@ -87,6 +87,7 @@ async def _seen(adapter: TeamsAdapter, *, root_id: str | None, ref: str) -> None
         message_ref=ref,
         root_id=root_id,
         channel_name="general",
+        addressed=False,
     )
 
 

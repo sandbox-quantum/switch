@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
@@ -21,6 +22,9 @@ class _FakeSession:
 
     async def commit(self) -> None:
         self.committed = True
+
+    async def get(self, model: Any, key: str) -> Any:
+        return None  # The owner's user row: not an admin.
 
 
 class _FakeResourceService:
@@ -44,22 +48,27 @@ class _FakeResourceService:
 
 
 class _FakeAgentStore:
-    """Returns an ownerless agent so `_resolve_acting_identity` resolves to an
-    anonymous principal (room write is granted via public write_visibility)."""
+    """Returns an agent of the room owner's, so the room policy lets it change
+    the room's links."""
 
     async def get(self, session: Any, agent_id: str) -> Any:
-        return SimpleNamespace(id=agent_id, owner_id=None)
+        return SimpleNamespace(
+            id=agent_id,
+            owner_id="u-alice",
+            addressing_policy=owner_and_owner_agents_policy().model_dump(),
+        )
 
 
 class _FakeRoomStore:
-    """Returns a publicly-writable room so the write guard passes."""
+    """Returns a room its agent's owner owns."""
 
     async def get(self, session: Any, room_id: str) -> Any:
         return SimpleNamespace(
             id=room_id,
-            owner_id=None,
+            owner_id="u-alice",
             read_visibility="public",
-            write_visibility="public",
+            write_visibility="private",
+            channel_type="channel_public",
         )
 
 

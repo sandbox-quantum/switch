@@ -36,7 +36,10 @@ interface AuthState {
   // switch to, so it says which workspace it shows instead.
   linkNotice: string | null;
   dismissLinkNotice: () => void;
-  recheck: () => void;
+  // Reads the session again, after any read already under way, which may
+  // have started before what the caller just changed. Never rejects: a read
+  // that fails sets `staleError`.
+  recheck: () => Promise<void>;
   refresh: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -139,9 +142,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loaded.session]);
   const reading = useRef<Promise<void> | null>(null);
   const restoredWhileReading = useRef(false);
-  const revalidate = useCallback((restored: boolean) => {
+  const revalidate = useCallback((restored: boolean): Promise<void> => {
     restoredWhileReading.current ||= restored;
-    if (reading.current !== null) return;
+    if (reading.current !== null) return reading.current;
     reading.current = (async () => {
       let current: Loaded;
       try {
@@ -165,13 +168,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       reading.current = null;
       restoredWhileReading.current = false;
     });
+    return reading.current;
   }, []);
   useEffect(() => {
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) revalidate(true);
+      if (event.persisted) void revalidate(true);
     };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") revalidate(false);
+      if (document.visibilityState === "visible") void revalidate(false);
     };
     window.addEventListener("pageshow", onPageShow);
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -180,7 +184,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [revalidate]);
-  const recheck = useCallback(() => revalidate(false), [revalidate]);
+  const recheck = useCallback(async () => {
+    while (reading.current !== null) await reading.current;
+    await revalidate(false);
+  }, [revalidate]);
 
   const login = useCallback(
     async (email: string, password: string) => {

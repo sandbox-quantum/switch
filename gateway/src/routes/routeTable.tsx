@@ -39,6 +39,7 @@ import CollaborationsPage from "../pages/collaborations/CollaborationsPage";
 import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "../pages/ecosystem/EcosystemGraphPage";
 import MachinesPage from "../pages/machines/MachinesPage";
+import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
 import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
 import ConnectorPage from "../pages/connectors/ConnectorPage";
 import OrganizationPage, {
@@ -64,11 +65,10 @@ import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import UsagePage from "../pages/usage/UsagePage";
 import UsersPage from "../pages/users/UsersPage";
+import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage";
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
-import WorkspacePage, {
-  WorkspaceGeneralPage,
-  WorkspaceUsersPage,
-} from "../pages/workspace/WorkspacePage";
+import WorkspacePage, { WorkspaceGeneralPage } from "../pages/workspace/WorkspacePage";
+import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
 import { PlannedPage } from "./StatusPages";
 
 /** Every page the signed-in dashboard has, in one table: its URL, who may
@@ -210,6 +210,12 @@ export const ROUTES: readonly AppRoute[] = [
   page("/registration-keys", CURRENT, everyone, <RegistrationKeysPage />),
   redirect("/registration-keys", V2, "/settings/api-keys"),
   page("/workspace", CURRENT, everyone, <WorkspacePage />),
+  page(
+    "/workspace/private-channel-rooms",
+    BOTH,
+    workspaceAdmins,
+    <PrivateChannelRoomsPage />,
+  ),
   redirect("/workspace", V2, "/settings/users"),
   page("/organization", CURRENT, inOrganization, <OrganizationPage />),
   redirect("/organization", V2, "/settings/org"),
@@ -232,7 +238,7 @@ export const ROUTES: readonly AppRoute[] = [
     "workspace",
     "Messaging apps",
     everyone,
-    <CollaborationsPage />,
+    <MessagingAppsPage />,
   ),
   redirect("/settings/messaging-apps", CURRENT, "/collaborations"),
   settingsPage(

@@ -170,6 +170,10 @@ export function TransferOwnershipDialog({
         )}
         {members === null && !error ? (
           <CircularProgress size={20} />
+        ) : members !== null && candidates.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            There is no one else in this workspace to give it to.
+          </Typography>
         ) : (
           <Select
             fullWidth
@@ -177,7 +181,9 @@ export function TransferOwnershipDialog({
             displayEmpty
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
-            aria-label="New owner"
+            // The select's name goes on the element that takes focus, where a
+            // screen reader reads it; on the Select itself it names nothing.
+            SelectDisplayProps={{ "aria-label": "New owner" }}
           >
             <MenuItem value="" disabled>
               Choose a user

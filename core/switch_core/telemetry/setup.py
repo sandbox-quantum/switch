@@ -98,7 +98,7 @@ async def build_telemetry(
             None,
         )
 
-    # Both streams send `flint.client_id`, so a deployment reporting both must
+    # Both streams send `switch_trust.client_id`, so a deployment reporting both must
     # be one subject downstream. The operator's value wins; the generated one
     # cannot be copied between deployments and carries the install date.
     client_id = config.deployment_id or generated_id
@@ -181,7 +181,7 @@ async def build_telemetry(
 
 
 def telemetry_environment(config: SwitchConfig, version: str | None) -> str:
-    """The Amplitude project this deployment reports to (`flint_env`).
+    """The Amplitude project this deployment reports to (`switch_trust.env`).
 
     `TELEMETRY_ENVIRONMENT` when it is set. Otherwise `dev` for a build that
     is not a release (a `.dev` version, as every image built from main is), so
