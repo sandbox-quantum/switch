@@ -7,6 +7,7 @@ import { ChatPanel } from '@switch-console/chat-ui/components/chat-panel';
 import { ChatRow, RoomRow, UnsavedChatRow } from '@switch-console/chat-ui/components/chat-row';
 import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { agentConversations } from '@switch-console/chat-ui/model/agent-conversations';
+import { roomActivityAt } from '@switch-console/chat-ui/model/room-order';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
 import { ChatActionItems, chatActions } from '@renderer/features/chats/components/chat-actions';
@@ -27,6 +28,7 @@ import { EmptyState } from '@renderer/lib/ui/empty-state';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
 import { AgentProfile, managedAgentMachineLine } from './agent-profile';
+import { AgentProfileActions } from './agent-profile-actions';
 import {
   type AgentSection,
   agentSections,
@@ -74,7 +76,12 @@ function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   return {
     agentRooms,
     archived,
-    ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed),
+    ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed, (roomId) =>
+      roomActivityAt(
+        ownServer ? chatsStore.chat(roomId) : undefined,
+        switchRoomsStore.roomSummaryById(roomId)
+      )
+    ),
   };
 }
 
@@ -185,6 +192,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               ? () => navigate('machine', { serverId, machineId: machine.id, name: machine.name })
               : null
           }
+          actions={<AgentProfileActions agent={agent} />}
         />
         <Section title="Direct chats" addLabel="New chat" onAdd={newChat} addChoices={null}>
           {ownServer && chatsStore.listError && (

@@ -16,6 +16,7 @@ import {
   byLatestDirectChat,
   isConsoleDirectChatSummary,
 } from "@switch-console/chat-ui/model/agent-conversations";
+import { roomActivityAt } from "@switch-console/chat-ui/model/room-order";
 import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
 import { SidebarMenuRow } from "@switch-console/chat-ui/primitives/sidebar";
 import type { ChatsStore } from "@switch-console/chat-ui/stores/chats-store";
@@ -179,6 +180,7 @@ const AgentPage = observer(function AgentPage({ agent }: { agent: AgentListEntry
     chats.chatsOfAgent(agentId),
     agentRooms.data ?? [],
     chats.removed,
+    (roomId) => roomActivityAt(chats.chat(roomId), null),
   );
   const archived = chats.archivedOfAgent(agentId).filter(isConsoleDirectChatSummary);
   const shownRoom = params.get("room");

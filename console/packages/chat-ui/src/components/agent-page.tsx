@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, type LucideIcon, Plus } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { AgentAvatar } from '../host';
+import { cn } from '../model/cn';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -8,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from '../primitives/dropdown-menu';
 import { SidebarItemMiniButton } from '../primitives/sidebar';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../primitives/tooltip';
 
 /** Where an agent runs, as the one line under its name says it. */
 export type AgentLine = {
@@ -137,4 +139,43 @@ export function ConversationSection({
 /** A quiet line in a section: empty, loading, or what went wrong. */
 export function ConversationNote({ children }: { children: ReactNode }) {
   return <p className="px-2 py-1 text-xs text-foreground-muted">{children}</p>;
+}
+
+/** One of the square buttons under an agent's name, its label in a tooltip. */
+export function ProfileButton({
+  label,
+  icon: Icon,
+  onClick,
+  pressed,
+  disabled = false,
+}: {
+  label: string;
+  icon: LucideIcon;
+  onClick: () => void;
+  /** For a section: whether it is the one open. Absent for an action. */
+  pressed?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            aria-pressed={pressed}
+            disabled={disabled}
+            onClick={onClick}
+            className={cn(
+              'flex size-9 items-center justify-center rounded-lg bg-background-2 text-foreground-muted transition-colors hover:bg-background-3 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
+              pressed && 'bg-background-3 text-foreground ring-1 ring-border-1 ring-inset'
+            )}
+          >
+            <Icon className="size-4" />
+          </button>
+        }
+      />
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 }

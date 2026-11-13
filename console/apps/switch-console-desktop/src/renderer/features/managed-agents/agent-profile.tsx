@@ -1,7 +1,10 @@
-import { type AgentLine, AgentProfileHeader } from '@switch-console/chat-ui/components/agent-page';
+import {
+  type AgentLine,
+  AgentProfileHeader,
+  ProfileButton,
+} from '@switch-console/chat-ui/components/agent-page';
 import { Cloud, Laptop, type LucideIcon, Plug, ServerOff, Settings } from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import { cn } from '@renderer/utils/utils';
+import type { ReactNode } from 'react';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { AgentSection } from './agent-sections';
 import { managedAgentState } from './managed-agent-state';
@@ -61,6 +64,7 @@ export function AgentProfile({
   selected,
   onSelect,
   onOpenMachine,
+  actions,
 }: {
   name: string;
   iconUrl: string | null;
@@ -70,6 +74,8 @@ export function AgentProfile({
   selected: AgentSection | null;
   onSelect: ((section: AgentSection) => void) | null;
   onOpenMachine: (() => void) | null;
+  /** The agent's own actions (turning it off, moving it), after its sections. */
+  actions?: ReactNode;
 }) {
   return (
     <AgentProfileHeader
@@ -83,28 +89,17 @@ export function AgentProfile({
         {SECTION_BUTTONS.filter((item) => sections.includes(item.section)).map((item) => {
           const active = selected === item.section;
           return (
-            <Tooltip key={item.section}>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={item.label}
-                    aria-pressed={active}
-                    disabled={onSelect === null}
-                    onClick={() => onSelect?.(item.section)}
-                    className={cn(
-                      'flex size-9 items-center justify-center rounded-lg bg-background-2 text-foreground-muted transition-colors hover:bg-background-3 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
-                      active && 'bg-background-3 text-foreground ring-1 ring-border-1 ring-inset'
-                    )}
-                  >
-                    <item.icon className="size-4" />
-                  </button>
-                }
-              />
-              <TooltipContent>{item.label}</TooltipContent>
-            </Tooltip>
+            <ProfileButton
+              key={item.section}
+              label={item.label}
+              icon={item.icon}
+              pressed={active}
+              disabled={onSelect === null}
+              onClick={() => onSelect?.(item.section)}
+            />
           );
         })}
+        {actions}
       </div>
     </AgentProfileHeader>
   );

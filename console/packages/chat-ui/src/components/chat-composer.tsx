@@ -31,6 +31,7 @@ import {
   shiftMentions,
   tokenToRemove,
 } from '../model/mentions';
+import { personColour } from '../model/person-colour';
 import { isInterruptAck } from '../model/stop-rows';
 import { Button } from '../primitives/button';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '../primitives/popover';
@@ -701,7 +702,8 @@ export const ChatComposer = observer(function ChatComposer({
                         <>
                           <span
                             aria-hidden
-                            className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[9px] font-medium text-foreground"
+                            className="flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-medium"
+                            style={personColour(each.id)}
                           >
                             {agentInitials(each.person.name)}
                           </span>

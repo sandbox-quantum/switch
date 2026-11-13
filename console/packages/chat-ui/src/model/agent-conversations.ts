@@ -1,4 +1,5 @@
 import type { ChatSummary } from '../contracts/chats';
+import { byActivity } from './room-order';
 
 /** A room an agent is in, as the server lists the agent's rooms. */
 export type AgentRoom = { roomId: string; roomName: string; archived: boolean };
@@ -16,13 +17,16 @@ export function isConsoleDirectChatSummary(
 
 /**
  * An agent's conversations, in two lists that never share a room: its 1-1
- * chats made in Console (see `isConsoleDirectChat`), newest first, and every other room it is in, by name — a messaging-app DM and a
+ * chats made in Console (see `isConsoleDirectChat`), newest first, and every other room it is in,
+ * the most recently active first (see `byActivity`) — a messaging-app DM and a
  * chat with several agents included, whether or not its membership lists it. Excludes rooms the person lost access to.
  */
 export function agentConversations(
   agentChats: readonly ChatSummary[],
   agentRooms: readonly AgentRoom[],
-  removed: ReadonlySet<string>
+  removed: ReadonlySet<string>,
+  /** When a room was last active, in milliseconds (see `roomActivityAt`). */
+  activityAt: (roomId: string) => number
 ): { direct: ChatSummary[]; rooms: Pick<AgentRoom, 'roomId' | 'roomName'>[] } {
   const direct = agentChats.filter(isConsoleDirectChatSummary);
   const directIds = new Set(direct.map((chat) => chat.roomId));
@@ -33,7 +37,11 @@ export function agentConversations(
   const unlisted = agentChats
     .filter((chat) => !directIds.has(chat.roomId) && !listedIds.has(chat.roomId))
     .map((chat) => ({ roomId: chat.roomId, roomName: chat.name }));
-  const rooms = [...listed, ...unlisted].sort((a, b) => a.roomName.localeCompare(b.roomName));
+  const rooms = byActivity([...listed, ...unlisted], (room) => ({
+    name: room.roomName,
+    activityAt: activityAt(room.roomId),
+    unread: false,
+  }));
   return { direct, rooms };
 }
 

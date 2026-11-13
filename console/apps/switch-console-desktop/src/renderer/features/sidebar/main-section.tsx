@@ -1,13 +1,20 @@
 import { RoomRow } from '@switch-console/chat-ui/components/chat-row';
+import {
+  byActivity,
+  holdingOpenRoom,
+  roomActivityAt,
+} from '@switch-console/chat-ui/model/room-order';
 import { MessageCircle, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
+import { appsOf, inApp } from '@renderer/features/switch-servers/room-apps';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -18,12 +25,14 @@ import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { NewRoomRow } from './new-room-row';
+import { RoomAppChips } from './room-app-chips';
 import { SidebarMenuRow } from './sidebar-primitives';
 import { isRoomViewActive, openRoomView } from './sidebar-room-grouping';
 
 type MainTab = 'agents' | 'rooms';
 
 const TAB_KEY = 'sidebar.mainTab';
+const ROOM_APP_KEY = 'sidebar.roomApp';
 const CHATS_TEASER_KEY = 'sidebar.chatsTeaserDismissed';
 
 const TABS: { value: MainTab; label: string }[] = [
@@ -49,6 +58,8 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
   const flags = useFeatureFlags(switchServersStore.activeServerId);
   const buddyPending = useBuddyPending(switchServersStore.activeServerId);
   const rooms = useListedRoomsInActiveScope();
+  // While the agents are showing, a dot on Rooms says a room has something new.
+  const roomsUnread = rooms.some((room) => chatsStore.unread(room.id) > 0);
   // No count until the agents are read: a 0 that turns into the real number
   // a moment later reads as the list changing.
   const count = tab === 'agents' ? (agents.data?.length ?? null) : rooms.length;
@@ -62,7 +73,11 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
             setTab(next);
             localStorage.setItem(TAB_KEY, next);
           }}
-          options={TABS}
+          options={TABS.map((option) =>
+            option.value === 'rooms' && roomsUnread && tab !== 'rooms'
+              ? { ...option, dot: true }
+              : option
+          )}
           ariaLabel="Show agents or rooms"
           quiet
         />
@@ -107,12 +122,68 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
   );
 });
 
-/** New Room, then one row per room: its messaging app and its name. Nothing is nested under it. */
-const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummary[] }) {
+/** The sidebar's rooms: unread first, then the most recently active (see `byActivity`). */
+function sidebarOrder(rooms: RemoteRoomSummary[]): RemoteRoomSummary[] {
+  return byActivity(rooms, (room) => ({
+    name: room.name,
+    activityAt: roomActivityAt(chatsStore.chat(room.id), room),
+    unread: chatsStore.unread(room.id) > 0,
+  }));
+}
+
+/**
+ * Where the open room sat in the list on screen when it was opened, kept while
+ * it stays open; null when none is open or it was not on screen. `remember`
+ * takes the order shown, for the next room opened.
+ */
+function useHeldPlace(openId: string | null): {
+  place: number | null;
+  remember: (shown: string[]) => void;
+} {
+  const held = useRef<{ id: string | null; place: number | null; shown: string[] }>({
+    id: null,
+    place: null,
+    shown: [],
+  });
+  if (held.current.id !== openId) {
+    // From the order on screen when it was clicked, not the one the click makes.
+    const place = openId === null ? -1 : held.current.shown.indexOf(openId);
+    held.current = { ...held.current, id: openId, place: place >= 0 ? place : null };
+  }
+  return {
+    place: held.current.place,
+    remember: (shown) => {
+      held.current.shown = shown;
+    },
+  };
+}
+
+/**
+ * New Room, then one row per room: its messaging app and its name, the rooms
+ * with something new first. Nothing is nested under it.
+ */
+const RoomList = observer(function RoomList({ rooms: listed }: { rooms: RemoteRoomSummary[] }) {
   const showCreateRoomModal = useShowModal('createRoomModal');
+  const [app, setApp] = useState<string | null>(() => localStorage.getItem(ROOM_APP_KEY));
+  const apps = appsOf(listed);
+  const chosen = app !== null && apps.includes(app) ? app : null;
+  const ordered = sidebarOrder(inApp(listed, chosen));
+  const openId = ordered.find((room) => isRoomViewActive(room.id))?.id ?? null;
+  const { place, remember } = useHeldPlace(openId);
+  const rooms = holdingOpenRoom(ordered, openId, place);
+  remember(rooms.map((room) => room.id));
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
       <NewRoomRow onCreate={() => showCreateRoomModal({})} />
+      <RoomAppChips
+        apps={apps}
+        selected={chosen}
+        onSelect={(next) => {
+          setApp(next);
+          if (next === null) localStorage.removeItem(ROOM_APP_KEY);
+          else localStorage.setItem(ROOM_APP_KEY, next);
+        }}
+      />
       {rooms.length === 0 && (
         <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms on this server.</p>
       )}

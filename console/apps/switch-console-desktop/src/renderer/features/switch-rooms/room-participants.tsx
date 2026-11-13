@@ -1,4 +1,5 @@
 import { agentInitials } from '@switch-console/chat-ui/model/agent-avatar';
+import { personColour } from '@switch-console/chat-ui/model/person-colour';
 import { useQuery } from '@tanstack/react-query';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -35,14 +36,26 @@ export function useRoomDetail(workspaceId: string | null, roomId: string, enable
   });
 }
 
-/** A person's initials disc: people have no picture in Switch. */
-export function PersonMark({ name, size }: { name: string; size: 'sm' | 'md' }) {
+/**
+ * A person's initials disc, in their colour (see `personColour`): people have
+ * no picture in Switch. `userId` is their Switch user when known.
+ */
+export function PersonMark({
+  name,
+  userId,
+  size,
+}: {
+  name: string;
+  userId: string | null;
+  size: 'sm' | 'md';
+}) {
   return (
     <span
       className={cn(
-        'flex shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] font-medium text-foreground',
+        'flex shrink-0 items-center justify-center rounded-full font-medium',
         size === 'md' ? 'size-7 text-xs' : 'size-[22px] text-[10px]'
       )}
+      style={personColour(userId ?? name)}
     >
       {agentInitials(name)}
     </span>

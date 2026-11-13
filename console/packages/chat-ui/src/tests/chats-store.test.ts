@@ -517,6 +517,12 @@ describe('ChatsStore unread counts', () => {
     expect(store.unread('g')).toBe(7);
   });
 
+  it('shows no count for a messaging-app room, whose reading happens in the app', async () => {
+    const { store, push, group } = await viewer();
+    push({ ...group, bridgeType: 'discord', unreadCount: 14 });
+    expect(store.unread('g')).toBe(0);
+  });
+
   it('marks read at once here and sends the furthest position once, never backwards', async () => {
     vi.useFakeTimers();
     try {

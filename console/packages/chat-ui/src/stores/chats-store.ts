@@ -393,7 +393,12 @@ export class ChatsStore {
 
   /** How many messages in a room wait to be read: none for the one being read. */
   unread(roomId: string): number {
-    return this.viewing === roomId ? 0 : (this.chats.get(roomId)?.unreadCount ?? 0);
+    if (this.viewing === roomId) return 0;
+    const chat = this.chats.get(roomId);
+    // A messaging-app room's count is only what reached it while Console
+    // watched, not what its person has read in the app, so it is not shown.
+    if (!chat || chat.bridgeType) return 0;
+    return chat.unreadCount;
   }
 
   /** The chats an agent is in, newest activity first. */
