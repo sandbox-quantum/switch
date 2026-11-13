@@ -86,7 +86,9 @@ describe('a group chat’s participant column', () => {
     const html = render(true);
     expect(html).toContain('Helper');
     expect(html).toContain('Bob');
-    expect(html).toContain('aria-label="Add participants"');
+    // Its own button, not the + beside Agents, which reads as agents only.
+    expect(html).toMatch(/<button[^>]*>(?:(?!<\/button>).)*Add participants<\/button>/);
+    expect(html).not.toContain('aria-label="Add agents"');
     expect(html).not.toContain('aria-label="Add people"');
     expect(html).toContain('aria-label="Helper in this room"');
     expect(html).toContain('aria-label="Bob in this room"');
@@ -98,7 +100,7 @@ describe('a group chat’s participant column', () => {
     flags.group_chats = false;
     try {
       const html = render(true);
-      expect(html).not.toContain('aria-label="Add participants"');
+      expect(html).not.toContain('Add participants');
       expect(html).toContain('aria-label="Bob in this room"');
     } finally {
       flags.group_chats = true;
@@ -108,7 +110,7 @@ describe('a group chat’s participant column', () => {
   it('shows the participants without controls to someone who cannot manage', () => {
     const html = render(false);
     expect(html).toContain('Bob');
-    expect(html).not.toContain('aria-label="Add participants"');
+    expect(html).not.toContain('Add participants');
     expect(html).not.toContain('in this room"');
   });
 });

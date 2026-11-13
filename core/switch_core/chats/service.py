@@ -1918,6 +1918,7 @@ class ChatService:
         mention_agent_ids: list[str],
         mention_user_ids: list[str],
         mention_spans: list[ChatMention],
+        command: tuple[str, str] | None,
     ) -> tuple[Room, list[Message]]:
         """Post the user's message, every part of it in one transaction.
 
@@ -1994,6 +1995,12 @@ class ChatService:
                 for upload_id in upload_ids
             ]
             root = await self._thread_root(session, room, thread_root_id)
+            # `!set-alias @helper @h`, typed here as on any platform, is a room
+            # command: written as the command event a bridge writes for it, so
+            # the room's command handling runs it, rather than as a message the
+            # agents read. Its mentions are its arguments, written as typed.
+            if command is not None:
+                mentions, people, mention_spans, typed = [], [], [], []
             shift = 0
             if mentions:
                 written = body
@@ -2047,6 +2054,21 @@ class ChatService:
                 contents[0][MENTIONS_KEY] = named_people
             posted: list[Message] = []
             routed: list[Routed] = []
+            if command is not None:
+                name, args = command
+                contents = [
+                    {
+                        "command": name,
+                        "args": args,
+                        "user_id": client.transport_user_id,
+                        "user_name": user.name,
+                        **(
+                            {"m.relates_to": contents[0]["m.relates_to"]}
+                            if "m.relates_to" in contents[0]
+                            else {}
+                        ),
+                    }
+                ]
             for index, content in enumerate(contents):
                 message = message_row(
                     room_id=room.id,
@@ -2054,7 +2076,9 @@ class ChatService:
                     sender_id=client.transport_user_id,
                     sender_client_id=client.id,
                     sender_name=user.name,
-                    event_type=MESSAGE_EVENT_TYPE,
+                    event_type=MESSAGE_EVENT_TYPE
+                    if command is None
+                    else COMMAND_EVENT_TYPE,
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )

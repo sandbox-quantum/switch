@@ -99,6 +99,16 @@ version of their own to them without also giving them a release of their own.
   `/organizations/current/workspaces/{id}/devices/{controller_id}` and
   `…/managed-agents/{agent_id}`). Today's organization page gains the
   Guardrails section too, since guardrails are now set only there.
+- **A link into the web dashboard can name its workspace.** A page opened
+  with `?workspace=<id>` switches to that workspace first, then opens the
+  same page there, rather than showing whichever workspace the browser had
+  selected last. It switches only to a workspace you're in, or one your
+  organization admin role covers, so a link can't take the platform operator
+  into someone else's. For any other workspace the page stays where it was
+  and says so. The address drops the parameter once it has been followed. A
+  link followed while signed out opens once you sign in, with a password or
+  through single sign-on, if that is within 15 minutes and in the same tab.
+  Switch Console's links into the dashboard use it.
 - **Workspace settings › API keys, Guardrails and Devices in the new
   dashboard layout.** Behind `gateway_v2`:
   - API keys: a workspace's admins (its admins, its organization's admin and
@@ -4223,6 +4233,19 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Workspace settings opens the web dashboard's settings in its new
+  layout.** On a server with the new layout on, Settings › Workspace settings
+  landed on its Users page. It now opens the settings home, on the page you
+  last had open there or else General, and Organization settings opens the
+  organization's. Servers without the new layout open the same pages as
+  before.
+- **Links into the web dashboard open the workspace they're for.** Workspace
+  settings, Organization settings, an agent's page and a room's page could
+  open in another workspace on the same server: the one the browser had
+  selected last or, for the server Switch Console runs, the one Switch Console
+  had last used. An agent or room page then said the agent or room wasn't
+  found. The links now name their workspace, and the dashboard switches to it.
+  A dashboard from before this release ignores it.
 - **A sign-in the vendor refuses no longer waits without a word.** A vendor
   that refuses the sign-in (a wrong redirect URI, a scope the app lacks)
   shows its own error page and never sends the browser back. After a minute,
