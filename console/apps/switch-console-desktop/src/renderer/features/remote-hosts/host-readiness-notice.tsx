@@ -23,10 +23,22 @@ import { log } from '@renderer/utils/logger';
 import { deriveAgentTypeStatus } from '@shared/core/remote-hosts/host-status';
 import { queueHostProbe } from './host-probe-queue';
 import { hostReachabilityStore } from './host-reachability-store';
-import { resolveReadiness, stepsNeedingObservation, type HostReadiness } from './host-readiness';
+import {
+  isProbing,
+  resolveReadiness,
+  stepsNeedingObservation,
+  type HostReadiness,
+} from './host-readiness';
 import { hostSetupStore } from './host-setup-store';
 
 export { resolveReadiness, type HostReadiness };
+
+/**
+ * How long the gate waits on a probe before giving up on it. A probe stuck on a
+ * hung SSH connection would otherwise hold the gate on "checking" for good;
+ * past this it is treated like a probe that failed.
+ */
+const PROBE_WAIT_MS = 90_000;
 
 /**
  * Readiness for the host an agent is about to be created on, probing once if
@@ -48,6 +60,9 @@ export function useRemoteHostReadiness(
   // the log filled with "another setup operation is already running" for steps
   // nobody had asked about.
   const probed = useRef(new Set<string>());
+  // The probes that have finished, however they ended. State rather than the
+  // ref above, so finishing re-renders the caller with a verdict.
+  const [attempted, setAttempted] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     void hostSetupStore.hydrate();
@@ -77,7 +92,14 @@ export function useRemoteHostReadiness(
     probed.current.add(probeKey);
     setChecking(true);
     const steps = staleRef.current;
-    queueHostProbe(sshHost, async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gaveUp = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no answer from ${sshHost} after ${PROBE_WAIT_MS / 1000}s`)),
+        PROBE_WAIT_MS
+      );
+    });
+    const probe = queueHostProbe(sshHost, async () => {
       if (needsSurvey) {
         await rpc.remoteHosts.recheckSetup(sshHost);
         return;
@@ -87,17 +109,27 @@ export function useRemoteHostReadiness(
       for (const stepId of steps) {
         await rpc.remoteHosts.recheckSetupStep({ sshHost, stepId });
       }
-    })
+    });
+    Promise.race([probe, gaveUp])
       .catch((error: unknown) => {
         // A probe we could not run tells us nothing. Leaving the gate open is
         // the honest outcome — the alternative blocks the user over our own
         // failure to look.
         log.warn('Could not check host readiness before creating an agent', { sshHost, error });
       })
-      .finally(() => setChecking(false));
+      .finally(() => {
+        clearTimeout(timer);
+        setChecking(false);
+        setAttempted((prev) => new Set(prev).add(probeKey));
+      });
   }, [sshHost, probeKey, needsProbe, needsSurvey]);
 
-  return resolveReadiness(status, plan, agentId, checking || needsProbe);
+  return resolveReadiness(
+    status,
+    plan,
+    agentId,
+    isProbing(checking, needsProbe, attempted.has(probeKey))
+  );
 }
 
 /** Explains a blocked host, and sends the user to the page that fixes it. */
