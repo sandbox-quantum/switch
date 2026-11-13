@@ -441,6 +441,28 @@ async def test_an_archived_workspaces_runs_are_not_posted(
     assert (await _stored(session_factory, schedule_id)).next_run_at == due
 
 
+async def test_a_run_read_before_an_archive_is_not_claimed_after_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Archived between `fire_due` reading the runs due and the run being
+    claimed: it is left due, for the restore to skip."""
+    due = _utc(2026, 11, 4, 9, 0)
+    _, schedule_id, _ = await _schedule(session_factory, due_at=due)
+    schedule = await _stored(session_factory, schedule_id)
+    await _archive_the_workspace(session_factory, due)
+    admin = _Admin()
+
+    await _scheduler(session_factory, admin)._fire(
+        TENANT_ZERO_ID,
+        admin,  # type: ignore[arg-type]
+        schedule,
+        due,
+    )
+
+    assert admin.posts == []
+    assert (await _stored(session_factory, schedule_id)).next_run_at == due
+
+
 async def test_runs_missed_while_archived_are_skipped_as_for_a_paused_schedule(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

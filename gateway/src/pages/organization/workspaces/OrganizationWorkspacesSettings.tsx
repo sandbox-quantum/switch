@@ -13,7 +13,7 @@ import WorkspacesTable from "./WorkspacesTable";
  * what can be done with one. The platform operator may open it too, read
  * only: running the organization's workspaces is its admins'. */
 export default function OrganizationWorkspacesSettings() {
-  const { session } = useAuth();
+  const { session, recheck } = useAuth();
   const loadOrganization = useCallback(() => fetchCurrentOrganization(), []);
   const organization = useLoad(loadOrganization);
   const loadWorkspaces = useCallback(() => fetchOrganizationWorkspaces(), []);
@@ -21,10 +21,12 @@ export default function OrganizationWorkspacesSettings() {
   const [createOpen, setCreateOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // The session too: the switcher lists the workspaces by name, and whether
+  // another may be created follows the allowance a new one uses up.
   const refetchWorkspaces = workspaces.refetch;
   const onChanged = useCallback(async () => {
-    await refetchWorkspaces();
-  }, [refetchWorkspaces]);
+    await Promise.all([refetchWorkspaces(), recheck()]);
+  }, [refetchWorkspaces, recheck]);
 
   const error = organization.error ?? workspaces.error;
   const loading = organization.data === null || workspaces.data === null;
@@ -67,6 +69,7 @@ export default function OrganizationWorkspacesSettings() {
       ) : (
         <WorkspacesTable
           administers={organization.data!.administers}
+          organizationName={organization.data!.name}
           currentId={session.tenant?.id ?? null}
           workspaces={workspaces.data!}
           onChanged={onChanged}
@@ -82,7 +85,7 @@ export default function OrganizationWorkspacesSettings() {
           onCreated={(name) => {
             setCreateOpen(false);
             setNotice(`Created ${name}.`);
-            void refetchWorkspaces();
+            void onChanged();
           }}
         />
       )}

@@ -184,6 +184,29 @@ class TestAnotherWorkspace:
             {"name": "Research", "previous_name": "Second", "workspace_id": org.first}
         ]
 
+    async def test_a_name_another_of_its_workspaces_has_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        app = _app(session_factory)
+        _with_archive(app)
+        org = await _organization(session_factory, app)
+        async with tenant_session(session_factory, org.first) as session:
+            first = await session.get(Tenant, org.first)
+            assert first is not None
+            taken_name = first.name
+
+        async with _client(app, org.ada, org.first) as client:
+            taken = await client.patch(
+                f"{WORKSPACES}/{org.second}", json={"name": taken_name.upper()}
+            )
+            own = await client.patch(
+                f"{WORKSPACES}/{org.second}", json={"name": "SECOND"}
+            )
+
+        assert taken.status_code == 409
+        assert taken_name in taken.json()["detail"]
+        assert own.status_code == 200, own.text
+
     async def test_a_workspace_of_another_organization_is_not_found(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -322,9 +345,11 @@ class TestChoosingAdmins:
         assert (org_admin.status_code, stranger.status_code) == (400, 400)
         assert await _role(session_factory, org.second, org.bob) == "member"
 
-    async def test_the_service_account_is_not_made_an_admin(
+    async def test_the_service_account_is_neither_chosen_nor_changed(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Never made an admin, and one made an admin before that was refused
+        is not demoted by a change to the others."""
         app = _app(session_factory)
         _with_archive(app)
         org = await _organization(session_factory, app)
@@ -332,16 +357,24 @@ class TestChoosingAdmins:
             bob = await session.get(User, org.bob)
             assert bob is not None
             bob.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
+            membership = await session.get(TenantMember, (org.second, org.bob))
+            assert membership is not None
+            membership.role = "admin"
             await session.commit()
 
         async with _client(app, org.ada, org.first) as client:
-            response = await client.put(
+            named = await client.put(
                 f"{WORKSPACES}/{org.second}/admins",
                 json={"user_ids": [org.bob, org.carol]},
             )
+            others = await client.put(
+                f"{WORKSPACES}/{org.second}/admins", json={"user_ids": [org.carol]}
+            )
 
-        assert response.status_code == 409
-        assert await _role(session_factory, org.second, org.bob) == "member"
+        assert named.status_code == 400
+        assert others.status_code == 200, others.text
+        assert await _role(session_factory, org.second, org.bob) == "admin"
+        assert await _role(session_factory, org.second, org.carol) == "admin"
 
 
 class TestItsMembers:

@@ -597,6 +597,19 @@ async def organization_candidates(
     return await tenants_bindable_by(session_factory, user_id)
 
 
+async def every_workspace_of(
+    session_factory: async_sessionmaker[AsyncSession], organization_id: str
+) -> list[Tenant]:
+    """Every workspace of `organization_id`, whoever asks, each read on its
+    own short session: for a check across all of them, such as whether a
+    name is taken (`workspace_creation.refuse_a_workspace_name_taken`)."""
+    return await _in_organization(
+        session_factory,
+        await tenants_of_organization(session_factory, organization_id),
+        organization_id,
+    )
+
+
 async def workspaces_in_organization(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
@@ -717,41 +730,62 @@ async def organization_workspaces_bindable_by(
     The platform operator may bind any workspace, and is shown every one of
     the organization's, as `admin` where they hold no role, the standing
     `platform_access` gives them. Each candidate is read on its own short
-    session, and only those in the organization are described further.
+    session, one after another.
     """
-    candidates = await organization_candidates(
-        session_factory, user_id, organization_id, is_operator=is_operator
-    )
     found: list[TenantMembershipResponse] = []
-    for tenant in await _in_organization(session_factory, candidates, organization_id):
-        tenant_id = tenant.id
+    for tenant_id in await organization_candidates(
+        session_factory, user_id, organization_id, is_operator=is_operator
+    ):
         async with tenant_session(session_factory, tenant_id) as session:
-            role = await user_store.effective_tenant_role(session, tenant_id, user_id)
-            organization_role = await user_store.organization_role(
-                session, tenant_id, user_id
-            )
-        if role is None and is_operator:
-            role = ORGANIZATION_ADMIN_TENANT_ROLE
-        if role is None:
-            logger.warning(
-                "tenants_bindable_by named tenant %s for user %s, but their "
-                "role there was gone by the time it was read",
+            membership = await membership_in_organization(
+                session,
+                user_store,
                 tenant_id,
                 user_id,
+                organization_id,
+                is_operator=is_operator,
             )
-            continue
-        found.append(
-            TenantMembershipResponse(
-                id=tenant.id,
-                slug=tenant.slug,
-                name=tenant.name,
-                role=role,
-                organization_role=organization_role,
-                organization_id=tenant.organization_id,
-                archived_at=archived_since(tenant),
-            )
-        )
+        if membership is not None:
+            found.append(membership)
     return found
+
+
+async def membership_in_organization(
+    session: AsyncSession,
+    user_store: UserStore,
+    tenant_id: str,
+    user_id: str,
+    organization_id: str,
+    *,
+    is_operator: bool,
+) -> TenantMembershipResponse | None:
+    """`user_id`'s standing in `tenant_id`, on a session bound to it, as
+    `organization_workspaces_bindable_by` lists it; None when the workspace
+    is not in `organization_id` or they hold no role there any more."""
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None or tenant.organization_id != organization_id:
+        return None
+    role = await user_store.effective_tenant_role(session, tenant_id, user_id)
+    organization_role = await user_store.organization_role(session, tenant_id, user_id)
+    if role is None and is_operator:
+        role = ORGANIZATION_ADMIN_TENANT_ROLE
+    if role is None:
+        logger.warning(
+            "tenants_bindable_by named tenant %s for user %s, but their "
+            "role there was gone by the time it was read",
+            tenant_id,
+            user_id,
+        )
+        return None
+    return TenantMembershipResponse(
+        id=tenant.id,
+        slug=tenant.slug,
+        name=tenant.name,
+        role=role,
+        organization_role=organization_role,
+        organization_id=tenant.organization_id,
+        archived_at=archived_since(tenant),
+    )
 
 
 async def _operator_may_enter(

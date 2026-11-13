@@ -123,6 +123,7 @@ interface Props {
    * organization has an admin, the platform operator. Without it the row
    * offers nothing: no "…" at all, rather than one that opens on reasons. */
   administers: boolean;
+  organizationName: string;
   /** The workspace the session is on now, so its row can say so; null for a
    * session with none (the platform operator, say). */
   currentId: string | null;
@@ -138,12 +139,13 @@ interface Props {
  * back. Every action follows the server's answer for that workspace. */
 export default function WorkspacesTable({
   administers,
+  organizationName,
   currentId,
   workspaces,
   onChanged,
   onNotice,
 }: Props) {
-  const { switchTo, recheck } = useAuth();
+  const { switchTo } = useAuth();
   const [pending, setPending] = useState<Pending | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const close = () => setPending(null);
@@ -175,7 +177,6 @@ export default function WorkspacesTable({
   const rename = async (workspace: OrganizationWorkspace, name: string) => {
     const result = await renameOrganizationWorkspace(workspace.id, name);
     onNotice(`Renamed to ${result.name}.`);
-    if (workspace.id === currentId) await recheck();
     await onChanged();
   };
 
@@ -310,6 +311,10 @@ export default function WorkspacesTable({
       {pending?.kind === "rename" && (
         <RenameWorkspaceDialog
           workspace={pending.workspace}
+          organizationName={organizationName}
+          otherNames={workspaces
+            .filter((workspace) => workspace.id !== pending.workspace.id)
+            .map((workspace) => workspace.name)}
           onSave={(name) => rename(pending.workspace, name)}
           onClose={close}
         />

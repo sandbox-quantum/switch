@@ -23,9 +23,13 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.agent.auth import ControllerAuthError, ControllerPrincipal
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.controller_presence import (
+    Binding,
+    ControllerPresence,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
@@ -129,6 +133,17 @@ class ManagementAuthenticator:
         )
         self._auth_cache.put_controller(current, ticket)
         return current
+
+    async def stopped_by_archive(self, binding: Binding) -> bool:
+        """Whether `binding` is stopped because its workspace is archived: its
+        controller may then not act for the agent, on an agent route or its
+        socket, as the agent's own key may not (`bridges/agent/auth.py`).
+        Read only for a binding not running, so acting for a running agent
+        costs nothing more."""
+        if binding.running:
+            return False
+        async with tenant_session(self._session_factory, binding.tenant_id) as session:
+            return await is_archived(session, binding.tenant_id)
 
     async def tenant_of_secret(self, secret: str) -> str | None:
         """The tenant an enrollment code or controller credential belongs to,

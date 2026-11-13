@@ -304,6 +304,12 @@ describe("OrganizationWorkspacesSettings", () => {
         role: "org_admin",
         workspaces: [{ id: "w1", name: "Acme", role: "admin", archived: false }],
       }),
+      member({
+        user_id: "svc",
+        name: "Registration",
+        service_account: true,
+        workspaces: [{ id: "w1", name: "Acme", role: "member", archived: false }],
+      }),
     ];
     const calls = answerFetch({
       "GET /organizations/current": [200, org()],
@@ -320,6 +326,8 @@ describe("OrganizationWorkspacesSettings", () => {
     expect(within(dialog).getByText("Admins of Acme")).toBeTruthy();
     // The org admin isn't offered: org admins administer every workspace already.
     expect(within(dialog).queryByText("Olga")).toBeNull();
+    // Nor the registration service account, which the server never makes one.
+    expect(within(dialog).queryByText("Registration")).toBeNull();
 
     const aliceCheckbox = within(dialog).getByRole("checkbox", { name: /Alice/ }) as HTMLInputElement;
     const bobCheckbox = within(dialog).getByRole("checkbox", { name: /Bob/ }) as HTMLInputElement;
@@ -372,6 +380,35 @@ describe("OrganizationWorkspacesSettings", () => {
     const post = calls.find((c) => c.method === "POST");
     expect(post?.body).toEqual({ name: "Quantum Chemistry" });
     expect(await screen.findByText("Created Quantum Chemistry.")).toBeTruthy();
+    // The session too: the switcher lists it, and the allowance may be used up.
+    await waitFor(() => expect(auth.recheck).toHaveBeenCalled());
+  });
+
+  it("refuses renaming to another workspace's name before asking, but not to its own", async () => {
+    const calls = answerFetch({
+      "GET /organizations/current": [200, org({ name: "Acme Org" })],
+      "GET /organizations/current/workspaces": [
+        200,
+        [workspace({ id: "w1", name: "Acme" }), workspace({ id: "w2", name: "Beta" })],
+      ],
+    });
+
+    render(<OrganizationWorkspacesSettings />);
+    await screen.findByText("Beta");
+
+    fireEvent.click(within(openMenu("Beta")).getByText("Rename workspace"));
+    const dialog = screen.getByRole("dialog");
+    const field = within(dialog).getByLabelText("Workspace name") as HTMLInputElement;
+    const renameButton = within(dialog).getByRole("button", { name: "Rename" }) as HTMLButtonElement;
+
+    fireEvent.change(field, { target: { value: " ACME " } });
+    expect(within(dialog).getByText("Acme Org already has a workspace called “Acme”.")).toBeTruthy();
+    expect(renameButton.disabled).toBe(true);
+
+    fireEvent.change(field, { target: { value: "BETA" } });
+    expect(within(dialog).queryByText(/already has a workspace/)).toBeNull();
+    expect(renameButton.disabled).toBe(false);
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
   it("gives a viewer who isn't an organization admin no working actions", async () => {

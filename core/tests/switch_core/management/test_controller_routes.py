@@ -22,7 +22,6 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerEnrollmentCode,
     ApiKey,
-    Tenant,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.session_scope import tenant_session
@@ -44,6 +43,7 @@ from tests.switch_core.management.harness import (
     EnrolledController,
     Harness,
     add_member,
+    archive_changed,
     bearer,
     build_harness,
     cookies_for,
@@ -56,6 +56,7 @@ from tests.switch_core.management.harness import (
     platform,
     provider,
     report_status,
+    set_archived,
     status_report,
 )
 
@@ -1021,24 +1022,6 @@ class TestPlacementBindsTheAgentInCore:
         assert restarted.is_revoked(controller.controller_id)
 
 
-async def _set_archived(harness: Harness, *, archived: bool) -> None:
-    async with harness.session_factory() as session:
-        await session.execute(
-            update(Tenant)
-            .where(Tenant.id == TENANT_ZERO_ID)
-            .values(archived_at=harness.clock.now if archived else None)
-        )
-        await session.commit()
-
-
-async def _archive_changed(harness: Harness) -> None:
-    """What `WorkspaceArchive` tells management once the change commits."""
-    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
-        await harness.management.service.workspace_archive_changed(
-            session, TENANT_ZERO_ID
-        )
-
-
 def _desired_states(assignment: httpx.Response) -> dict[str, str]:
     assert assignment.status_code == 200, assignment.text
     return {
@@ -1069,11 +1052,11 @@ class TestAnArchivedWorkspace:
             )
             path = f"/v1/management/controllers/{controller.controller_id}/assignment"
             before = await client.get(path, headers=controller.headers)
-            await _set_archived(harness, archived=True)
-            await _archive_changed(harness)
+            await set_archived(harness, archived=True)
+            await archive_changed(harness)
             archived = await client.get(path, headers=controller.headers)
-            await _set_archived(harness, archived=False)
-            await _archive_changed(harness)
+            await set_archived(harness, archived=False)
+            await archive_changed(harness)
             restored = await client.get(path, headers=controller.headers)
 
         assert running.status_code == 201, running.text
@@ -1094,14 +1077,14 @@ class TestAnArchivedWorkspace:
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
             agent_id = await _placed_agent(harness, client, controller)
-        await _set_archived(harness, archived=True)
-        await _archive_changed(harness)
+        await set_archived(harness, archived=True)
+        await archive_changed(harness)
         archived = presence.binding(agent_id)
         presence.unbind(agent_id, "unassigned")
         await harness.management.load_bindings()
         reloaded = presence.binding(agent_id)
-        await _set_archived(harness, archived=False)
-        await _archive_changed(harness)
+        await set_archived(harness, archived=False)
+        await archive_changed(harness)
         restored = presence.binding(agent_id)
 
         assert archived is not None and archived.running is False
@@ -1129,7 +1112,7 @@ class TestAnArchivedWorkspace:
         await recheck()
         before = presence.binding(agent_id)
 
-        await _set_archived(harness, archived=True)
+        await set_archived(harness, archived=True)
         await recheck()
         after = presence.binding(agent_id)
 
@@ -1141,7 +1124,7 @@ class TestAnArchivedWorkspace:
         run there. Asked of the service, since nobody but an org admin could
         reach these routes in an archived workspace at all."""
         owner = await add_member(harness.session_factory, "ada")
-        await _set_archived(harness, archived=True)
+        await set_archived(harness, archived=True)
         service = harness.management.service
         description = ControllerDescription.model_validate(
             {

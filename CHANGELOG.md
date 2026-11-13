@@ -82,8 +82,8 @@ version of their own to them without also giving them a release of their own.
   choose its admins in one step (`PUT …/admins`), change someone's role or
   remove them (with the same hand-over preview), and make invite links,
   each checked as on the workspace's own pages, without switching into it.
-  Creating a workspace refuses a name the organization already uses, in
-  any case.
+  Creating or renaming a workspace, here or on its own settings, refuses a
+  name another of the organization's workspaces has, in any case.
 - **Organization settings pages in the new dashboard layout.** Behind
   `gateway_v2`: General renames the organization; Workspaces lists each
   workspace with its status, people, agents and rooms, its admins and when it

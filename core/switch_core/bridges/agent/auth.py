@@ -19,7 +19,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from switch_core.archived_workspace import WORKSPACE_ARCHIVED, is_archived
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.controller_presence import (
+    Binding,
+    ControllerPresence,
+)
 from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX as MESSAGING_INSTALL_PREFIX,
@@ -174,6 +177,10 @@ class ControllerAuthenticator(Protocol):
 
     `auth_cache` memoises the rows a controller token makes the server read,
     and is kept in step with `presence`.
+
+    `stopped_by_archive` says whether a binding is stopped because its
+    workspace is archived, when a controller may not act for the agent at
+    all, as the agent's own key may not.
     """
 
     @property
@@ -189,6 +196,8 @@ class ControllerAuthenticator(Protocol):
     def is_controller_token(self, token: str) -> bool: ...
 
     async def authenticate(self, token: str) -> ControllerPrincipal: ...
+
+    async def stopped_by_archive(self, binding: Binding) -> bool: ...
 
 
 class BearerAuthMiddleware:
@@ -423,7 +432,8 @@ class BearerAuthMiddleware:
         controller and the agent row come from the controller-token cache
         when it holds them, which forgets a controller the moment it is
         revoked and an agent the moment its binding changes. The binding
-        itself is checked against `presence` every time.
+        itself is checked against `presence` every time, and an agent stopped
+        because its workspace is archived is refused as its own key is.
         """
         try:
             principal = await controller_auth.authenticate(token)
@@ -461,6 +471,11 @@ class BearerAuthMiddleware:
                 f"Agent {agent_id} is not assigned to this controller.",
                 403,
             )(scope, receive, send)
+            return
+        if await controller_auth.stopped_by_archive(binding):
+            await _controller_refusal("workspace_archived", WORKSPACE_ARCHIVED, 403)(
+                scope, receive, send
+            )
             return
 
         if path_agent is not None and _SERVED_ON_THE_CONTROLLER_STREAM.fullmatch(rest):

@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent import dependencies as bridge_deps
@@ -50,10 +50,12 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
     Room,
+    Tenant,
     TenantMember,
     User,
     room_agents,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -338,6 +340,25 @@ async def add_member(
         session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role="member"))
         await session.commit()
         return user
+
+
+async def set_archived(harness: Harness, *, archived: bool) -> None:
+    """Archive or restore tenant zero, as the route's commit does."""
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == TENANT_ZERO_ID)
+            .values(archived_at=harness.clock.now if archived else None)
+        )
+        await session.commit()
+
+
+async def archive_changed(harness: Harness) -> None:
+    """What `WorkspaceArchive` tells management once the change commits."""
+    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        await harness.management.service.workspace_archive_changed(
+            session, TENANT_ZERO_ID
+        )
 
 
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:

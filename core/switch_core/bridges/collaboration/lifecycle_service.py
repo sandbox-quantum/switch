@@ -47,6 +47,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.webhooks import (
     BridgeWebhookTarget,
+    WebhookBridgeArchived,
     WebhookBridgeStopped,
     WebhookBridgeUnknown,
     webhook_url,
@@ -138,6 +139,13 @@ def _log_refusal(bridge_id: str, exc: BridgeStartRefused, *, holder: bool) -> No
             bridge_id,
             exc,
         )
+
+
+class BridgeWorkspaceArchived(ValueError):
+    """A bridge not started because its workspace is archived. Not a failed
+    attempt: it starts again, from the same row, once the workspace is
+    restored. A new bridge refused this way is not kept, as any refused at
+    its first start is."""
 
 
 class _RefusedBefore(BridgeStartRefused):
@@ -500,6 +508,7 @@ class CollaborationBridgeLifecycleService:
             raise WebhookBridgeUnknown(f"no bridge {bridge_id}")
         async with tenant_session(self._session_factory, tenant_id) as session:
             bridge = await self._bridge_store.get(session, bridge_id)
+            archived = await is_archived(session, tenant_id)
         if bridge is None:
             raise WebhookBridgeUnknown(f"no bridge {bridge_id} in its tenant")
         adapter_cls = self._adapter_registry.get(bridge.type)
@@ -509,6 +518,10 @@ class CollaborationBridgeLifecycleService:
             )
         adapter = self.get_adapter(bridge_id)
         if adapter is None:
+            if archived:
+                raise WebhookBridgeArchived(
+                    f"{bridge.type} bridge {bridge_id} is in an archived workspace"
+                )
             raise WebhookBridgeStopped(
                 f"{bridge.type} bridge {bridge_id} is not running"
             )
@@ -1220,7 +1233,7 @@ class CollaborationBridgeLifecycleService:
             # refusal remembered: once the workspace is restored, the same row
             # starts it.
             if archived:
-                raise ValueError(
+                raise BridgeWorkspaceArchived(
                     f"Bridge {bridge_id} is in an archived workspace, so it does "
                     "not run until the workspace is restored"
                 )
@@ -1425,6 +1438,10 @@ class CollaborationBridgeLifecycleService:
             self._workspace_cursors.pop(bridge_id, None)
             if isinstance(exc, _RefusedBefore):
                 # Not an attempt: reported, and counted, when it was refused.
+                self._connect_started.pop(bridge_id, None)
+                raise
+            if isinstance(exc, BridgeWorkspaceArchived):
+                # Not an attempt either: closed on purpose, not failing.
                 self._connect_started.pop(bridge_id, None)
                 raise
             if isinstance(exc, BridgeStartRefused):
@@ -1876,7 +1893,16 @@ class CollaborationBridgeLifecycleService:
         # Asked for explicitly, so a bridge refused before is tried again.
         self._refused_rows.pop(bridge_id, None)
         await self.stop(bridge_id, reason="restart")
-        await self.start(bridge_id)
+        try:
+            await self.start(bridge_id)
+        except BridgeWorkspaceArchived:
+            # An edit stored in an archived workspace, by an organization
+            # admin who may still enter it: it takes effect on restore.
+            logger.info(
+                "Collaboration bridge %s stays stopped: its workspace is archived",
+                bridge_id,
+            )
+            return
         logger.info("Restarted collaboration bridge %s", bridge_id)
         self._announce_restart(bridge_id)
 

@@ -29,7 +29,8 @@ export function adminsNotice(name: string, count: number): string {
   return `${name} now has ${count} admins.`;
 }
 
-/** The client-side half of the uniqueness check a new workspace's name gets:
+/** The client-side half of the uniqueness check a workspace's new name gets,
+ * creating or renaming it:
  * the server refuses a duplicate too, but this catches the common case
  * without a round trip. Case-insensitive, since "Acme" and "acme" would
  * collide server-side. */

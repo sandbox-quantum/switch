@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -1275,6 +1275,18 @@ async def _end_agent_rows(session_factory: SessionFactory) -> None:
         await session.commit()
 
 
+async def _set_workspace_archived(
+    session_factory: SessionFactory, *, archived: bool
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == TENANT_ZERO_ID)
+            .values(archived_at=func.now() if archived else None)
+        )
+        await session.commit()
+
+
 class TestAnAgentWhoseKeyWasReissued:
     """The agent stays, but its connections authenticated with the old key
     when they opened. They end wherever their sockets are held."""
@@ -1355,6 +1367,28 @@ class TestAnAgentWhoseWorkspaceWasArchived:
         await _eventually(lambda: conn.closure is not None)
         assert conn.closure == WORKSPACE_ARCHIVED
         assert told == [AGENT]
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+
+    async def test_one_opened_as_it_was_archived_ends_at_the_next_recheck(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """Let in on a key another process remembered a moment longer, its
+        row is written after the archive deleted the others, and nothing is
+        told: the re-check that reads it ends it, wherever its socket is."""
+        a, b = processes
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        await _set_workspace_archived(session_factory, archived=True)
+        try:
+            await b.shared.reload_all()
+            await _eventually(lambda: conn.closure is not None)
+        finally:
+            await _set_workspace_archived(session_factory, archived=False)
+
+        assert conn.closure == WORKSPACE_ARCHIVED
         assert not a.registry.is_live(AGENT)
         assert not b.registry.is_live(AGENT)
 

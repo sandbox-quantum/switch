@@ -195,6 +195,7 @@ from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
     create_organization_for,
     directory_failed,
+    refuse_a_workspace_name_taken,
 )
 from switch_core.organization_access import (
     AccessRevocation,
@@ -522,12 +523,17 @@ async def rename_tenant(
     req: TenantRenameRequest,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> TenantRenameResponse:
     """Rename the bound workspace. Whoever administers it may, as with its
     other settings: its admins, its organization's `org_admin` and the
     operator. The slug stays as it is, being an identifier rather than the
-    name. The name it already has changes nothing and records nothing.
+    name. The name it already has changes nothing and records nothing. A
+    name another workspace of its organization has, in any case, is refused
+    with 409, as creating one is.
 
     Recorded in the workspace's audit log and in its organization's, as
     creating it is, so the organization's admins see it beside the workspaces
@@ -537,6 +543,18 @@ async def rename_tenant(
     made_from: dict[str, object] = (
         {"platform_access": True} if request.state.platform_access else {}
     )
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
+    # A workspace from before organizations has none to compare names in.
+    if tenant.organization_id is not None and req.name != tenant.name:
+        await refuse_a_workspace_name_taken(
+            session,
+            session_factory,
+            tenant.organization_id,
+            req.name,
+            renaming=tenant_id,
+        )
     if await rename_workspace(
         session, tenant_id, req.name, actor_id=user.id, made_from=made_from
     ):
@@ -561,7 +579,12 @@ async def rename_workspace(
     (`gateway/organization_workspaces.py`)."""
     # Locked, so renames made at the same moment each record the name they
     # replaced, and the second of two the same is the no-op it should be.
-    tenant = await session.get(Tenant, tenant_id, with_for_update=True)
+    tenant = await session.get(
+        Tenant,
+        tenant_id,
+        with_for_update={"key_share": True},
+        populate_existing=True,
+    )
     if tenant is None:
         raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
     if name == tenant.name:

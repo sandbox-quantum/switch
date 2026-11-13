@@ -11,9 +11,14 @@ import {
 } from "@mui/material";
 import { useId, useState } from "react";
 import { WORKSPACE_NAME_MAX } from "../../../data/api";
+import { duplicateWorkspaceNameError } from "./copy";
 
 interface Props {
   workspace: { id: string; name: string };
+  organizationName: string;
+  /** The names of the organization's other workspaces, to refuse one of
+   * them before the server does. */
+  otherNames: readonly string[];
   /** The rename itself. Left to throw: the dialog shows what it says and
    * stays open, rather than closing on a refusal. */
   onSave: (name: string) => Promise<void>;
@@ -22,14 +27,21 @@ interface Props {
 
 /** Renames one of the organization's workspaces. Mounted only while open, so
  * it always starts from the workspace's current name. */
-export default function RenameWorkspaceDialog({ workspace, onSave, onClose }: Props) {
+export default function RenameWorkspaceDialog({
+  workspace,
+  organizationName,
+  otherNames,
+  onSave,
+  onClose,
+}: Props) {
   const [name, setName] = useState(workspace.name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const titleId = useId();
 
   const trimmed = name.trim();
-  const disabled = busy || trimmed === "" || trimmed === workspace.name;
+  const clientError = duplicateWorkspaceNameError(organizationName, otherNames, trimmed);
+  const disabled = busy || trimmed === "" || trimmed === workspace.name || clientError !== null;
 
   const save = async () => {
     if (disabled) return;
@@ -75,6 +87,8 @@ export default function RenameWorkspaceDialog({ workspace, onSave, onClose }: Pr
           onKeyDown={(e) => {
             if (e.key === "Enter" && !disabled) void save();
           }}
+          error={clientError !== null}
+          helperText={clientError ?? undefined}
           slotProps={{ htmlInput: { maxLength: WORKSPACE_NAME_MAX } }}
         />
         {error && (

@@ -159,10 +159,15 @@ export default function OrganizationUsersSettings({
     [members, onChanged],
   );
 
+  // The workspaces someone could be added to, or why none can be offered yet.
   const openWorkspaceIds = useMemo(
-    () => (workspaces.data ?? []).filter((w) => w.archived_at === null).map((w) => w.id),
+    () =>
+      workspaces.data === null
+        ? null
+        : workspaces.data.filter((w) => w.archived_at === null).map((w) => w.id),
     [workspaces.data],
   );
+  const workspacesError = workspaces.error;
 
   const columns = useMemo<TableColumn<Row>[]>(() => {
     const administers = organization.administers;
@@ -193,9 +198,16 @@ export default function OrganizationUsersSettings({
           {
             label: "Add to a workspace",
             onClick: () => setPending({ kind: "add", member: row }),
-            disabledReason: openWorkspaceIds.every((id) => row.workspaces.some((w) => w.id === id))
-              ? "They're already in every workspace that isn't archived."
-              : null,
+            disabledReason:
+              openWorkspaceIds === null
+                ? workspacesError !== null
+                  ? "The organization's workspaces couldn't be loaded."
+                  : "Loading the organization's workspaces…"
+                : openWorkspaceIds.length === 0
+                  ? "Every workspace in the organization is archived."
+                  : openWorkspaceIds.every((id) => row.workspaces.some((w) => w.id === id))
+                    ? "They're already in every workspace that isn't archived."
+                    : null,
           },
           {
             label: "Change role in a workspace",
@@ -295,7 +307,7 @@ export default function OrganizationUsersSettings({
         },
       },
     ];
-  }, [organization.administers, selfId, openWorkspaceIds]);
+  }, [organization.administers, selfId, openWorkspaceIds, workspacesError]);
 
   const close = () => setPending(null);
   const openWorkspaces = (workspaces.data ?? []).filter((w) => w.archived_at === null);

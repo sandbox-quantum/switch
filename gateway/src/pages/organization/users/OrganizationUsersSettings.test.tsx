@@ -179,6 +179,21 @@ describe("OrganizationUsersSettings", () => {
     ]);
   });
 
+  it("says why no one can be added to a workspace while the workspaces can't be read", async () => {
+    answerFetch({
+      "GET /organizations/current/members": [200, [ME, BOB]],
+      "GET /organizations/current/workspaces": [500, { detail: "Could not reach the database." }],
+    });
+    renderPage();
+    await screen.findByTestId("row-bob");
+
+    await waitFor(() =>
+      expect(menuItems("Bob").find((item) => item.label === "Add to a workspace")?.reason).toBe(
+        "The organization's workspaces couldn't be loaded.",
+      ),
+    );
+  });
+
   it("adds someone to a workspace they are not in, as the role picked", async () => {
     const calls = answerFetch({
       "GET /organizations/current/members": [200, [ME, BOB]],

@@ -27,11 +27,13 @@ interface Candidate {
 
 /** Who may be made an admin of this workspace: its members who are not
  * already an org admin (an org admin administers every workspace already,
- * and isn't offered here), pre-ticked where their role there is "admin". */
+ * and isn't offered here), pre-ticked where their role there is "admin".
+ * The registration service account is never offered: the server never makes
+ * it an admin, and leaves it as it is. */
 function candidatesFor(members: readonly OrganizationMemberEntry[], workspaceId: string): Candidate[] {
   const candidates: Candidate[] = [];
   for (const member of members) {
-    if (member.role === "org_admin") continue;
+    if (member.role === "org_admin" || member.service_account) continue;
     const membership = member.workspaces.find((workspace) => workspace.id === workspaceId);
     if (!membership) continue;
     candidates.push({

@@ -305,6 +305,33 @@ async def test_an_archived_workspaces_bridge_is_refused_a_start_not_remembered(
         await service.stop_all()
 
 
+async def test_a_restart_in_an_archived_workspace_leaves_the_bridge_stopped(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An organization admin may still enter an archived workspace and edit
+    a bridge there, which restarts it: the edit is kept for the restore, not
+    answered with an error."""
+    bridge_id = await _bridge(session_factory)
+    await _set_archived(session_factory, bridge_id, archived=True)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    announced: list[str] = []
+
+    class _Signals:
+        def restarted(self, bridge_id: str) -> None:
+            announced.append(bridge_id)
+
+    service.use_signals(_Signals())  # type: ignore[arg-type]
+    try:
+        await service.restart(bridge_id)
+
+        assert service._running(bridge_id) is None
+        assert bridge_id not in service._started_rows
+        assert announced == []
+    finally:
+        await service.stop_all()
+
+
 async def test_reconcile_and_announce_tells_every_other_process_too(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,

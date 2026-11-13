@@ -18,11 +18,11 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.archived_workspace import WORKSPACE_ARCHIVED, archived_since
@@ -97,6 +97,7 @@ from switch_core.gateway.tenants import (
     rename_workspace,
     validated_member_role,
 )
+from switch_core.gateway.workspace_creation import refuse_a_workspace_name_taken
 from switch_core.organization_access import AccessRevocation
 from switch_core.room_schedules import skip_missed_runs
 
@@ -144,9 +145,16 @@ async def _in_workspace(
 ) -> AsyncIterator[tuple[AsyncSession, Tenant]]:
     """A session bound to `workspace_id`, and its row, locked until the
     session commits; 404 when it is not one of the caller's organization's,
-    as when it does not exist, so a workspace elsewhere is not confirmed."""
+    as when it does not exist, so a workspace elsewhere is not confirmed.
+
+    The lock is `FOR NO KEY UPDATE`, which another change to the workspace
+    (an archive, a rename) waits on and a row written in it does not: every
+    write there checks its foreign key to `tenants` with `FOR KEY SHARE`,
+    which `FOR UPDATE` would hold up for as long as this runs."""
     async with tenant_session(session_factory, workspace_id) as bound:
-        tenant = await bound.get(Tenant, workspace_id, with_for_update=True)
+        tenant = await bound.get(
+            Tenant, workspace_id, with_for_update={"key_share": True}
+        )
         if tenant is None or tenant.organization_id != acting.access.organization_id:
             raise HTTPException(status_code=404, detail=NOT_IN_ORGANIZATION)
         yield bound, tenant
@@ -165,8 +173,16 @@ async def rename_organization_workspace(
     user: Annotated[User, Depends(get_current_user)],
 ) -> TenantRenameResponse:
     """Rename one of the organization's workspaces, as its own General page
-    does (`tenants.rename_workspace`), recorded in both audit logs."""
+    does (`tenants.rename_workspace`), recorded in both audit logs. Refused,
+    409, for a name another of its workspaces has in any case."""
     acting = await _org_admin(session, user_store, organization_store, user)
+    await refuse_a_workspace_name_taken(
+        session,
+        session_factory,
+        acting.access.organization_id,
+        req.name,
+        renaming=workspace_id,
+    )
     async with _in_workspace(session_factory, acting, workspace_id) as (bound, _):
         if await rename_workspace(
             bound,
@@ -193,11 +209,11 @@ async def set_organization_workspace_admins(
 ) -> WorkspaceAdminsResponse:
     """Make exactly `req.user_ids` the workspace's admins among its members
     who are not the organization's `org_admin`s, the others members: the
-    Workspaces page's Manage admins. All of it or none of it, each change
+    Workspaces page's Manage admins. The registration service account is
+    neither, and is left as it is. All of it or none of it, each change
     checked as one made on the workspace's own page
-    (`tenants.change_member_role`): never its last admin demoted, never the
-    registration service account made one. Someone named who is not such a
-    member is refused, 400, with nothing changed."""
+    (`tenants.change_member_role`): never its last admin demoted. Someone
+    named who is not such a member is refused, 400, with nothing changed."""
     acting = await _org_admin(session, user_store, organization_store, user)
     wanted = set(req.user_ids)
     async with _in_workspace(session_factory, acting, workspace_id) as (bound, tenant):
@@ -207,7 +223,7 @@ async def set_organization_workspace_admins(
         members = {
             person.id: membership
             for person, membership in await user_store.list_tenant_members(bound)
-            if person.id not in organization_admins
+            if person.id not in organization_admins and not is_bootstrap_owner(person)
         }
         unknown = wanted - set(members)
         if unknown:
@@ -447,7 +463,10 @@ async def _set_archived(
     user = acting.user
     async with _in_workspace(session_factory, acting, workspace_id) as (bound, tenant):
         if (tenant.archived_at is not None) != archived:
-            now = datetime.now(UTC)
+            # The database's clock, as the scheduler's (`RoomScheduler`): the
+            # runs skipped on restore are those due by its now, not this
+            # process's.
+            now = (await bound.execute(select(func.clock_timestamp()))).scalar_one()
             tenant.archived_at = now if archived else None
             tenant.archived_by = user.id if archived else None
             if not archived:

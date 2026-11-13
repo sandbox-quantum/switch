@@ -70,8 +70,8 @@ def init_dependencies(
     invite_mailer: InviteMailer | None,
     user_changes: LocalUserChanges,
     config: SwitchConfig,
+    trust_connection_check: TrustConnectionCheck,
     trust_settings_changed: Callable[[str], None] | None = None,
-    trust_connection_check: TrustConnectionCheck | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
     _state["room_store"] = room_store
@@ -264,10 +264,7 @@ def trust_settings_changed(organization_id: str) -> None:
 
 
 def get_trust_connection_check() -> TrustConnectionCheck:
-    check = _state.get("trust_connection_check")
-    if check is None:
-        raise RuntimeError("No Switch Trust connection check was wired in")
-    return check  # type: ignore[no-any-return]
+    return _state["trust_connection_check"]  # type: ignore[no-any-return]
 
 
 def get_protocol() -> AgentCore:

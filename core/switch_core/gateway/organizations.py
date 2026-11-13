@@ -65,8 +65,8 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    membership_in_organization,
     organization_candidates,
-    organization_workspaces,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
     rebind_if_left,
@@ -116,6 +116,7 @@ from switch_core.gateway.workspace_creation import (
     create_workspace,
     directory_failed,
     lock_workspace_allowance,
+    refuse_a_workspace_name_taken,
 )
 from switch_core.organization_access import (
     AccessRevocation,
@@ -369,7 +370,7 @@ async def rename_current_organization(
     # Locked, so renames made at the same moment each record the name they
     # replaced.
     organization = await session.get(
-        Organization, access.organization_id, with_for_update=True
+        Organization, access.organization_id, with_for_update={"key_share": True}
     )
     if organization is None:
         raise RuntimeError(f"Organization {access.organization_id} is not visible here")
@@ -412,35 +413,33 @@ async def list_organization_workspaces(
     by membership."""
     organization_id = await _current_organization_id(session)
     current_id = require_tenant_id()
-    # Let go of the request's connection while each workspace is read on a
-    # session of its own.
-    await session.commit()
-    workspaces = await organization_workspaces_bindable_by(
-        session_factory,
-        user_store,
-        user.id,
-        organization_id,
-        is_operator=user.role == "admin",
-    )
     administers = (
         await organization_access(
             session, user_store, organization_store, user, operator_restores=False
         )
         is not None
     )
+    is_operator = user.role == "admin"
+    # Let go of the request's connection while each workspace is read on a
+    # session of its own: everything shown of it, on the one session.
     await session.commit()
     described: list[OrganizationWorkspaceResponse] = []
-    for workspace in workspaces:
-        async with tenant_session(session_factory, workspace.id) as bound:
-            tenant = await bound.get(Tenant, workspace.id)
-            if tenant is None:
-                logger.warning(
-                    "Workspace %s of organization %s was gone by the time it "
-                    "was described",
-                    workspace.id,
-                    organization_id,
-                )
+    for tenant_id in await organization_candidates(
+        session_factory, user.id, organization_id, is_operator=is_operator
+    ):
+        async with tenant_session(session_factory, tenant_id) as bound:
+            workspace = await membership_in_organization(
+                bound,
+                user_store,
+                tenant_id,
+                user.id,
+                organization_id,
+                is_operator=is_operator,
+            )
+            if workspace is None:
                 continue
+            tenant = await bound.get(Tenant, tenant_id)
+            assert tenant is not None  # `membership_in_organization` read it.
             blocked = (
                 _ARCHIVE_ADMINS_ONLY
                 if not administers
@@ -509,8 +508,8 @@ async def create_organization_workspace(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
-    await _refuse_a_name_taken(
-        session, session_factory, organization_id, user.id, req.name
+    await refuse_a_workspace_name_taken(
+        session, session_factory, organization_id, req.name, renaming=None
     )
     allowance = (
         None
@@ -542,33 +541,6 @@ async def create_organization_workspace(
         organization_id=organization_id,
         archived_at=None,
     )
-
-
-async def _refuse_a_name_taken(
-    session: AsyncSession,
-    session_factory: async_sessionmaker[AsyncSession],
-    organization_id: str,
-    admin_id: str,
-    name: str,
-) -> None:
-    """409 when the organization already has a workspace called `name`, in any
-    case: two of the same name could not be told apart in the switcher. A
-    check before creating, not a constraint, so two made at the same moment
-    could still share one, which nothing breaks."""
-    wanted = name.strip().casefold()
-    taken = [
-        tenant.name
-        for tenant in await organization_workspaces(
-            session_factory, admin_id, organization_id
-        )
-        if tenant.name.strip().casefold() == wanted
-    ]
-    if taken:
-        organization = await _organization(session, organization_id)
-        raise HTTPException(
-            status_code=409,
-            detail=f"{organization.name} already has a workspace called “{taken[0]}”.",
-        )
 
 
 def made_from(access: OrganizationAccess) -> dict[str, object]:

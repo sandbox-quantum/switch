@@ -303,6 +303,10 @@ class RoomScheduler:
             else None
         )
         async with tenant_session(self._sessions, tenant_id) as db:
+            # Asked again where the run is claimed: the workspace may have
+            # been archived since `fire_due` read it.
+            if await is_archived(db, tenant_id):
+                return
             if not await self._schedules.claim(
                 db, schedule.id, due_at=due_at, next_run_at=following, fired_at=now
             ):

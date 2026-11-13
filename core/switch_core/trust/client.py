@@ -183,7 +183,9 @@ class DynamicTrustClient:
     Every message an agent sends is checked, and reading the settings for each
     one was a transaction per message for a row that hardly ever changes.
     Which organization a workspace is in is kept for good: a workspace never
-    moves to another.
+    moves to another. That it is in none is read again as settings are, since
+    the revision that gives every workspace an organization may run while
+    this process does.
     """
 
     def __init__(
@@ -202,8 +204,12 @@ class DynamicTrustClient:
         self._client = client
         self._timeout_seconds = timeout_seconds
         self._max_age_seconds = max_age_seconds
-        # Each workspace's organization; None for one in no organization.
-        self._organization_of: dict[str, str | None] = {}
+        # Each workspace's organization, kept for good.
+        self._organization_of: dict[str, str] = {}
+        # When each workspace found in no organization was read so, and those
+        # already logged as unchecked.
+        self._no_organization: dict[str, float] = {}
+        self._said_unchecked: set[str] = set()
         self._kept: dict[str, _Kept] = {}
         # Bumped for an organization by each `forget`, and the epoch by each
         # `forget_all`, so a read begun before either does not keep what it
@@ -221,6 +227,7 @@ class DynamicTrustClient:
         """Read every organization's settings again: this process may have
         missed a change, as on reconnecting to the database."""
         self._kept.clear()
+        self._no_organization.clear()
         self._epoch += 1
 
     async def is_active(self, tenant_id: str) -> bool:
@@ -245,8 +252,13 @@ class DynamicTrustClient:
                 and time.monotonic() - kept.read_at < self._max_age_seconds
             ):
                 return kept.checker
-        elif tenant_id in self._organization_of:
-            return None
+        else:
+            read_at = self._no_organization.get(tenant_id)
+            if (
+                read_at is not None
+                and time.monotonic() - read_at < self._max_age_seconds
+            ):
+                return None
         # The reads and the decrypt below are not network calls to Switch
         # Trust, so neither raises `GuardrailsCheckError` on its own — but a
         # stuck pool or an `UndecryptableError` from a key rotated out too
@@ -256,17 +268,24 @@ class DynamicTrustClient:
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 if organization_id is None:
+                    epoch = self._epoch
+                    read_at = time.monotonic()
                     organization_id = await self._store.organization_of(
                         session, tenant_id
                     )
-                    self._organization_of[tenant_id] = organization_id
                     if organization_id is None:
-                        logger.warning(
-                            "Workspace %s belongs to no organization, so no "
-                            "Switch Trust policy checks its messages",
-                            tenant_id,
-                        )
+                        if self._epoch == epoch:
+                            self._no_organization[tenant_id] = read_at
+                        if tenant_id not in self._said_unchecked:
+                            self._said_unchecked.add(tenant_id)
+                            logger.warning(
+                                "Workspace %s belongs to no organization, so no "
+                                "Switch Trust policy checks its messages",
+                                tenant_id,
+                            )
                         return None
+                    self._organization_of[tenant_id] = organization_id
+                    self._no_organization.pop(tenant_id, None)
                 generation = self._generation.get(organization_id, 0)
                 epoch = self._epoch
                 read_at = time.monotonic()

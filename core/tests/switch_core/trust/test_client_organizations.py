@@ -84,3 +84,44 @@ async def test_each_message_is_checked_against_its_own_organizations_policy(
         ("pol_globex", "key-for-pol_globex"),
     ]
     assert await client.is_active(unchecked) is False
+
+
+async def test_a_workspace_in_no_organization_is_checked_once_it_has_one(
+    rls_harness: RLSHarness,
+) -> None:
+    """Not checked while it has none, and not remembered so for good: the
+    revision that gives it an organization may run while the process does."""
+    asked: list[str | None] = []
+
+    def switch_trust(request: httpx.Request) -> httpx.Response:
+        asked.append(request.headers.get("x-guardrails-policy-id"))
+        return httpx.Response(200, json={"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+
+    adopted = await _workspace(rls_harness.owner, "pol_adopted")
+    async with rls_harness.owner() as session:
+        tenant = await session.get(Tenant, adopted)
+        assert tenant is not None
+        organization_id = tenant.organization_id
+        tenant.organization_id = None
+        await session.commit()
+    client = DynamicTrustClient(
+        session_factory=rls_harness.restricted,
+        store=OrganizationTrustSettingsStore(),
+        keyring=TEST_KEYRING,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(switch_trust)),
+        timeout_seconds=1.0,
+    )
+
+    unchecked = await client.is_active(adopted)
+    async with rls_harness.owner() as session:
+        tenant = await session.get(Tenant, adopted)
+        assert tenant is not None
+        tenant.organization_id = organization_id
+        await session.commit()
+    remembered = await client.is_active(adopted)
+    client.forget_all()
+    await client.check(tenant_id=adopted, role="user", content="hi", room_id="room-1")
+
+    assert unchecked is False
+    assert remembered is False
+    assert asked == ["pol_adopted"]
