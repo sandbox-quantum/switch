@@ -53,6 +53,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Your account in the new dashboard layout.** Behind `gateway_v2`, Settings
+  › Your account shows your display name, which you can change in place, and
+  your email, read-only. It has cards to change your password (not shown for
+  an account made through single sign-on), to sign out of this browser or of
+  every device, and to delete your account. The delete dialog says straight
+  away when deletion isn't possible yet, for example because you're the only
+  admin of a workspace or organization that has other people in it, instead
+  of after you've typed your email. A new `GET /gateway/auth/me/deletion`
+  answers with the reason `DELETE /gateway/auth/me` would give, or null.
+  Change password moves out of the account menu in the new layout. In the
+  settings menu, Your account and the way across to the other settings area
+  each sit in a group of their own, below a divider.
 - **A link into the web dashboard can name its workspace.** A page opened
   with `?workspace=<id>` switches to that workspace first, then opens the
   same page there, rather than showing whichever workspace the browser had
@@ -570,6 +582,11 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **A sign-out that fails in the dashboard says so.** Signing out, or out of
+  every device, from the account menu or the screens before a workspace said
+  nothing when Switch didn't answer, and a failed sign-out of this browser
+  looked signed out until the next reload signed it back in. The dashboard
+  now stays signed in and shows what went wrong.
 - **Creating an API key no longer says it won't be shown again.** Its owner
   can copy it again from the API keys page, as they always could.
 - **Deleting an API key that can't be deleted says why,** instead of closing
