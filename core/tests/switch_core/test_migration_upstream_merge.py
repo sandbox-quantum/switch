@@ -16,7 +16,8 @@ the fourth merge; the fifth, `abc98bfaa469`, joins it with main's three
 revisions to `861ff8767cf4`, so a database at `31f9c357ce29` upgrades through
 exactly those three and that merge. The head, `7578dcab9d39`, joins the fifth
 merge with main's `c8e4a1f7d392`; the head, `0c3b39b59766`, joins that sixth
-merge with main's `b7e2c4a9d1f6`.
+merge with main's `b7e2c4a9d1f6`; the head, `97c1c62e3ca3`, joins that seventh
+merge with main's `c5d1e8f3a6b2`.
 The test server's database is stamped `a90e3df4fe3f`, inside our chain,
 so its next upgrade must run our remaining revision (`e11b7c3d9a2f`) and all 12
 of upstream's, then the merge. This builds a database of its own (never the
@@ -44,7 +45,9 @@ from switch_core.db.schema_version import record_expand_only
 
 _CORE = Path(__file__).resolve().parents[2]
 _MIGRATION_DB = "migration_upstream_merge"
-_HEAD = "0c3b39b59766"
+_HEAD = "97c1c62e3ca3"
+_SEVENTH_MAIN_MERGE = "0c3b39b59766"
+_EIGHTH_MAIN_HEAD = "c5d1e8f3a6b2"
 _SIXTH_MAIN_MERGE = "7578dcab9d39"
 _SEVENTH_MAIN_HEAD = "b7e2c4a9d1f6"
 _FIFTH_MAIN_MERGE = "abc98bfaa469"
@@ -283,7 +286,10 @@ def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
     assert script.get_heads() == [_HEAD]
     head = script.get_revision(_HEAD)
     assert head is not None
-    assert set(head._all_down_revisions) == {_SIXTH_MAIN_MERGE, _SEVENTH_MAIN_HEAD}
+    assert set(head._all_down_revisions) == {_SEVENTH_MAIN_MERGE, _EIGHTH_MAIN_HEAD}
+    seventh = script.get_revision(_SEVENTH_MAIN_MERGE)
+    assert seventh is not None
+    assert set(seventh._all_down_revisions) == {_SIXTH_MAIN_MERGE, _SEVENTH_MAIN_HEAD}
     sixth = script.get_revision(_SIXTH_MAIN_MERGE)
     assert sixth is not None
     assert set(sixth._all_down_revisions) == {_FIFTH_MAIN_MERGE, _SIXTH_MAIN_HEAD}
@@ -371,6 +377,8 @@ async def test_the_test_servers_database_upgrades_through_both_chains(
             _SIXTH_MAIN_HEAD,
             _SIXTH_MAIN_MERGE,
             _SEVENTH_MAIN_HEAD,
+            _SEVENTH_MAIN_MERGE,
+            _EIGHTH_MAIN_HEAD,
             _HEAD,
         }
         assert (
@@ -380,7 +388,7 @@ async def test_the_test_servers_database_upgrades_through_both_chains(
             + len(_MAIN_AGAIN)
             + len(_MAIN_FOURTH)
             + len(_MAIN_FIFTH)
-            + 12
+            + 14
         )
         assert ran[-1] == _HEAD
         assert await _version(engine) == [_HEAD]
@@ -421,10 +429,12 @@ async def test_a_database_at_the_first_merge_runs_mains_ten_then_the_merges(
             _SIXTH_MAIN_HEAD,
             _SIXTH_MAIN_MERGE,
             _SEVENTH_MAIN_HEAD,
+            _SEVENTH_MAIN_MERGE,
+            _EIGHTH_MAIN_HEAD,
         }
         assert [r for r in ran if r in _MAIN_FOURTH] == list(_MAIN_FOURTH)
         assert [r for r in ran if r in _MAIN_FIFTH] == list(_MAIN_FIFTH)
-        assert len(ran) == len(_MAIN_AGAIN) + len(_MAIN_FOURTH) + len(_MAIN_FIFTH) + 9
+        assert len(ran) == len(_MAIN_AGAIN) + len(_MAIN_FOURTH) + len(_MAIN_FIFTH) + 11
         assert ran[-1] == _HEAD
         assert await _version(engine) == [_HEAD]
     finally:
@@ -456,10 +466,12 @@ async def test_a_database_at_the_second_merge_runs_mains_index_then_the_head(
             _SIXTH_MAIN_HEAD,
             _SIXTH_MAIN_MERGE,
             _SEVENTH_MAIN_HEAD,
+            _SEVENTH_MAIN_MERGE,
+            _EIGHTH_MAIN_HEAD,
         }
         assert [r for r in ran if r in _MAIN_FOURTH] == list(_MAIN_FOURTH)
         assert [r for r in ran if r in _MAIN_FIFTH] == list(_MAIN_FIFTH)
-        assert len(ran) == len(_MAIN_FOURTH) + len(_MAIN_FIFTH) + 8
+        assert len(ran) == len(_MAIN_FOURTH) + len(_MAIN_FIFTH) + 10
         assert ran[-1] == _HEAD
         assert await _version(engine) == [_HEAD]
     finally:
@@ -490,6 +502,8 @@ async def test_a_database_at_the_third_merge_runs_mains_six_then_the_head(
             _SIXTH_MAIN_HEAD,
             _SIXTH_MAIN_MERGE,
             _SEVENTH_MAIN_HEAD,
+            _SEVENTH_MAIN_MERGE,
+            _EIGHTH_MAIN_HEAD,
         }
         assert [r for r in ran if r in _MAIN_FIFTH] == list(_MAIN_FIFTH)
         assert ran[-1] == _HEAD
@@ -521,6 +535,8 @@ async def test_a_database_at_the_fourth_merge_runs_mains_three_then_the_head(
             _SIXTH_MAIN_HEAD,
             _SIXTH_MAIN_MERGE,
             _SEVENTH_MAIN_HEAD,
+            _SEVENTH_MAIN_MERGE,
+            _EIGHTH_MAIN_HEAD,
         }
         assert ran[-1] == _HEAD
         assert await _version(engine) == [_HEAD]
@@ -556,7 +572,12 @@ async def test_a_database_at_the_fifth_merge_runs_mains_link_prompts_then_the_he
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade("head", ran))
         assert ran[0] == _SIXTH_MAIN_HEAD
-        assert set(ran[1:-1]) == {_SIXTH_MAIN_MERGE, _SEVENTH_MAIN_HEAD}
+        assert set(ran[1:-1]) == {
+            _SIXTH_MAIN_MERGE,
+            _SEVENTH_MAIN_HEAD,
+            _SEVENTH_MAIN_MERGE,
+            _EIGHTH_MAIN_HEAD,
+        }
         assert ran[-1] == _HEAD
         assert await _version(engine) == [_HEAD]
     finally:
@@ -567,8 +588,9 @@ async def test_a_database_at_the_fifth_merge_runs_mains_link_prompts_then_the_he
 async def test_a_database_at_the_sixth_merge_runs_mains_room_visibility_then_the_head(
     postgres_url: str,
 ) -> None:
-    """At `7578dcab9d39`, the hosted-agents v2 head before this merge: the next
-    upgrade runs main's `b7e2c4a9d1f6`, then the head, and nothing else."""
+    """At `7578dcab9d39`, the hosted-agents v2 head before the seventh merge:
+    the next upgrade runs main's `b7e2c4a9d1f6`, then the seventh merge and
+    main's `c5d1e8f3a6b2`, then the head, and nothing else."""
     engine = await _engine(postgres_url)
     try:
         async with engine.begin() as connection:
@@ -577,7 +599,29 @@ async def test_a_database_at_the_sixth_merge_runs_mains_room_visibility_then_the
         ran: list[str] = []
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade("head", ran))
-        assert ran == [_SEVENTH_MAIN_HEAD, _HEAD]
+        assert ran[0] == _SEVENTH_MAIN_HEAD
+        assert set(ran[1:-1]) == {_SEVENTH_MAIN_MERGE, _EIGHTH_MAIN_HEAD}
+        assert ran[-1] == _HEAD
+        assert await _version(engine) == [_HEAD]
+    finally:
+        await engine.dispose()
+        await _drop(postgres_url)
+
+
+async def test_a_database_at_the_seventh_merge_runs_mains_grant_revisions_then_the_head(
+    postgres_url: str,
+) -> None:
+    """At `0c3b39b59766`, the hosted-agents v2 head before this merge: the next
+    upgrade runs main's `c5d1e8f3a6b2`, then the head, and nothing else."""
+    engine = await _engine(postgres_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade(_SEVENTH_MAIN_MERGE))
+        assert await _version(engine) == [_SEVENTH_MAIN_MERGE]
+        ran: list[str] = []
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade("head", ran))
+        assert ran == [_EIGHTH_MAIN_HEAD, _HEAD]
         assert await _version(engine) == [_HEAD]
     finally:
         await engine.dispose()
