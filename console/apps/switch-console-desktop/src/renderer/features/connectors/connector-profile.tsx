@@ -10,6 +10,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ConnectorAgentsSection } from './connector-agents-section';
+import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
   type ConnectorViewer,
   FIX_LABEL,
@@ -126,11 +127,7 @@ export function ConnectorProfile({
           </div>
           <div className="flex shrink-0 gap-2">
             {state.fix === 'set_up' && (
-              <Button
-                onClick={() =>
-                  navigate('admin', { serverId, section: 'apps', app: connection.slug })
-                }
-              >
+              <Button onClick={() => openConnectorAppSetUp(serverId, connection.slug, navigate)}>
                 {FIX_LABEL.set_up}
               </Button>
             )}
