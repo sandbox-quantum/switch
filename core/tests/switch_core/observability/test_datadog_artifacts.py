@@ -36,6 +36,7 @@ def _load(name: str) -> object:
     "filename",
     [
         "dashboard.json",
+        "hosted-dashboard.json",
         "multi-pod-dashboard.json",
         "monitors.json",
         "signal-board.json",
@@ -219,6 +220,7 @@ _READ_WITH_MAX = (
     "filename",
     [
         "dashboard.json",
+        "hosted-dashboard.json",
         "multi-pod-dashboard.json",
         "monitors.json",
         "signal-board.json",
@@ -237,7 +239,13 @@ def test_server_wide_gauges_are_read_with_max(filename: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "filename", ["dashboard.json", "multi-pod-dashboard.json", "signal-board.json"]
+    "filename",
+    [
+        "dashboard.json",
+        "hosted-dashboard.json",
+        "multi-pod-dashboard.json",
+        "signal-board.json",
+    ],
 )
 def test_no_toplist_request_carries_an_aggregator(filename: str) -> None:
     """Datadog refuses to import a toplist whose request has `aggregator`
@@ -275,3 +283,93 @@ def test_the_signal_board_stays_readable_at_a_glance() -> None:
             len(request.get("formulas", [])) for request in chart.get("requests", [])
         )
         assert series <= 5, f"{chart.get('title')} draws {series} series"
+
+
+# The hosted agents board, in the order whoever is on call reads it: is
+# anything firing, can people get working agents, why is it failing, capacity,
+# and whether the charts can be trusted.
+_HOSTED_BOARD_ORDER = [
+    "Hosted alerts: status",
+    "Cloud machines reporting vs expected, by kind (silent = reporting below expected)",
+    "Seconds since the hosted controller service last called Core (min over pods; rising = reconciler silent)",
+    "Cloud machine changes, by event and reason",
+    "New cloud machines: seconds from request to first report, p95 / max",
+    "Agents on cloud machines, by process state and kind (a v1 machine's session is always none)",
+    "Sessions on cloud machines: running vs max",
+    "Cloud calls that failed for hosted machines, by call and kind",
+    "Hosted controller service errors, by kind",
+    "Agent controller restarts on cloud machines",
+    "Controller credentials refused per second, by reason and route",
+    "AI provider logins missing or expired on cloud machines, by provider and reason",
+    "Agents stopped on cloud machines, by reason",
+    "Cloud machine memory used (%), p95 / max. Needs distribution mapping, see README",
+    "Cloud machine disk used (%), p95 / max. Needs distribution mapping, see README",
+    "Metrics samples that failed, by sampler",
+]
+
+
+def _hosted_board() -> dict:
+    board = _load("hosted-dashboard.json")
+    assert isinstance(board, dict)
+    return board
+
+
+def test_the_hosted_board_reads_in_on_call_order() -> None:
+    """The hosted note first, then the alerts, then each chart in order."""
+    widgets = _hosted_board()["widgets"]
+    first = widgets[0]["definition"]
+    assert first["type"] == "note"
+    assert first["content"].startswith("**Hosted agents (cloud machines).**")
+    assert [w["definition"].get("title") for w in widgets[1:]] == _HOSTED_BOARD_ORDER
+
+
+def test_the_hosted_board_is_the_main_dashboards_charts_unchanged() -> None:
+    """Each chart, and the note, is the main dashboard's of the same title, so
+    the two can't drift: change a query there and here together."""
+    main = {
+        w["definition"].get("title") or w["definition"].get("content"): w["definition"]
+        for w in _load("dashboard.json")["widgets"]  # type: ignore[index]
+    }
+    for widget in _hosted_board()["widgets"]:
+        definition = widget["definition"]
+        if definition["type"] == "manage_status":
+            continue
+        key = definition.get("title") or definition.get("content")
+        assert key in main, f"{key!r} is on no panel of dashboard.json"
+        assert definition == main[key], f"{key!r} differs from dashboard.json"
+
+
+def test_the_hosted_alerts_panel_lists_every_alert_on_its_charts() -> None:
+    """The alerts panel names exactly the alerts that read a metric the board
+    charts, by the name after `[Switch <env>] `, within the board's service."""
+    widgets = _hosted_board()["widgets"]
+    (alerts,) = [
+        w["definition"] for w in widgets if w["definition"]["type"] == "manage_status"
+    ]
+    charted = _referenced_metrics(
+        [w for w in widgets if w["definition"]["type"] != "manage_status"]
+    )
+    expected = {
+        monitor["name"].split("] ", 1)[1]
+        for monitor in _load("monitors.json")  # type: ignore[union-attr]
+        if _referenced_metrics(monitor["query"]) & charted
+    }
+    query = alerts["query"]
+    assert query.startswith('tag:"service:REPLACE-WITH-SERVICE" (')
+    assert set(re.findall(r'"([^"]+)"', query.split(" ", 1)[1])) == expected
+    assert len(expected) == 13
+
+
+def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:
+    """It's imported per deployment, so it names none: placeholder defaults,
+    no ids, no notification handles."""
+    board = _hosted_board()
+    defaults = {v["name"]: v["default"] for v in board["template_variables"]}
+    assert defaults == {
+        "service": "REPLACE-WITH-SERVICE",
+        "flint_env": "REPLACE-WITH-ENV",
+    }
+    text = json.dumps(board)
+    assert '"id"' not in text
+    assert "@" not in text
+    assert "$env" not in text

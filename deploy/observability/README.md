@@ -147,6 +147,12 @@ The application key needs monitor and dashboard write access. `dashboard.json`
 and `multi-pod-dashboard.json` are not touched by it; import those by hand with
 `POST /api/v1/dashboard` if a deployment doesn't have them yet.
 
+`hosted-dashboard.json` is the hosted agents board for whoever is on call: the
+hosted alerts, then the main dashboard's hosted charts in reading order (a test
+keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
+dashboard JSON, then set `$service` and `$flint_env` to the deployment's, and
+replace `REPLACE-WITH-SERVICE` in the alerts panel's query with its service.
+
 ## Check these before you trust the dashboard
 
 **Histogram panels need two things, not one.** Request latency, delivery lag,

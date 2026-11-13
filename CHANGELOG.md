@@ -68,6 +68,9 @@ version of their own to them without also giving them a release of their own.
   `apply.sh` needs `SERVICE` and `ENV`, refuses the default `switch-core`
   unless `ALLOW_DEFAULT_SERVICE=1`, and uploads the shared signal board only
   for the default service.
+- **A hosted agents dashboard to import**, `hosted-dashboard.json`: the
+  hosted alerts and charts in the order whoever is on call reads them, the
+  same charts as the main dashboard's hosted section.
 - **The hosted controller service reports what goes wrong.** It counts failed
   cloud calls by call and kind and its own errors by kind, and sends the
   counts with its next observation, which Core counts once the observation is
