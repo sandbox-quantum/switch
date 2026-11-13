@@ -21,6 +21,8 @@ function key(workspaceId: string, switchAgentId: string): string {
   return `${workspaceId}:${switchAgentId}`;
 }
 
+const MEMBERSHIP_FAILED = 'Could not load the rooms this agent belongs to.';
+
 /**
  * The messaging-app values worth offering as a room filter for these rooms:
  * the bridge types actually in use, plus the unbridged sentinel when some room
@@ -542,11 +544,75 @@ export class SwitchRoomsStore {
     const identities = new Map(agents.map((a) => [key(a.workspaceId, a.switchAgentId), a]));
     for (const [k, watched] of this.watchedIdentities)
       if (!identities.has(k)) identities.set(k, watched);
+    // Asked a workspace at a time: the server answers for all of a workspace's
+    // agents in one read.
+    const byWorkspace = new Map<string, string[]>();
+    for (const [k, { workspaceId, switchAgentId }] of identities) {
+      if (this.roomsByAgent.has(k) && !options.force) continue;
+      const ids = byWorkspace.get(workspaceId);
+      if (ids) ids.push(switchAgentId);
+      else byWorkspace.set(workspaceId, [switchAgentId]);
+    }
     await Promise.all(
-      [...identities.values()].map((a) =>
-        this.fetchAgentRooms(a.workspaceId, a.switchAgentId, options)
-      )
+      [...byWorkspace].map(([workspaceId, ids]) => this.fetchRoomsOfAgents(workspaceId, ids))
     );
+  }
+
+  /**
+   * Fetch several agents' membership in one workspace, in one read, or an agent
+   * at a time from a server too old to answer for many at once.
+   */
+  private async fetchRoomsOfAgents(workspaceId: string, switchAgentIds: string[]): Promise<void> {
+    const asked = switchAgentIds.map((id) => {
+      const k = key(workspaceId, id);
+      return { id, k, request: this.startMembershipRequest(k) };
+    });
+    let found: Record<string, RemoteAgentRoom[]> | null;
+    try {
+      found = await rpc.workspaces.listRoomsOfAgents({ workspaceId, agentIds: switchAgentIds });
+    } catch (cause) {
+      const error = failureText(cause, MEMBERSHIP_FAILED);
+      for (const { k, request } of asked) this.settleMembership(k, request, { error });
+      return;
+    }
+    if (found === null) {
+      await Promise.all(
+        switchAgentIds.map((id) => this.fetchAgentRooms(workspaceId, id, { force: true }))
+      );
+      return;
+    }
+    for (const { id, k, request } of asked) {
+      const rooms: RemoteAgentRoom[] | undefined = found[id];
+      this.settleMembership(
+        k,
+        request,
+        rooms ? { rooms } : { error: `${MEMBERSHIP_FAILED} The server has no such agent.` }
+      );
+    }
+  }
+
+  private startMembershipRequest(k: string): number {
+    const request = (this.membershipRequests.get(k) ?? 0) + 1;
+    this.membershipRequests.set(k, request);
+    runInAction(() => {
+      this.loading.add(k);
+      this.errors.delete(k);
+    });
+    return request;
+  }
+
+  /** Record what a membership read found, unless a newer read of the same agent has started since. */
+  private settleMembership(
+    k: string,
+    request: number,
+    outcome: { rooms: RemoteAgentRoom[] } | { error: string }
+  ): void {
+    runInAction(() => {
+      if (this.membershipRequests.get(k) !== request) return;
+      if ('rooms' in outcome) this.roomsByAgent.set(k, outcome.rooms);
+      else this.errors.set(k, outcome.error);
+      this.loading.delete(k);
+    });
   }
 
   /**
@@ -588,29 +654,14 @@ export class SwitchRoomsStore {
     const k = key(workspaceId, switchAgentId);
     const cached = this.roomsByAgent.get(k);
     if (cached && !options.force) return cached;
-    const request = (this.membershipRequests.get(k) ?? 0) + 1;
-    this.membershipRequests.set(k, request);
-
-    runInAction(() => {
-      this.loading.add(k);
-      this.errors.delete(k);
-    });
+    const request = this.startMembershipRequest(k);
     try {
       const rooms = await rpc.workspaces.listAgentRooms({ workspaceId, agentId: switchAgentId });
-      runInAction(() => {
-        if (this.membershipRequests.get(k) === request) this.roomsByAgent.set(k, rooms);
-      });
+      this.settleMembership(k, request, { rooms });
       return rooms;
     } catch (cause) {
-      runInAction(() => {
-        if (this.membershipRequests.get(k) === request)
-          this.errors.set(k, failureText(cause, 'Could not load the rooms this agent belongs to.'));
-      });
+      this.settleMembership(k, request, { error: failureText(cause, MEMBERSHIP_FAILED) });
       return null;
-    } finally {
-      runInAction(() => {
-        if (this.membershipRequests.get(k) === request) this.loading.delete(k);
-      });
     }
   }
 }

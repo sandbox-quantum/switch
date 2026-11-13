@@ -57,6 +57,7 @@ import {
   fetchRoomRoles,
   fetchRoomSchedules,
   fetchRooms,
+  fetchRoomsOfAgents,
   fetchTemplateDetail,
   fetchTemplateRuns,
   fetchTemplates,
@@ -1018,6 +1019,15 @@ export const workspacesController = createRPCController({
 
   listAgentRooms: (params: { workspaceId: string; agentId: string }): Promise<RemoteAgentRoom[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchAgentRooms(server, params.agentId)),
+
+  /** Several agents' rooms in one read; null from a server that answers one agent at a time. */
+  listRoomsOfAgents: (params: {
+    workspaceId: string;
+    agentIds: string[];
+  }): Promise<Record<string, RemoteAgentRoom[]> | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomsOfAgents(server, params.agentIds)
+    ),
 
   listRoomRoles: (params: { workspaceId: string; roomId: string }): Promise<RemoteRoomRole[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchRoomRoles(server, params.roomId)),

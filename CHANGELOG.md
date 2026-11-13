@@ -3968,6 +3968,10 @@ version of their own to them without also giving them a release of their own.
   shows its own error page and never sends the browser back. After a minute,
   the connect step now says what to check. GitHub's step does too, and names
   the GitHub App's Callback URL.
+- **The sidebar reads a workspace's agents' rooms in one request**, rather
+  than one request per agent on every refresh (every 20 seconds while the
+  window is open, and whenever it is focused). On a server from before that
+  request it still asks for one agent at a time.
 - **Usage data recognises Switch Cloud the way the app shows it**, by its
   address's origin, and adding the Cloud by its address reports it as `cloud`
   rather than `external`. A Switch Cloud address that cannot be read is logged,
