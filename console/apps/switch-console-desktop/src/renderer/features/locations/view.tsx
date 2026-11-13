@@ -1,5 +1,6 @@
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { LocationViewWrapper } from '@renderer/features/locations/components/location-view-wrapper';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { appState } from '@renderer/lib/stores/app-state';
 import { LocationTitlebar } from './components/location-titlebar';
 import { LocationMainPanel } from './components/main-panel/main-panel';
@@ -13,11 +14,11 @@ export const locationView = {
       typeof params === 'object' && params !== null
         ? (params as { locationId?: unknown }).locationId
         : undefined;
-    if (typeof locationId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof locationId !== 'string') return homeRedirect();
     return appState.locations.locations.has(locationId) ||
       appState.locations.pendingCreationIds.has(locationId)
       ? { ok: true }
-      : { ok: false, redirect: 'home' };
+      : homeRedirect();
   },
   // `roomId` records which room the agent was opened *from*, when it was opened
   // from a room in the sidebar. The page itself ignores it; it is what lets the

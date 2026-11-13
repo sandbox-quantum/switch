@@ -34,6 +34,8 @@ describe('chatRemovalNavigation', () => {
   });
 
   it('does not navigate from a chat view left in the background', () => {
-    expect(chatRemovalNavigation('!a', { currentViewId: 'home', chatRoomId: '!a' })).toEqual(stay);
+    expect(chatRemovalNavigation('!a', { currentViewId: 'noServer', chatRoomId: '!a' })).toEqual(
+      stay
+    );
   });
 });

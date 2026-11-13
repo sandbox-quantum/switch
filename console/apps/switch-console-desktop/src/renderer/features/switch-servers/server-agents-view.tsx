@@ -38,6 +38,7 @@ import { SearchInput } from '@renderer/lib/ui/search-input';
 import type { Agent } from '@shared/core/agents/agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { homeRedirect } from './home-target';
 import { isFrozenServer } from './managed-server-state';
 import { matchesNameFilter } from './name-filter';
 import { openServerPage } from './open-server-page';
@@ -306,7 +307,7 @@ export const serverAgentsView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string }>;

@@ -2,7 +2,7 @@ import { FolderInput } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
 import { SidebarOnboardingChecklist } from '@renderer/features/onboarding/sidebar-onboarding-checklist';
-import { useNavigate } from '@renderer/lib/layout/navigation-provider';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
 import { cn } from '@renderer/utils/utils';
 import { FROZEN, isFrozenServer } from '../switch-servers/managed-server-state';
@@ -25,8 +25,6 @@ import { useSidebarDrop } from './use-sidebar-drop';
 import { WorkspaceNav } from './workspace-nav';
 
 export const LeftSidebar: React.FC = observer(function LeftSidebar() {
-  const { navigate } = useNavigate();
-
   const { isDragOver, onDragOver, onDragEnter, onDragLeave, onDrop } = useSidebarDrop();
   const managementMode = useAgentManagementMode();
   const activeServer = switchServersStore.activeServer;
@@ -77,11 +75,9 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
         </SidebarContent>
         <SidebarOnboardingChecklist />
         <div className="flex items-center justify-between gap-2 px-3 py-2">
-          {/* The mark doubles as the way back to the welcome screen — the one
-              view with no other entry point once you have navigated away. */}
           <button
             type="button"
-            onClick={() => navigate('home')}
+            onClick={() => navigateHome()}
             aria-label="Go to home"
             title="Home"
             className="rounded-md text-[var(--fg-passive)] transition-colors hover:text-foreground"

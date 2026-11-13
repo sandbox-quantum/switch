@@ -42,7 +42,7 @@ vi.mock('@renderer/lib/ipc', () => ({
 vi.mock('@renderer/lib/stores/app-state', () => ({
   appState: {
     navigation: {
-      currentViewId: 'home',
+      currentViewId: 'noServer',
       revalidate: vi.fn(),
       viewParamsStore: {},
     },

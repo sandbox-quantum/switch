@@ -22,7 +22,7 @@ import { switchServersStore } from './switch-servers-store';
 const NEVER_FROZEN: ReadonlySet<ViewId> = new Set<ViewId>([
   'managedServer',
   'settings',
-  'home',
+  'noServer',
   'remoteHosts',
   'remoteHost',
 ]);

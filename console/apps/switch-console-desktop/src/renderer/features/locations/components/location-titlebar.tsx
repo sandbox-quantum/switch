@@ -9,6 +9,7 @@ import {
   getLocationStore,
   locationViewKind,
 } from '@renderer/features/locations/stores/location-selectors';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { openServerPage } from '@renderer/features/switch-servers/open-server-page';
 import { ServerStatusPill } from '@renderer/features/switch-servers/server-presentation';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -20,7 +21,7 @@ import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-b
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
@@ -108,7 +109,6 @@ const AgentActionsMenu = observer(function AgentActionsMenu({
   agent: Agent | null;
   sshHost: string | null;
 }) {
-  const { navigate } = useNavigate();
   const showConfirmReset = useShowModal('resetAgentModal');
   const confirmDeleteAgent = useConfirmDeleteAgent();
   const { toastPromise } = useToast();
@@ -164,7 +164,7 @@ const AgentActionsMenu = observer(function AgentActionsMenu({
               locationId,
               agentId: agent?.id,
               locationLabel: label,
-              onDeleted: () => navigate('home'),
+              onDeleted: () => navigateHome(),
             });
           }}
         >

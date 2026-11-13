@@ -28,7 +28,7 @@ function staleParamGuard(params: unknown): GuardResult {
 
 function makeStore(guards: Partial<Record<ViewId, (params: unknown) => GuardResult>>) {
   const store = new NavigationStore();
-  for (const viewId of ['home', 'settings', 'remoteHosts', 'session'] as ViewId[]) {
+  for (const viewId of ['noServer', 'settings', 'remoteHosts', 'session'] as ViewId[]) {
     store.registerView(viewId);
   }
   for (const [viewId, guard] of Object.entries(guards)) {
@@ -64,7 +64,7 @@ describe('NavigationStore stale-param guards', () => {
     // The trap this covers: currentViewId is something else entirely, so restore
     // never runs the guard, and the stale tab sits in the store until the first
     // click on Settings — which then bounces, and every click after it.
-    store.restoreSnapshot({ currentViewId: 'home', viewParams: { settings: staleTab } });
+    store.restoreSnapshot({ currentViewId: 'noServer', viewParams: { settings: staleTab } });
 
     store.navigate('settings');
     expect(store.currentViewId).toBe('remoteHosts');
@@ -75,7 +75,7 @@ describe('NavigationStore stale-param guards', () => {
 
   it('drops only the offending view params', () => {
     store.restoreSnapshot({
-      currentViewId: 'home',
+      currentViewId: 'noServer',
       viewParams: { settings: staleTab, session: { sessionId: 's1' } },
     });
 
@@ -90,13 +90,13 @@ describe('NavigationStore stale-param guards', () => {
     // Those params are good; discarding them would lose the restored session.
     let loaded = false;
     const runtimeGuard = (): GuardResult =>
-      loaded ? { ok: true } : { ok: false, redirect: 'home' };
+      loaded ? { ok: true } : { ok: false, redirect: 'noServer' };
     store = makeStore({ session: runtimeGuard });
     store.restoreSnapshot({
       currentViewId: 'session',
       viewParams: { session: { sessionId: 's1' } },
     });
-    expect(store.currentViewId).toBe('home');
+    expect(store.currentViewId).toBe('noServer');
 
     loaded = true;
     store.navigate('session');

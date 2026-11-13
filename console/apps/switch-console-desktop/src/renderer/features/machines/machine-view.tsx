@@ -2,6 +2,7 @@ import { Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { ServerTableEmpty } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
@@ -90,7 +91,7 @@ export const machineView = {
       typeof value.machineId !== 'string' ||
       typeof value.name !== 'string'
     )
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     return { ok: true };
   },
 } satisfies ViewDefinition<MachineParams>;

@@ -72,10 +72,10 @@ describe('what the interface is allowed to report', () => {
   it('drops a property the event does not declare', () => {
     trackFromRenderer({
       name: 'view_opened',
-      properties: { view_id: 'home', working_dir: '/Users/someone/secret-project' },
+      properties: { view_id: 'noServer', working_dir: '/Users/someone/secret-project' },
     });
 
-    expect(trackEvent).toHaveBeenCalledWith('view_opened', { view_id: 'home' });
+    expect(trackEvent).toHaveBeenCalledWith('view_opened', { view_id: 'noServer' });
   });
 
   it('accepts an event that carries nothing of its own', () => {
@@ -103,7 +103,7 @@ describe('what the interface is allowed to report', () => {
   });
 
   it('reports an event every time it happens', () => {
-    trackFromRenderer({ name: 'view_opened', properties: { view_id: 'home' } });
+    trackFromRenderer({ name: 'view_opened', properties: { view_id: 'noServer' } });
     trackFromRenderer({ name: 'view_opened', properties: { view_id: 'settings' } });
 
     expect(trackEvent).toHaveBeenCalledTimes(2);

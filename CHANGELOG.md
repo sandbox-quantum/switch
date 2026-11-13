@@ -3420,6 +3420,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A new Home for each workspace.** One row at the top names the server and
+  workspace, shows the connection, and holds Refresh and the server's actions.
+  Signed out, the page is the sign-in card. Signed in, it offers to connect an
+  AI provider until switch-buddy has one, then a box to ask switch-buddy
+  anything, with up to three suggestions picked from what the workspace still
+  lacks: a messaging app (for admins), a first agent, a room for the team.
+  Sending, or clicking a suggestion, starts a new chat with switch-buddy with
+  the message sent, named from it. The identity card, the count tiles and the messaging apps moved off the
+  page; they are in Settings and Admin.
+- **`home_action` usage event.** Which suggestion on Home was clicked,
+  Connect to AI pressed, or a message sent to switch-buddy from Home. The
+  message itself is never sent.
 - **Confirm a linked chat account with a tap.** When the server can message
   the account, the link screen shows a number to tap in that message, with an
   **Open in …** button that opens the message in the chat app, the code below
@@ -3752,6 +3764,11 @@ version of their own to them without also giving them a release of their own.
   storage, which keeps the login in plaintext, and sign in again (#1048).
 
 #### Removed
+- **The welcome page.** The Switch mark in the sidebar, and deleting the agent
+  or server on screen, now go to the active workspace's Home, or to an "Add a
+  server" page when no server is left. "About Switch" in the workspace menu is
+  now "Switch on GitHub". The `view_opened` event reports `noServer` where it
+  reported `home`.
 - **Usage events nothing needed any more.** `buddy_message_sent` (the Switch
   server counts Console's chats), the setup checklist's
   `onboarding_step_started`, `onboarding_checklist_dismissed` and

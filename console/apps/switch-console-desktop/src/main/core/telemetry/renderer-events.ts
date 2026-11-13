@@ -96,6 +96,18 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'none',
     ]),
   }),
+  home_action: z.object({
+    action: z.enum(['chip', 'connect_ai', 'message']),
+    chip: z.enum([
+      'connect_chat_app',
+      'first_agent',
+      'team_room',
+      'new_room',
+      'new_agent',
+      'room_instructions',
+      'none',
+    ]),
+  }),
   renderer_crashed: z.object({}),
 } as const satisfies {
   [K in RendererTelemetryEvent]: z.ZodType<TelemetryEventMap[K]>;
@@ -157,6 +169,7 @@ export type RendererTelemetryEvent =
   | 'add_server_step'
   | 'onboarding_page'
   | 'buddy_step'
+  | 'home_action'
   | 'renderer_crashed';
 
 export type RendererTelemetryRequest = {

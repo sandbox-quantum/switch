@@ -16,6 +16,7 @@ import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -659,7 +660,7 @@ export const libraryItemView = {
       typeof p.itemId !== 'string' ||
       (p.kind !== 'references' && p.kind !== 'documents' && p.kind !== 'packages')
     ) {
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     }
     return { ok: true };
   },

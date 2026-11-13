@@ -200,6 +200,11 @@ export class SwitchRoomsStore {
    * rule. Named separately so a page about a single workspace asks for that
    * workspace rather than for whichever one happens to be active.
    */
+  /** Whether a workspace's room list has been read, so an empty list means none. */
+  roomsLoadedFor(workspaceId: string): boolean {
+    return this.allRoomsByWorkspace.has(workspaceId);
+  }
+
   listedRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
     const serverId = workspacesStore.serverIdFor(workspaceId);
     const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;

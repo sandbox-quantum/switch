@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -97,10 +98,10 @@ export const chatView = {
       typeof value.roomId !== 'string' ||
       (value.agentId !== null && value.agentId !== undefined && typeof value.agentId !== 'string')
     )
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     // An unsaved chat lives only in memory: one restored after a restart is gone.
     if (value.roomId.startsWith(UNSAVED_CHAT_PREFIX) && !directChats.unsavedChat(value.roomId))
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     return { ok: true };
   },
 } satisfies ViewDefinition<ChatParams>;

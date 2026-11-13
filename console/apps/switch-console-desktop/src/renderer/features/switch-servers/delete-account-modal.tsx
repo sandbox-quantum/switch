@@ -91,7 +91,7 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
               onClick={() => {
                 onClose();
                 onboardingStore.rehearse();
-                appState.navigation.navigate('home');
+                appState.navigation.navigate('noServer');
               }}
             >
               Start over
@@ -181,5 +181,5 @@ function startOnboardingOn(serverId: string): void {
   const server = switchServersStore.serverById(serverId);
   if (server === null) throw new Error('The reset server is no longer in the server list.');
   onboardingStore.connected(server, isSwitchCloudServer(server) ? 'cloud' : 'external', false);
-  appState.navigation.navigate('home');
+  appState.navigation.navigate('noServer');
 }
