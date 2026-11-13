@@ -23,6 +23,7 @@ import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
+import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
   type ConnectorViewer,
   FIX_LABEL,
@@ -229,7 +230,7 @@ function Connectors({
           viewer={viewer}
           turningOn={turningOn}
           onOpen={openProfile}
-          onSetUp={(entry) => navigate('admin', { serverId, section: 'apps', app: entry.slug })}
+          onSetUp={(entry) => openConnectorAppSetUp(serverId, entry.slug, navigate)}
           onTurnOn={(entry) => void turnOn(entry)}
           onConnect={(entry) =>
             connect(entry, 'connect', (warning) => {

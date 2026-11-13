@@ -23,6 +23,7 @@ const workspaces = vi.hoisted(() => ({
 }));
 const switchServers = vi.hoisted(() => ({
   openGitHubInstallation: vi.fn(),
+  openGatewayPage: vi.fn(),
 }));
 const modalHost = vi.hoisted(() => ({
   show: (_id: string, _args: unknown): void => {
@@ -62,13 +63,24 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   operatesServer: () => admin.operator,
 }));
 
-const server = vi.hoisted(() => ({ managed: false }));
+const server = vi.hoisted(() => ({ managed: false, servesGateway: false }));
+
+vi.mock('@renderer/features/switch-servers/server-gateway', () => ({
+  servesWebGateway: () => server.servesGateway,
+}));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     get servers() {
       return [
-        { id: 'server', name: 'Dev Server', managed: server.managed, managementKind: 'local' },
+        {
+          id: 'server',
+          name: 'Dev Server',
+          url: 'https://switch.example.com',
+          dashboardUrl: null,
+          managed: server.managed,
+          managementKind: 'local',
+        },
       ];
     },
     isConnected: () => true,
@@ -197,8 +209,9 @@ beforeEach(() => {
   admin.administers = false;
   admin.operator = false;
   server.managed = false;
+  server.servesGateway = false;
   for (const mock of Object.values(workspaces)) mock.mockReset();
-  switchServers.openGitHubInstallation.mockReset();
+  for (const mock of Object.values(switchServers)) mock.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
 });
 
@@ -320,6 +333,29 @@ it("offers the server's operator to set up an app that is not set up, on the car
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
   expect(button(/^Set up$/, page)).toBeDefined();
   expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+});
+
+it("opens the gateway's connector apps to set an app up on a server with a web gateway", async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  const page = await discover([NOT_SET_UP]);
+  const connectorApps = {
+    serverId: 'server',
+    url: 'https://switch.example.com/platform/connectors',
+  };
+
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith(connectorApps);
+  expect(navigation.view()).toBe('connectors');
+
+  navigation.navigate('connectors', { connector: 'example' });
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  await act(async () => button(/^Set up$/, page)!.click());
+  expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
+  expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
+  expect(navigation.view()).toBe('connectors');
 });
 
 it('tells anyone else who sets the app up, with no button to press', async () => {
