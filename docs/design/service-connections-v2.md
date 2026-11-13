@@ -643,7 +643,7 @@ their own.
 A connector is a catalog entry and a skill, with no code, when the vendor fits
 one of three shapes. Pick the first that fits:
 
-1. **A remote MCP server with OAuth** (Atlassian, Datadog): `adapter: oauth`
+1. **A remote MCP server with OAuth** (Atlassian, Datadog, Linear): `adapter: oauth`
    with `mcp`. Where the vendor offers dynamic client registration, nothing is
    set up on the server (`registration: dynamic`); otherwise each server's
    operator registers an OAuth app and saves it under Connectors in the

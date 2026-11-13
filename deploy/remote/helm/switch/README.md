@@ -280,10 +280,12 @@ switchCore:
 ```
 
 - `serviceSignInRedirect`: for a connector that can come back either way
-  (Atlassian, Datadog). `loopback` is Switch Console on the person's computer,
-  and the default. `core` is
+  (Atlassian, Datadog, Linear). Unset, it comes back the first way the
+  service's entry lists: `loopback` for Atlassian and Datadog, `core` for
+  Linear where `GATEWAY_PUBLIC_URL` is set. `loopback` is Switch Console on
+  the person's computer. `core` is
   `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`,
-  which the vendor's admin must allow-list first. If you change it, Switch
+  which an Atlassian or Datadog admin must allow-list first. If you change it, Switch
   registers a new client at the vendor, and everyone reconnects that service
   once. A service or way the catalog does not list stops switch-core at
   startup.

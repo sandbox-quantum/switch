@@ -536,10 +536,12 @@ switchCore:
   # startup. Empty: full scopes.
   serviceAccessProfiles: {}
   # Where a connector's sign-ins come back, for one that can come back either
-  # way (Atlassian, Datadog) (SERVICE_SIGN_IN_REDIRECT), e.g. {"atlassian":
-  # "core"}. "loopback" is Switch Console on the person's computer, and the
-  # default; "core" is <GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback,
-  # which the vendor's admin must allow-list first. Changing it registers a new
+  # way (Atlassian, Datadog, Linear) (SERVICE_SIGN_IN_REDIRECT), e.g.
+  # {"atlassian": "core"}. Unset, it comes back the first way the service's
+  # entry lists: "loopback" for Atlassian and Datadog, "core" for Linear where
+  # GATEWAY_PUBLIC_URL is set. "loopback" is Switch Console on the person's
+  # computer; "core" is <GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback,
+  # which an Atlassian or Datadog admin must allow-list first. Changing it registers a new
   # client at the vendor, so everyone reconnects that service once. A service
   # or way the catalog does not list stops switch-core at startup. Restart all
   # replicas together to change it. With more than one replica, a chart

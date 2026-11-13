@@ -1068,6 +1068,11 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The dashboard says when a GitHub App can only read.** On Connectors
+  (Platform → Connectors in the new layout), a GitHub App without write
+  permissions reads "Agents can read only", naming what it lacks. On an
+  agent's Service access, a write grant on such an App shows why it gets
+  nothing, and granting GitHub offers Read and push disabled with the reason.
 - **A server chooses where each connector's sign-ins come back, and
   Atlassian's can come back to the server.** `SERVICE_SIGN_IN_REDIRECT` maps
   a service to `loopback` (Switch Console, on the person's computer) or `core`
@@ -1147,11 +1152,6 @@ version of their own to them without also giving them a release of their own.
   kept and left out of sessions, and a token request or a new grant is
   refused with the same sentence. The same holds for any connection made
   before its service asked for a choice it now needs.
-- **The dashboard says when a GitHub App can only read.** On Connectors
-  (Platform → Connectors in the new layout), a GitHub App without write
-  permissions reads "Agents can read only", naming what it lacks. On an
-  agent's Service access, a write grant on such an App shows why it gets
-  nothing, and granting GitHub offers Read and push disabled with the reason.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A
