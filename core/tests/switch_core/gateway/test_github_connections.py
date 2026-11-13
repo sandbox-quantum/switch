@@ -751,8 +751,8 @@ async def test_disconnect_works_once_the_app_is_removed(github_app):
     [
         (
             "https://switch.example.com",
-            "GitHub is not set up here. Whoever runs Switch can set it up in "
-            "Switch Console, under Admin → Connector apps.",
+            "GitHub's connector app isn't set up on this server yet. "
+            "Whoever runs Switch can set it up.",
         ),
         (
             "http://switch.example.com",
