@@ -180,12 +180,12 @@ export const organizations: FastScenario = {
       [...before.map((row) => row.id), organization.id].sort()
     );
 
-    const orgName = names.name('org-renamed');
+    const orgName = names.name('org-new');
     expect((await founder.renameOrganization(orgName)).name, 'the organization renamed').toBe(
       orgName
     );
     expect((await founder.currentOrganization()).name).toBe(orgName);
-    const secondName = names.name('second-renamed');
+    const secondName = names.name('ws2-new');
     expect(
       (await founder.renameOrganizationWorkspace(second.id, secondName)).name,
       'a workspace renamed from its organization'

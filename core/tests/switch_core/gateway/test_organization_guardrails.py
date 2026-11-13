@@ -47,7 +47,9 @@ from switch_core.trust.workspace_policy import DEFAULT_TRUST_ENDPOINT
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 GUARDRAILS = "/organizations/current/guardrails"
-_BODY = {"policy_id": "pol_123", "api_key": "made-up-6789"}
+# Made up; the last four are what the page shows of it.
+API_KEY = "made-up-6789"
+_BODY = {"policy_id": "pol_123", "api_key": API_KEY}
 
 
 class _SwitchTrust:
@@ -212,7 +214,7 @@ async def test_connecting_checks_the_policy_with_switch_trust_and_keeps_it(
     admin = await world.org_admin()
     async with world.client(admin) as client:
         answer = await client.put(
-            GUARDRAILS, json={"policy_id": " pol_123 ", "api_key": "made-up-6789"}
+            GUARDRAILS, json={"policy_id": " pol_123 ", "api_key": API_KEY}
         )
         read = await client.get(GUARDRAILS)
 
@@ -227,18 +229,18 @@ async def test_connecting_checks_the_policy_with_switch_trust_and_keeps_it(
     assert body["api_key_last4"] == "6789"
     assert body["connected_by_name"] == "olga"
     assert read.json() == body
-    assert "s3cr3t" not in answer.text
+    assert API_KEY not in answer.text
     assert world.switch_trust.asked == [
         {
             "endpoint": DEFAULT_TRUST_ENDPOINT,
             "policy_id": "pol_123",
-            "api_key": "made-up-6789",
+            "api_key": API_KEY,
         }
     ]
     [settings] = await world.settings()
     assert settings.organization_id == TENANT_ZERO_ID
-    assert settings.api_key_encrypted != "made-up-6789"
-    assert TEST_KEYRING.decrypt(settings.api_key_encrypted) == "made-up-6789"
+    assert settings.api_key_encrypted != API_KEY
+    assert TEST_KEYRING.decrypt(settings.api_key_encrypted) == API_KEY
     assert world.changed == [TENANT_ZERO_ID]
     [event] = await world.audit()
     assert event.action == OrganizationAuditAction.GUARDRAILS_CONNECTED
@@ -248,7 +250,7 @@ async def test_connecting_checks_the_policy_with_switch_trust_and_keeps_it(
         "policy_name": "Baseline Monitoring (Alert)",
         "workspace_id": TENANT_ZERO_ID,
     }
-    assert "s3cr3t" not in str(event.details)
+    assert API_KEY not in str(event.details)
 
 
 async def test_a_policy_switch_trust_refuses_is_not_connected(world: _World) -> None:

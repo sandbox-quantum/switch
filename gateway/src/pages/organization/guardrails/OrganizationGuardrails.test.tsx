@@ -4,6 +4,9 @@ import type { OrganizationGuardrails as Guardrails } from "../../../data/api";
 import { answerFetch } from "../../../test/answerFetch";
 import OrganizationGuardrails from "./OrganizationGuardrails";
 
+// Made up; the last four are what the page shows of it.
+const API_KEY = "made-up-6789";
+
 const NONE: Guardrails = {
   connected: false,
   policy_id: null,
@@ -50,13 +53,13 @@ describe("OrganizationGuardrails", () => {
     fireEvent.change(screen.getByLabelText("Guardrail policy ID"), { target: { value: " pol_123 " } });
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "short" } });
     expect(connect.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "made-up-6789" } });
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: API_KEY } });
     fireEvent.click(connect);
 
     await waitFor(() =>
       expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
         policy_id: "pol_123",
-        api_key: "made-up-6789",
+        api_key: API_KEY,
       }),
     );
     expect(
@@ -80,7 +83,7 @@ describe("OrganizationGuardrails", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Set up" }));
     fireEvent.change(screen.getByLabelText("Guardrail policy ID"), { target: { value: "pol_1" } });
-    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "wrong-key-1" } });
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "made-up-0000" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
     expect(await screen.findByText(/refused this policy ID and API key/)).toBeTruthy();
