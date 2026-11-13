@@ -427,5 +427,11 @@ def test_switch_buddy_joins_and_links_the_room_a_template_makes():
 
 def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
-    assert "Always end the options with **Something else**" in text
+    # Room suggestions and the agent fallback alike.
+    assert (
+        "Every list of suggestions, rooms or agents, ends with **Something else**"
+        in text
+    )
     assert "ask for one line (what it is, who it's for)" in text
+    # Defaults are proposed in plain words, not the template's switch names.
+    assert 'never a parameter\'s name or "bypass" / "auto mode"' in text
