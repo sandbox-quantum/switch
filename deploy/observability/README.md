@@ -148,8 +148,9 @@ and `multi-pod-dashboard.json` are not touched by it; import those by hand with
 `POST /api/v1/dashboard` if a deployment doesn't have them yet.
 
 `hosted-dashboard.json` is the hosted agents board for whoever is on call: the
-hosted alerts, then the main dashboard's hosted charts in reading order (a test
-keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
+hosted alerts, then the main dashboard's hosted charts in reading order, then
+its hosted agents v2 section, which stays empty unless `HOSTED_BOX_PROVISIONING`
+is on (a test keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
 dashboard JSON, then set `$service` and `$flint_env` to the deployment's, and
 replace `REPLACE-WITH-SERVICE` in the alerts panel's query with its service.
 

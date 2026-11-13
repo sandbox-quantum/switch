@@ -1638,11 +1638,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Cloud machine changes, by event and reason",
+        "title": "Cloud machine changes, by event, reason and kind",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.machine_events{$service,$flint_env} by {event,reason}.as_count()",
+            "q": "sum:switch.hosted.machine_events{$service,$flint_env} by {event,reason,backend}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -1695,15 +1695,15 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "New cloud machines: seconds from request to first report, p95 / max",
+        "title": "New cloud machines: seconds from request to first report, p95 / max, by kind",
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env}",
+            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.provision_seconds{$service,$flint_env}",
+            "q": "max:switch.hosted.provision_seconds{$service,$flint_env} by {backend}",
             "display_type": "line"
           }
         ]
@@ -1854,23 +1854,39 @@
     },
     {
       "definition": {
+        "type": "note",
+        "content": "**Hosted agents v2 (boxes).** Empty unless `HOSTED_BOX_PROVISIONING` is on. What only a box reports, beside the v1 panels above, which cover boxes too under `backend:box`: the operator's open alerts, sessions waiting for room, restarts, out-of-memory kills and evictions, the memory guard and valve, the provider gateway, and box memory. Counts and fixed words only.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 181,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
         "type": "timeseries",
-        "title": "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
+        "title": "Operator alerts open, by condition (the box, machine or service is on the operator's Alerts tab)",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.guard_stops{$service,$flint_env}.as_count()",
-            "display_type": "bars"
-          },
-          {
-            "q": "sum:switch.hosted.valve_parks{$service,$flint_env}.as_count()",
-            "display_type": "bars"
+            "q": "max:switch.hosted.alerts_open{$service,$flint_env} by {condition}",
+            "display_type": "line"
           }
         ]
       },
       "layout": {
-        "x": 6,
-        "y": 177,
+        "x": 0,
+        "y": 183,
         "width": 6,
         "height": 4
       }
@@ -1888,31 +1904,8 @@
         ]
       },
       "layout": {
-        "x": 0,
-        "y": 181,
-        "width": 6,
-        "height": 4
-      }
-    },
-    {
-      "definition": {
-        "type": "timeseries",
-        "title": "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
-        "show_legend": true,
-        "requests": [
-          {
-            "q": "p95:switch.hosted.box_anon_memory{$service,$flint_env}",
-            "display_type": "line"
-          },
-          {
-            "q": "max:switch.hosted.box_anon_memory{$service,$flint_env}",
-            "display_type": "line"
-          }
-        ]
-      },
-      "layout": {
         "x": 6,
-        "y": 181,
+        "y": 183,
         "width": 6,
         "height": 4
       }
@@ -1939,7 +1932,30 @@
       },
       "layout": {
         "x": 0,
-        "y": 185,
+        "y": 187,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.guard_stops{$service,$flint_env}.as_count()",
+            "display_type": "bars"
+          },
+          {
+            "q": "sum:switch.hosted.valve_parks{$service,$flint_env}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 187,
         "width": 6,
         "height": 4
       }
@@ -1961,8 +1977,8 @@
         ]
       },
       "layout": {
-        "x": 6,
-        "y": 185,
+        "x": 0,
+        "y": 191,
         "width": 6,
         "height": 4
       }
@@ -1970,18 +1986,22 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Operator alerts open, by condition (the box, machine or service is on the operator's Alerts tab)",
+        "title": "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.hosted.alerts_open{$service,$flint_env} by {condition}",
+            "q": "p95:switch.hosted.box_anon_memory{$service,$flint_env}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.box_anon_memory{$service,$flint_env}",
             "display_type": "line"
           }
         ]
       },
       "layout": {
-        "x": 0,
-        "y": 189,
+        "x": 6,
+        "y": 191,
         "width": 6,
         "height": 4
       }
