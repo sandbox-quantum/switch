@@ -133,6 +133,8 @@ function service(overrides: Partial<WorkspaceService>): WorkspaceService {
     updated_at: null,
     connected_members: 0,
     granted_agents: 0,
+    unavailable_code: null,
+    unavailable_reason: null,
     ...overrides,
   };
 }
@@ -253,6 +255,25 @@ it('switches a service nobody uses without asking, and leaves it as it was on a 
   await vi.waitFor(() => expect(page.querySelector('[role="alert"]')).not.toBeNull());
   expect(page.querySelector('[role="alert"]')!.textContent).toContain('Switch is down.');
   expect(switchFor(page, 'Figma')!.getAttribute('aria-checked')).toBe('true');
+});
+
+it("says under a tile why the server can't serve the service, and keeps its switch", async () => {
+  workspaces.getWorkspaceServices.mockResolvedValue([
+    service({
+      slug: 'atlassian',
+      name: 'Atlassian',
+      unavailable_code: 'app_not_set_up',
+      unavailable_reason: 'Atlassian is not set up on this server.',
+    }),
+    service({ slug: 'figma', name: 'Figma' }),
+  ]);
+  const page = await render();
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+
+  const [atlassian, figma] = [...tiles(page)!.children];
+  expect(atlassian!.textContent).toContain('Atlassian is not set up on this server.');
+  expect(switchFor(page, 'Atlassian')!.hasAttribute('disabled')).toBe(false);
+  expect(figma!.textContent).not.toContain('not set up');
 });
 
 it('searches the tiles by name', async () => {
