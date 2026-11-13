@@ -158,6 +158,8 @@ export default function RoomDetailPage() {
           onSaved={refetch}
         />
         <Divider />
+        <ToolDetailSection room={room} canManage={canManage} onChanged={refetch} />
+        <Divider />
         <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
         <RoomResourcesSection
@@ -1195,6 +1197,61 @@ function ArchiveSection({
         }}
         onClose={() => setConfirming(false)}
       />
+    </Stack>
+  );
+}
+
+// ── Tool calls ───────────────────────────────────────────────────────────────
+
+function ToolDetailSection({
+  room,
+  canManage,
+  onChanged,
+}: {
+  room: RoomDetail;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleChange = useCallback(
+    async (showToolDetail: boolean) => {
+      setSaving(true);
+      setError(null);
+      try {
+        await updateRoom(room.id, { show_tool_detail: showToolDetail });
+        onChanged();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to update tool calls");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [room.id, onChanged],
+  );
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+        Tool calls
+      </Typography>
+      {error && <Alert severity="error">{error}</Alert>}
+      <FormControlLabel
+        control={
+          <Switch
+            checked={room.show_tool_detail}
+            disabled={!canManage || saving}
+            onChange={(e) => void handleChange(e.target.checked)}
+            slotProps={{ input: { "aria-label": "Show tool calls in this room" } }}
+          />
+        }
+        label="Let people in this room open what each agent's tool calls were given and gave back"
+      />
+      <Typography variant="body2" color="text.secondary">
+        Secrets are masked by pattern, which can miss one. Only the room's owner or a
+        workspace admin can change this{canManage ? "." : ", and you are neither."}
+      </Typography>
     </Stack>
   );
 }

@@ -435,11 +435,16 @@ def _protocol_for(
                     name="agent-1",
                     integration_profile=profile,
                     metadata_=None,
+                    show_tool_detail=False,
                 )
             )
         ),
         room_store=SimpleNamespace(
-            get=_returning(SimpleNamespace(id=room_id, name="Room C", bridge_id=None))
+            get=_returning(
+                SimpleNamespace(
+                    id=room_id, name="Room C", bridge_id=None, show_tool_detail=False
+                )
+            )
         ),
         require_room_member=_returning(room),
         list_participants=_returning([]),

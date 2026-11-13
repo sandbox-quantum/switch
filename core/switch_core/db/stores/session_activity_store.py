@@ -301,6 +301,7 @@ class AgentSessionActivityStore:
                 "status",
                 "title",
                 "text",
+                "detail",
                 "command_id",
                 "room_id",
                 "thread_id",

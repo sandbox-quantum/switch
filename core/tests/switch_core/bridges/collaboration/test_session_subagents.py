@@ -209,7 +209,7 @@ def test_persisted_child_revision_changes_the_platform_redraw_key():
         subagent=True,
         status="in-progress",
     )
-    view = turn_view([turn, child])
+    view = turn_view([turn, child], show_detail=False)
     assert view is not None
     assert view.items[0].kind == "tool-activity"
     assert view.items[0].subagent is True
@@ -222,7 +222,7 @@ def test_persisted_child_revision_changes_the_platform_redraw_key():
     )
     child.revision = 2
     child.status = "completed"
-    after = turn_view([turn, child])
+    after = turn_view([turn, child], show_detail=False)
     assert after is not None
     assert (
         status_state(

@@ -100,6 +100,12 @@ _OUTCOME = {
 # log is body text.
 _LOG_TITLE = 200
 _LOG_DETAIL = 120
+# What the log shows of a call's input and output, where the room asked to see
+# them: set apart under its line rather than squeezed onto it, and as much as
+# the host sends. A short one-line result still sits beside the name. The
+# newest end of the log is kept whole, so a call with detail costs the older
+# lines room.
+_LOG_TOOL_DETAIL = 2000
 
 _LOG_UNTITLED = "(untitled)"
 _LOG_EMPTY = "No activity."
@@ -403,7 +409,7 @@ def in_activity_log(item: Item) -> bool:
     return item.kind == "assistant-message" and bool(item.text)
 
 
-def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
+def _log_line(item: Item, *, escape: Callable[[str], str], markup: Markup) -> str:
     """One item as the single line the log gives it.
 
     What the agent said is folded onto one line like everything else in here,
@@ -418,8 +424,11 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
         "Subagent" if item.kind == "tool-activity" and item.subagent else _TOOL_MARKER
     )
     line = f"{marker} {_OUTCOME[item.status]} {title}"
-    if item.text:
+    if item.text and "\n" not in item.text and len(item.text) <= _LOG_DETAIL:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
+    elif item.text:
+        detail = _fit(item.text, _LOG_TOOL_DETAIL, escape=markup.literal(escape))
+        line += f"\n{markup.block(detail)}"
     return line
 
 
@@ -475,7 +484,7 @@ def activity_log(
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
-        line = _log_line(item, escape=escape)
+        line = _log_line(item, escape=escape, markup=markup)
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break

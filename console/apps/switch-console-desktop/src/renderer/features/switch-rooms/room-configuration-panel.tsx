@@ -7,6 +7,7 @@ import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redire
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
+import type { RoomPermissions } from '@renderer/features/switch-servers/room-permissions';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -18,6 +19,7 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
+import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
 import { type ChatSummary } from '@shared/core/chats/chats';
@@ -207,6 +209,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
               canManage={permissions.canManage}
             />
           )}
+          <ToolDetailSection workspaceId={workspaceId} room={room} permissions={permissions} />
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
           <SchedulesSection workspaceId={workspaceId} room={room} permissions={permissions} />
           <RoomInfoSection room={room} />
@@ -492,6 +495,63 @@ const LinkedChannelName = observer(function LinkedChannelName({
     </div>
   );
 });
+
+/**
+ * Whether people in the room can open what its agents' tool calls were given
+ * and gave back. Saved as it is switched, since there is nothing else to edit
+ * with it; the server refuses anyone but the room's owner or an admin, and
+ * that refusal is shown rather than the switch moving.
+ */
+function ToolDetailSection({
+  workspaceId,
+  room,
+  permissions,
+}: {
+  workspaceId: string;
+  room: RemoteRoomDetail;
+  permissions: RoomPermissions;
+}) {
+  const queryClient = useQueryClient();
+  const [state, setState] = useState<SaveState>({ phase: 'idle' });
+
+  async function change(showToolDetail: boolean) {
+    setState({ phase: 'saving' });
+    try {
+      const updated = await rpc.workspaces.updateRoom({
+        workspaceId,
+        roomId: room.id,
+        showToolDetail,
+      });
+      queryClient.setQueryData(roomDetailKey(workspaceId, room.id), updated);
+      setState({ phase: 'saved' });
+    } catch (cause) {
+      setState({ phase: 'failed', message: failureText(cause, 'Could not save the change.') });
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="text-sm font-semibold text-foreground">Tool calls</h2>
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-muted-foreground text-xs">
+          Let people in this room open what each agent&apos;s tool calls were given and gave back.
+          Secrets are masked by pattern, which can miss one. Only the room&apos;s owner or a
+          workspace admin can change this
+          {permissions.canManage ? '.' : ', and you are neither.'}
+        </p>
+        <Switch
+          aria-label="Show tool calls in this room"
+          checked={room.showToolDetail}
+          disabled={state.phase === 'saving' || !permissions.canManage}
+          onCheckedChange={(checked) => void change(checked)}
+        />
+      </div>
+      {state.phase === 'failed' && (
+        <span className="text-xs text-destructive">Not saved — {state.message}</span>
+      )}
+    </section>
+  );
+}
 
 /** Says where the edits stand, so an unsaved change is never silent. */
 function SaveStatus({ state, dirty }: { state: SaveState; dirty: boolean }) {

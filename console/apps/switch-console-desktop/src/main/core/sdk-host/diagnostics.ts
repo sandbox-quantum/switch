@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { redactSecrets } from '@switch-console/shared/secret-redaction';
 import { z } from 'zod';
 import { resolveSharedHostBundlePath } from '@main/core/agent-runtime/impl/resolve-sidecar-bundle';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
-import { redactSecrets } from '@main/lib/file-logger';
 import { listHostSessions } from './host-sessions';
 import { hostWatcherStatus } from './host-watcher-snapshot';
 import { inspectWatchers } from './watcher-inspection';

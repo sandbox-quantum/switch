@@ -624,6 +624,7 @@ class DiscordAdapter(PlatformAdapter):
     # A problem somebody has to act on gets its own reply, because the status
     # it would otherwise be an edit to is a message they have already read.
     separate_attention_slot: ClassVar[bool] = True
+    shows_tool_detail: ClassVar[bool] = True
 
     # Discord subscribes you to a thread you started, were mentioned in, or
     # have spoken in — and to nothing else. The person who asked from the

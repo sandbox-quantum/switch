@@ -225,7 +225,7 @@ export function sessionToolAnswerer(deps: {
     caller: Caller,
     catalog: SwitchToolCatalog,
     ask: Extract<HostAsk, { type: 'room-instructions' }>
-  ): Promise<{ instructions: string }> => {
+  ): Promise<{ instructions: string; toolDetail: boolean }> => {
     const attended = deps.placements.roomOf(caller.sessionId);
     if (attended !== ask.roomId)
       throw new Error(
@@ -239,7 +239,11 @@ export function sessionToolAnswerer(deps: {
     const instructions = result.structuredContent?.instructions;
     if (typeof instructions !== 'string')
       throw new Error(`connect_to_room answered for room ${ask.roomId} without its instructions.`);
-    return { instructions: instructions.replace(ROOM_SECTION_HEADING, '').trim() };
+    return {
+      instructions: instructions.replace(ROOM_SECTION_HEADING, '').trim(),
+      // A server that predates the setting does not say, which means no.
+      toolDetail: result.structuredContent?.tool_detail === true,
+    };
   };
 
   return async (caller, ask) => {

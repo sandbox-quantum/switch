@@ -27,6 +27,7 @@ from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
     ApprovalRequest,
+    Room,
     UsageMetric,
     require_tenant_id,
 )
@@ -195,6 +196,7 @@ class AgentSessionActivityService:
         status: str,
         title: str,
         text: str,
+        detail: str | None,
         command_id: str | None,
         room_id: str | None,
         thread_id: str | None,
@@ -237,7 +239,15 @@ class AgentSessionActivityService:
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
             )
-        if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
+        if detail is not None and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only a tool call's row carries tool detail."
+            )
+        if (
+            len(title) > MAX_TITLE_CHARS
+            or len(text) > MAX_TEXT_CHARS
+            or len(detail or "") > MAX_TEXT_CHARS
+        ):
             raise SessionError(
                 "INVALID_EVENT",
                 f"A step's title is at most {MAX_TITLE_CHARS} characters and its "
@@ -245,8 +255,16 @@ class AgentSessionActivityService:
             )
         tenant_id = require_tenant_id()
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-            if room_id is not None:
+            room = (
                 await self._require_member(db, agent_id, room_id)
+                if room_id is not None
+                else None
+            )
+            # Kept only while the room shows it, read from the membership row
+            # the write already loads, so a host holding an older answer cannot
+            # put detail into a room that has since turned it off.
+            if detail is not None and (room is None or not room.show_tool_detail):
+                detail = None
             prior_status = (
                 await self._activity.status_for_update(
                     db, agent_id, session_id, turn_id, item_id
@@ -269,6 +287,7 @@ class AgentSessionActivityService:
                         status=status,
                         title=title,
                         text=text,
+                        detail=detail,
                         command_id=command_id,
                         room_id=room_id,
                         thread_id=thread_id,
@@ -606,12 +625,13 @@ class AgentSessionActivityService:
 
     async def _require_member(
         self, db: AsyncSession, agent_id: str, room_id: str
-    ) -> None:
+    ) -> Room:
         found = await self._rooms.get_with_membership(db, room_id, agent_id)
         if found is None:
             raise SessionError("NOT_FOUND", f"Room not found: {room_id}")
         if not found[1]:
             raise SessionError("NOT_AUTHORIZED", "Agent is not a member of this room.")
+        return found[0]
 
     async def _require_may_address(
         self,

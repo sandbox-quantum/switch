@@ -273,7 +273,11 @@ async def connect_to_room(
     Returns:
         {agent_id, room_id, name, description, participants, instructions,
          reference_types, references, documents, packages, linked_rooms,
-         roles, warning}.
+         roles, tool_detail, warning}.
+        `tool_detail` is true when people in the room can see what your tool
+        calls were given and gave back, with secrets masked by pattern: the
+        room's owner or an admin turned it on. Masking is a heuristic, so keep
+        secrets out of commands and output there as anywhere.
         `warning` is normally null. It is set when connecting took the room off
         another live session of this same agent — only one session of an agent
         may act in a room, so that session was disconnected from it to let this
@@ -316,6 +320,7 @@ async def connect_to_room(
             bridge = await session.get(CollaborationBridge, room_model.bridge_id)
 
     profile = IntegrationProfile(**agent.integration_profile)
+    tool_detail = room_model.show_tool_detail
     instructions = build_room_instructions(
         agent,
         room_model,
@@ -415,6 +420,7 @@ async def connect_to_room(
         "packages": resources["packages"],
         "linked_rooms": linked_rooms,
         "roles": roles,
+        "tool_detail": tool_detail,
         "warning": _eviction_warning(
             room.id, displaced_session_id, evicted_connection_id
         ),

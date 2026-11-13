@@ -28,6 +28,7 @@ from switch_core.db.models import (
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    Room,
     TurnStatusPost,
 )
 from switch_core.delivery.addressing import AddressingDecision
@@ -43,6 +44,7 @@ from switch_core.session_activity.service import (
     QuestionOption,
 )
 from switch_core.sessions.contract import Answer, QuestionsResult
+from switch_core.sessions.errors import SessionError
 from switch_core.tenant_context import current_tenant_id
 
 from .bridge_fixtures import (
@@ -185,6 +187,7 @@ async def _step(
     text="",
     message_id=ASKED,
     subagent=False,
+    detail=None,
 ):
     await service.report_item(
         AGENT,
@@ -196,6 +199,7 @@ async def _step(
         status=status,
         title=title,
         text=text,
+        detail=detail,
         command_id="command-1" if kind == "turn" else None,
         room_id=room_id,
         thread_id=ASKED,
@@ -715,6 +719,106 @@ async def test_a_turn_is_drawn_step_by_step_in_one_message(
     assert last.content.elapsed_seconds is not None
     post = await _turn_post(session_factory)
     assert post.external_post_id == first.ref
+
+
+async def _show_tool_detail(session_factory, room_id: str, on: bool) -> None:
+    async with session_factory() as db, db.begin():
+        (await db.get(Room, room_id)).show_tool_detail = on
+
+
+async def test_a_calls_detail_is_drawn_only_while_its_room_has_tool_detail_on(
+    service, publisher, platform, bridged, session_factory
+):
+    await _show_tool_detail(session_factory, bridged.room_id, True)
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_for(1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="Ran `cat app.env`",
+        detail="Input:\ncat app.env\n\nOutput:\nDB_PASSWORD=[REDACTED]",
+    )
+    await platform.wait_until(lambda: len(_turns(platform)) == 2)
+    assert _turns(platform)[-1].content.items[0].text.startswith("Input:")
+
+    # Turned off before the turn draws again: what it showed goes with it.
+    await _show_tool_detail(session_factory, bridged.room_id, False)
+    await _turn(service, bridged.room_id, "completed", 2)
+    await platform.wait_until(
+        lambda: _turns(platform)[-1].content.turn.status == "completed"
+    )
+    assert _turns(platform)[-1].content.items[0].text == ""
+
+
+async def test_a_platform_that_shows_no_tool_detail_draws_the_call_without_it(
+    service, publisher, platform, bridged, session_factory
+):
+    platform.shows_tool_detail = False
+    await _show_tool_detail(session_factory, bridged.room_id, True)
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_for(1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="Ran `cat app.env`",
+        detail="Input:\ncat app.env",
+    )
+    await platform.wait_until(lambda: len(_turns(platform)) == 2)
+    assert _turns(platform)[-1].content.items[0].text == ""
+
+
+async def test_a_detail_reported_while_its_room_has_it_off_is_not_kept(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_for(1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="Ran `cat app.env`",
+        detail="Input:\ncat app.env",
+    )
+    async with session_factory() as db:
+        stored = await db.scalar(
+            select(AgentSessionActivityItem.detail).where(
+                AgentSessionActivityItem.item_id == "tool-1"
+            )
+        )
+    assert stored is None
+
+    # Turned on afterwards, the room is not shown what was sent while it was off.
+    await _show_tool_detail(session_factory, bridged.room_id, True)
+    await _turn(service, bridged.room_id, "completed", 2)
+    await platform.wait_until(
+        lambda: _turns(platform)[-1].content.turn.status == "completed"
+    )
+    assert _turns(platform)[-1].content.items[0].text == ""
+
+
+async def test_a_detail_is_refused_on_anything_but_a_tool_call(service, bridged):
+    with pytest.raises(SessionError, match="tool detail"):
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="said-1",
+            kind="assistant-message",
+            status="completed",
+            revision=1,
+            text="Done",
+            detail="Input:\nls",
+        )
 
 
 async def test_the_asking_message_is_marked_working_while_the_turn_runs(

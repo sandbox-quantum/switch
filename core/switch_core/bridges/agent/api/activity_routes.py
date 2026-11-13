@@ -91,6 +91,9 @@ class ActivityReport(BaseModel):
     status: str = Field(min_length=1, max_length=40)
     title: str = Field(max_length=MAX_TITLE_CHARS)
     text: str = Field(max_length=MAX_TEXT_CHARS)
+    # Sent only for a tool call in a room that may see it, so a host never
+    # sends it to a server from before tool detail.
+    detail: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
     command_id: _Id | None
     room_id: _Id | None
     thread_id: _Id | None
@@ -215,6 +218,7 @@ async def report_activity(
         status=body.status,
         title=body.title,
         text=body.text,
+        detail=body.detail,
         command_id=body.command_id,
         room_id=body.room_id,
         thread_id=body.thread_id,

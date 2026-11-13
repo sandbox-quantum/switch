@@ -1152,9 +1152,8 @@ class AgentSessionActivityPublisher:
         self, key: _Key, agent_id: str, session_id: str, turn_id: str
     ) -> None:
         async with tenant_session(self._sessions, self._tenant_id) as db:
-            view = turn_view(
-                await self._activity.turn(db, agent_id, session_id, turn_id)
-            )
+            rows = await self._activity.turn(db, agent_id, session_id, turn_id)
+            view = turn_view(rows, show_detail=await self._shows_tool_detail(db, rows))
             if view is None or view.row.room_id is None:
                 self._forget_turn(key)
                 return
@@ -1296,6 +1295,26 @@ class AgentSessionActivityPublisher:
         while len(self._drawn) > _MAX_REMEMBERED_TURNS:
             self._drawn.popitem(last=False)
         return drawn
+
+    async def _shows_tool_detail(
+        self, db: AsyncSession, rows: list[AgentSessionActivityItem]
+    ) -> bool:
+        """Whether a turn's tool calls are drawn with what they were given and gave back.
+
+        Only on a platform that shows it, and only while the turn's room has
+        tool detail on, read as each draw happens: a room turning it off takes
+        it out of every message drawn after, one drawn again for a turn shown
+        before included.
+        """
+        if not self._adapter.shows_tool_detail or not any(row.detail for row in rows):
+            return False
+        room_id = next(
+            (row.room_id for row in rows if row.item_id == TURN_ITEM_ID), None
+        )
+        if room_id is None:
+            return False
+        shown = await db.scalar(select(Room.show_tool_detail).where(Room.id == room_id))
+        return shown is True
 
     async def _running_turn(
         self, db: AsyncSession, agent_id: str, session_id: str
@@ -1759,9 +1778,10 @@ class AgentSessionActivityPublisher:
         post = await self._turn_posts.at(db, self._bridge_id, channel_id, ref)
         if post is None:
             return None
-        view = turn_view(
-            await self._activity.turn(db, post.agent_id, post.session_id, post.turn_id)
+        rows = await self._activity.turn(
+            db, post.agent_id, post.session_id, post.turn_id
         )
+        view = turn_view(rows, show_detail=await self._shows_tool_detail(db, rows))
         if view is None or view.row.room_id is None:
             return None
         found = await self._rooms.get_with_membership(

@@ -414,6 +414,9 @@ export type RemoteRoomSummary = {
 export type RemoteRoomDetail = RemoteRoomSummary & {
   /** Room-specific system prompt shown to agents on connect; null when unset. */
   instructions: string | null;
+  /** Whether the room may see what its agents' tool calls were given and gave
+   * back, redacted. False from a server that predates it, which shows none. */
+  showToolDetail: boolean;
   /** Switch agent ids in the room — every install's agents, not just this one's. */
   agentIds: string[];
   /** Display names of the people in the room, via the messaging app it is
@@ -571,6 +574,8 @@ export type UpdateRoomParams = {
   /** Changing either is for the room's owner or an admin; the server refuses anyone else. */
   readVisibility?: RoomVisibility;
   writeVisibility?: RoomVisibility;
+  /** Only the room's owner or a workspace admin may change it. */
+  showToolDetail?: boolean;
 };
 
 /** A role's own fields, as a room defines it. The name is fixed once made. */

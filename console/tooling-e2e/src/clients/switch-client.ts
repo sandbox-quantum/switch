@@ -1012,6 +1012,29 @@ export class SwitchClient {
     }
   }
 
+  /** Whether the server holds the room as showing its agents' tool calls. */
+  async roomShowsToolDetail(roomId: string): Promise<boolean> {
+    const detail = await this.gateway<{ show_tool_detail: boolean }>(
+      "GET",
+      `/rooms/${roomId}`,
+    );
+    return detail.show_tool_detail;
+  }
+
+  /**
+   * `PATCH /gateway/rooms/{id}` with `show_tool_detail` — show, or stop
+   * showing, what its agents' tool calls did in one room. Returns what the
+   * server now holds.
+   */
+  async setRoomToolDetail(roomId: string, enabled: boolean): Promise<boolean> {
+    const detail = await this.gateway<{ show_tool_detail: boolean }>(
+      "PATCH",
+      `/rooms/${roomId}`,
+      { show_tool_detail: enabled },
+    );
+    return detail.show_tool_detail;
+  }
+
   /**
    * The status Switch reports for one agent in one room. `live` means a session
    * is attending the room; `dormant` means an auto-session connector is watching

@@ -25,6 +25,7 @@ const origin: Origin = {
 };
 const originOf = (turnId: string) => (turnId === 'turn' ? origin : null);
 const noUsage = () => [];
+const noDetail = () => null;
 const OCCURRED = '2026-09-24T12:00:00.000Z';
 
 function event(sequence: number, body: ServerEvent['body']): ServerEvent {
@@ -81,7 +82,7 @@ const placed = { room_id: 'room-1', thread_id: 'sw_asked', message_id: 'sw_asked
 
 it('reports the turn itself as a row revised by event sequence, placed where it was asked', async () => {
   const lines = await reporter();
-  expect(rows(lines.reports(event(4, turn('running')), originOf, noUsage))).toEqual([
+  expect(rows(lines.reports(event(4, turn('running')), originOf, noUsage, noDetail))).toEqual([
     {
       turn_id: 'turn',
       item_id: 'turn',
@@ -103,10 +104,12 @@ it("carries an ended turn's usage on its row, and nothing on a turn still runnin
     { model: 'big', inputTokens: 10, outputTokens: 2, cacheReadTokens: 300, cacheWriteTokens: 0 },
   ];
   const usageOf = (turnId: string) => (turnId === 'turn' ? spent : []);
-  expect(rows(lines.reports(event(1, turn('running')), originOf, usageOf))[0]).not.toHaveProperty(
-    'usage'
-  );
-  expect(rows(lines.reports(event(2, turn('completed')), originOf, usageOf))[0]?.usage).toEqual([
+  expect(
+    rows(lines.reports(event(1, turn('running')), originOf, usageOf, noDetail))[0]
+  ).not.toHaveProperty('usage');
+  expect(
+    rows(lines.reports(event(2, turn('completed')), originOf, usageOf, noDetail))[0]?.usage
+  ).toEqual([
     {
       model: 'big',
       input_tokens: 10,
@@ -115,15 +118,20 @@ it("carries an ended turn's usage on its row, and nothing on a turn still runnin
       cache_write_tokens: 0,
     },
   ]);
-  expect(rows(lines.reports(event(3, turn('error')), originOf, noUsage))[0]).not.toHaveProperty(
-    'usage'
-  );
+  expect(
+    rows(lines.reports(event(3, turn('error')), originOf, noUsage, noDetail))[0]
+  ).not.toHaveProperty('usage');
 });
 
 it('places a turn in its origin thread when it has one', async () => {
   const lines = await reporter();
   const [row] = rows(
-    lines.reports(event(1, turn('queued')), () => ({ ...origin, threadId: 'sw_thread' }), noUsage)
+    lines.reports(
+      event(1, turn('queued')),
+      () => ({ ...origin, threadId: 'sw_thread' }),
+      noUsage,
+      noDetail
+    )
   );
   expect(row).toMatchObject({ room_id: 'room-1', thread_id: 'sw_thread', message_id: 'sw_asked' });
 });
@@ -158,7 +166,7 @@ it('reports every message and tool item, streamed parts included, as its own row
           text: 'more',
         })
       ),
-    ].flatMap((e) => lines.reports(e, originOf, noUsage))
+    ].flatMap((e) => lines.reports(e, originOf, noUsage, noDetail))
   );
   expect(
     reported.map((row) => [row.item_id, row.kind, row.revision, row.status, row.title, row.text])
@@ -172,13 +180,33 @@ it('reports every message and tool item, streamed parts included, as its own row
   expect(reported[0]).toMatchObject({ turn_id: 'turn', command_id: null, ...placed });
 });
 
+it("shows a tool call's detail on its row only where the turn may show it", async () => {
+  const lines = await reporter();
+  const detailOf = (turnId: string, itemId: string) =>
+    turnId === 'turn' && itemId === '["turn","tool-1"]' ? 'Input:\nls\n\nOutput:\ntotal 0' : null;
+  const [call, other, said] = rows(
+    [
+      event(1, item({})),
+      event(2, item({ itemId: '["turn","tool-2"]' })),
+      event(3, item({ itemId: 'answer', kind: 'assistant-message', title: '', text: 'Done' })),
+    ].flatMap((e) => lines.reports(e, originOf, noUsage, detailOf))
+  );
+  expect(call).toMatchObject({ text: '', detail: 'Input:\nls\n\nOutput:\ntotal 0' });
+  // Left out rather than null: a server from before tool detail refuses a
+  // field it does not know.
+  expect(other).not.toHaveProperty('detail');
+  expect(said).not.toHaveProperty('detail');
+  expect(said!.text).toBe('Done');
+});
+
 it('truncates long titles and texts', async () => {
   const lines = await reporter();
   const [row] = rows(
     lines.reports(
       event(1, item({ title: 't'.repeat(600), text: 'x'.repeat(9000) })),
       originOf,
-      noUsage
+      noUsage,
+      noDetail
     )
   );
   expect(Array.from(row!.title)).toHaveLength(500);
@@ -196,7 +224,7 @@ it('reports a notice in the running turn, and in a turn that just ended', async 
     event(4, turn('error')),
     event(5, notice('The turn failed')),
     event(6, notice('Model changed')),
-  ].flatMap((e) => lines.reports(e, originOf, noUsage));
+  ].flatMap((e) => lines.reports(e, originOf, noUsage, noDetail));
   const notices = rows(reported).filter((row) => row.kind === 'notice');
   expect(notices).toEqual([
     {
@@ -218,9 +246,9 @@ it('reports a notice in the running turn, and in a turn that just ended', async 
 it('knows the running turn after a restart from the events it already reported', async () => {
   const lines = await reporter();
   lines.catchUp([event(1, turn('running'))]);
-  expect(rows(lines.reports(event(2, notice('Still going')), originOf, noUsage))).toMatchObject([
-    { turn_id: 'turn', item_id: 'notice:2' },
-  ]);
+  expect(
+    rows(lines.reports(event(2, notice('Still going')), originOf, noUsage, noDetail))
+  ).toMatchObject([{ turn_id: 'turn', item_id: 'notice:2' }]);
 });
 
 it('opens an approval with its options and closes it when it settles', async () => {
@@ -243,7 +271,8 @@ it('opens an approval with its options and closes it when it settles', async () 
       },
     }),
     originOf,
-    noUsage
+    noUsage,
+    noDetail
   );
   expect(opened).toEqual([
     {
@@ -273,7 +302,8 @@ it('opens an approval with its options and closes it when it settles', async () 
         result: null,
       }),
       originOf,
-      noUsage
+      noUsage,
+      noDetail
     )
   ).toEqual([{ kind: 'approval.close', requestId: 'permission' }]);
 });
@@ -309,7 +339,8 @@ it('opens questions with every question and its options', async () => {
       },
     }),
     originOf,
-    noUsage
+    noUsage,
+    noDetail
   );
   expect(opened).toEqual([
     {
@@ -369,7 +400,7 @@ it('reports child progress with stable placement and identity through journal re
     origin: null,
   };
   const first = event(1, { type: 'item.upsert', item });
-  const reports = source.reports(first, originOf, noUsage);
+  const reports = source.reports(first, originOf, noUsage, noDetail);
   expect(reports).toMatchObject([
     {
       kind: 'activity',
@@ -391,7 +422,8 @@ it('reports child progress with stable placement and identity through journal re
     loaded.reports(
       event(2, { type: 'item.upsert', item: { ...item, revision: 2, status: 'failed' } }),
       originOf,
-      noUsage
+      noUsage,
+      noDetail
     )
   ).toMatchObject([{ row: { item_id: item.itemId, revision: 2, status: 'failed' } }]);
 });

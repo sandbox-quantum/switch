@@ -300,6 +300,8 @@ stored one is ignored (`recorded: false`), an equal one is a no-op.
                          // notice: info|warning|error
   "title": str,          // <= 500 chars, host truncates with "…"
   "text": str,           // <= 8000 chars, host truncates with "…"
+  "detail": str | null,  // tool-activity only: redacted input and output, kept
+                         // only while the room shows tool detail (docs/tool-detail.md)
   "command_id": str | null,   // turn rows only
   "room_id": str | null,      // from the turn's origin
   "thread_id": str | null,    // origin thread, else origin message
