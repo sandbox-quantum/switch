@@ -1,0 +1,36 @@
+slug: cloudflare
+name: Cloudflare
+category: Deployment
+description: Inspect and manage Cloudflare Workers, DNS records, zones and analytics.
+enabled: true
+publisher: Cloudflare
+links:
+  documentation: https://developers.cloudflare.com/api/
+  support: https://support.cloudflare.com
+  privacy: https://www.cloudflare.com/privacypolicy/
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: API Token
+        secret: true
+        help: Cloudflare Dashboard, My Profile, API Tokens. Requires Account Resources Read.
+    identity:
+      method: GET
+      url: "https://api.cloudflare.com/client/v4/user/tokens/verify"
+      headers:
+        Authorization: "Bearer {api_key}"
+      account_id: result.id
+      label: result.status
+    help_url: https://dash.cloudflare.com/profile/api-tokens
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: cloudflare
+      url: "https://mcp.cloudflare.com/mcp"
+      headers:
+        Authorization: "Bearer {api_key}"
+tools: { mode: pass_through }
