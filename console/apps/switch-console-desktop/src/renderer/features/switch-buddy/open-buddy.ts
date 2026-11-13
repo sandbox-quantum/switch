@@ -101,8 +101,10 @@ export async function openBuddyChat(
 
 /**
  * Opens the buddy's chat with `text` sent in it, as if typed there. The
- * message goes through the chat's own timeline, so it shows as sending and is
- * retried there; a buddy that is starting or offline reads it when it is up.
+ * message goes through the chat's own timeline, which holds it until the
+ * server takes it: it shows there as sending, and a send that fails stays in
+ * the chat with Retry, as one typed there would. A buddy that is starting or
+ * offline reads it when it is up.
  *
  * Raises when the chat cannot be had, before anything is sent or opened, so
  * the caller can keep the text rather than lose it.

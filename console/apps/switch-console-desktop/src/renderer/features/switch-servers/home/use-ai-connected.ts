@@ -48,6 +48,8 @@ export function useAiConnected(
     setSince(Date.now());
     setTimedOut(false);
     if (!active) return;
+    // The prefix covers the machines list too (`[key, serverId, 'machines', …]`),
+    // so both reads are fresh after this.
     void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
     const timer = setTimeout(() => setTimedOut(true), AI_CHECK_TIMEOUT_MS);
     return () => clearTimeout(timer);

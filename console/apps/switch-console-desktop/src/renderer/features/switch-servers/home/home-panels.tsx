@@ -19,6 +19,7 @@ import { showModal } from '@renderer/lib/modal/modal-provider';
 import { report } from '@renderer/lib/telemetry/report';
 import { Button } from '@renderer/lib/ui/button';
 import { ONBOARDING_BACKDROP } from '@renderer/lib/ui/wizard-frame';
+import { log } from '@renderer/utils/logger';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import {
@@ -167,10 +168,27 @@ export function useHomeChips(
     return () => clearTimeout(timer);
   }, [serverId, workspaceId]);
 
-  const bridgesKnown = bridges.isSuccess || bridges.isError;
-  const agentsKnown = agentsStore.loaded && (managed.isSuccess || managed.isError);
+  // A failed read is settled, so the page stops waiting on it, but it is not
+  // known: what it would have said must not decide a suggestion.
+  useEffect(() => {
+    if (bridges.isError)
+      log.warn('Home suggestions: could not read the messaging apps', {
+        error: String(bridges.error),
+      });
+  }, [bridges.isError, bridges.error]);
+  useEffect(() => {
+    if (managed.isError)
+      log.warn('Home suggestions: could not read the managed agents', {
+        error: String(managed.error),
+      });
+  }, [managed.isError, managed.error]);
+
+  const bridgesSettled = bridges.isSuccess || bridges.isError;
+  const agentsSettled = agentsStore.loaded && (managed.isSuccess || managed.isError);
   const roomsKnown = workspaceId !== null && switchRoomsStore.roomsLoadedFor(workspaceId);
-  if (!(bridgesKnown && agentsKnown && roomsKnown) && !timedOut) return null;
+  if (!(bridgesSettled && agentsSettled && roomsKnown) && !timedOut) return null;
+  const bridgesKnown = bridges.isSuccess;
+  const agentsKnown = agentsStore.loaded && managed.isSuccess;
 
   // Counted as the Your Agents page lists them: this Console's agents, less
   // the ones the server runs, plus every agent the server runs.

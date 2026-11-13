@@ -5,6 +5,8 @@ import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -55,23 +57,33 @@ export const HomeHeader = observer(function HomeHeader({
    * Held on screen for a moment even when the reads come back instantly. A
    * spinner that appears and vanishes inside one frame reads as a button that
    * did nothing, which is the opposite of what it did.
+   *
+   * Every read runs to the end, so one failing does not leave the rest
+   * half-done behind a spinner that has stopped; a failure is then said.
    */
   const refreshEverything = async (): Promise<void> => {
     setRefreshingPage(true);
     // These caches are keyed by workspace, so a server id would invalidate nothing.
     const workspaceId = workspacesStore.idOnServerInScope(serverId);
-    try {
-      await Promise.all([
-        switchServersStore.refreshServer(serverId),
-        queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] }),
-        queryClient.invalidateQueries({ queryKey: myIdentitiesQueryKey(workspaceId) }),
-        queryClient.invalidateQueries({ queryKey: ['owns-owner-addressed-agent', workspaceId] }),
-        switchRoomsStore.refreshRoomState(),
-        agentsStore.load(),
-        new Promise((resolve) => setTimeout(resolve, MIN_REFRESH_FEEDBACK_MS)),
-      ]);
-    } finally {
-      setRefreshingPage(false);
+    const results = await Promise.allSettled([
+      switchServersStore.refreshServer(serverId),
+      queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] }),
+      queryClient.invalidateQueries({ queryKey: myIdentitiesQueryKey(workspaceId) }),
+      queryClient.invalidateQueries({ queryKey: ['owns-owner-addressed-agent', workspaceId] }),
+      switchRoomsStore.refreshRoomState(),
+      agentsStore.load(),
+      new Promise((resolve) => setTimeout(resolve, MIN_REFRESH_FEEDBACK_MS)),
+    ]);
+    setRefreshingPage(false);
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected'
+    );
+    if (failed) {
+      toast({
+        title: 'Could not refresh everything',
+        description: failureText(failed.reason, 'Some of this page may be out of date.'),
+        variant: 'destructive',
+      });
     }
   };
 
