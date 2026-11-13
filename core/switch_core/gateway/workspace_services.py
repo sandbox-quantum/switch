@@ -57,7 +57,9 @@ from switch_core.gateway.auth import (
     require_tenant_admin,
 )
 from switch_core.gateway.connector_apps import organization_apps_on
-from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.dependencies import current_telemetry, get_session
+from switch_core.telemetry.service import emit_safely
+from switch_core.telemetry.services import service_slug
 
 router = APIRouter(prefix="/workspace/services")
 STORE = WorkspaceServiceStore()
@@ -258,6 +260,17 @@ async def set_workspace_service(
         details={"service": service},
     )
     await session.commit()
+    if switch.enabled != body.enabled:
+        emit_safely(
+            current_telemetry(),
+            "service_switched",
+            {
+                "service": service_slug(service),
+                "scope": "workspace",
+                "setting": "on" if body.enabled else "off",
+                "locked": False,
+            },
+        )
     warning = (
         None if body.enabled else await broker.revoke_withdrawn(session, issued_for_it)
     )
@@ -314,6 +327,16 @@ async def clear_workspace_service(
         details={"service": service, "enabled": switch.enabled},
     )
     await session.commit()
+    emit_safely(
+        current_telemetry(),
+        "service_switched",
+        {
+            "service": service_slug(service),
+            "scope": "workspace",
+            "setting": "default",
+            "locked": False,
+        },
+    )
     warning = (
         None
         if switch.enabled

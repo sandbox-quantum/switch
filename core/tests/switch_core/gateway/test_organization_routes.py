@@ -115,6 +115,7 @@ def _app(
     # token (`workos_sign_in_routes.py`).
     app.add_middleware(SessionMiddleware, secret_key="test-sign-in-cookie")
     app.state.service_broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=_KEYRING,
         catalog=CATALOG,

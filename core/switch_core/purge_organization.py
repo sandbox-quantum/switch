@@ -270,6 +270,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     session_factory=session_factory,
                     http=http,
                     registration=registration,
+                    telemetry=None,
                 ),
                 installers=await _installers(config),
                 keyring=config.keyring,

@@ -62,6 +62,7 @@ async def test_every_google_app_offers_the_profile_the_server_chose(
             session_factory=session_factory,
             http=http,
             registration=registration,
+            telemetry=None,
         )
 
     profile = CATALOG[GOOGLE].definition.access_profiles["drive-file"]

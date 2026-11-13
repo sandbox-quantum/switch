@@ -115,6 +115,7 @@ def _process(
     app.state.github_connections = github
     app.state.sign_in_flows = SignInFlows(session_factory, TEST_KEYRING)
     app.state.service_broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,

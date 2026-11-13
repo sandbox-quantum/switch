@@ -94,6 +94,18 @@ from switch_core.db.stores.workspace_service_store import (
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
 from switch_core.observability.metrics import metrics
+from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.service import (
+    TelemetryService,
+    emit_after_commit,
+    emit_safely,
+)
+from switch_core.telemetry.services import (
+    TOKEN_REFUSALS_HELD,
+    TokenRefusals,
+    auth_kind,
+    service_slug,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -487,6 +499,7 @@ class ServiceBroker:
         workspace_services: WorkspaceServiceStore,
         workspace_gate: bool,
         public_url: str | None,
+        telemetry: TelemetryService | None,
     ) -> None:
         unknown = sorted(set(adapters) - set(catalog))
         if unknown:
@@ -521,6 +534,8 @@ class ServiceBroker:
         # The access token being fetched for each connection, by (tenant,
         # owner, service), for callers that ask while it is.
         self._fetching: dict[tuple[str, str, str], asyncio.Task[AccessToken]] = {}
+        self._telemetry = telemetry
+        self._token_refusals = TokenRefusals(held=TOKEN_REFUSALS_HELD)
 
     def _entry(self, service: str) -> Connection:
         entry = self._catalog.get(service)
@@ -864,6 +879,17 @@ class ServiceBroker:
             return token
         except ServiceError as error:
             outcome = error.code
+            if self._token_refusals.first_in_window(agent_id, service, error.code):
+                emit_safely(
+                    self._telemetry,
+                    "service_token_refused",
+                    {
+                        "service": service_slug(service),
+                        "reason": error.code,
+                        "retryable": error.retryable,
+                        "principal": principal.kind,
+                    },
+                )
             raise
         finally:
             metrics().increment(
@@ -1190,10 +1216,12 @@ class ServiceBroker:
                     retryable=False,
                 )
             if _client_replaced(connection, adapter):
-                await self._store.mark_needs_reauthorization(
+                lost = await self._store.mark_needs_reauthorization(
                     session, owner_id, service, CLIENT_REPLACED
                 )
                 await session.commit()
+                if lost:
+                    self._report_lost(service, CLIENT_REPLACED)
                 raise self._revoked(
                     service,
                     ReauthorizationRequiredError(
@@ -1216,10 +1244,12 @@ class ServiceBroker:
             try:
                 renewed = await adapter.refresh(secret)
             except ReauthorizationRequiredError as error:
-                await self._store.mark_needs_reauthorization(
+                lost = await self._store.mark_needs_reauthorization(
                     session, owner_id, service, "refresh_refused"
                 )
                 await session.commit()
+                if lost:
+                    self._report_lost(service, "refresh_refused")
                 raise self._revoked(service, error) from None
             except ServiceUnavailableError as error:
                 raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
@@ -1263,15 +1293,25 @@ class ServiceBroker:
         """
         tenant_id = require_tenant_id()
 
-        async def mark() -> None:
+        async def mark() -> bool:
             async with tenant_session(self._session_factory, tenant_id) as session:
-                await self._store.mark_needs_reauthorization(
+                lost = await self._store.mark_needs_reauthorization(
                     session, owner_id, service, "sign_in_refused"
                 )
                 await session.commit()
+                return lost
 
-        await finish_shielded(mark())
+        if await finish_shielded(mark()):
+            self._report_lost(service, "sign_in_refused")
         return self._revoked(service, error)
+
+    def _report_lost(self, service: str, reason: str) -> None:
+        """A connection the vendor stopped honouring, once it is recorded."""
+        emit_safely(
+            self._telemetry,
+            "service_connection_lost",
+            {"service": service_slug(service), "reason": reason},
+        )
 
     def _signed_in(self, connection: ServiceConnection) -> SignIn:
         return SignIn(self._secret(connection), connection.oauth_client_id)
@@ -1694,6 +1734,7 @@ class ServiceBroker:
         tool_mode: Literal["allow", "deny"] | None,
         tools: list[str] | None,
         resources: dict[str, Any],
+        granted_by: Literal["person", "agent", "template"],
     ) -> tuple[ServiceGrant, str | None]:
         """Create or replace the agent's grant on its owner's own connection.
 
@@ -1792,6 +1833,17 @@ class ServiceBroker:
         )
         grant_id = grant.id
         await session.commit()
+        emit_safely(
+            self._telemetry,
+            "service_grant_set",
+            {
+                "service": service_slug(service),
+                "access": level_name,
+                "tool_mode": mode,
+                "granted_by": granted_by,
+                "change": "new" if previous is None else "updated",
+            },
+        )
         if not narrowed:
             return grant, None
         return grant, await self.revoke_withdrawn(
@@ -1862,6 +1914,7 @@ class ServiceBroker:
         except ServiceConnectionBusy as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         previous = await self._store.get_connection(session, user_id, service)
+        first_for_person = not await self._store.list_connections(session, user_id)
         replaced = None if previous is None else self._signed_in(previous)
         replaced_account = "" if previous is None else previous.account_id
         issued_on_it = (
@@ -1890,6 +1943,17 @@ class ServiceBroker:
             details={"service": service, "relinked": previous is not None},
         )
         await session.commit()
+        emit_safely(
+            self._telemetry,
+            "service_connection_added",
+            {
+                "service": service_slug(service),
+                "auth_kind": auth_kind(entry.definition.adapter),
+                "consent": consent,
+                "relinked": previous is not None,
+                "first_for_person": first_for_person,
+            },
+        )
 
         warnings = []
         if (
@@ -2056,7 +2120,11 @@ class ServiceBroker:
         )
 
     async def revoke_grant(
-        self, session: AsyncSession, grant: ServiceGrant, actor_id: str
+        self,
+        session: AsyncSession,
+        grant: ServiceGrant,
+        actor_id: str,
+        removed_by: Literal["person", "agent"],
     ) -> str | None:
         """Remove a grant and revoke the tokens issued under it.
 
@@ -2084,6 +2152,11 @@ class ServiceBroker:
             details={"service": service},
         )
         await session.commit()
+        emit_safely(
+            self._telemetry,
+            "service_grant_removed",
+            {"service": service_slug(service), "removed_by": removed_by},
+        )
         return await self.revoke_withdrawn(
             session, (ServiceTokenIssuance.grant_id == grant_id,)
         )
@@ -2121,7 +2194,12 @@ class ServiceBroker:
         revoked_by_admin: bool,
     ) -> str | None:
         name = self._entry(service).definition.name
-        removed = await self._remove_connection(session, user_id, service)
+        removed = await self._remove_connection(
+            session,
+            user_id,
+            service,
+            removed_by="admin" if revoked_by_admin else "self",
+        )
         if removed is None:
             raise ServiceError(
                 404,
@@ -2155,14 +2233,19 @@ class ServiceBroker:
         removed = []
         for connection in await self._store.list_connections(session, user_id):
             signed_in = await self._remove_connection(
-                session, user_id, connection.service
+                session, user_id, connection.service, removed_by="membership_ended"
             )
             if signed_in is not None:
                 removed.append((connection.service, signed_in))
         return removed
 
     async def _remove_connection(
-        self, session: AsyncSession, user_id: str, service: str
+        self,
+        session: AsyncSession,
+        user_id: str,
+        service: str,
+        *,
+        removed_by: Literal["self", "admin", "membership_ended"],
     ) -> SignIn | None:
         try:
             await self._store.lock_connection(session, user_id, service)
@@ -2178,6 +2261,16 @@ class ServiceBroker:
             ServiceTokenIssuance.service == service,
         )
         await self._store.delete_connection(session, user_id, service)
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "service_connection_removed",
+            {
+                "service": service_slug(service),
+                "removed_by": removed_by,
+                "age_days": age_days(connection.created_at),
+            },
+        )
         return signed_in
 
     async def finish_disconnect(

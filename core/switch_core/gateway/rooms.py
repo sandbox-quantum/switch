@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -109,7 +110,16 @@ from switch_core.rooms_yaml import (
     template_json_schema,
 )
 from switch_core.telemetry import emit_after_commit
-from switch_core.template_installs import record_install, vouched_source
+from switch_core.telemetry.template_runs import (
+    TemplateRunReport,
+    failure_for_status,
+    rooms_in,
+)
+from switch_core.template_installs import (
+    InstallSource,
+    record_install,
+    vouched_source,
+)
 from switch_core.template_runs import (
     LISTEN_TIMEOUT_SECONDS,
     AgentsNotCreated,
@@ -575,6 +585,15 @@ async def create_room_from_yaml(
       values for declared ``params:`` and ``template_name`` is what the run is
       listed under in Recently used (the document's own name when absent).
     """
+    return await _reported(
+        TemplateRunReport(current_telemetry(), None, "person", user.created_at),
+        _provision_from_yaml(request, rooms_yaml, user, is_admin),
+    )
+
+
+async def _provision_from_yaml(
+    request: Request, rooms_yaml: RoomYamlService, user: User, is_admin: bool
+) -> ProvisionResult | GroupProvisionResult:
     content_type = request.headers.get("content-type", "")
     try:
         if "application/json" in content_type:
@@ -691,13 +710,76 @@ class TemplateRunBody(BaseModel):
     template_name: str
 
 
-def _refused_run(error: AgentsNotCreated | RunUndone) -> JSONResponse:
+class _RefusedRun(JSONResponse):
+    """A run refused with a reason code, kept beside the response for the
+    run's report."""
+
+    def __init__(self, code: str, content: dict[str, Any]) -> None:
+        super().__init__(status_code=409, content=content)
+        self.code = code
+
+
+def _refused_run(error: AgentsNotCreated | RunUndone) -> _RefusedRun:
     content: dict[str, Any] = {"detail": str(error), "code": error.reason}
     if isinstance(error, AgentsNotCreated):
         content["problems"] = [p.as_dict() for p in error.problems]
     else:
         content["left_behind"] = error.left_behind
-    return JSONResponse(status_code=409, content=content)
+    return _RefusedRun(error.reason, content)
+
+
+def _run_failure(error: HTTPException) -> str:
+    """A refused run's reason, from the error the route raised it from where
+    there is one: the status alone cannot tell a channel in use from any other
+    conflict."""
+    cause = error.__cause__
+    if isinstance(cause, ChannelInUse):
+        return "channel_in_use"
+    if isinstance(cause, ValueError):
+        return "invalid"
+    if isinstance(cause, PermissionError):
+        return "forbidden"
+    if isinstance(cause, BridgeOperationError):
+        return "bridge_unavailable"
+    return failure_for_status(error.status_code)
+
+
+def _report_success(report: TemplateRunReport, result: object) -> None:
+    """Report a run that has made what it made. Guarded: the run is
+    committed, and an answer it did not expect must not fail it for the
+    caller, who would run it again."""
+    try:
+        if isinstance(result, dict):
+            report.succeeded(
+                agents_created=len(result.get("created_agents") or []),
+                rooms_created=rooms_in(result.get("room")),
+            )
+        elif isinstance(result, BaseModel):
+            report.succeeded(
+                agents_created=0, rooms_created=rooms_in(result.model_dump())
+            )
+    except Exception:
+        logger.exception("Could not report a template run that succeeded")
+
+
+async def _reported[T: dict[str, Any] | JSONResponse | BaseModel](
+    report: TemplateRunReport, run: Awaitable[T]
+) -> T:
+    """Await a person's template run and report what came of it; the
+    run's answer, or its error, reaches the caller unchanged."""
+    try:
+        result = await run
+    except HTTPException as error:
+        report.failed(_run_failure(error))
+        raise
+    except Exception:
+        report.failed("error")
+        raise
+    if isinstance(result, _RefusedRun):
+        report.failed(result.code)
+    else:
+        _report_success(report, result)
+    return result
 
 
 @router.post("/from-template", status_code=201, response_model=None)
@@ -724,16 +806,19 @@ async def run_template_with_agents(
     half. ``listening`` is false for an agent that was not taking events
     before the rooms were made: the kickoff may not have reached it.
     """
-    return await _run_as_person(
-        rooms_yaml,
-        protocol,
-        user,
-        is_admin,
-        plans=[agent.plan() for agent in body.agents],
-        document=body.yaml,
-        inputs=body.inputs,
-        template_name=body.template_name,
-        room_addressing={},
+    return await _reported(
+        TemplateRunReport(current_telemetry(), None, "person", user.created_at),
+        _run_as_person(
+            rooms_yaml,
+            protocol,
+            user,
+            is_admin,
+            plans=[agent.plan() for agent in body.agents],
+            document=body.yaml,
+            inputs=body.inputs,
+            template_name=body.template_name,
+            room_addressing={},
+        ),
     )
 
 
@@ -774,19 +859,39 @@ async def run_template_document(
     The agents a run of a known template creates are recorded as its
     install (``template_installs``), so a later revision can update them.
     """
-    loaded = (
-        await readable_template(
-            body.template_id, session, template_store, user, is_admin, config
+    try:
+        loaded = (
+            await readable_template(
+                body.template_id, session, template_store, user, is_admin, config
+            )
+            if body.template_id is not None
+            else None
         )
-        if body.template_id is not None
-        else None
-    )
+    except HTTPException as error:
+        TemplateRunReport(current_telemetry(), None, "person", user.created_at).failed(
+            _run_failure(error)
+        )
+        raise
     source = vouched_source(
         body.template,
         loaded,
         agent_management=config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=config.feature_flags[SWITCH_BUDDY],
     )
+    return await _reported(
+        TemplateRunReport(current_telemetry(), source, "person", user.created_at),
+        _run_document_as_person(body, source, rooms_yaml, protocol, user, is_admin),
+    )
+
+
+async def _run_document_as_person(
+    body: TemplateDocumentRunBody,
+    source: InstallSource | None,
+    rooms_yaml: RoomYamlService,
+    protocol: AgentCore,
+    user: User,
+    is_admin: bool,
+) -> dict[str, Any] | JSONResponse:
     inputs = body.inputs or {}
     try:
         if is_v2_text(body.template):

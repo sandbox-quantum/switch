@@ -118,6 +118,7 @@ def _world(
         ),
     )
     broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=catalog,
@@ -447,6 +448,7 @@ class TestTheProfileChanging:
                     tool_mode=None,
                     tools=None,
                     resources={},
+                    granted_by="person",
                 )
         for refused in (issuing.value, granting.value):
             assert (refused.status_code, refused.code) == (409, "connector_revoked")

@@ -62,6 +62,11 @@ from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
+from switch_core.telemetry.template_runs import (
+    TemplateRunReport,
+    failure_for_refusal,
+    rooms_in,
+)
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
 from switch_core.template_runs import (
@@ -2211,17 +2216,42 @@ async def run_template(
         ``created_agents``.
     """
     protocol = get_protocol()
+    telemetry = protocol.telemetry
     async with _refusals_reported("run_template"):
         acting = await _acting_for()
-        async with protocol.session_factory() as session:
-            template = await _agent_templates().load(session, acting, template_id)
-            content, name = template.content, template.name
-        result = await _run_document(
-            content,
-            inputs,
-            agents or {},
-            template_name=name,
-            source=source_of(template),
+        try:
+            async with protocol.session_factory() as session:
+                template = await _agent_templates().load(session, acting, template_id)
+                content, name = template.content, template.name
+        except AgentRefused as refusal:
+            TemplateRunReport(telemetry, None, "agent", acting.owner.created_at).failed(
+                failure_for_refusal(refusal.reason)
+            )
+            raise
+        except Exception:
+            TemplateRunReport(telemetry, None, "agent", acting.owner.created_at).failed(
+                "error"
+            )
+            raise
+        source = source_of(template)
+        report = TemplateRunReport(telemetry, source, "agent", acting.owner.created_at)
+        try:
+            result = await _run_document(
+                content,
+                inputs,
+                agents or {},
+                template_name=name,
+                source=source,
+            )
+        except AgentRefused as refusal:
+            report.failed(failure_for_refusal(refusal.reason))
+            raise
+        except Exception:
+            report.failed("error")
+            raise
+        report.succeeded(
+            agents_created=len(result.get("created_agents") or []),
+            rooms_created=rooms_in(result),
         )
         await _count_run(template.id)
         return result

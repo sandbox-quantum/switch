@@ -1535,6 +1535,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         session_factory=session_factory,
         http=service_http,
         registration=service_registration,
+        telemetry=telemetry,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
@@ -2442,6 +2443,7 @@ def build_service_broker(
     session_factory: async_sessionmaker[AsyncSession],
     http: httpx.AsyncClient,
     registration: ClientRegistration,
+    telemetry: TelemetryService | None,
 ) -> ServiceBroker:
     """The broker over the catalog `connector_apps` holds, so the server's
     adapters and every organization's ask for the same scopes.
@@ -2469,6 +2471,7 @@ def build_service_broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=config.service_connections_enabled,
         public_url=config.gateway_public_url,
+        telemetry=telemetry,
     )
 
 

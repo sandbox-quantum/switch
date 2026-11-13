@@ -80,6 +80,7 @@ def github_broker(
     vendor: FakeVendor,
 ) -> ServiceBroker:
     return ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=keyring,
         catalog=CATALOG,

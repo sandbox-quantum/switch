@@ -67,6 +67,7 @@ def build_service_harness(
 ) -> tuple[Harness, ServiceBroker]:
     harness = build_harness(session_factory)
     broker = ServiceBroker(
+        telemetry=None,
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,

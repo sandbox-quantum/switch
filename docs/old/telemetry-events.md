@@ -429,6 +429,33 @@ never invisible.
 | `package_count` | number | packages |
 | `room_group_count` | number | room groups |
 | `api_key_count` | number | API keys |
+| `template_count` | number | templates saved on the server |
+| `template_agent_saved_count` | number | of those, saved by an agent for its owner |
+| `template_author_count` | number | distinct accounts that own a saved template, across the deployment |
+| `template_author_active_7d` | number | distinct accounts with a saved template created or changed in the last 7 days |
+| `template_run_7d` | number | template runs counted in the last 7 days: runs Switch Console reported as finished, and agents' runs |
+| `template_official_installer_count` | number | distinct accounts that ever ran an official template that created agents |
+| `template_saved_installer_count` | number | distinct accounts that ever ran a saved template that created agents |
+| `official_template_hidden_count` | number | official templates a workspace admin removed from their workspace |
+
+The installer counts come from the runs the server records as installs, which
+are only the runs that created an agent: a run that made rooms and nothing
+else leaves no install, so they undercount room templates. `template_run`
+reports every run as it happens, with whether it was official.
+| `service_connection_count` | number | people's connections to a service connector (GitHub, Google Workspace, …) |
+| `service_connection_needs_attention_count` | number | of those, ones the vendor refused or Switch can no longer use, waiting for the person to sign in again |
+| `service_connected_account_count` | number | distinct accounts with at least one working connection, across the deployment |
+| `service_connected_workspace_count` | number | workspaces with at least one working connection |
+| `service_grant_count` | number | agents' grants on their owner's connections |
+| `service_granted_agent_count` | number | distinct agents with at least one grant |
+| `service_agent_active_7d` | number | distinct agents a session host fetched a service token for in the last 7 days |
+| `service_token_issued_7d` | number | service tokens issued in the last 7 days |
+| `service_<slug>_connection_count` | number | connections to one service, one property per service in the catalog, its slug's hyphens as underscores (`service_google_workspace_connection_count`) |
+
+The service figures are about the services agents use, not the messaging
+platforms `connector_*` counts. The token figures are read from the issuance
+records, which are pruned after `SERVICE_TOKEN_RETENTION_DAYS` (30 by
+default); a deployment that keeps them for fewer than 7 days undercounts both.
 
 Per-platform counts are separate properties rather than one map because the
 platform set is closed and small, and because Amplitude charts a property far
@@ -1016,8 +1043,11 @@ only when there was something to detach or remove.
 | `api_key_revoked` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`); `age_days` (number) |
 | `room_group_created` | `has_parent` (boolean) |
 | `room_group_deleted` | `room_count` (number); `age_days` (number) |
-| `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`) |
+| `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `author` (`person` \| `agent`) |
+| `template_updated` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `author` (`person` \| `agent`): who changed it; `age_days` (number). An edit that changed nothing sends nothing |
 | `template_deleted` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `age_days` (number) |
+| `official_template_hidden` | `official_slug`: the template a workspace admin removed. Removing it again sends nothing |
+| `template_run` | `source` (`official` \| `saved` \| `document`); `official_slug`; `runner` (`person` \| `agent`); `agents_created` (number); `rooms_created` (number); `account_age_days` (number); `outcome`; `failure_reason` (`none` \| `agents_not_created` \| `run_undone` \| `invalid` \| `not_found` \| `channel_in_use` \| `forbidden` \| `bridge_unavailable` \| `refused` \| `error`) |
 | `agent_request_refused` | `operation` (`list_templates` \| `get_template` \| `run_template` \| `save_template` \| `update_template` \| `delete_template` \| `create_room` \| `create_room_from_yaml`); `reason` (`not_found` \| `not_yours` \| `name_taken` \| `visibility_not_allowed` \| `invalid` \| `too_large` \| `has_warnings` \| `missing_agents` \| `agent_creation_console_only` \| `agents_not_created` \| `run_undone` \| `busy` \| `run_paused` \| `run_stopped` \| `repeat` \| `kickoff_ignored`) |
 | `room_link_created` | none |
 | `room_link_removed` | none |
@@ -1027,6 +1057,15 @@ only when there was something to detach or remove.
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
+| `service_connection_started` | `service`; `auth_kind` (`oauth` \| `api_key` \| `github_app`) |
+| `service_connection_added` | `service`; `auth_kind`; `consent` (`read` \| `write`); `relinked` (boolean): the same person linking the service again; `first_for_person` (boolean): the person's first service connection in the workspace, of any service |
+| `service_connection_failed` | `service`; `stage` (`start` \| `vendor` \| `complete`); `reason` (`cancelled` \| `refused` \| `vendor_refused` \| `vendor_unavailable` \| `vendor_error` \| `scopes_missing` \| `account_linked_elsewhere` \| `invalid_key` \| `interrupted` \| `error`). Only a sign-in that ended: a callback or completion that could not be verified (a reload, a replay, another browser) leaves the sign-in able to finish and is not reported |
+| `service_connection_lost` | `service`; `reason` (`refresh_refused` \| `sign_in_refused` \| `client_replaced`). Once per connection lost: not again while it waits for its owner to sign in again |
+| `service_connection_removed` | `service`; `removed_by` (`self` \| `admin` \| `membership_ended`); `age_days` (number) |
+| `service_grant_set` | `service`; `access` (`read` \| `write`); `tool_mode` (`allow` \| `deny`); `granted_by` (`person` \| `agent` \| `template`); `change` (`new` \| `updated`) |
+| `service_grant_removed` | `service`; `removed_by` (`person` \| `agent`) |
+| `service_switched` | `service`; `scope` (`workspace` \| `organization`); `setting` (`on` \| `off` \| `default`); `locked` (boolean) |
+| `service_token_refused` | `service`; `reason` (`grant_missing` \| `grant_account_changed` \| `connector_not_connected` \| `connector_revoked` \| `forbidden` \| `not_found` \| `internal` \| `validation_error`); `retryable` (boolean); `principal` (`controller` \| `agent_key`) |
 
 ### Closed value sets
 
@@ -1055,8 +1094,21 @@ Console, and `bot` an integration posting on a platform (see "People, bots and
 accounts"); `platform` is Switch itself speaking; `unknown` a sender whose
 client could not be looked up.
 
+`service`: a service connector this build ships, by its catalog slug — for
+example `github`, `google-workspace` or `sentry` — or `unknown` for one no
+longer in the catalog. The set is read from `connections/catalog/` when an
+event is checked, so a new connector adds its own value. A slug is a
+directory name in this repository, never anything a person typed, and never
+the account it is connected to.
+
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
+
+`official_slug`: a template that comes with Switch, by its slug (for example
+`switch-buddy` or `incident-war-room`), or `none`. The set is read from the
+templates this release ships when an event is checked, so a new official
+template adds its own value. A slug is a file name in this repository, never
+anything a person typed; a saved template's name is never sent.
 
 `bridge_connected.failure_reason` is `none` | `auth_failed` | `network` |
 `platform_error` | `config_invalid` | `unknown`. `bridge_disconnected.reason`
@@ -1083,6 +1135,8 @@ is summed and averaged like any other value unless every chart filters it,
 where an absent property is skipped by every aggregation. These are the only
 properties that may be missing: `age_days`, `age_hours`,
 `seconds_since_install` and `seconds_since_configured` on `connector_added`,
+`account_age_days` on `template_run`,
+`age_days` on `service_connection_removed`,
 `duration_ms` on `bridge_connected`, `provisioning_seconds`, the room sizes on
 `message_sent`, and `known_agent_type` on `message_sent`, which only an agent's
 message carries. Servers released before this sent `-1` instead.
@@ -1376,9 +1430,43 @@ reason.
 
 - `reference_type_created` / `reference_type_deleted` — registering a *type*,
   which is an owner extending what Switch can point at, not making a reference.
-- `template_created` / `template_deleted` — `template_kind` names the three the
-  product uses and reports anything an operator invents as `other`. Saved or
-  deleted in the gateway or by an agent's `save_template` / `delete_template`.
+- `service_connection_started` / `service_connection_added` /
+  `service_connection_failed` — connect a service in Switch Console under
+  Connectors: through its sign-in (OAuth, or GitHub's App) or by pasting a
+  key. Cancel the vendor's consent page for `cancelled`; turn the service off
+  for the workspace first for `refused`. `added` over `started` is the
+  sign-in's completion rate, abandoned sign-ins included; a sign-in refused
+  before it starts (`stage` `start`) sends only the failure.
+- `service_connection_lost` — revoke Switch's access at the vendor, then let
+  an agent ask for a token: the refresh is refused.
+- `service_connection_removed` — disconnect a service yourself (`self`), have
+  a workspace admin remove it (`admin`), or leave or be removed from the
+  workspace (`membership_ended`).
+- `service_grant_set` / `service_grant_removed` — give an agent a service, or
+  take it away, in Switch Console (`person`), with the agent's own tool
+  (`agent`), or by running a template that grants one (`template`).
+- `service_switched` — a workspace admin turns a service on or off, or back
+  to the default; an organization admin sets it for every workspace.
+- `service_token_refused` — an agent's session asks for a token it may not
+  have: no grant, a connection that needs signing in again, the service
+  switched off. At most once per agent, service and reason an hour.
+- `template_created` / `template_updated` / `template_deleted` —
+  `template_kind` names the three the product uses and reports anything an
+  operator invents as `other`. Saved, changed or deleted in the gateway or by
+  an agent's `save_template` / `update_template` / `delete_template`; `author`
+  says which.
+- `official_template_hidden` — a workspace admin removes a room template that
+  comes with Switch (Delete on it in Switch Console or the dashboard).
+- `template_run` — run a template: from Switch Console or the dashboard
+  (`POST /rooms/from-template-document`, `/rooms/from-template` or
+  `/rooms/from-yaml`), or by an agent's `run_template`. A run refused before
+  it made anything, or undone after, is sent with `outcome` `failure`.
+  `source` is `official` or `saved` only where the server can vouch for the
+  document: a whole-document run of a template the client named, or whose
+  document is an official one word for word, and every agent run. A run
+  Switch Console resolved itself (`/rooms/from-template`, `/rooms/from-yaml`)
+  is `document`. "Started off with an official template" is an official run
+  with a small `account_age_days`.
 - `agent_request_refused`: an agent asked for something a rule says no to:
   a template it did not save, a run that would need a new agent, a room in a
   paused or stopped run. `operation` and `reason` are fixed lists; which agent

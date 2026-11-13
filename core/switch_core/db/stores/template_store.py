@@ -16,6 +16,19 @@ from switch_core.db.models import (
 _LIKE_ESCAPE = "\\"
 
 
+def edited_state(template: Template) -> tuple[object, ...]:
+    """What `TemplateStore.update_fields` can change, to tell an edit from an
+    update that left the template as it was."""
+    return (
+        template.name,
+        template.description,
+        template.kind,
+        template.content,
+        template.read_visibility,
+        template.write_visibility,
+    )
+
+
 class TemplateNameTaken(ValueError):
     """This owner already has a template by that name.
 
@@ -312,11 +325,13 @@ class TemplateStore:
 
     async def hide_official(
         self, session: AsyncSession, slug: str, hidden_by: str
-    ) -> None:
+    ) -> bool:
         """Remove an official template from the bound workspace; removing it
-        again changes nothing."""
-        await session.execute(
+        again changes nothing. Whether this call removed it."""
+        result = await session.execute(
             insert(HiddenOfficialTemplate)
             .values(tenant_id=require_tenant_id(), slug=slug, hidden_by=hidden_by)
             .on_conflict_do_nothing()
+            .returning(HiddenOfficialTemplate.slug)
         )
+        return result.scalar_one_or_none() is not None

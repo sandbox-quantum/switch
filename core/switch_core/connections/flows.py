@@ -68,6 +68,16 @@ class FlowError(Exception):
     """The flow cannot go on; the message is for the person."""
 
 
+class SignInEnded(FlowError):
+    """The person or the vendor ended the sign-in, rather than the flow
+    breaking: `reason` says which way, as `service_connection_failed`
+    reports it."""
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class ServiceFlow:
     """A service sign-in as its row stands.
@@ -286,7 +296,7 @@ class ServiceFlows:
                 to="failed",
                 changes={"error": error},
             )
-            raise FlowError(error)
+            raise SignInEnded(error, "cancelled")
         taken = await self._flows.advance(
             flow.stored, expect=("authorizing",), to="delivered", changes={}
         )
@@ -338,12 +348,12 @@ class ServiceFlows:
             await self.failed(
                 checking, f"{flow.name} refused the sign-in. Connect again."
             )
-            raise FlowError(
-                f"{flow.name} refused the sign-in. Connect again."
+            raise SignInEnded(
+                f"{flow.name} refused the sign-in. Connect again.", "vendor_refused"
             ) from None
         except ServiceAdapterError as error:
             await self.failed(checking, str(error))
-            raise FlowError(str(error)) from None
+            raise SignInEnded(str(error), "vendor_error") from None
         except BaseException:
             await self.failed(checking, INTERRUPTED)
             raise
@@ -360,9 +370,10 @@ class ServiceFlows:
             return "write"
         if set(details["read_scopes"]) <= granted:
             return "read"
-        raise FlowError(
+        raise SignInEnded(
             f"{details['name']} granted less than Switch needs to read. Connect "
-            "again and allow what it asks for."
+            "again and allow what it asks for.",
+            "scopes_missing",
         )
 
     async def connected(self, exchange: Exchange, warning: str | None) -> None:
