@@ -1,7 +1,18 @@
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
-import { Alert, Box, Button, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
-import { type ReactNode, useEffect, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  FormControl,
+  InputLabel,
+  OutlinedInput,
+  Snackbar,
+  Stack,
+  Typography,
+} from "@mui/material";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import EditableField from "../../components/EditableField";
 import { useAuth } from "../../data/AuthContext";
 import { type Me, changeMyName, fetchMe } from "../../data/api";
@@ -11,6 +22,8 @@ import DeleteAccountDialog from "./DeleteAccountDialog";
 
 // What `PATCH /auth/me` accepts.
 const NAME_MAX = 255;
+// How wide the two fields are, as the design has them.
+const FIELD_WIDTH = 360;
 
 /** Your account: the signed-in person, not the workspace, and the same for
  * every role. The display name is edited in place and the email only shown,
@@ -36,7 +49,7 @@ export default function AccountPage() {
         Your account
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        About you, not this workspace: the same in every workspace you're in.
+        About you, not this workspace — the same in every workspace you're in.
       </Typography>
       {loadError ? (
         <Alert severity="error">Couldn't load your account: {loadError}</Alert>
@@ -93,20 +106,10 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
           readOnlyHelper=""
           editLabel="Change display name"
           maxLength={NAME_MAX}
+          width={FIELD_WIDTH}
           onSave={rename}
         />
-        {/* The same field with no pencil, so the two look alike but for that,
-            and no caption, as the design has it: nobody can change the email
-            here, which is how the person signs in. */}
-        <EditableField
-          label="Email"
-          value={me.email}
-          canEdit={false}
-          readOnlyHelper=""
-          editLabel=""
-          maxLength={NAME_MAX}
-          onSave={() => Promise.reject(new Error("The email can't be changed here."))}
-        />
+        <ReadOnlyField label="Email" value={me.email} />
       </Stack>
 
       <Stack spacing={2} sx={{ mt: 4 }}>
@@ -177,6 +180,29 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
         </Alert>
       </Snackbar>
     </>
+  );
+}
+
+/** A value nobody can change here, drawn as the design system draws one:
+ * the cream fill, the border kept, no shadow, still selectable. The email is
+ * how the person signs in, so it needs no caption saying so. */
+function ReadOnlyField({ label, value }: { label: string; value: string }) {
+  const id = useId();
+  return (
+    <FormControl sx={{ maxWidth: FIELD_WIDTH }} fullWidth>
+      <InputLabel htmlFor={id}>{label}</InputLabel>
+      <OutlinedInput
+        id={id}
+        value={value}
+        readOnly
+        size="small"
+        sx={{
+          backgroundColor: tokenVar("field-readonly"),
+          boxShadow: "none",
+          "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: tokenVar("field-border") },
+        }}
+      />
+    </FormControl>
   );
 }
 
