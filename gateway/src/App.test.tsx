@@ -833,9 +833,21 @@ describe("the new layout (gateway_v2)", () => {
     });
   });
 
+  describe("in the Platform area", () => {
+    it("hides the rail and leads back to the workspace, as it spans every one", async () => {
+      mockFetch({ ...signedInAs("operator", { flags: V2 }), "/users": [200, []] });
+      renderAt("/platform/users");
+      const back = await screen.findByRole("link", { name: "Back to workspace" });
+      expect(back.getAttribute("href")).toBe("/");
+      expect(await menuLabels("Platform")).toEqual(["All workspaces", "Users", "Connectors"]);
+      expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
+    });
+  });
+
   it("shows a page that is not built yet as such", async () => {
     mockFetch(signedInAs("member", { flags: V2 }));
-    renderAt("/settings/guardrails");
+    renderAt("/settings/account");
     expect(
       await screen.findByText("This page is part of the new layout and isn't built yet."),
     ).toBeTruthy();

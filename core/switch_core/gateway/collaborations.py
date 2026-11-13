@@ -270,6 +270,9 @@ async def _detail(
             bridge.type
         ),
         channel_creation_enabled=bridge.channel_creation_enabled,
+        channel_creation_blocker=collab_lifecycle.channel_creation_blocker(
+            bridge.type, bridge.connection_config or {}
+        ),
         private_channels_supported=collab_lifecycle.supports_private_channels(
             bridge.type
         ),

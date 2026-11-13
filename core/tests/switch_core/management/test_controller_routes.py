@@ -8,7 +8,7 @@ the operation lifecycle, and the bindings placement keeps in Core.
 from __future__ import annotations
 
 import hashlib
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -1000,15 +1000,19 @@ class TestPlacementBindsTheAgentInCore:
     async def test_a_revoked_controller_reads_as_revoked_after_a_restart(
         self, harness: Harness
     ) -> None:
+        """An agent still placed on a revoked controller: one revoked before
+        removing a device took its agents off it."""
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner, "workstation")
             agent_id = await _placed_agent(harness, client, controller)
-            revoked = await client.delete(
-                f"/gateway/management/controllers/{controller.controller_id}",
-                cookies=cookies_for(owner),
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(AgentController)
+                .where(AgentController.id == controller.controller_id)
+                .values(revoked_at=datetime.now(UTC))
             )
-        assert revoked.status_code in (200, 204), revoked.text
+            await session.commit()
         restarted = AgentConnectionRegistry().controllers
 
         await load_bindings(

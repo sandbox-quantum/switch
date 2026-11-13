@@ -88,6 +88,11 @@ class _FakeCollabLifecycle:
     def rooms_changed(self, bridge_id: str) -> None:
         return None
 
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
 
 async def _slack(chats: _Harness, *, link: User | None) -> tuple[str, _FakeCore]:
     """A running Slack bridge on which `link`, if given, has claimed `U-ALICE`."""

@@ -784,9 +784,8 @@ export default function MachinesPage() {
         <DialogContent>
           <DialogContentText>
             The device's controller loses access to Switch immediately, and if it is online
-            it stops every agent it runs. Agents placed on it stay placed, and offline, until
-            you move them to another device or stop managing them. Enrolling the device again
-            needs a new code.
+            it stops every agent it runs. Agents placed on it are taken off it, and run again
+            once you put them on another device. Enrolling the device again needs a new code.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

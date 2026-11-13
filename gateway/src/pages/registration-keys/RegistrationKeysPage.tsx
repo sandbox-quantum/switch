@@ -4,6 +4,7 @@ import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import DoneOutline from "@mui/icons-material/DoneOutline";
 import SearchIcon from "@mui/icons-material/Search";
 import {
+  Alert,
   Box,
   Button,
   CircularProgress,
@@ -32,6 +33,7 @@ export default function RegistrationKeysPage() {
   const { data: keys, loading, refetch } = useApiKeys();
   const [deleteTarget, setDeleteTarget] = useState<ApiKeyDetail | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [agentSearch, setAgentSearch] = useState("");
@@ -39,10 +41,16 @@ export default function RegistrationKeysPage() {
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    await deleteApiKey(deleteTarget.id);
-    setDeleteTarget(null);
-    setDeleting(false);
-    refetch();
+    setDeleteError(null);
+    try {
+      await deleteApiKey(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
+      refetch();
+    }
   }, [deleteTarget, refetch]);
 
   const handleCopy = useCallback(async (keyId: string) => {
@@ -296,9 +304,20 @@ export default function RegistrationKeysPage() {
         />
       )}
 
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
+      <Dialog
+        open={!!deleteTarget}
+        onClose={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+      >
         <DialogTitle>Delete API key</DialogTitle>
         <DialogContent>
+          {deleteError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {deleteError}
+            </Alert>
+          )}
           <DialogContentText>
             Are you sure you want to delete key &quot;{deleteTarget?.label}&quot;?{" "}
             {deleteTarget?.type === "agent"
@@ -307,7 +326,14 @@ export default function RegistrationKeysPage() {
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+          <Button
+            onClick={() => {
+              setDeleteTarget(null);
+              setDeleteError(null);
+            }}
+          >
+            Cancel
+          </Button>
           <Button
             color="error"
             variant="contained"

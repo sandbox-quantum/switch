@@ -94,6 +94,29 @@ version of their own to them without also giving them a release of their own.
   workspace; Guardrails connects and disconnects the organization's Switch
   Trust policy. Today's organization page gains the Guardrails section too,
   since guardrails are now set only there.
+- **Workspace settings › API keys, Guardrails and Devices in the new
+  dashboard layout.** Behind `gateway_v2`:
+  - API keys: a workspace's admins (its admins, its organization's admin and
+    the operator) see every key in it, with its owner and fingerprint
+    (`GET /api-keys/workspace`), and delete anyone's key for adding agents.
+    An agent's own key stays with its owner, and the bootstrap key with the
+    operator it was seeded for. Members see their own. Only a key's owner can
+    copy it, as before. `GET /api-keys` is still the caller's own keys, and
+    every key now carries `owner_id`, `owner_name`, `agent_id` and
+    `agent_name`, the agent's name now rather than the one it registered
+    under.
+  - Guardrails: everyone in a workspace sees which Switch Trust policy checks
+    it, with its ID to copy and a link to it on Switch Trust
+    (`GET /workspace/guardrails`, which never returns the key). The policy's
+    name and detectors aren't shown: Switch can read only its ID.
+  - Devices: a table of devices and one of managed agents. Admins see
+    everyone's and remove any device or managed agent; everyone else sees and
+    acts on their own. `GET /management/workspace` lists them as the caller
+    may see them, each with its owner, its type (computer, remote SSH or
+    cloud), how many of its agents run, and what the caller may do with it;
+    removed devices are left out. What an offline device can't do is greyed
+    out with the reason. The owner's cloud device shows as Switch Console
+    shows it, with Stop, Start and Retry.
 - **Messages sent while an agent works can steer its running turn.** Each
   agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
   kept on the agent so re-registering leaves it alone, changed on the agent's
@@ -382,6 +405,34 @@ version of their own to them without also giving them a release of their own.
   organization, so nothing checked before goes unchecked; a new organization
   starts with none. The operator's server-wide setting is gone:
   `/gateway/trust-settings` answers 410 saying where the setting went.
+- **Removing a device takes its agents off it.** They stop, and run again
+  once their owner puts them on another device; they used to stay placed on
+  the removed device until someone moved them.
+- **Nobody renames or removes a cloud device.** Switch names it, and it comes
+  and goes with its machine, so `PATCH` and `DELETE
+  /management/controllers/{id}` on one answer 409 `cloud_managed`, and its
+  `can_edit` and `can_remove` say no. Switch Console already offered
+  neither.
+- **A workspace's admins remove any device and stop managing any agent in
+  it** (`DELETE /management/controllers/{id}` and `DELETE
+  /management/agents/{id}`), as its owner does. Anyone else asking about
+  someone else's is still answered 404.
+- **The Teams default team follows the teams Switch is in.** A Microsoft
+  Teams connection made by approving Switch's own Teams app starts with no
+  default team, so creating a room with a channel failed until an admin
+  picked one. Now, when Switch joins a team with no default set, from the
+  connection's Microsoft Teams panel or from Teams, that team becomes the
+  default; a default team already chosen is never replaced. When Switch is
+  taken out of its default team, from the panel or from Teams, the default is
+  cleared, so no channel is made in a team Switch is not in and the next team
+  it joins becomes the default. A removal Switch only notices on its periodic
+  check leaves the default alone and is logged, so one wrong answer from
+  Microsoft cannot lose it. Leaving the default team no longer turns channel
+  creation off: that stays an admin's choice, and is still off after
+  approval until an admin turns it on. Until a connection has a default team,
+  `list_bridges` reports `can_create_channels: false` for it, the dashboard's
+  New room form says why it cannot create a channel, and creating a room with
+  a channel there is refused before anything is made.
 - **A refusal for not being a workspace admin says "Workspace admin access
   required"**, where it said "Tenant admin access required", on every
   gateway route that only the workspace's admins may use.
@@ -560,6 +611,12 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **Creating an API key no longer says it won't be shown again.** Its owner
+  can copy it again from the API keys page, as they always could.
+- **Deleting an API key that can't be deleted says why,** instead of closing
+  as if it had worked.
+- **The operator's Users and All workspaces pages say why they could not
+  load**, rather than showing an empty list.
 - **Messaging apps says when a change is refused or the list fails to load.**
   Turning agent greetings or channel creation on or off said nothing when
   Switch refused it, and a list that failed to load showed "No messaging apps
@@ -947,6 +1004,19 @@ version of their own to them without also giving them a release of their own.
   polls) and its `device` with whose device it is, which is named to the
   device's owner and to workspace admins.
 - **An agent's page says when you can see the agent but not change it.**
+- **The new layout's Platform area is a place of its own.** Its pages span
+  every workspace, so, as in Organization settings, the rail gives way to
+  the area's menu and the top bar leads back to the workspace. Each of its
+  pages refuses anyone but the operator by itself, not only through the
+  area.
+- **The operator can sign someone out of all their devices.** The Users
+  page offers "Sign out of all devices" on every account but your own, for
+  a lost device or an account that looks taken over: every session it holds
+  ends, Switch Console's included, and the audit log records it. Delete
+  account moves into the same row menu.
+- **The operator's Users and All workspaces lists can be searched and
+  filtered**, by name and email, or by name, slug and organization, with a
+  Role or Organization dropdown and a count, in alphabetical order.
 - **The new layout's Workspace › Connectors chooses which connectors the
   workspace may use.** Each connector says whether it is enabled here and
   what decided that: the organization's lock ("Set by" the organization, with
@@ -4080,6 +4150,9 @@ version of their own to them without also giving them a release of their own.
   server-wide policy to edit, so the form gives way to its note and a button
   that opens Organization settings › Guardrails in the dashboard. Servers that
   still have the server-wide setting keep the form.
+- **Removing a device says what happens to its agents on any Switch:** they
+  stop, and run again once you put them on another device. It used to say
+  they stay placed on it, which newer Switch no longer does.
 - **New agents' generated avatars no longer carry the name.** A new agent
   created without a chosen icon gets the same digest-seeded DiceBear face the
   server generates, and the picker's choices are drawn the same way. Existing

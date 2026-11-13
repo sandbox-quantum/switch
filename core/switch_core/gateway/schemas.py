@@ -793,12 +793,21 @@ class ApiKeyDetail(BaseModel):
     id: str
     label: str
     type: str
+    # The start of the key's hash, not of the key: a fingerprint to tell keys
+    # apart by, which gives away nothing of the secret to whoever reads it.
     key_prefix: str
     created_at: str
     expires_at: datetime | None
+    owner_id: str
+    owner_name: str
+    # The agent that signs in with it, by its name now: an agent key's label is
+    # the name it registered under. Null for any other key, and for an agent
+    # key whose agent is gone.
+    agent_id: str | None
+    agent_name: str | None
     # What the caller may do with it: reveal and copy it, their own only; and
-    # delete it, their own unless an agent still signs in with it
-    # (`authz.can_delete_api_key`).
+    # delete it, their own, or as an admin anyone's key for adding agents,
+    # unless an agent still signs in with it (`authz.can_delete_api_key`).
     can_reveal: bool
     can_delete: bool
 
@@ -858,6 +867,9 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Why a new channel cannot be made here yet even so — a Teams connection
+    # with no default team — or None; said where a room would make one.
+    channel_creation_blocker: str | None = None
     # Whether a new room here can have a private channel, and whether that
     # channel needs the person asking to have linked their account on the
     # platform, through which Switch puts them in it (on Teams, as its owner).
@@ -2536,6 +2548,18 @@ class OrganizationGuardrailsResponse(BaseModel):
     api_key_last4: str | None
     connected_by_name: str | None
     connected_at: str | None
+
+
+class WorkspaceGuardrails(BaseModel):
+    """The Switch Trust policy that checks the bound workspace's messages, as
+    anyone in it may read it: which policy, never the key it is checked with.
+    `policy_id` is null when nothing checks them; `policy_url`, where the
+    policy is shown on Switch Trust, is null too when it is on an endpoint
+    Switch cannot link into."""
+
+    checking: bool
+    policy_id: str | None
+    policy_url: str | None
 
 
 class OrganizationGuardrailsConnectRequest(BaseModel):
