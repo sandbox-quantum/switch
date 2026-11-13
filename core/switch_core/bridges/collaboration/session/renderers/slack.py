@@ -1133,7 +1133,7 @@ def render_activity_text(
     did = [
         item
         for item in items
-        if item.kind == "tool-activity"
+        if is_tool_call(item)
         or (item.kind == "user-message" and in_activity_log(item))
     ]
 
@@ -1142,7 +1142,7 @@ def render_activity_text(
     if hidden:
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
-    lines += _activity_lines([item for item in did if is_tool_call(item)])
+    lines += _activity_lines(did)
     lines += subagent_lines(items, fit=lambda text, size: _fit(text, size))
     lines.append(
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
