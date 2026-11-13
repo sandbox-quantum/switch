@@ -2428,3 +2428,41 @@ async def test_a_kickoff_reads_back_as_the_agent_that_ran_the_template(
         "displayName": "Switch Buddy",
         "iconUrl": "https://example.test/buddy.png",
     }
+
+
+async def test_a_typed_room_command_is_run_as_one(chats: _Harness) -> None:
+    """`!set-alias` typed in Console is the command event a platform bridge
+    writes for it, so the room's command handling runs it; the agents do not
+    read it as a message."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "s1", "  !set-alias @helper @h ")
+    assert sent.status_code == 200, sent.text
+    [shown] = sent.json()["messages"]
+    assert shown["sender"]["kind"] == "system"
+    assert shown["body"] == "!set-alias @helper @h"
+
+    assert await chats.message_rows(room_id) == []
+    async with chats.factory() as session:
+        row = (
+            await session.execute(
+                select(Message).where(Message.transport_event_id == shown["messageId"])
+            )
+        ).scalar_one()
+    assert row.event_type == "com.switch.command"
+    assert row.content["command"] == "set-alias"
+    assert row.content["args"] == "@helper @h"
+    assert row.content["user_name"] == "alice"
+
+
+async def test_a_message_that_only_starts_with_a_bang_stays_a_message(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "s1", "!important: read this")
+    assert sent.status_code == 200, sent.text
+    [row] = await chats.message_rows(room_id)
+    assert row.body == "!important: read this"

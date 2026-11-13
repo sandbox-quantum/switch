@@ -1994,6 +1994,13 @@ class ChatService:
                 for upload_id in upload_ids
             ]
             root = await self._thread_root(session, room, thread_root_id)
+            # `!set-alias @helper @h`, typed here as on any platform, is a room
+            # command: written as the command event a bridge writes for it, so
+            # the room's command handling runs it, rather than as a message the
+            # agents read. Its mentions are its arguments, written as typed.
+            command = None if uploads else room_command(body)
+            if command is not None:
+                mentions, people, mention_spans, typed = [], [], [], []
             shift = 0
             if mentions:
                 written = body
@@ -2047,6 +2054,21 @@ class ChatService:
                 contents[0][MENTIONS_KEY] = named_people
             posted: list[Message] = []
             routed: list[Routed] = []
+            if command is not None:
+                name, args = command
+                contents = [
+                    {
+                        "command": name,
+                        "args": args,
+                        "user_id": client.transport_user_id,
+                        "user_name": user.name,
+                        **(
+                            {"m.relates_to": contents[0]["m.relates_to"]}
+                            if "m.relates_to" in contents[0]
+                            else {}
+                        ),
+                    }
+                ]
             for index, content in enumerate(contents):
                 message = message_row(
                     room_id=room.id,
@@ -2054,7 +2076,9 @@ class ChatService:
                     sender_id=client.transport_user_id,
                     sender_client_id=client.id,
                     sender_name=user.name,
-                    event_type=MESSAGE_EVENT_TYPE,
+                    event_type=MESSAGE_EVENT_TYPE
+                    if command is None
+                    else COMMAND_EVENT_TYPE,
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )
@@ -2560,6 +2584,24 @@ def _may_use(agent: Agent, user: User, *, room_id: str, group_id: str | None) ->
 
 def _utf16_len(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
+
+
+def room_command(body: str) -> tuple[str, str] | None:
+    """`(name, args)` when `body` is a room command a member can type here
+    (`!name args`, split as the platform bridges split one), else None. Only a
+    command Switch has is taken: "!important" stays a message."""
+    text = body.strip()
+    if not text.startswith("!"):
+        return None
+    # Imported here: the command table reaches the agent protocol, which
+    # imports this module.
+    from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
+
+    parts = text.split(None, 1)
+    name = parts[0][1:]
+    if name not in COMMANDS_BY_NAME:
+        return None
+    return name, parts[1].strip() if len(parts) > 1 else ""
 
 
 def _span_texts(body: str, spans: list[ChatMention]) -> list[str]:
