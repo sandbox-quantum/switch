@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import json
 import logging
@@ -9,7 +10,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -71,6 +72,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
+    ChannelMembers,
     ChannelNotUsable,
     ChannelType,
     CreatedChannel,
@@ -84,6 +86,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -3046,6 +3049,108 @@ class MattermostAdapter(PlatformAdapter):
                 failed.append(external_id)
         return failed
 
+    async def remove_users_from_channel(
+        self, channel_id: str, user_external_ids: list[str]
+    ) -> list[str]:
+        """Take people out of a channel as the admin account. Someone already
+        gone is success; anyone else Mattermost refuses comes back failed."""
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError(
+                "Cannot remove users from channel: Mattermost client not connected"
+            )
+        loop = self._main_loop
+        failed: list[str] = []
+        for user_id in user_external_ids:
+            try:
+                await loop.run_in_executor(
+                    None,
+                    self._admin_driver.channels.remove_channel_member,
+                    channel_id,
+                    user_id,
+                )
+            except ResourceNotFound:
+                continue
+            except Exception:
+                logger.exception(
+                    "Failed to remove user %s from Mattermost channel %s",
+                    user_id,
+                    channel_id,
+                )
+                failed.append(user_id)
+        return failed
+
+    #: Members read per page when listing a channel; Mattermost's ceiling.
+    _MEMBERS_PAGE = 200
+
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
+        """The people in a channel, read page by page as the admin account.
+
+        Bots (every agent's, the bridge's, anyone else's), the admin account
+        and deactivated accounts are left out. A page or a lookup that fails
+        marks the listing incomplete rather than ending it, so whoever was read
+        can still be added.
+        """
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError("Cannot list channel members: adapter not started")
+        loop = self._main_loop
+        driver = self._admin_driver
+        ids: list[str] = []
+        complete = True
+        page = 0
+        try:
+            while True:
+                params = {"page": page, "per_page": self._MEMBERS_PAGE}
+                batch = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        driver.channels.get_channel_members, channel_id, params=params
+                    ),
+                )
+                ids.extend(str(m.get("user_id", "")) for m in batch if m.get("user_id"))
+                if len(batch) < self._MEMBERS_PAGE:
+                    break
+                page += 1
+        except Exception:
+            logger.warning(
+                "Could not list every member of Mattermost channel %s",
+                channel_id,
+                exc_info=True,
+            )
+            complete = False
+
+        candidates = [
+            user_id
+            for user_id in ids
+            if user_id != self._admin_user_id
+            and user_id != self._admin_bot_id
+            and user_id not in self._bridge_bot_ids
+            and user_id not in self._bot_id_to_username
+        ]
+        members: dict[str, str] = {}
+        for start in range(0, len(candidates), self._MEMBERS_PAGE):
+            chunk = candidates[start : start + self._MEMBERS_PAGE]
+            try:
+                users = await loop.run_in_executor(
+                    None, driver.users.get_users_by_ids, chunk
+                )
+            except Exception:
+                logger.warning(
+                    "Could not describe members of Mattermost channel %s",
+                    channel_id,
+                    exc_info=True,
+                )
+                complete = False
+                continue
+            for user in users:
+                if user.get("is_bot") or user.get("delete_at"):
+                    continue
+                user_id = str(user.get("id", ""))
+                if user_id:
+                    members[user_id] = str(user.get("username") or user_id)
+        return ChannelMembers(members=members, complete=complete)
+
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the
         user does not exist. Used to rebind a human actor's ``external_user_id`` when
@@ -3654,6 +3759,10 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
+        if event_type == "user_removed":
+            await self._handle_user_removed(event)
+            return
+
         if event_type != "posted":
             return
 
@@ -3842,6 +3951,62 @@ class MattermostAdapter(PlatformAdapter):
             )
         return attachments, failures
 
+    async def _handle_user_removed(self, event: dict[str, Any]) -> None:
+        """Someone left a channel, or was taken out of it.
+
+        Mattermost sends `user_removed` twice: to the channel, naming who went
+        (`data.user_id`), and to the person removed, with no `data.user_id`.
+        Only the first is a member leaving the room; the second is how one of
+        Switch's own bots hears it was removed, which is not a person leaving.
+        It reaches every bot socket in the channel, so the same departure can
+        arrive more than once, and the second is nothing to do.
+
+        `remover_id` is whoever did it; the person themselves when they left.
+        """
+        data: dict[str, Any] = event.get("data", {})
+        user_id = str(data.get("user_id", ""))
+        broadcast: dict[str, Any] = event.get("broadcast", {})
+        channel_id = str(broadcast.get("channel_id", "") or data.get("channel_id", ""))
+        if not user_id or not channel_id:
+            return
+        if (
+            user_id in self._bridge_bot_ids
+            or user_id in self._bot_id_to_username
+            or user_id == self._admin_user_id
+            or user_id == self._admin_bot_id
+        ):
+            return
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            raise RuntimeError("Cannot handle user_removed: adapter not started")
+
+        remover_id = str(data.get("remover_id", ""))
+        removed_by: str | None = None
+        if remover_id and remover_id != user_id:
+            removed_by = await self._username_of(remover_id)
+        coro = self._user_left(
+            InboundUserLeave(
+                channel_id=channel_id,
+                external_user_id=user_id,
+                removed_by_name=removed_by,
+            )
+        )
+        self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    async def _username_of(self, user_id: str) -> str | None:
+        """A Mattermost account's username, or None if it cannot be read."""
+        if self._admin_driver is None:
+            return None
+        try:
+            user = await asyncio.get_event_loop().run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+        except Exception:
+            logger.warning("Could not resolve Mattermost user %s", user_id)
+            return None
+        name = user.get("username")
+        return str(name) if name else None
+
     async def _handle_user_added(self, event: dict[str, Any]) -> None:
         data: dict[str, Any] = event.get("data", {})
         user_id = str(data.get("user_id", ""))
@@ -3881,7 +4046,14 @@ class MattermostAdapter(PlatformAdapter):
             self._dispatch(coro, loop)  # type: ignore[arg-type]
             return
 
-        if user_id == self._admin_user_id:
+        if (
+            user_id == self._admin_user_id
+            or user_id == self._admin_bot_id
+            or user_id in self._bridge_bot_ids
+        ):
+            # Switch's own accounts: the admin, and the bot it posts its
+            # notices as, which it adds to a channel the first time it
+            # answers there. Neither is a person joining.
             return
 
         if not self._on_user_joined:

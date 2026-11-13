@@ -1555,8 +1555,85 @@ async def _cmd_remove_agent(
         if await _refused(client, room, event, decision):
             return
 
-    await host._room_service.remove_agents_from_room(meta.room_id, [target.id])
+    await host._room_service.remove_agents_from_room(
+        meta.room_id, [target.id], removed_by=event.user_name or None
+    )
     await _reply(client, room, event, f"Removed **{_label(target)}** from this room.")
+
+
+async def _cmd_remove_user(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    """Take people out of the room and its channel: the room's owner or a
+    workspace admin, as for removing anyone (`room_policy`). Never in a direct
+    or group conversation, whose platform fixes who is in it."""
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+    names = [token.lstrip("@") for token in _mention_tokens(event.args)]
+    if not names:
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!remove-user @username` — the person to remove from this "
+            "room, by their name here.",
+        )
+        return
+
+    # `remove-user` is admin-owned, so only the always-present admin client
+    # runs this handler.
+    host = cast("CommandConsumer", client)
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
+        row = await session.get(Room, meta.room_id)
+        if row is not None and row.channel_type in room_policy.FIXED_MEMBERSHIP:
+            await _reply(
+                client,
+                room,
+                event,
+                "Nobody can be removed from this conversation through Switch: "
+                "who is in it is up to the platform.",
+            )
+            return
+        decision = await _room_decision(
+            host, session, meta.room_id, event, "remove_member", "remove_user"
+        )
+        if await _refused(client, room, event, decision):
+            return
+
+    try:
+        misses = await host._room_service.remove_users_from_room(
+            meta.room_id, names, removed_by=event.user_name or event.user_id
+        )
+    except ValueError as e:
+        await _reply(client, room, event, f"Could not remove anyone: {e}")
+        return
+    not_in_room = [m.name for m in misses if m.reason == "not_in_room"]
+    refused = [m.name for m in misses if m.reason == "platform_refused"]
+    missed = {m.name for m in misses}
+    removed = [name for name in names if name not in missed]
+    lines: list[str] = []
+    if removed:
+        lines.append("Removed " + ", ".join(f"**{n}**" for n in removed) + ".")
+    if refused:
+        lines.append(
+            "Could not remove "
+            + ", ".join(f"**{n}**" for n in refused)
+            + ": this channel would not let Switch take them out, so they stay "
+            "in the room. Remove them from the channel itself, and Switch will "
+            "follow."
+        )
+    if not_in_room:
+        lines.append(
+            "Nobody in this room goes by "
+            + ", ".join(f"`{n}`" for n in not_in_room)
+            + "."
+        )
+    await _reply(client, room, event, "\n".join(lines))
 
 
 def _command_resolver(host: CommandConsumer) -> AddressingResolver:
@@ -2553,6 +2630,18 @@ COMMANDS: list[Command] = [
         _cmd_remove_agent,
         args_spec=(
             CommandArg("agent", "The agent to remove from this room", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "remove-user",
+        "Remove a person from this room and its channel: the room's owner or "
+        "an admin. Usage: `!remove-user @username`.",
+        _cmd_remove_user,
+        args_spec=(
+            CommandArg(
+                "person", "The person to remove, by their name here", required=True
+            ),
         ),
         admin_owned=True,
     ),

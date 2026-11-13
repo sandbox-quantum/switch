@@ -52,6 +52,7 @@
     "release_role",
     "remove_agent_from_room",
     "remove_agent_service",
+    "remove_users_from_room",
     "request_agent_deletion",
     "run_template",
     "save_template",
@@ -1510,6 +1511,11 @@
     },
     {
       "route": "POST /gateway/rooms/{room_id}/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/users/remove",
       "auth": "session",
       "flags": []
     },

@@ -51,7 +51,7 @@ class _FakeProvisioning:
     async def invite_to_room(self, room_id: str, user_id: str) -> None:
         return None
 
-    async def kick_user(self, room_id: str, user_id: str) -> None:
+    async def kick_user(self, room_id: str, user_id: str, **_kwargs: object) -> None:
         return None
 
 
