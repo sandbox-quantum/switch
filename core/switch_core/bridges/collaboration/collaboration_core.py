@@ -1759,7 +1759,7 @@ class CollaborationCore:
                 self._pending_message_maps.pop(event_id, None)
 
     async def _owner_from_platform_account(
-        self, external_user_id: str | None
+        self, external_user_id: str | None, channel_id: str
     ) -> str | None:
         """The Switch user who linked the platform account `external_user_id`,
         to own a room that account brought Switch into. None when the platform
@@ -1768,28 +1768,49 @@ class CollaborationCore:
 
         Only claimants who still belong to the bridge's workspace count: a
         former member who linked the account doesn't own a room in a
-        workspace they've left."""
+        workspace they've left.
+
+        A room left without an owner is changed only by admins, so the cases
+        someone may ask about (an unlinked or shared account) are logged with
+        the reason. A platform that never says who added Switch is expected,
+        and only noted at debug level."""
         if external_user_id is None:
+            logger.debug(
+                "Channel %s gets a room with no owner: the platform did not say "
+                "who added Switch",
+                channel_id,
+            )
             return None
+        users = UserStore()
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
             account = await self._external_user_store.get_by_external_id(
                 session, self._bridge_id, external_user_id
             )
-            if account is None:
-                return None
-            claimants = [
-                user_id
+            claimants: list[str] = []
+            if account is not None:
                 for user_id in await self._external_user_store.claimant_ids(
                     session, account.id
-                )
-                if await UserStore().effective_tenant_role(
-                    session, self._bridge_tenant_id, user_id
-                )
-                is not None
-            ]
-        return claimants[0] if len(claimants) == 1 else None
+                ):
+                    role = await users.effective_tenant_role(
+                        session, self._bridge_tenant_id, user_id
+                    )
+                    if role is not None:
+                        claimants.append(user_id)
+        if len(claimants) == 1:
+            return claimants[0]
+        logger.warning(
+            "Channel %s gets a room with no owner, so only workspace admins can "
+            "change it: %s",
+            channel_id,
+            "the account that added Switch is not linked to a Switch user in "
+            "this workspace"
+            if not claimants
+            else f"{len(claimants)} Switch users have linked the account that "
+            "added Switch, so it is not clear which one did",
+        )
+        return None
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1962,7 +1983,9 @@ class CollaborationCore:
             return existing
 
         agent_ids = await self._resolve_agents_for_channel(channel_id, channel_type)
-        owner_id = await self._owner_from_platform_account(added_by_external_user_id)
+        owner_id = await self._owner_from_platform_account(
+            added_by_external_user_id, channel_id
+        )
 
         bridge_name = self._bridge_display_name
         if channel_type == "direct":

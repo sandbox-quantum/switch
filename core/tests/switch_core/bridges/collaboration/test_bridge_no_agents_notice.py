@@ -60,7 +60,9 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
     ) -> None:
         pass
 
-    async def _owner_from_platform_account(external_user_id: str | None) -> None:
+    async def _owner_from_platform_account(
+        external_user_id: str | None, channel_id: str
+    ) -> None:
         return None
 
     async def _adopt_existing_room(channel_id: str) -> tuple[str, str] | None:

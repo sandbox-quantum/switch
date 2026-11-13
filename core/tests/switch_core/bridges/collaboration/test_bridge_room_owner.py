@@ -104,7 +104,7 @@ class TestTheRoomsOwner:
         bridge_id, alice = await _bridge_with_account(session_factory, ["alice"])
 
         owner = await _core(session_factory, bridge_id)._owner_from_platform_account(
-            "UALICE"
+            "UALICE", "C1"
         )
 
         assert owner == alice
@@ -127,7 +127,7 @@ class TestTheRoomsOwner:
         bridge_id, _ = await _bridge_with_account(session_factory, claimed_by)
 
         owner = await _core(session_factory, bridge_id)._owner_from_platform_account(
-            added_by
+            added_by, "C1"
         )
 
         assert owner is None
@@ -140,7 +140,7 @@ class TestTheRoomsOwner:
         )
 
         owner = await _core(session_factory, bridge_id)._owner_from_platform_account(
-            "UALICE"
+            "UALICE", "C1"
         )
 
         assert owner is None
@@ -153,7 +153,53 @@ class TestTheRoomsOwner:
         )
 
         owner = await _core(session_factory, bridge_id)._owner_from_platform_account(
-            "UALICE"
+            "UALICE", "C1"
         )
 
         assert owner is not None and owner != alice_old
+
+
+class TestWhyARoomHasNoOwner:
+    async def test_an_unlinked_account_is_logged_with_its_channel(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bridge_id, _ = await _bridge_with_account(session_factory, [])
+
+        with caplog.at_level("WARNING"):
+            await _core(session_factory, bridge_id)._owner_from_platform_account(
+                "UALICE", "C1"
+            )
+
+        assert "C1" in caplog.text and "not linked" in caplog.text
+
+    async def test_a_shared_account_is_logged(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bridge_id, _ = await _bridge_with_account(
+            session_factory, ["alice", "alice-too"]
+        )
+
+        with caplog.at_level("WARNING"):
+            await _core(session_factory, bridge_id)._owner_from_platform_account(
+                "UALICE", "C1"
+            )
+
+        assert "2 Switch users" in caplog.text
+
+    async def test_no_inviter_at_all_is_not_a_warning(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bridge_id, _ = await _bridge_with_account(session_factory, ["alice"])
+
+        with caplog.at_level("WARNING"):
+            await _core(session_factory, bridge_id)._owner_from_platform_account(
+                None, "C1"
+            )
+
+        assert caplog.text == ""

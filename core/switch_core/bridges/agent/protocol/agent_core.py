@@ -3623,14 +3623,18 @@ class AgentCore:
         """Whether the calling agent's owner may change the room's settings
         (`room_policy`'s "configure", the owner tier), as a yes or no: the rule
         room roles follow."""
-        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+        agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
             session, agent_id
         )
         room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
         return room_policy.allows(
-            RoomCaller(Principal(owner_id, owner_is_admin), in_room=False),
+            RoomCaller(
+                Principal(owner_id, owner_is_admin),
+                in_room=False,
+                owner_rights=not await others_can_address(session, agent),
+            ),
             room,
             "configure",
         )
@@ -3734,7 +3738,7 @@ class AgentCore:
         instructions: str,
         exclusive: bool,
     ) -> None:
-        """Define a new role in a room. Requires write access to the room."""
+        """Define a new role in a room: a room setting, so the owner tier."""
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, room_id, "configure")
             await self.room_role_store.define_role(
