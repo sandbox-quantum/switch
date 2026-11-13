@@ -199,8 +199,10 @@ version of their own to them without also giving them a release of their own.
   menu, now including Open in the app, Copy webhook address and Require
   confirmation for older links. A member no longer sees the workspace's app
   settings there, only their own accounts, and the chats of an app that joins
-  one chat at a time where they can add one. `GET /gateway/auth/me/identities`
-  now says when each link started counting (`linked_at`).
+  one chat at a time where they can add one or still have one. `GET
+  /gateway/auth/me/identities` now says when each link started counting
+  (`linked_at`) and whether a confirmation waits for an older link
+  (`awaiting_confirmation`).
 - **A dev-only role switcher for the dashboard.** `just seed-dev-roles`
   creates local test accounts for an org admin, a workspace admin and a
   member, plus a second workspace only the org admin can open, and
