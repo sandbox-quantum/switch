@@ -6,8 +6,9 @@ import type { FastScenario } from "./scenario.ts";
  * What ends: ownership, a workspace and an account. The harness admin hands a
  * package to a colleague, who cannot hand on what is not theirs. A second
  * person makes a workspace of their own and deletes it, once they type its
- * name right. The colleague cannot delete anyone's account; the operator
- * deletes theirs, which ends their sign-in.
+ * name right. Asked before deleting, the colleague's account could go and the
+ * operator's own could not. The colleague cannot delete anyone's account; the
+ * operator deletes theirs, which ends their sign-in.
  *
  * The workspace maker is a deployment operator, so they can make a
  * workspace, and an operator's account cannot be deleted, so this runs only
@@ -20,6 +21,7 @@ export const accountLifecycle: FastScenario = {
       "POST /gateway/ownership/transfer",
       "DELETE /gateway/tenants/{tenant_id}",
       "DELETE /gateway/users/{user_id}",
+      "GET /gateway/auth/me/deletion",
     ],
     lane: "fast",
     environments: ["ephemeral"],
@@ -113,6 +115,15 @@ export const accountLifecycle: FastScenario = {
       everyWorkspace.map((row) => row.id),
       "the deleted workspace",
     ).not.toContain(spaceId);
+
+    expect(
+      await colleague.accountDeletionRefusal(),
+      "a member asking whether their account can go",
+    ).toBeNull();
+    expect(
+      await maker.accountDeletionRefusal(),
+      "an operator asking whether their account can go",
+    ).toContain("administrator account");
 
     const [notOperator] = await status(() => colleague.deleteUser(makerId));
     expect(notOperator, "a member deleting someone's account").toBe(403);

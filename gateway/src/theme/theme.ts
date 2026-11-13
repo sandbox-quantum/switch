@@ -209,6 +209,21 @@ export const APP_THEME = () =>
                 },
               },
               { props: { variant: "outlined", color: "inherit" }, style: { borderColor: tokenVar("input") } },
+              // The destructive outline: an action that removes something but
+              // asks first, so it does not shout like the confirm itself. Red
+              // as ink and a hairline, filled only on hover; the ink is the
+              // text red, which keeps small text at AA.
+              {
+                props: { variant: "outlined", color: "error" },
+                style: {
+                  color: tokenVar("destructive-text"),
+                  borderColor: `color-mix(in oklch, ${tokenVar("destructive")} 45%, transparent)`,
+                  "&:hover": {
+                    borderColor: `color-mix(in oklch, ${tokenVar("destructive")} 45%, transparent)`,
+                    backgroundColor: tokenVar("destructive-muted"),
+                  },
+                },
+              },
               {
                 props: { variant: "contained", color: "error" },
                 style: {

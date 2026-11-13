@@ -101,6 +101,7 @@ import {
   type RemoteBridge,
   type RemoteBridgeType,
   type RemoteExternalUser,
+  type RemoteRoomAdmin,
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
@@ -1120,6 +1121,13 @@ function isoTimestamp(raw: string): string {
   return parsed.toISOString();
 }
 
+/** `raw` as `isoTimestamp` writes it, or as it came when it does not parse:
+ * a room with an odd date still belongs in the list. */
+function isoTimestampOr(raw: string): string {
+  const parsed = new Date(raw.replace(' ', 'T'));
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
+}
+
 function mapInvitation(json: InvitationJson): Invitation {
   return {
     id: json.id,
@@ -1464,6 +1472,7 @@ type AgentSummaryJson = {
   known_agent_type: string | null;
   known_agent_options?: Record<string, unknown> | null;
   addressing_policy?: AddressingPolicy | null;
+  mid_turn_delivery?: 'steer' | 'queue';
   icon_url?: string | null;
   created_at: string;
 };
@@ -1483,6 +1492,7 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
     knownAgentType: json.known_agent_type,
     knownAgentOptions: json.known_agent_options ?? null,
     addressingPolicy: json.addressing_policy ?? null,
+    midTurnDelivery: json.mid_turn_delivery,
     iconUrl: json.icon_url ?? null,
     createdAt: json.created_at,
   };
@@ -1783,6 +1793,23 @@ export async function updateAgentIcon(
     method: 'PUT',
     body: { icon_url: iconUrl },
   });
+  return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+export async function updateMidTurnDelivery(
+  server: SwitchServer,
+  agentId: string,
+  mode: 'steer' | 'queue'
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/mid-turn-delivery`,
+    {
+      authenticated: true,
+      method: 'PUT',
+      body: { mid_turn_delivery: mode },
+    }
+  );
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
 }
 
@@ -2155,8 +2182,13 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
 /** Slack's create-app page, filled in with the app this server needs. */
 export async function fetchSlackOwnAppSetup(server: SwitchServer): Promise<SlackOwnAppSetup> {
   const res = await gatewayFetch(server, '/collaborations/setup/slack', { authenticated: true });
-  const body = z.object({ create_url: z.string() }).parse(await res.json());
-  return { createUrl: body.create_url };
+  const body = z
+    .object({ create_url: z.string(), manifest: z.record(z.string(), z.unknown()).optional() })
+    .parse(await res.json());
+  return {
+    createUrl: body.create_url,
+    manifestJson: body.manifest ? JSON.stringify(body.manifest, null, 2) : null,
+  };
 }
 
 /**
@@ -3594,11 +3626,14 @@ type RoomSummaryJson = {
   external_channel_url?: string | null;
   owner_id?: string | null;
   viewer_is_member?: boolean;
+  viewer_is_room_admin?: boolean;
   is_console_chat?: boolean;
   /** Its people are its Switch members; absent from a server too old to count them. */
   people_are_members?: boolean;
   archived: boolean;
   created_at: string;
+  /** Absent from a server too old to say. */
+  last_message_at?: string | null;
   write_visibility?: string;
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
@@ -3608,6 +3643,10 @@ type RoomSummaryJson = {
   can_attach?: boolean;
   can_remove_members?: boolean;
   can_manage?: boolean;
+  /** Absent from a server that predates room admins, where archiving took `can_manage`. */
+  can_archive?: boolean;
+  /** Absent from a server that predates room admins. */
+  can_manage_admins?: boolean;
   can_unlink?: boolean;
   group_id?: string | null;
   group_name?: string | null;
@@ -3628,10 +3667,14 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     externalChannelUrl: r.external_channel_url ?? null,
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
+    viewerIsRoomAdmin: r.viewer_is_room_admin ?? false,
     isConsoleChat: r.is_console_chat ?? false,
     ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
-    createdAt: r.created_at,
+    // In the same form as every other time Console orders rooms by, which
+    // the server writes with a space where ISO 8601 has a `T`.
+    createdAt: isoTimestampOr(r.created_at),
+    lastMessageAt: r.last_message_at ? isoTimestampOr(r.last_message_at) : null,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
     writeVisibility: visibilityOf(r.write_visibility),
     ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),
@@ -3652,6 +3695,9 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
             canAttach: r.can_attach ?? r.can_write,
             canRemoveMembers: r.can_remove_members ?? r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
+            // Archiving took managing the room until room admins.
+            canArchive: r.can_archive ?? r.can_manage,
+            canManageAdmins: r.can_manage_admins ?? false,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,
           },
@@ -3672,6 +3718,9 @@ type RoomDetailJson = RoomSummaryJson & {
   instructions?: string | null;
   agent_ids?: string[];
   connected_user_names?: string[];
+  /** Absent from a server that predates room admins. */
+  room_admins?: RoomAdminJson[];
+  room_admin_candidates?: { user_id: string; name: string }[];
   /** Absent from a server that predates it; kept absent rather than read as
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
@@ -3690,6 +3739,23 @@ type RoomDetailJson = RoomSummaryJson & {
   /** Absent from a server that predates decision routing. */
   auto_route?: RoomAutoRouteJson;
 };
+
+/** The gateway `RoomAdminEntry` wire shape. */
+type RoomAdminJson = {
+  user_id: string;
+  name?: string | null;
+  granted_by?: string | null;
+  granted_at: string;
+};
+
+function mapRoomAdmin(a: RoomAdminJson): RemoteRoomAdmin {
+  return {
+    userId: a.user_id,
+    name: a.name ?? null,
+    grantedBy: a.granted_by ?? null,
+    grantedAt: a.granted_at,
+  };
+}
 
 /** The server's visibility words; anything else reads as private, the narrower of the two. */
 function visibilityOf(value: string | undefined): RoomVisibility {
@@ -3723,6 +3789,11 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     instructions: r.instructions ?? null,
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
+    roomAdmins: (r.room_admins ?? []).map(mapRoomAdmin),
+    roomAdminCandidates: (r.room_admin_candidates ?? []).map((p) => ({
+      userId: p.user_id,
+      name: p.name,
+    })),
     channelOnDelete: r.channel_on_delete,
     linkedChannelName: r.linked_channel_name ?? null,
     readVisibility: visibilityOf(r.read_visibility),
@@ -3893,6 +3964,27 @@ export async function setRoomArchived(
     server,
     `/rooms/${encodeURIComponent(roomId)}/${archived ? 'archive' : 'unarchive'}`,
     { authenticated: true, method: 'POST' }
+  );
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Make a person in the room one of its room admins, or take them off
+ * (`PUT|DELETE /rooms/{id}/admins/{userId}`). Choosing them takes the room's
+ * owner or a workspace admin; a room admin may take themselves off. The
+ * server refuses someone who cannot be one (an agent, or someone not in the
+ * room) in its own words.
+ */
+export async function setRoomAdmin(
+  server: SwitchServer,
+  roomId: string,
+  userId: string,
+  admin: boolean
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/admins/${encodeURIComponent(userId)}`,
+    { authenticated: true, method: admin ? 'PUT' : 'DELETE' }
   );
   return mapRoomDetail((await res.json()) as RoomDetailJson);
 }

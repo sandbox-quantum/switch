@@ -9,6 +9,8 @@
  * in the encrypted secrets store, never in plain settings.
  */
 
+import { WORKSPACE_PARAM } from './dashboard-pages';
+
 /**
  * Origin (protocol + host + port, lowercased) of a URL, or null if unparseable.
  * Agents are matched to servers by origin rather than full URL: an agent's
@@ -59,6 +61,22 @@ export function normaliseServerUrl(url: string): string {
  * keeps the dashboard elsewhere. */
 export function dashboardOrigin(server: Pick<SwitchServer, 'url' | 'dashboardUrl'>): string {
   return server.dashboardUrl ?? server.url;
+}
+
+/**
+ * The address of one of a server's dashboard pages, in the workspace
+ * `tenantId` names when it names one. The dashboard switches to it on arrival
+ * (`?workspace=`), so the page is that workspace's rather than whichever one
+ * the browser, or the session Console last used, had selected. A dashboard
+ * from before ignores it.
+ */
+export function dashboardPageUrl(
+  server: Pick<SwitchServer, 'url' | 'dashboardUrl'>,
+  path: string,
+  tenantId: string | null
+): string {
+  const page = `${dashboardOrigin(server).replace(/\/+$/, '')}/${path}`;
+  return tenantId === null ? page : `${page}?${WORKSPACE_PARAM}=${encodeURIComponent(tenantId)}`;
 }
 
 /** A registered Switch server. Non-secret connection metadata only. */
@@ -303,6 +321,7 @@ export type RemoteAgentSummary = {
    * owner" is one list read rather than a read per agent. Null also for a
    * server older than the field, which reads the same as open. */
   addressingPolicy: AddressingPolicy | null;
+  midTurnDelivery?: 'steer' | 'queue';
   /** Absolute URL of the agent's own icon, or null when it has none. Null is
    * the ordinary state rather than an error: the display layer draws a
    * name-derived avatar instead, so the fallback can change without every
@@ -368,6 +387,8 @@ export type RemoteRoomSummary = {
   ownerId: string | null;
   /** The signed-in user is a member of the room. False from a server that does not say. */
   viewerIsMember: boolean;
+  /** The signed-in user is one of the room's room admins. False from a server that does not say. */
+  viewerIsRoomAdmin: boolean;
   /** A Switch Console chat: only its members can open it. False from a server that does not say. */
   isConsoleChat: boolean;
   /**
@@ -378,6 +399,12 @@ export type RemoteRoomSummary = {
   peopleAreMembers?: boolean;
   archived: boolean;
   createdAt: string;
+  /**
+   * When the room last had a message, from any platform, as ISO 8601: what
+   * room lists order by. Null when it has had none; absent from an older
+   * server.
+   */
+  lastMessageAt?: string | null;
   /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
   writeVisibility?: RoomVisibility;
   /**
@@ -393,9 +420,13 @@ export type RemoteRoomSummary = {
     /** Adding people and attaching resources: being in the room, or a workspace admin. */
     canAddPeople: boolean;
     canAttach: boolean;
-    /** Taking agents out: the room's owner or a workspace admin. */
+    /** Taking agents out: the room's owner, a room admin or a workspace admin. */
     canRemoveMembers: boolean;
     canManage: boolean;
+    /** Archiving and unarchiving: the room's owner, a room admin or a workspace admin. */
+    canArchive: boolean;
+    /** Choosing the room's room admins: the room's owner or a workspace admin. */
+    canManageAdmins: boolean;
     canUnlink: boolean;
   };
   /** The messaging app connection it is on, when the server says (the list does). Unlike
@@ -444,6 +475,11 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   ownerName: string | null;
   /** The bridge the room is linked through; null for a room with no messaging app. */
   bridgeId: string | null;
+  /** The room's room admins, longest-standing first. Empty from a server that predates them. */
+  roomAdmins: RemoteRoomAdmin[];
+  /** Who the viewer could make a room admin: the Switch users taking part in the
+   * room, less its owner and its room admins. Empty unless `canManageAdmins`. */
+  roomAdminCandidates: { userId: string; name: string }[];
   /** Each member agent's presence in this room, by agent id: `live`,
    * `awaiting_manual_poll`, `disconnected` or `no_session`. An agent the server
    * says nothing about is missing rather than guessed at. */
@@ -461,6 +497,19 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   /** Whether untagged messages here are routed by the workspace's decision
    * service. Undefined from a server that predates decision routing. */
   autoRoute?: RoomAutoRoute;
+};
+
+/**
+ * One of a room's room admins (mirrors the gateway `RoomAdminEntry`): a person
+ * in the room its owner, or a workspace admin, let change it as the owner does.
+ */
+export type RemoteRoomAdmin = {
+  userId: string;
+  /** Null when the server does not know their name. */
+  name: string | null;
+  /** Who made them one; null once that account is gone. */
+  grantedBy: string | null;
+  grantedAt: string;
 };
 
 /**

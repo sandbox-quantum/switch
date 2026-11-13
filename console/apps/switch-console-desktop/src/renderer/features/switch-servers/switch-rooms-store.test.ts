@@ -18,7 +18,7 @@ const serversStore = vi.hoisted(() => ({
   statusFor: (serverId: string) => ({ user: { id: `user-of-${serverId}` } }),
 }));
 const workspaces = vi.hoisted(() => ({
-  workspaces: [] as { id: string; serverId: string; name: string }[],
+  workspaces: [] as { id: string; serverId: string; name: string; tenantId?: string | null }[],
   activeId: null as string | null,
   byId(workspaceId: string) {
     return this.workspaces.find((w) => w.id === workspaceId) ?? null;
@@ -67,6 +67,7 @@ function room(id: string, ownerId: string | null, overrides: Partial<RemoteRoomS
     externalChannelUrl: null,
     ownerId,
     viewerIsMember: false,
+    viewerIsRoomAdmin: false,
     isConsoleChat: false,
     archived: false,
     createdAt: '2026-01-01T00:00:00Z',
@@ -806,7 +807,10 @@ it('does not clear a newer loading state or error from an older request', async 
 describe('dashboard links', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    twoWorkspaces();
+    workspaces.workspaces = [
+      { id: 'ws-a', serverId: 'srv-a', name: 'Alpha', tenantId: 'tenant-a' },
+      { id: 'ws-b', serverId: 'srv-b', name: 'Beta', tenantId: 'tenant-b' },
+    ];
     workspaces.activeId = null;
     serversStore.servers = [
       { id: 'srv-a', url: 'https://alpha.example.com/', dashboardUrl: null },
@@ -825,30 +829,45 @@ describe('dashboard links', () => {
     const store = new SwitchRoomsStore();
     await store.loadRoomNames();
 
-    expect(store.gatewayRoomUrl('room-a')).toBe('https://alpha.example.com/rooms/room-a');
+    expect(store.gatewayRoomUrl('room-a')).toBe(
+      'https://alpha.example.com/rooms/room-a?workspace=tenant-a'
+    );
   });
 
   it('opens a room on the dashboard address an older server keeps apart', async () => {
     const store = new SwitchRoomsStore();
     await store.loadRoomNames();
 
-    expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+    expect(store.gatewayRoomUrl('room-b')).toBe(
+      'https://beta-gateway.example.com/rooms/room-b?workspace=tenant-b'
+    );
+  });
+
+  it('names no workspace for one not matched to the server’s yet', async () => {
+    workspaces.workspaces[0]!.tenantId = null;
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.gatewayRoomUrl('room-a')).toBe('https://alpha.example.com/rooms/room-a');
+    expect(store.gatewayAgentUrl('ws-a', 'agent-1')).toBe(
+      'https://alpha.example.com/agents/agent-1'
+    );
   });
 
   it('has no link for a room whose server it does not know yet', () => {
     expect(new SwitchRoomsStore().gatewayRoomUrl('room-a')).toBeNull();
   });
 
-  it('opens an agent on the same address its server’s rooms open on', () => {
+  it('opens an agent in its workspace, on the address its server’s rooms open on', () => {
     const store = new SwitchRoomsStore();
 
-    expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBe(
-      'https://alpha.example.com/agents/agent-1'
+    expect(store.gatewayAgentUrl('ws-a', 'agent-1')).toBe(
+      'https://alpha.example.com/agents/agent-1?workspace=tenant-a'
     );
-    expect(store.gatewayAgentUrl('srv-b', 'agent-1')).toBe(
-      'https://beta-gateway.example.com/agents/agent-1'
+    expect(store.gatewayAgentUrl('ws-b', 'agent-1')).toBe(
+      'https://beta-gateway.example.com/agents/agent-1?workspace=tenant-b'
     );
-    expect(store.gatewayAgentUrl('srv-unknown', 'agent-1')).toBeNull();
+    expect(store.gatewayAgentUrl('ws-unknown', 'agent-1')).toBeNull();
   });
 
   it('has no links into a server that serves no admin pages', async () => {
@@ -858,8 +877,10 @@ describe('dashboard links', () => {
       await store.loadRoomNames();
 
       expect(store.gatewayRoomUrl('room-a')).toBeNull();
-      expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBeNull();
-      expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+      expect(store.gatewayAgentUrl('ws-a', 'agent-1')).toBeNull();
+      expect(store.gatewayRoomUrl('room-b')).toBe(
+        'https://beta-gateway.example.com/rooms/room-b?workspace=tenant-b'
+      );
     } finally {
       localServer.withoutPages.clear();
     }

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import ColumnElement, select
 
-from switch_core import room_policy
+from switch_core import room_admins, room_policy
 from switch_core.addressing import (
     AddressingPolicy,
     can_address,
@@ -102,6 +102,7 @@ from switch_core.db.models import (
     AgentRuntimeState,
     ApiKey,
     Client,
+    CollaborationBridge,
     Message,
     MessageAttachment,
     Model,
@@ -155,6 +156,7 @@ from switch_core.room_schedules import (
 )
 from switch_core.room_service import (
     RemovalMiss,
+    names_the_owner,
     require_membership_changeable_from_outside,
 )
 from switch_core.room_wide_mention import (
@@ -3179,12 +3181,14 @@ class AgentCore:
                 "display_name": b.display_name,
                 "status": b.status,
                 "is_default": b.is_default,
-                # The platform's ceiling and the operator's switch, ANDed: an
+                # The platform's ceiling, the operator's switch and what the
+                # connection still lacks (a Teams default team), ANDed: an
                 # agent asking "can I make a room here?" wants one answer, and
                 # gets it before spending a create_room call to find out.
                 "can_create_channels": (
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_channel_creation(b.type)
+                    and self._channel_creation_unblocked(b)
                 ),
                 # Whether create_room may ask for channel_private here, and
                 # whether that needs the room's owner to have linked their
@@ -3193,6 +3197,7 @@ class AgentCore:
                 "can_create_private_channels": (
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_private_channels(b.type)
+                    and self._channel_creation_unblocked(b)
                 ),
                 "private_channel_needs_linked_account": (
                     self.collab_lifecycle.supports_private_channels(b.type)
@@ -3200,6 +3205,14 @@ class AgentCore:
             }
             for b in bridges
         ]
+
+    def _channel_creation_unblocked(self, bridge: CollaborationBridge) -> bool:
+        return (
+            self.collab_lifecycle.channel_creation_blocker(
+                bridge.type, bridge.connection_config or {}
+            )
+            is None
+        )
 
     async def create_moderation_room(
         self,
@@ -3497,8 +3510,15 @@ class AgentCore:
             caller = await self.agent_store.get(session, agent_id)
             if caller is None:
                 raise ValueError(f"Unknown agent: {agent_id}")
+            row = await self.room_store.get(session, room_id)
+            names_owner = row is not None and await names_the_owner(
+                session, row, user_names
+            )
             room = await self._require_room_action(
-                session, agent_id, room_id, "remove_member"
+                session,
+                agent_id,
+                room_id,
+                "remove_owner" if names_owner else "remove_member",
             )
             require_membership_changeable_from_outside(room)
         try:
@@ -3653,8 +3673,17 @@ class AgentCore:
         if room_policy.allows(outside, room, action, owns_target=owns_target):
             return room
         in_room = await self._acts_in_room(session, agent_id, owner_id, room_id)
+        # An agent of a room admin acts as a room admin, as it acts as its owner.
+        room_admin = in_room and await room_admins.is_room_admin(
+            session, self.room_store, room_id, owner_id
+        )
         room_policy.require(
-            RoomCaller(principal, in_room=in_room, owner_rights=owner_rights),
+            RoomCaller(
+                principal,
+                in_room=in_room,
+                owner_rights=owner_rights,
+                room_admin=room_admin,
+            ),
             room,
             action,
             owns_target=owns_target,
@@ -4423,20 +4452,23 @@ class AgentCore:
         room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        # A room setting (`room_policy`), so the owner tier, and not for an
-        # agent others may address: a schedule carries its owner's authority.
+        # A room setting (`room_policy`), so the room admin tier, and not for
+        # an agent others may address: a schedule carries its owner's authority.
+        where = await room_admins.standing(session, self.room_store, room_id, owner_id)
         if not room_policy.allows(
             RoomCaller(
                 Principal(owner_id, owner_is_admin),
-                in_room=False,
+                in_room=where.in_room,
                 owner_rights=not await others_can_address(session, agent),
+                room_admin=where.room_admin,
             ),
             room,
             "configure",
         ):
             raise PermissionError(
                 "Changing a room's schedules takes the right to manage the room "
-                "(its owner or a workspace admin), and your owner does not have it here."
+                "(its owner, a room admin or a workspace admin), and your owner "
+                "does not have it here."
             )
         if agent_id not in set(await self.room_store.get_agent_ids(session, room_id)):
             raise PermissionError(

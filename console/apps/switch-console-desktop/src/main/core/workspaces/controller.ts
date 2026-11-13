@@ -17,6 +17,7 @@ import {
   deleteRoomRole,
   fetchArchivedRooms,
   fetchBridgePeople,
+  setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -89,6 +90,7 @@ import {
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
+  updateMidTurnDelivery,
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
@@ -1135,6 +1137,18 @@ export const workspacesController = createRPCController({
       setRoomArchived(server, params.roomId, params.archived)
     ),
 
+  /** Make a person in the room a room admin, or take them off (`admin: false`).
+   * Refusals propagate in the gateway's own words. */
+  setRoomAdmin: (params: {
+    workspaceId: string;
+    roomId: string;
+    userId: string;
+    admin: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAdmin(server, params.roomId, params.userId, params.admin)
+    ),
+
   /** The archived rooms the signed-in user can see. */
   listArchivedRooms: (params: { workspaceId: string }): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchArchivedRooms(server)),
@@ -1822,6 +1836,15 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  updateMidTurnDelivery: (params: {
+    workspaceId: string;
+    agentId: string;
+    mode: 'steer' | 'queue';
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateMidTurnDelivery(server, params.agentId, params.mode)
     ),
 
   /** Change an agent's description. Returns the agent as the server now holds it. */

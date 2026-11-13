@@ -164,6 +164,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("chat_operations", "user_id"): "database cascades",
     ("chat_hidden", "user_id"): "database cascades",
     ("chat_owner_grants", "user_id"): "database cascades",
+    ("room_admins", "user_id"): "database cascades",
+    ("room_admins", "granted_by"): "database clears",
     ("chat_reads", "user_id"): "database cascades",
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
@@ -433,11 +435,14 @@ class AccountDeletion:
             alone = workspace.role != FORMER_MEMBER and all(
                 member.id == user.id for member, _ in members
             )
+            # Counted without a lock, which would end with this session anyway:
+            # the deletion counts again with the rows locked before it removes
+            # anything (`_still_not_the_last_admin`).
             if (
                 not alone
                 and await self.users.tenant_role(session, workspace.id, user.id)
                 == "admin"
-                and await self.users.lock_admins(session) <= 1
+                and await self.users.count_admins(session) <= 1
             ):
                 return (
                     f"You're the only admin of {workspace.name}, which has other "

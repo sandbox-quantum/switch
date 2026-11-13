@@ -85,6 +85,7 @@ from switch_core.gateway.schemas import (
     UpdateAgentDescriptionRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
+    UpdateAgentMidTurnDeliveryRequest,
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
@@ -627,6 +628,39 @@ async def update_agent_options(
     owner_name = user.name if agent.owner_id == user.id else None
     summary = await build_agent_summary(session, agent_store, agent, owner_name)
     return await _summary_for_caller(session, summary, user, is_admin)
+
+
+@router.put("/{agent_id}/mid-turn-delivery")
+async def update_mid_turn_delivery(
+    agent_id: str,
+    req: UpdateAgentMidTurnDeliveryRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> AgentSummary:
+    """Choose what a message sent while the agent is working does: steer into
+    the running turn where its sender may, or always queue behind it.
+
+    Only the agent's owner (or an admin) can change it. It is sent with every
+    message, so the next one follows it without restarting the agent.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change how it takes messages sent while it works.",
+        )
+    await agent_store.update(session, agent_id, mid_turn_delivery=req.mid_turn_delivery)
+    await session.commit()
+    await session.refresh(agent)
+    return await build_agent_summary(
+        session, agent_store, agent, user.name if agent.owner_id == user.id else None
+    )
 
 
 @router.put("/{agent_id}/icon")

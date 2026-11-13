@@ -199,6 +199,18 @@ CHECKS: dict[str, Check] = {
                     _act("DELETE", f"{G}/rooms/{{{room}}}"),
                 ),
                 Check(
+                    "can_archive",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("POST", f"{G}/rooms/{{{room}}}/archive"),
+                ),
+                Check(
+                    "can_manage_admins",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("PUT", f"{G}/rooms/{{{room}}}/admins/{{member_target}}"),
+                    # The target isn't in the room: allowed to ask, refused for them.
+                    later=frozenset({400}),
+                ),
+                Check(
                     "can_transfer",
                     _get(f"{G}/rooms/{{{room}}}"),
                     _transfer("room", f"{{{room}}}"),
@@ -234,6 +246,7 @@ CHECKS: dict[str, Check] = {
             for who, room in (
                 ("everyone reads it", "readable_room"),
                 ("the member is in it", "joined_room"),
+                ("the member is a room admin", "administered_room"),
             )
         },
         "a direct conversation": [
@@ -368,14 +381,15 @@ CHECKS: dict[str, Check] = {
                     {"role": "member"},
                 ),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last admin stays.
+                refused=REFUSED | {409},  # The last admin stays.
             ),
             Check(
                 "can_remove",
                 MEMBERS,
                 _act("DELETE", f"{G}/tenants/{{tenant}}/members/{{self_id}}"),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last admin, or still owning agents.
+                refused=REFUSED | {409},  # The last admin stays.
+                later=frozenset({409}),  # Still owning agents.
             ),
         ],
         "your own organization membership": [
@@ -404,6 +418,11 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/tenants/current"),
                 _act("DELETE", f"{G}/tenants/{{tenant}}", {"name": "{tenant}"}),
                 later=frozenset({409}),  # Still has other members in it.
+            ),
+            Check(
+                "administers",
+                _get(f"{G}/tenants/current"),
+                _act("PATCH", f"{G}/tenants/{{tenant}}", {"name": "{tag}-renamed"}),
             ),
             Check(
                 "can_manage_data_protection",
@@ -481,6 +500,29 @@ CHECKS: dict[str, Check] = {
                 refused=REFUSED | {409},
             ),
         ],
+        "an API key, among the workspace's": [
+            Check(
+                "can_reveal",
+                _get(f"{G}/api-keys/workspace"),
+                _get(f"{G}/api-keys/{{registration_key}}/reveal"),
+                match=("id", "registration_key"),
+            ),
+            Check(
+                "can_delete",
+                _get(f"{G}/api-keys/workspace"),
+                _act("DELETE", f"{G}/api-keys/{{registration_key}}"),
+                match=("id", "registration_key"),
+            ),
+        ],
+        "an agent's key, among the workspace's": [
+            Check(
+                "can_delete",
+                _get(f"{G}/api-keys/workspace"),
+                _act("DELETE", f"{G}/api-keys/{{agent_key}}"),
+                match=("id", "agent_key"),
+                refused=REFUSED | {409},
+            ),
+        ],
         "a machine": [
             Check(
                 "can_edit",
@@ -515,6 +557,62 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/management/agents"),
                 _act("DELETE", f"{G}/management/agents/{{managed_agent}}"),
                 match=("agent_id", "managed_agent"),
+            ),
+        ],
+        "a device, among the workspace's": [
+            Check(
+                "can_edit",
+                _get(f"{G}/management/workspace"),
+                _act(
+                    "PATCH",
+                    f"{G}/management/controllers/{{controller}}",
+                    {"description": "x"},
+                ),
+                match=("id", "controller"),
+                within="devices",
+            ),
+            Check(
+                "can_recheck",
+                _get(f"{G}/management/workspace"),
+                _act(
+                    "POST",
+                    f"{G}/management/operations",
+                    {
+                        "controller_id": "{controller}",
+                        "agent_id": None,
+                        "kind": "provider.recheck",
+                        "params": {"provider": "claude"},
+                    },
+                ),
+                match=("id", "controller"),
+                within="devices",
+            ),
+            Check(
+                "can_remove",
+                _get(f"{G}/management/workspace"),
+                _act("DELETE", f"{G}/management/controllers/{{controller}}"),
+                match=("id", "controller"),
+                within="devices",
+            ),
+        ],
+        "a managed agent, among the workspace's": [
+            Check(
+                "can_edit",
+                _get(f"{G}/management/workspace"),
+                _act(
+                    "PATCH",
+                    f"{G}/management/agents/{{managed_agent}}",
+                    {"desired_state": "stopped"},
+                ),
+                match=("agent_id", "managed_agent"),
+                within="managed_agents",
+            ),
+            Check(
+                "can_delete",
+                _get(f"{G}/management/workspace"),
+                _act("DELETE", f"{G}/management/agents/{{managed_agent}}"),
+                match=("agent_id", "managed_agent"),
+                within="managed_agents",
             ),
         ],
         "a messaging app": [

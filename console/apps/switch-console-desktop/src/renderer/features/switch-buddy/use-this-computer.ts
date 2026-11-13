@@ -9,8 +9,9 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
  * This computer as a machine of the workspace, for the buddy to run on.
  *
  * `starting`: being enrolled, or enrolled and not yet reported to Switch.
- * `failed`: it could not be set up; `error` says why, and nothing pretends
- * the providers are known.
+ * `failed`: it could not be set up, or its machines could not be read;
+ * `error` says why, and nothing pretends the providers are known. `retry`
+ * (from `useThisComputer`) tries again.
  */
 export type ThisComputer =
   | { kind: 'starting' }
@@ -47,9 +48,12 @@ function ensureRunsAgents(serverId: string, workspaceId: string): Promise<void> 
 export function useThisComputer(serverId: string, workspaceId: string) {
   const queryClient = useQueryClient();
   const [setupError, setSetupError] = useState<string | null>(null);
+  // Bumped by `retry`, to set this computer up again after a failure.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setSetupError(null);
     void (async () => {
       try {
         await ensureRunsAgents(serverId, workspaceId);
@@ -62,7 +66,7 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     return () => {
       cancelled = true;
     };
-  }, [serverId, workspaceId, queryClient]);
+  }, [serverId, workspaceId, queryClient, attempt]);
 
   const machines = useQuery({
     queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines', workspaceId],
@@ -97,31 +101,44 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     enabled: !reported,
     refetchInterval: 1_000,
   });
-  const state = thisComputerState(setupError, machines.data);
+  // Machines that could not be read at all (the server unreachable, the
+  // session gone) are a failure to say, not a spinner that never ends; a
+  // read that fails after one worked keeps what it last had.
+  const readError =
+    machines.data === undefined && machines.error
+      ? failureText(machines.error, 'Could not reach Switch to check this computer.')
+      : null;
+  const state = thisComputerState(setupError ?? readError, machines.data);
   const earlyProviders = !reported && early.data && early.data.length > 0 ? early.data : null;
-  return { state, recheck, earlyProviders };
+  const { refetch } = machines;
+  const retry = useCallback(() => {
+    setAttempt((n) => n + 1);
+    void refetch();
+  }, [refetch]);
+  return { state, recheck, earlyProviders, retry };
 }
 
 /**
  * Where this computer stands, from why setting it up failed (null when it
  * did not) and the workspace's machines as last read: null when the server
  * runs no managed agents, undefined before the first read. Ready once this
- * computer is among them and has reported its providers.
+ * computer is among them and has reported its providers, even if setting it
+ * up said it failed: a setup that timed out may still have worked, and the
+ * report is what Switch checks.
  */
 export function thisComputerState(
   setupError: string | null,
   machines: OwnedMachine[] | null | undefined
 ): ThisComputer {
+  const machine = thisComputerIn(machines);
+  if (machine && machine.providers.length > 0) return { kind: 'ready', machine };
   if (setupError) return { kind: 'failed', error: setupError };
   if (machines === null)
     return {
       kind: 'failed',
       error: 'This server does not run managed agents, so switch-buddy cannot be set up here.',
     };
-  const machine = thisComputerIn(machines);
-  return machine && machine.providers.length > 0
-    ? { kind: 'ready', machine }
-    : { kind: 'starting' };
+  return { kind: 'starting' };
 }
 
 /** How many providers this computer last reported ready. */

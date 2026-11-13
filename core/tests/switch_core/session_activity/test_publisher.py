@@ -28,6 +28,7 @@ from switch_core.db.models import (
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    SteeredMessageMark,
     TurnStatusPost,
 )
 from switch_core.delivery.addressing import AddressingDecision
@@ -185,6 +186,7 @@ async def _step(
     text="",
     message_id=ASKED,
     subagent=False,
+    delivery=None,
 ):
     await service.report_item(
         AGENT,
@@ -203,6 +205,7 @@ async def _step(
         occurred_at=datetime.now(UTC),
         usage=[],
         subagent=subagent,
+        delivery=delivery,
     )
 
 
@@ -735,6 +738,105 @@ async def test_the_asking_message_is_marked_working_while_the_turn_runs(
     await platform.wait_until(lambda: len(platform.marks) == 2)
     assert platform.marks[-1] == (ASKED_POST, "working", False)
     assert (await _turn_post(session_factory)).mark is None
+
+
+STEERED = "sw_correction"
+STEERED_POST = "1700000000.0002"
+
+
+async def _steer(service, session_factory, bridged, *, mapped: bool = True) -> None:
+    """A correction steered into turn-1 while it runs, posted on the platform."""
+    if mapped:
+        async with session_factory() as db, db.begin():
+            db.add(
+                BridgeMessageMap(
+                    bridge_id=bridged.bridge_id,
+                    external_channel_id=bridged.channel_id,
+                    transport_event_id=STEERED,
+                    external_post_id=STEERED_POST,
+                )
+            )
+    await _step(
+        service,
+        bridged.room_id,
+        item_id=f"user-{STEERED}",
+        kind="user-message",
+        status="completed",
+        revision=1,
+        text="No, use the other file",
+        message_id=STEERED,
+        delivery="steered",
+    )
+
+
+async def test_a_steered_message_is_marked_working_until_its_turn_ends(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
+
+    await _steer(service, session_factory, bridged)
+    await platform.wait_until(lambda: (STEERED_POST, "working", True) in platform.marks)
+
+    await _turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(
+        lambda: (
+            (STEERED_POST, "working", False) in platform.marks
+            and (ASKED_POST, "working", False) in platform.marks
+        )
+    )
+    assert platform.marks.count((STEERED_POST, "working", True)) == 1
+    async with session_factory() as db:
+        marks = list(await db.scalars(select(SteeredMessageMark)))
+    assert [(mark.message_id, mark.marked) for mark in marks] == [(STEERED, False)]
+
+
+async def test_a_steered_message_not_yet_on_the_platform_is_marked_once_it_is(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await _steer(service, session_factory, bridged, mapped=False)
+    await platform.wait_until(lambda: len(platform.marks) == 1)
+    await asyncio.sleep(0.3)
+    assert all(ref != STEERED_POST for ref, _, _ in platform.marks)
+
+    async with session_factory() as db, db.begin():
+        db.add(
+            BridgeMessageMap(
+                bridge_id=bridged.bridge_id,
+                external_channel_id=bridged.channel_id,
+                transport_event_id=STEERED,
+                external_post_id=STEERED_POST,
+            )
+        )
+    # The turn's next change tries again.
+    await _turn(service, bridged.room_id, "running", 2)
+    await platform.wait_until(lambda: (STEERED_POST, "working", True) in platform.marks)
+
+
+async def test_a_steered_marker_is_taken_off_again_after_a_failed_try(
+    service, publisher, platform, bridged, session_factory, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    await _turn(service, bridged.room_id, "running", 1)
+    await _steer(service, session_factory, bridged)
+    await platform.wait_until(lambda: (STEERED_POST, "working", True) in platform.marks)
+    real = platform.mark_activity
+    failed = False
+
+    async def flaky(channel, ref, *, agent_name, mark, on, force):
+        nonlocal failed
+        if ref == STEERED_POST and not on and not failed:
+            failed = True
+            raise RuntimeError("platform timed out")
+        await real(channel, ref, agent_name=agent_name, mark=mark, on=on, force=force)
+
+    platform.mark_activity = flaky  # type: ignore[method-assign]
+    await _turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(
+        lambda: (STEERED_POST, "working", False) in platform.marks
+    )
+    assert failed
 
 
 async def test_a_marker_two_turns_share_comes_off_with_the_last(

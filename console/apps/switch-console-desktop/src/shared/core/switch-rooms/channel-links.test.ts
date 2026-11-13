@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { browserUrlForChannelLink } from './channel-links';
+import { appUrlForChannelLink, browserUrlForChannelLink } from './channel-links';
 
 describe('browserUrlForChannelLink', () => {
   it('rebases a Mattermost deeplink onto the origin Switch Console reaches it on', () => {
@@ -70,5 +70,39 @@ describe('browserUrlForChannelLink', () => {
 
   it('gives up on a scheme it does not know', () => {
     expect(browserUrlForChannelLink('zulip://stream/general', null)).toBeNull();
+  });
+});
+
+describe('appUrlForChannelLink', () => {
+  it('keeps a Slack deeplink as it is', () => {
+    expect(appUrlForChannelLink('slack://channel?team=T1&id=C2')).toEqual({
+      scheme: 'slack',
+      url: 'slack://channel?team=T1&id=C2',
+    });
+  });
+
+  it("turns Slack's web client address back into the app's link", () => {
+    expect(appUrlForChannelLink('https://app.slack.com/client/T1/C2')?.url).toBe(
+      'slack://channel?team=T1&id=C2'
+    );
+    expect(appUrlForChannelLink('https://app.slack.com/client/T1')?.url).toBe(
+      'slack://open?team=T1'
+    );
+  });
+
+  it('gives the Discord app its own link for a channel or server', () => {
+    expect(appUrlForChannelLink('https://discord.com/channels/123/456')).toEqual({
+      scheme: 'discord',
+      url: 'discord://-/channels/123/456',
+    });
+    expect(appUrlForChannelLink('https://discord.com/channels/123')?.url).toBe(
+      'discord://-/channels/123'
+    );
+  });
+
+  it('leaves platforms whose web links already reach the app alone', () => {
+    expect(appUrlForChannelLink('mattermost://chat.example.com/switch/channels/x')).toBeNull();
+    expect(appUrlForChannelLink('https://t.me/c/123/1')).toBeNull();
+    expect(appUrlForChannelLink('https://example.com/client/T1')).toBeNull();
   });
 });

@@ -61,6 +61,7 @@ from switch_core.db.models import (
     TenantMember,
 )
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
+from switch_core.db.stores.room_store import RoomStore
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -381,6 +382,9 @@ async def transfer_ownership(
         )
     resource.owner_id = new_owner_id
     await session.flush()
+    if isinstance(resource, Room):
+        # The new owner has every right a room admin has, and more.
+        await RoomStore().remove_admin(session, resource.id, new_owner_id)
     await record_audit_event(
         session,
         tenant_id=tenant_id,

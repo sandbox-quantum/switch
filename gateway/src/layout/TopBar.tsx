@@ -13,7 +13,7 @@ import {
   organizationName,
 } from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
-import { type Layout, areaOf } from "../routes/routeTable";
+import { type Layout, outsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
 import WorkspaceMenu from "./WorkspaceMenu";
 
@@ -86,14 +86,14 @@ function CurrentCrumbs({ section }: { section: string | undefined }) {
 }
 
 /** The new layout's breadcrumb: "Organization / Workspace", which opens the
- * workspace switcher, then the page. In organization settings, the way back
- * to the workspace instead. */
+ * workspace switcher, then the page. In an area outside the workspace,
+ * organization settings or Platform, the way back to it instead. */
 function WorkspaceCrumbs({
   section,
-  inOrganizationSettings,
+  outside,
 }: {
   section: string | undefined;
-  inOrganizationSettings: boolean;
+  outside: boolean;
 }) {
   const { session, switchTo } = useAuth();
   const [organizations, setOrganizations] = useState<OrganizationName[]>([]);
@@ -133,7 +133,7 @@ function WorkspaceCrumbs({
   const organization = organizationName(currentOrganizationId, organizations);
 
   let crumbs: ReactNode;
-  if (inOrganizationSettings) {
+  if (outside) {
     crumbs = (
       <Button
         component={RouterLink}
@@ -190,9 +190,9 @@ function WorkspaceCrumbs({
         <CreateInvitationDialog
           open={inviteOpen}
           tenantId={tenant.id}
+          workspaceName={tenant.name}
           emailEnabled={session?.invite_email_enabled ?? false}
           onClose={() => setInviteOpen(false)}
-          onCreated={() => {}}
         />
       )}
       <Snackbar
@@ -239,10 +239,7 @@ export default function TopBar({ layout }: { layout: Layout }) {
       }}
     >
       {layout === "v2" ? (
-        <WorkspaceCrumbs
-          section={section}
-          inOrganizationSettings={areaOf(pathname, layout) === "organization"}
-        />
+        <WorkspaceCrumbs section={section} outside={outsideWorkspace(pathname, layout)} />
       ) : (
         <CurrentCrumbs section={section} />
       )}

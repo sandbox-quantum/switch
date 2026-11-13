@@ -1002,6 +1002,20 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def channel_creation_blocker(
+        cls, connection_config: Mapping[str, object]
+    ) -> str | None:
+        """Why a connection with this config cannot create a channel yet,
+        though the platform can and an admin allows it; None when nothing is
+        missing.
+
+        None — the default — for a platform whose new channels need nothing
+        from the connection. Asked of the stored config, so every process
+        answers alike, before anyone tries.
+        """
+        return None
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
@@ -1960,6 +1974,18 @@ class PlatformAdapter(ABC):
         answer about is not counted as gone."""
         return None
 
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
+        """Whether `list_channel_members` can give this channel's whole member
+        list, so its room counts everyone in the channel and not only those
+        who have posted. Asked before a room is made private, where anyone
+        the room does not count would lose sight of it, for many rooms at
+        once: so it calls no platform, and decides from what this process
+        knows and the room's recorded `channel_type`. The base cannot list
+        anyone (Telegram)."""
+        return False
+
     @abstractmethod
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Give the agent its platform handle, or bring an existing one in
@@ -2175,6 +2201,20 @@ class PlatformAdapter(ABC):
         subscription is created against `teams/{team}/channels/{channel}`, and
         the team arrives only on an inbound activity. Losing it on restart
         silently kills capture in every channel outside the configured team."""
+        return None
+
+    def set_default_team_writer(
+        self, write: Callable[[str | None, str | None], Awaitable[bool]]
+    ) -> None:
+        """Install a callback the adapter uses to change the container new
+        channels go in as it joins and leaves containers: `write(expected,
+        team_id)` stores `team_id` (None to clear it) only if the stored one is
+        still `expected`, and answers whether it did, so an admin's choice made
+        meanwhile is kept.
+
+        Default is a no-op; Teams overrides it because a connection on the
+        distributed app is approved before Switch is in any team, so it has
+        no default team until it joins one, and keeps none it has left."""
         return None
 
     def set_callback_endpoint(self, endpoint: CallbackEndpoint) -> None:

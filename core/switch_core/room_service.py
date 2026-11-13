@@ -526,18 +526,24 @@ class RoomService:
 
     async def _require_channel_creation(self, bridge_id: str) -> None:
         """Refuse to make a channel on a connection an operator has withheld it
-        from, before anything is provisioned.
+        from, or that lacks what a channel needs (a Teams default team), before
+        anything is provisioned.
 
-        Only the operator's switch is checked here. A platform that cannot
-        create channels at all is caught by its own adapter raising, which says
-        so in the platform's terms — naming the bot, the link, the step to take
-        — and that is a better error than anything this layer could compose.
+        A platform that cannot create channels at all is not checked here: its
+        own adapter raises, saying so in the platform's terms — naming the bot,
+        the link, the step to take — and that is a better error than anything
+        this layer could compose.
         """
         async with self._session_factory() as session:
             bridge = await self._collab_bridge_store.get(session, bridge_id)
         if bridge is None:
             raise ValueError(f"Bridge not found: {bridge_id}")
         if bridge.channel_creation_enabled:
+            blocker = self._collab_lifecycle.channel_creation_blocker(
+                bridge.type, bridge.connection_config or {}
+            )
+            if blocker is not None:
+                raise ChannelCreationUnsupported(blocker)
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "
@@ -1830,17 +1836,10 @@ class RoomService:
             members = await ExternalUserStore().get_by_room(session, room_id)
         if not room.bridge_id or not room.external_channel_id:
             raise ValueError(f"Room {room_id} is not bridged")
-        by_name: dict[str, str] = {}
-        for member in members:
-            if member.bridge_id == room.bridge_id:
-                # By name, and by platform id, which is how a mention a
-                # platform escaped (Slack's `<@U123>`) arrives.
-                by_name.setdefault(
-                    member.external_username.lower(), member.external_user_id
-                )
-                by_name.setdefault(
-                    member.external_user_id.lower(), member.external_user_id
-                )
+        by_name = {
+            name: member.external_user_id
+            for name, member in _members_by_name(room, members).items()
+        }
         misses: list[RemovalMiss] = []
         # Every name asked for, by the account it names: two names can name
         # one person (`alice` and `U123`), and a refusal is reported under each.
@@ -2523,3 +2522,43 @@ def _missing_clients(
     client is not among the room's `existing` client ids."""
     present = set(existing)
     return {cid: uid for cid, uid in expected.items() if cid not in present}
+
+
+def _members_by_name(
+    room: Room, members: list[ExternalUser]
+) -> dict[str, ExternalUser]:
+    """The room's platform members on its own bridge, by lowercased name and
+    by platform id, which is how a mention a platform escaped (Slack's
+    `<@U123>`) arrives. The first one wins a name two share."""
+    by_name: dict[str, ExternalUser] = {}
+    for member in members:
+        if member.bridge_id == room.bridge_id:
+            by_name.setdefault(member.external_username.lower(), member)
+            by_name.setdefault(member.external_user_id.lower(), member)
+    return by_name
+
+
+async def names_the_owner(
+    session: AsyncSession, room: Room, user_names: list[str]
+) -> bool:
+    """Whether any of `user_names`, matched as `remove_users_from_room`
+    matches them, is a platform account the room's owner has claimed:
+    removing them takes the owner tier (`remove_owner`)."""
+    if room.owner_id is None or not room.bridge_id:
+        return False
+    members = _members_by_name(
+        room, await ExternalUserStore().get_by_room(session, room.id)
+    )
+    named = [
+        members[n.lstrip("@").lower()]
+        for n in user_names
+        if n.lstrip("@").lower() in members
+    ]
+    if not named:
+        return False
+    claims = await ExternalUserStore().claims_for(session, [m.id for m in named])
+    return any(
+        claim.user_id == room.owner_id
+        for member in named
+        for claim in claims.get(member.id, [])
+    )

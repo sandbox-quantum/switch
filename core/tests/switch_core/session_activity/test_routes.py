@@ -101,6 +101,8 @@ async def test_a_status_that_is_not_the_kinds_is_a_422_with_its_code(client):
         {"title": "x" * 501},
         {"text": "x" * 8001},
         {"unexpected": 1},
+        {"kind": "user-message", "status": "completed", "delivery": "sideways"},
+        {"delivery": "steered"},
     ],
 )
 async def test_malformed_activity_is_a_422(client, overrides):
@@ -108,6 +110,25 @@ async def test_malformed_activity_is_a_422(client, overrides):
         f"/agent-sessions/{SESSION}/activity", json=_activity(**overrides)
     )
     assert response.status_code == 422
+
+
+async def test_a_message_steered_mid_turn_is_recorded_as_such(client, service):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/activity",
+        json=_activity(
+            item_id="user-correction",
+            kind="user-message",
+            status="completed",
+            title="",
+            text="Use the other file",
+            delivery="steered",
+        ),
+    )
+    assert response.json() == {"recorded": True}
+    rows = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert [(row.item_id, row.delivery) for row in rows] == [
+        ("user-correction", "steered")
+    ]
 
 
 _USAGE = {

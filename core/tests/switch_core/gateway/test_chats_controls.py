@@ -142,18 +142,19 @@ async def test_a_posted_control_is_shown_in_the_chat(chats: _Harness) -> None:
 
 
 @pytest.mark.parametrize(
-    ("command", "args", "body"),
+    ("command", "args", "body", "kind"),
     [
-        ("interrupt", "", "Stop requested for everyone by alice"),
-        ("retry", "message-1", "Retry requested for everyone by alice"),
-        ("reset", "", "Context reset requested for everyone by alice"),
-        ("compact", "", "Compaction requested for everyone by alice"),
-        ("interrupt", "please @helper", "!interrupt please @helper"),
-        ("unknown", "", "!unknown"),
+        ("interrupt", "", "Stop requested for everyone by alice", "system"),
+        ("retry", "message-1", "Retry requested for everyone by alice", "system"),
+        ("reset", "", "Context reset requested for everyone by alice", "system"),
+        ("compact", "", "Compaction requested for everyone by alice", "system"),
+        # Not one Switch words for itself: shown as the person typed it, as theirs.
+        ("interrupt", "please @helper", "!interrupt please @helper", "human"),
+        ("unknown", "", "!unknown", "human"),
     ],
 )
 async def test_a_control_with_no_target_is_shown_as_asked_of_everyone(
-    chats: _Harness, command: str, args: str, body: str
+    chats: _Harness, command: str, args: str, body: str, kind: str
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await chats.new_chat(chats.alice, agent, "c1")
@@ -172,7 +173,7 @@ async def test_a_control_with_no_target_is_shown_as_asked_of_everyone(
     )
     [shown] = [m for m in page.json()["messages"] if m["messageId"] == command_id]
     assert shown["body"] == body
-    assert shown["sender"]["kind"] == "system"
+    assert shown["sender"]["kind"] == kind
 
 
 async def test_stop_refuses_unless_the_agents_current_turn_is_in_this_chat(

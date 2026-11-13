@@ -2,18 +2,20 @@ import { format, isToday, isYesterday } from 'date-fns';
 import { CornerUpLeft, Loader2, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, type ReactNode } from 'react';
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
 import type { ChatApproval } from '@shared/core/chats/activity';
-import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
+import type { ChatAgent, ChatKickoff, ChatMessage } from '@shared/core/chats/chats';
 import {
   chatAgentLabel,
   isSessionStartingNotice,
   liveSessionStartingNotices,
   turnEndNotice,
 } from '@shared/core/chats/chats';
+import { personColour } from '@shared/core/people/person-colour';
 import { foldTurnEndNotices, placeRequests, placeTurns, type TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import {
@@ -107,10 +109,11 @@ function MentionText({
   );
 }
 
-function PersonAvatar({ name }: { name: string }) {
+function PersonAvatar({ name, userId }: { name: string; userId: string | null }) {
   return (
     <span
-      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[11px] font-medium text-foreground"
+      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
+      style={personColour(userId ?? name)}
       title={name}
       aria-hidden
     >
@@ -233,6 +236,13 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     ])
   );
   const liveNotices = liveSessionStartingNotices(timeline.messages, turnAgents);
+  // A kickoff's one-line headline ("Kickoff from …") says what its request
+  // row already shows, so the request alone stands for both.
+  const kickoffHeadlines = new Set(
+    timeline.messages.flatMap((message) =>
+      message.kickoff && message.threadRootId ? [message.threadRootId] : []
+    )
+  );
   const stopRows = hiddenStopRows(timeline.messages);
   // Open requests whose turn shows under no loaded message still need an answer.
   const shownRequests = new Set(
@@ -293,6 +303,8 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const notice = isSessionStartingNotice(message);
         if (notice && !liveNotices.has(message.messageId)) return null;
         if (foldedNotices.has(message.messageId) || stopRows.has(message.messageId)) return null;
+        if (message.sender.kind === 'system' && kickoffHeadlines.has(message.messageId))
+          return null;
         const ended = turnEndNotice(message);
         const sentAt = new Date(message.sentAt);
         // The conversation's first message gets no separator above it; a later group does.
@@ -314,6 +326,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         };
         const agentRow = notice || ended !== null || message.sender.kind === 'agent';
         const head = startsBlock(agentRow ? message.sender.agentId : null);
+        const kickoff = message.sender.kind === 'system' ? message.kickoff : null;
         return (
           <Fragment key={message.messageId}>
             {separator}
@@ -364,7 +377,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 id={messageAnchorId(message.messageId)}
                 className={cn('group/row flex gap-3', spacing())}
               >
-                <PersonAvatar name={message.sender.name} />
+                <PersonAvatar name={message.sender.name} userId={message.sender.userId} />
                 <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
                   <span className="flex items-center gap-1.5 text-xs">
                     <span className="font-medium text-foreground-muted">{message.sender.name}</span>
@@ -394,6 +407,15 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 </div>
                 <ReplyButton onReply={() => onReply(message)} />
               </div>
+            ) : kickoff ? (
+              <KickoffRow
+                id={messageAnchorId(message.messageId)}
+                className={spacing()}
+                kickoff={kickoff}
+                body={message.body}
+                agent={agentOf(kickoff.agentId)}
+                serverId={serverId}
+              />
             ) : message.sender.kind === 'agent' ? (
               <AgentRow
                 id={messageAnchorId(message.messageId)}
@@ -416,12 +438,15 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 </div>
               </AgentRow>
             ) : (
-              <p
+              // Switch's own lines (notices, kickoff headlines) are written in
+              // the same Markdown as messages: drawn as text, `**name**` read
+              // as asterisks.
+              <div
                 id={messageAnchorId(message.messageId)}
                 className={cn('text-center text-xs text-foreground-muted', spacing())}
               >
-                {message.body}
-              </p>
+                <ChatMarkdown>{message.body}</ChatMarkdown>
+              </div>
             )}
             {(blocksByAnchor.get(message.messageId) ?? []).map(({ activity, turn }) => {
               const turnAgent = agentOf(activity.agentId);
@@ -549,3 +574,56 @@ const PendingBubble = observer(function PendingBubble({
     </div>
   );
 });
+
+/**
+ * A template's kickoff: a full request, often several paragraphs, that Switch
+ * posts for whoever ran the template. It is not a notice, so it is not drawn
+ * as one; and its sender is usually not in the room (switch-buddy rarely is),
+ * so it is not drawn as a room member speaking either, which would invite
+ * people to address it here. A card names who sent it, with that agent's own
+ * picture, and folds the run history Switch appends for the agents under it.
+ */
+function KickoffRow({
+  kickoff,
+  body,
+  agent,
+  serverId,
+  ...props
+}: {
+  kickoff: ChatKickoff;
+  body: string;
+  agent: ChatAgent | null;
+  serverId: string;
+  id: string;
+  className: string;
+}) {
+  const sender = kickoff.displayName ?? (agent ? chatAgentLabel(agent) : kickoff.name);
+  return (
+    <div {...props} className={cn('rounded-xl border bg-background-1 px-4 py-3', props.className)}>
+      <div className="mb-1.5 flex items-center gap-2 text-xs text-foreground-muted">
+        {kickoff.agentId !== null && (
+          <AgentAvatar
+            name={sender}
+            iconUrl={kickoff.iconUrl ?? agent?.iconUrl ?? null}
+            serverId={serverId}
+            size={16}
+          />
+        )}
+        <span>
+          Kickoff from <span className="font-medium text-foreground">{sender}</span>
+        </span>
+      </div>
+      <div className="text-sm leading-relaxed">
+        <ChatMarkdown>{body}</ChatMarkdown>
+      </div>
+      {kickoff.agentNote && (
+        <details className="mt-1 text-xs text-foreground-muted">
+          <summary className="cursor-pointer">Details for agents</summary>
+          <div className="mt-1">
+            <ChatMarkdown>{kickoff.agentNote}</ChatMarkdown>
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
