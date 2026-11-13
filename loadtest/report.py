@@ -6,6 +6,9 @@ import math
 import statistics
 from collections import defaultdict
 
+# A pod whose busiest second reached this share of its pool's ceiling is full.
+FULL = 0.9
+
 
 def pct(xs: list[float], p: float) -> float | None:
     """The p-th quantile (nearest rank) in milliseconds, or None."""
@@ -56,9 +59,16 @@ def phase_summary(
     db = [s for s in in_window if s["kind"] == "db"]
     xact = [s["xact_s"] for s in db if s.get("xact_s") is not None]
 
+    refreshes = stats.console_refreshes.get(name, [])
+    console_errors = stats.console_errors.get(name, 0)
+    busy = [
+        s["app_busy_client_max"] for s in db if s.get("app_busy_client_max") is not None
+    ]
+    ceiling = phase.get("pool_ceiling")
     errors = (
         stats.send_errors.get(name, 0)
         + stats.read_errors.get(name, 0)
+        + console_errors
         + count["refused"]
         + count["drop"]
         + count["controller_drop"]
@@ -111,6 +121,22 @@ def phase_summary(
             }
             for pod, v in sorted(pods.items())
         },
+        # The most connections one pod had checked out at once, as the database
+        # saw them once a second, against what its pool hands out at most.
+        # Within a tenth of it counts as full: sampled once a second, the
+        # database seldom sees the very top of a burst.
+        "pool_busy_pod_max": max(busy, default=None),
+        "pool_ceiling": ceiling,
+        "pool_full": bool(busy and ceiling and max(busy) >= FULL * ceiling),
+        "console_refreshes": len(refreshes),
+        "console_refresh_ms_p50": pct(refreshes, 0.5),
+        "console_refresh_ms_p99": pct(refreshes, 0.99),
+        "console_rooms_ms_p99": pct(stats.console_reads.get((name, "rooms"), []), 0.99),
+        "console_agents_ms_p99": pct(
+            stats.console_reads.get((name, "agents"), []), 0.99
+        ),
+        "console_requests": stats.console_requests.get(name, 0),
+        "console_errors": console_errors,
         "db_app_conns_max": max((s["app_total"] for s in db), default=None),
         "db_app_active_max": max((s["app_active"] for s in db), default=None),
         "db_app_idle_tx_max": max((s["app_idle_tx"] for s in db), default=None),
@@ -141,7 +167,8 @@ def render(meta: dict, phases: list[dict], teardown: dict | None) -> str:
         "",
         "Delivery latency is from the moment the sender's POST went out to the moment the "
         "receiving agent read the frame, both on the harness clock. `errors` counts failed "
-        "sends, failed context reads, refused or failed connects, evictions and dropped sockets.",
+        "sends, failed context reads, refused or failed connects, evictions, dropped sockets "
+        "and failed Console requests.",
         "",
         "## Traffic",
         "",
@@ -172,18 +199,47 @@ def render(meta: dict, phases: list[dict], teardown: dict | None) -> str:
             )
     lines += [
         "",
-        "| phase | DB conns app max (active / idle in tx) | DB conns total max | transactions/s avg / p50 / max "
-        "| lock waits max | RDS CPU avg / max % |",
-        "|---|---|---|---|---|---|",
+        "`busiest pod` is the most connections one switch-core pod had checked out of its "
+        "pool at once (running a statement or inside a transaction), against the most its "
+        "pool hands out; `full` is within a tenth of that, since a sample a second seldom "
+        "sees the top of a burst.",
+        "",
+        "| phase | busiest pod (of ceiling) | DB conns app max (active / idle in tx) | DB conns total max "
+        "| transactions/s avg / p50 / max | lock waits max | RDS CPU avg / max % |",
+        "|---|---|---|---|---|---|---|",
     ]
     for p in phases:
         rds = p.get("rds") or {}
         lines.append(
-            f"| {p['phase']} | {_fmt(p['db_app_conns_max'])} ({_fmt(p['db_app_active_max'])} / "
+            f"| {p['phase']} | {_fmt(p.get('pool_busy_pod_max'))} / {_fmt(p.get('pool_ceiling'))}"
+            f"{' full' if p.get('pool_full') else ''} "
+            f"| {_fmt(p['db_app_conns_max'])} ({_fmt(p['db_app_active_max'])} / "
             f"{_fmt(p['db_app_idle_tx_max'])}) | {_fmt(p['db_conns_total_max'])} "
             f"| {_fmt(p['db_xact_per_s_avg'])} / {_fmt(p['db_xact_per_s_p50'])} / {_fmt(p['db_xact_per_s_max'])} "
             f"| {_fmt(p['db_lock_waits_max'])} | {_fmt(rds.get('cpu_avg'))} / {_fmt(rds.get('cpu_max'))} |"
         )
+    if any(p.get("console_refreshes") for p in phases):
+        console = meta.get("args") or {}
+        lines += [
+            "",
+            "## Switch Console",
+            "",
+            f"{console.get('consoles')} windows of {console.get('console_agents')} agents, "
+            f"each re-reading its sidebar every {console.get('console_interval')} s, "
+            f"`{console.get('console_mode')}`. A re-read is the room list and every "
+            "agent's rooms, sent at once; its time is until the last answer.",
+            "",
+            "| phase | re-reads | re-read p50 / p99 ms | room list p99 ms | agents' rooms p99 ms "
+            "| requests | failed |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for p in phases:
+            lines.append(
+                f"| {p['phase']} | {p['console_refreshes']} "
+                f"| {_fmt(p['console_refresh_ms_p50'])} / {_fmt(p['console_refresh_ms_p99'])} "
+                f"| {_fmt(p.get('console_rooms_ms_p99'))} | {_fmt(p.get('console_agents_ms_p99'))} "
+                f"| {p['console_requests']} | {p['console_errors']} |"
+            )
     if teardown is not None:
         lines += [
             "",

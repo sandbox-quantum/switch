@@ -53,6 +53,7 @@ HERE = Path(__file__).parent
 RUNS = HERE / "runs"
 sys.path.insert(0, str(HERE))
 
+from consoles import MODES as CONSOLE_MODES  # noqa: E402
 from kube import guard_target  # noqa: E402
 from run import broken as window_broken  # noqa: E402
 
@@ -102,6 +103,13 @@ class Config:
     ramp: list[float]
     ramp_seconds: float
     drain_seconds: float
+    # Switch Console windows open on the first worker's agents all night,
+    # each re-reading its sidebar as the Console does (consoles.py): people
+    # with Console open are part of realistic load.
+    consoles: int
+    console_agents: int
+    console_interval: float
+    console_mode: str
     # UTC, HH:MM: workers still running then are stopped.
     deadline: str
     bucket: str
@@ -155,6 +163,10 @@ class Config:
             ramp=_list(get("RAMP", "150,250,300,350,400,450,500")),
             ramp_seconds=float(get("RAMP_SECONDS", "60")),
             drain_seconds=float(get("DRAIN_SECONDS", "60")),
+            consoles=int(get("CONSOLES", "10")),
+            console_agents=int(get("CONSOLE_AGENTS", "60")),
+            console_interval=float(get("CONSOLE_INTERVAL", "20")),
+            console_mode=get("CONSOLE_MODE", "per-agent"),
             deadline=get("DEADLINE", "04:30"),
             bucket=get("BUCKET"),
             prefix=get("PREFIX", "staging/").rstrip("/") + "/",
@@ -191,6 +203,15 @@ class Config:
             )
         if self.day_nodes > self.night_nodes or self.day_pods > self.night_pods:
             raise SystemExit("the day sizes must not be above the night sizes")
+        if self.console_mode not in CONSOLE_MODES:
+            raise SystemExit(
+                f"LOADTEST_CONSOLE_MODE is one of {', '.join(CONSOLE_MODES)}"
+            )
+        if self.consoles < 0 or self.console_agents < 1 or self.console_interval <= 0:
+            raise SystemExit(
+                "LOADTEST_CONSOLES must be 0 or more, LOADTEST_CONSOLE_AGENTS 1 or "
+                "more and LOADTEST_CONSOLE_INTERVAL above 0"
+            )
 
     @property
     def per_agents(self) -> int:
@@ -226,6 +247,17 @@ class Config:
         return [f"every {m:g} min" for m in self.realistic_minutes] + [
             f"{r:g} msg/s" for r in self.ramp
         ]
+
+    def console_args(self) -> list[str]:
+        """The Console windows, for the worker that opens them."""
+        if not self.consoles:
+            return []
+        return [
+            "--consoles", str(self.consoles),
+            "--console-agents", str(self.console_agents),
+            "--console-interval", f"{self.console_interval:g}",
+            "--console-mode", self.console_mode,
+        ]  # fmt: skip
 
     def population_shape(self) -> dict:
         """What decides which agents and rooms the harness makes: a kept batch
@@ -275,6 +307,8 @@ def combine(cfg: Config, worker_summaries: list[list[dict]]) -> list[dict]:
         ]
         rds = first.get("rds") or {}
         p99 = max((p["delivery_ms_p99"] or 0) for p in ph)
+        busy = [b for p in ph if (b := p.get("pool_busy_pod_max")) is not None]
+        reread = [r for p in ph if (r := p.get("console_refresh_ms_p99")) is not None]
         errors = sum(p["errors"] for p in ph)
         missing = sum(p["deliveries_missing"] for p in ph)
         # Broken when any worker's window broke by the harness's own rule
@@ -312,6 +346,15 @@ def combine(cfg: Config, worker_summaries: list[list[dict]]) -> list[dict]:
                 "db_cpu_avg_pct": rds.get("cpu_avg"),
                 "db_cpu_max_pct": rds.get("cpu_max"),
                 "db_xact_per_s": first.get("db_xact_per_s_avg"),
+                # Every worker samples the same database, so the busiest pod is
+                # the most any of them saw.
+                "pool_busy_max": max(busy) if busy else None,
+                "pool_ceiling": next(
+                    (c for p in ph if (c := p.get("pool_ceiling"))), None
+                ),
+                "pool_full": any(p.get("pool_full") for p in ph),
+                "console_refresh_ms_p99": max(reread) if reread else None,
+                "console_errors": sum(p.get("console_errors", 0) for p in ph),
                 "harness_lag_ms_max": max((p["harness_lag_ms_max"] or 0) for p in ph),
                 "stopped_early": any("stopped early" in p["phase"] for p in ph),
                 "broken": why,
@@ -325,12 +368,19 @@ def verdict(rows: list[dict], cfg: Config, failures: list[str]) -> dict:
     ramp step every worker held. Any of `failures` fails the night."""
     realistic = [r for r in rows if r["kind"] == "realistic"]
     ramp = [r for r in rows if r["kind"] == "ramp"]
-    realistic_ok = len(realistic) == len(cfg.realistic_minutes) and all(
-        not r["broken"]
-        and not r["errors"]
-        and not r["missing"]
-        and not r["stopped_early"]
-        for r in realistic
+    # A pod's pool at its ceiling makes every request on that pod queue for a
+    # connection, which realistic load must not do even when nothing fails.
+    pool_full = [r["label"] for r in realistic if r.get("pool_full")]
+    realistic_ok = (
+        len(realistic) == len(cfg.realistic_minutes)
+        and not pool_full
+        and all(
+            not r["broken"]
+            and not r["errors"]
+            and not r["missing"]
+            and not r["stopped_early"]
+            for r in realistic
+        )
     )
     held = [r for r in ramp if not r["broken"] and not r["stopped_early"]]
     broke = next((r for r in ramp if r["broken"]), None)
@@ -340,6 +390,7 @@ def verdict(rows: list[dict], cfg: Config, failures: list[str]) -> dict:
     return {
         "ok": realistic_ok and complete and not failures,
         "realistic_ok": realistic_ok,
+        "realistic_pool_full": pool_full,
         "complete": complete,
         "held_per_s": held[-1]["target_per_s"] if held else None,
         "held_sent_per_s": held[-1]["sent_per_s"] if held else None,
@@ -415,6 +466,12 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
         failures = result.get("failures") or []
         if failures:
             why = failures[0]
+        elif v.get("realistic_pool_full"):
+            why = (
+                "a pod's database pool filled at realistic load ("
+                + ", ".join(v["realistic_pool_full"])
+                + ")"
+            )
         elif not v["realistic_ok"]:
             why = "realistic load did not run clean"
         else:
@@ -424,6 +481,11 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
         head,
         f"build {result['build']} · {result['pods']} pods on {result['nodes']} nodes · "
         f"{cfg.controllers} controllers"
+        + (
+            f" · {cfg.consoles} Consoles of {cfg.console_agents} agents, {cfg.console_mode}"
+            if cfg.consoles
+            else ""
+        )
         + (" · agents made tonight" if result.get("seeded") else ""),
     ]
     lines += [f"❌ {f}" for f in (result.get("failures") or [])[1:]]
@@ -436,19 +498,26 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
     lines += result.get("notes", [])
     if result["rows"]:
         table = [
-            f"{'step':<14}{'sent/s':>8}{'p50':>7}{'p99':>8}{'err':>5}{'lost':>6}{'pods':>6}{'db':>6}"
+            f"{'step':<14}{'sent/s':>8}{'p50':>7}{'p99':>8}{'err':>5}{'lost':>6}{'pods':>6}{'db':>6}{'pool':>6}"
         ]
         for r in result["rows"]:
+            pool = "-" if r.get("pool_busy_max") is None else str(r["pool_busy_max"])
             table.append(
                 f"{r['label']:<14}{r['sent_per_s']:>8.1f}{_ms(r['delivery_ms_p50']):>7}"
                 f"{_ms(r['delivery_ms_p99']):>8}{r['errors']:>5}{r['missing']:>6}"
-                f"{_pct(r['pod_cpu_avg_pct']):>6}{_pct(r['db_cpu_avg_pct']):>6}"
+                f"{_pct(r['pod_cpu_avg_pct']):>6}{_pct(r['db_cpu_avg_pct']):>6}{pool:>6}"
+                + ("  full" if r.get("pool_full") else "")
                 + ("  broke" if r["broken"] else "")
             )
         lines.append("```\n" + "\n".join(table) + "\n```")
+        ceiling = next(
+            (r["pool_ceiling"] for r in result["rows"] if r.get("pool_ceiling")), None
+        )
         lines.append(
             "p50 and p99 are delivery latency in ms (p99 is the worst worker's); "
-            "pods is switch-core's average CPU, db the database's"
+            "pods is switch-core's average CPU, db the database's; pool the most "
+            "connections one pod had checked out"
+            + (f", of {ceiling}" if ceiling else "")
         )
     lines += comparison
     if cfg.dashboard_url:
@@ -535,6 +604,10 @@ def datadog_series(result: dict, cfg: Config, now: float) -> list[dict]:
         point("step.db_cpu_avg_pct", r["db_cpu_avg_pct"], tags)
         point("step.db_xact_per_s", r["db_xact_per_s"], tags)
         point("step.broken", 1 if r["broken"] else 0, tags)
+        point("step.pool_busy_max", r.get("pool_busy_max"), tags)
+        point("step.pool_full", 1 if r.get("pool_full") else 0, tags)
+        point("step.console_refresh_p99_ms", r.get("console_refresh_ms_p99"), tags)
+        point("step.console_errors", r.get("console_errors"), tags)
     return series
 
 
@@ -1018,6 +1091,7 @@ def run_workers(
                     "--drain-full",
                     "--rates-after",
                     str(go),
+                    *(cfg.console_args() if i == 1 else []),
                 ],
                 out,
             )  # fmt: skip

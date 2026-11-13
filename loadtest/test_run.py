@@ -15,6 +15,7 @@ from run import (  # noqa: E402
     kept_record,
     parse_args,
     plan,
+    pool_ceiling,
     rate_phase,
     resolve_urls,
     take_over,
@@ -283,3 +284,41 @@ def test_seed_only_keeps_what_it_makes_and_reuses_nothing() -> None:
         parse_args([*base, "--keep", "--seed-only", "--reuse", "x"])
     a = parse_args([*base, "--keep", "--seed-only", "--concurrency", "4"])
     assert a.seed_only and a.concurrency == 4
+
+
+def test_console_windows_are_off_unless_asked_for_and_checked():
+    assert _args().consoles == 0
+    a = _args("--consoles", "3", "--console-agents", "60", "--console-mode", "batch")
+    assert (a.consoles, a.console_agents, a.console_interval, a.console_mode) == (
+        3,
+        60,
+        20.0,
+        "batch",
+    )
+    for bad in (
+        ["--consoles", "-1"],
+        ["--console-agents", "0"],
+        ["--console-interval", "0"],
+    ):
+        with pytest.raises(SystemExit):
+            _args(*bad)
+    with pytest.raises(SystemExit):
+        _args("--console-mode", "both")
+
+
+class _Kube:
+    def __init__(self, env: dict | Exception) -> None:
+        self.env = env
+
+    def core_env(self) -> dict:
+        if isinstance(self.env, Exception):
+            raise self.env
+        return self.env
+
+
+def test_the_pool_ceiling_is_the_release_s_size_and_overflow_or_switch_core_s_own():
+    assert pool_ceiling(_Kube({})) == 40
+    assert pool_ceiling(_Kube({"DB_POOL_SIZE": {"value": "20"}})) == 30
+    env = {"DB_POOL_SIZE": {"value": "50"}, "DB_MAX_OVERFLOW": {"value": "0"}}
+    assert pool_ceiling(_Kube(env)) == 50
+    assert pool_ceiling(_Kube(RuntimeError("no cluster"))) is None

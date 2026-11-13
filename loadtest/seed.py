@@ -71,6 +71,11 @@ class Admin:
         self._cookie: str | None = None
         self.http = httpx.AsyncClient(base_url=gateway_url.rstrip("/"), timeout=60)
 
+    @property
+    def cookie(self) -> str | None:
+        """The session, bound to the run's workspace once `use_workspace` ran."""
+        return self._cookie
+
     async def call(self, method: str, path: str, **kw) -> httpx.Response:
         headers = {"X-Request-Id": self.ids.next()}
         if self._cookie:

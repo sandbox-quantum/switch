@@ -595,3 +595,46 @@ def test_the_wait_ends_with_every_pod_ready_on_one_build_though_a_newer_one_wait
     monkeypatch.setattr(nightly, "core_state", lambda cfg: next(states))
     monkeypatch.setattr(nightly.time, "sleep", lambda s: None)
     assert nightly.wait_core(_cfg(), 12, 1500)["ready"] == 12
+
+
+def test_console_windows_open_on_the_first_worker_by_default():
+    cfg = _cfg()
+    assert (cfg.consoles, cfg.console_agents, cfg.console_interval) == (10, 60, 20.0)
+    assert cfg.console_mode == "per-agent"
+    assert cfg.console_args() == [
+        "--consoles", "10", "--console-agents", "60",
+        "--console-interval", "20", "--console-mode", "per-agent",
+    ]  # fmt: skip
+    a = parse_args(
+        ["--namespace", "switch-test", "--steps", "1000", *cfg.console_args()]
+    )
+    assert (a.consoles, a.console_mode) == (10, "per-agent")
+    assert _cfg(CONSOLES="0").console_args() == []
+    with pytest.raises(SystemExit, match="LOADTEST_CONSOLE_MODE"):
+        _cfg(CONSOLE_MODE="both")
+
+
+def test_a_full_pool_at_realistic_load_fails_the_night_and_says_where():
+    cfg = _cfg(WORKERS="1", AGENTS="1000", CONTROLLERS="50")
+    phases = _worker(cfg, broke_at=9)
+    for k, ph in enumerate(phases):
+        ph.update(pool_busy_pod_max=40 if k == 4 else 12, pool_ceiling=40)
+        ph["pool_full"] = k == 4
+        ph["console_refresh_ms_p99"] = 9000.0 if k == 4 else 300.0
+        ph["console_errors"] = 0
+    rows = combine(cfg, [phases])
+    assert rows[4]["pool_full"] and rows[4]["pool_busy_max"] == 40
+    v = verdict(rows, cfg, [])
+    assert not v["ok"] and v["realistic_pool_full"] == ["every 3 min"]
+    result = {"build": "b", "pods": 12, "nodes": 4, "rows": rows, "verdict": v}
+    text = report_text(result, cfg, [])
+    assert "a pod's database pool filled at realistic load (every 3 min)" in text
+    assert "of 40" in text and len(text) < 2000
+    series = datadog_series({**result, "restarts": 0, "duration_s": 1}, cfg, 1.0)
+    full = [
+        s for s in series
+        if s["metric"] == "switch.loadtest.step.pool_full" and s["points"][0]["value"]
+    ]  # fmt: skip
+    assert [next(t for t in s["tags"] if t.startswith("target:")) for s in full] == [
+        "target:every_3_min"
+    ]
