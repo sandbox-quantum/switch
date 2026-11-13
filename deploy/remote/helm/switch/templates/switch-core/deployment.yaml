@@ -121,6 +121,9 @@ spec:
             {{- if not (and (has "hosted_agents" .Values.switchCore.featureFlags.enabled) (has "agent_management" .Values.switchCore.featureFlags.enabled)) }}
             {{- fail "switchCore.hostedBoxProvisioning needs \"hosted_agents\" and \"agent_management\" in switchCore.featureFlags.enabled: without them no box is ever made." }}
             {{- end }}
+            {{- if not .Values.switchCore.visibilityKeyedIdKeySecret }}
+            {{- fail "switchCore.hostedBoxProvisioning needs switchCore.visibilityKeyedIdKeySecret: without the keyed-id key the Hosted area and the box operator's actions can't work." }}
+            {{- end }}
             - name: HOSTED_BOX_PROVISIONING
               value: "true"
             {{- end }}

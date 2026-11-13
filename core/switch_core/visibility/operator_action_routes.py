@@ -112,12 +112,12 @@ def get_operator_actions(
     ],
 ) -> OperatorActions:
     """One per app. The session factory comes through the dependency, so an
-    app's override of it (tests, other wiring) is the one used."""
+    app's override of it (tests, other wiring) is the one used. Without a
+    keyed-id key it answers 503, whatever was built before."""
+    key = get_keyed_id_key(request)
     actions = getattr(request.app.state, "operator_actions", None)
-    if not isinstance(actions, OperatorActions):
-        actions = OperatorActions(
-            session_factory=session_factory, key=get_keyed_id_key(request)
-        )
+    if not isinstance(actions, OperatorActions) or actions.key is not key:
+        actions = OperatorActions(session_factory=session_factory, key=key)
         request.app.state.operator_actions = actions
     return actions
 

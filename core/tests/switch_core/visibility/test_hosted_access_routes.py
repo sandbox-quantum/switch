@@ -55,3 +55,25 @@ def test_without_agent_management_the_routes_answer_503() -> None:
     with pytest.raises(HTTPException) as refused:
         get_hosted_access(request)  # type: ignore[arg-type]
     assert refused.value.status_code == 503
+
+
+def test_without_a_keyed_id_key_the_routes_answer_503_even_after_boot() -> None:
+    """An instance built at boot doesn't stand in for the key: with none set,
+    the routes answer 503 rather than reaching code that needs one."""
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    from switch_core.visibility.hosted_access import HostedAccess
+    from switch_core.visibility.hosted_access_routes import get_hosted_access
+
+    built_at_boot = object.__new__(HostedAccess)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(keyed_id_key=None, hosted_access=built_at_boot)
+        )
+    )
+    with pytest.raises(HTTPException) as refused:
+        get_hosted_access(request)  # type: ignore[arg-type]
+    assert refused.value.status_code == 503
