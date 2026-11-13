@@ -452,6 +452,21 @@ it('tells a member to ask a workspace admin about a service the workspace has of
   expect(page.querySelector('button[aria-label="Turn on Example"]')).toBeNull();
 });
 
+it('offers an admin no Turn on for a service the organization locked off', async () => {
+  admin.administers = true;
+  const page = await discover([
+    entry({
+      slug: 'example',
+      name: 'Example',
+      workspace_enabled: false,
+      organization_locked: true,
+    }),
+  ]);
+
+  expect(button(/^Example/, grid(page)!)!.textContent).toContain('Set by your organization.');
+  expect(page.querySelector('button[aria-label="Turn on Example"]')).toBeNull();
+});
+
 it('shows the real error when the catalog cannot be read, with Retry', async () => {
   workspaces.getServiceConnections.mockRejectedValue(
     new RpcError(

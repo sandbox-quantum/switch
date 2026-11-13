@@ -105,21 +105,29 @@ export function connectorCardState(
   if (entry.unavailable_reason !== null)
     return unavailableState(entry, entry.unavailable_reason, viewer);
   if (entry.workspace_enabled === false)
-    return viewer.administers
+    return entry.organization_locked
       ? {
           kind: 'workspace_off',
           label: 'Off in this workspace',
-          detail: 'Turn it on so people in this workspace can connect it.',
-          tone: 'muted',
-          fix: 'turn_on',
-        }
-      : {
-          kind: 'workspace_off',
-          label: 'Off in this workspace',
-          detail: 'Ask a workspace admin to turn it on.',
+          detail: 'Set by your organization.',
           tone: 'muted',
           fix: null,
-        };
+        }
+      : viewer.administers
+        ? {
+            kind: 'workspace_off',
+            label: 'Off in this workspace',
+            detail: 'Turn it on so people in this workspace can connect it.',
+            tone: 'muted',
+            fix: 'turn_on',
+          }
+        : {
+            kind: 'workspace_off',
+            label: 'Off in this workspace',
+            detail: 'Ask a workspace admin to turn it on.',
+            tone: 'muted',
+            fix: null,
+          };
   if (entry.status === 'needs_reauthorization' || entry.status === 'error')
     return {
       kind: 'reconnect',
