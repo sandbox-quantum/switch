@@ -106,7 +106,8 @@ def test_telegram_adapter_registers_with_expected_required_fields() -> None:
     schema = service.get_config_schema("telegram")
     # bot_username is required alongside the token because every t.me link the
     # bridge hands out is built from it, with no API call to fall back on.
-    assert set(schema["properties"]) == {"bot_token", "bot_username"}
+    # show_tool_calls is offered but not required: it defaults to on.
+    assert set(schema["properties"]) == {"bot_token", "bot_username", "show_tool_calls"}
     assert set(schema["required"]) == {"bot_token", "bot_username"}
 
 
