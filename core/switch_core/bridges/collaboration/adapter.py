@@ -1960,6 +1960,18 @@ class PlatformAdapter(ABC):
         answer about is not counted as gone."""
         return None
 
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
+        """Whether `list_channel_members` can give this channel's whole member
+        list, so its room counts everyone in the channel and not only those
+        who have posted. Asked before a room is made private, where anyone
+        the room does not count would lose sight of it, for many rooms at
+        once: so it calls no platform, and decides from what this process
+        knows and the room's recorded `channel_type`. The base cannot list
+        anyone (Telegram)."""
+        return False
+
     @abstractmethod
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Give the agent its platform handle, or bring an existing one in

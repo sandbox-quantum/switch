@@ -239,6 +239,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/rooms/{room_id}/agents/{agent_id}",
       "auth": "session",
       "flags": []
@@ -842,6 +847,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/{room_id}/admins",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/{room_id}/documents",
       "auth": "session",
       "flags": []
@@ -1000,6 +1010,16 @@
     },
     {
       "route": "GET /gateway/tenants/{tenant_id}/people",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/private-channel-rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/private-channel-rooms/count",
       "auth": "session",
       "flags": []
     },
@@ -1596,6 +1616,16 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/tenants/{tenant_id}/switch",
       "auth": "session",
       "flags": []
@@ -1632,6 +1662,11 @@
     },
     {
       "route": "PUT /gateway/agents/{agent_id}/icon",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/mid-turn-delivery",
       "auth": "session",
       "flags": []
     },
@@ -1706,6 +1741,11 @@
     },
     {
       "route": "PUT /gateway/room-groups/{group_id}/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/admins/{target_user_id}",
       "auth": "session",
       "flags": []
     },

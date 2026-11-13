@@ -1104,8 +1104,13 @@ class RoomYamlService:
         group_id: str | None = None,
         origin: AgentOrigin | None = None,
         template_name: str | None = None,
+        on_room_made: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> ProvisionResult:
         """Create the room and everything the spec attaches to it.
+
+        ``on_room_made`` is called with the room's name and id as soon as it
+        exists, before its kickoff: a template run opens its agents to the room
+        there, so the kickoff reaches them.
 
         ``kickoff`` is posted once the room exists, by the platform on the
         creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
@@ -1182,6 +1187,8 @@ class RoomYamlService:
         if console:
             assert owner is not None and self._console_rooms is not None
             await self._add_console_owner(result.room, owner, self._console_rooms)
+        if on_room_made is not None:
+            await on_room_made(result.room.name, room_id)
         failures: list[dict[str, Any]] = list(result.failed_attachments)
 
         created_ref_ids = await self._create_inline_references(
@@ -1236,6 +1243,7 @@ class RoomYamlService:
         creator_name: str | None = None,
         origin: AgentOrigin | None = None,
         template_name: str | None = None,
+        on_room_made: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> GroupProvisionResult:
         """Provision a room group, its rooms, and the links between them.
 
@@ -1278,6 +1286,7 @@ class RoomYamlService:
                     origin=origin,
                     template_name=template_name,
                     group_id=group_id,
+                    on_room_made=on_room_made,
                 )
             except Exception as e:  # noqa: BLE001 - reported, not swallowed
                 errors.append(

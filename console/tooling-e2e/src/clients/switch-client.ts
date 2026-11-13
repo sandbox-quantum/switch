@@ -262,6 +262,18 @@ export interface RetentionPolicy {
   updated_by_user_id: string | null;
 }
 
+/** One row of `GET /gateway/tenants/{tenant_id}/private-channel-rooms`. */
+export interface PrivateChannelRoom {
+  room_id: string;
+  name: string;
+  bridge_id: string;
+  channel_type: string | null;
+  people: number;
+  members_listed: boolean | null;
+  cautions: string[];
+  recommended: boolean;
+}
+
 /** One row of `GET /gateway/tenants/{tenant_id}/people`. `kind: 'member'` is someone taking part from Switch Console. */
 export interface Person {
   id: string;
@@ -763,6 +775,10 @@ export class SwitchClient {
     bridgeId: string | null;
     agentNames: string[];
     userNames: string[];
+    /** The new channel's type; a public channel unless given. */
+    channelType?: string;
+    /** Overrides the visibility the room would take from its channel. */
+    readVisibility?: "public" | "private";
   }): Promise<RoomDetail> {
     const row = await this.gateway<RawRoom>("POST", "/rooms", {
       name: params.name,
@@ -772,8 +788,9 @@ export class SwitchClient {
         : {
             bridge_id: params.bridgeId,
             internal_only: false,
-            channel_type: "channel_public",
+            channel_type: params.channelType ?? "channel_public",
           }),
+      ...(params.readVisibility ? { read_visibility: params.readVisibility } : {}),
       agent_names: params.agentNames,
       user_names: params.userNames,
     });
@@ -1379,6 +1396,53 @@ export class SwitchClient {
     });
   }
 
+  /** `GET /gateway/tenants/{tenant_id}/private-channel-rooms/count` — how many Public rooms sit on private channels. */
+  async countPrivateChannelRooms(tenantId: string): Promise<number> {
+    const result = await this.gateway<{ count: number }>(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/count`,
+    );
+    return result.count;
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/private-channel-rooms` — those rooms, to review; changes nothing. */
+  async previewPrivateChannelRooms(tenantId: string): Promise<PrivateChannelRoom[]> {
+    const result = await this.gateway<{ rooms: PrivateChannelRoom[] }>(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms`,
+    );
+    return result.rooms;
+  }
+
+  /** `POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform` — ask the apps about rooms of unrecorded channel type. */
+  async askPlatformAboutRooms(
+    tenantId: string,
+    roomIds?: string[],
+  ): Promise<{
+    answered: { room_id: string; channel_type: string }[];
+    unanswered: { room_id: string; reason: string }[];
+    stopped: string | null;
+    remaining: number;
+  }> {
+    return this.gateway(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/ask-platform`,
+      roomIds === undefined ? {} : { room_ids: roomIds },
+    );
+  }
+
+  /** `POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private` — make the confirmed rooms Private. */
+  async makeRoomsPrivate(
+    tenantId: string,
+    roomIds: string[],
+  ): Promise<{ changed: string[]; skipped: { room_id: string; reason: string }[] }> {
+    return this.gateway(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+      { room_ids: roomIds },
+    );
+  }
+
   /** `DELETE /gateway/tenants/{tenant_id}/retention` — keep messages forever again. */
   async clearRetention(tenantId: string): Promise<RetentionPolicy> {
     return this.gateway("DELETE", `/tenants/${encodeURIComponent(tenantId)}/retention`);
@@ -1485,7 +1549,10 @@ export class SwitchClient {
   ): Promise<{ id: string; displayName: string }> {
     const rows = await this.gateway<
       {
-        id: string;
+        // `GET /gateway/collaborations` names it `bridge_id`; `id` is kept
+        // for servers that answered with that.
+        bridge_id?: string;
+        id?: string;
         bridge_type: string;
         display_name: string;
         is_default?: boolean;
@@ -1498,7 +1565,9 @@ export class SwitchClient {
       );
     }
     const row = ofType.find((candidate) => candidate.is_default) ?? ofType[0]!;
-    return { id: row.id, displayName: row.display_name };
+    const id = row.bridge_id ?? row.id;
+    if (!id) throw new Error(`The ${type} collaboration bridge came back without an id`);
+    return { id, displayName: row.display_name };
   }
 
   /**

@@ -90,6 +90,7 @@ async function render() {
         thisComputer={{
           state: { kind: 'ready', machine: { id: 'm-1', providers: state.providers } as never },
           recheck: state.recheck,
+          retry: () => {},
         }}
       />
     )
@@ -155,6 +156,36 @@ describe('ProviderSetup', () => {
 
     expect(state.install).toHaveBeenCalledWith('claude');
     expect(alert()).toContain('can’t install Claude Code on this computer');
+  });
+
+  it('offers installing by hand, and the Check again it tells the person to press', async () => {
+    state.providers = [missing('claude')];
+    state.install.mockResolvedValue({ success: false, error: { type: 'no-install-command' } });
+    await render();
+
+    await click('Claude Code');
+    await click('Install Claude Code');
+    const labels = [...container!.querySelectorAll('button')].map((b) => b.textContent ?? '');
+    expect(labels).toContain('Try again');
+    expect(labels).toContain('How to install Claude Code');
+
+    state.recheck.mockClear();
+    await click('Check again');
+    expect(state.recheck).toHaveBeenCalled();
+  });
+
+  it('keeps what the picked provider needs next pinned in view, with its error', async () => {
+    state.providers = [missing('claude')];
+    state.install.mockResolvedValue({ success: false, error: { type: 'no-install-command' } });
+    await render();
+
+    await click('Claude Code');
+    await click('Install Claude Code');
+    const panel = container!.querySelector<HTMLElement>('[data-slot="provider-action"]')!;
+    expect(getComputedStyle(panel).position).toBe('sticky');
+    expect(panel.querySelector('[role="alert"]')?.textContent).toContain(
+      'can’t install Claude Code'
+    );
   });
 
   it('clears the last error when the person starts again', async () => {

@@ -3545,6 +3545,195 @@ class TestRetentionRoutes:
         assert thirty.json() == {"message_retention_days": 30, "messages_to_delete": 2}
 
 
+class TestPrivateChannelRoomsRoutes:
+    """The preview and the change; what each lists or changes is
+    `test_private_channel_rooms`'s subject."""
+
+    class _Adapter:
+        async def get_channel_type(self, channel_id: str) -> str:
+            return "channel_private"
+
+        def can_list_channel_members(
+            self, channel_id: str, channel_type: str | None
+        ) -> bool:
+            return channel_id != "C-TELEGRAM"
+
+    async def _seed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[str, str, str]:
+        async with tenant_session(session_factory, TENANT_A) as session:
+            bridge_client = Client(
+                transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+                display_name="bridge",
+                type="bridge",
+            )
+            session.add(bridge_client)
+            await session.flush()
+            bridge = CollaborationBridge(
+                type="slack",
+                display_name="Acme Slack",
+                client_id=bridge_client.id,
+                status="active",
+            )
+            session.add(bridge)
+            await session.flush()
+            rooms = []
+            for name, channel_id in (("ops", "C-OPS"), ("tg", "C-TELEGRAM")):
+                room = Room(
+                    transport_room_id=f"!{uuid.uuid4().hex[:8]}:test",
+                    name=name,
+                    description="",
+                    bridge_id=bridge.id,
+                    external_channel_id=channel_id,
+                    channel_type="channel_private",
+                    read_visibility="public",
+                )
+                session.add(room)
+                await session.flush()
+                rooms.append(room.id)
+            await session.commit()
+            return bridge.id, rooms[0], rooms[1]
+
+    def _app(
+        self, session_factory: async_sessionmaker[AsyncSession], bridge_id: str
+    ) -> FastAPI:
+        app = _app(session_factory)
+        core = SimpleNamespace(adapter=self._Adapter())
+        app.dependency_overrides[gw_deps.get_collab_lifecycle] = lambda: (
+            SimpleNamespace(get=lambda b: core if b == bridge_id else None)
+        )
+        app.dependency_overrides[gw_deps.get_room_service] = lambda: SimpleNamespace(
+            room_changed=lambda tenant_id, room_id: None
+        )
+        return app
+
+    async def test_an_admin_previews_then_makes_the_confirmed_rooms_private(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin = await _make_member(
+            session_factory, name="pcr-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin, "pcr-admin@example.invalid", TENANT_A)
+        bridge_id, ops, telegram = await self._seed(session_factory)
+
+        async with _client(self._app(session_factory, bridge_id), token) as client:
+            count = await client.get(f"/tenants/{TENANT_A}/private-channel-rooms/count")
+            preview = await client.get(f"/tenants/{TENANT_A}/private-channel-rooms")
+            applied = await client.post(
+                f"/tenants/{TENANT_A}/private-channel-rooms/make-private",
+                json={"room_ids": [ops, "gone"]},
+            )
+            after = await client.get(f"/tenants/{TENANT_A}/private-channel-rooms")
+
+        assert count.json() == {"count": 2}
+        assert preview.status_code == 200
+        rooms = {room["room_id"]: room for room in preview.json()["rooms"]}
+        assert rooms[ops] == {
+            "room_id": ops,
+            "name": "ops",
+            "bridge_id": bridge_id,
+            "bridge_name": "Acme Slack",
+            "bridge_type": "slack",
+            "channel_type": "channel_private",
+            "people": 0,
+            "members_listed": True,
+            "cautions": [],
+            "recommended": True,
+        }
+        assert rooms[telegram]["cautions"] == ["members_not_listed"]
+        assert rooms[telegram]["recommended"] is False
+        assert applied.status_code == 200
+        assert applied.json() == {
+            "changed": [ops],
+            "skipped": [{"room_id": "gone", "reason": "not_found"}],
+        }
+        assert [room["room_id"] for room in after.json()["rooms"]] == [telegram]
+
+    async def test_asking_the_platform_records_an_unrecorded_type(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin = await _make_member(
+            session_factory, name="pcr-ask", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin, "pcr-ask@example.invalid", TENANT_A)
+        bridge_id, ops, _ = await self._seed(session_factory)
+        async with tenant_session(session_factory, TENANT_A) as session:
+            room = await session.get(Room, ops)
+            assert room is not None
+            room.channel_type = None
+            await session.commit()
+
+        async with _client(self._app(session_factory, bridge_id), token) as client:
+            asked = await client.post(
+                f"/tenants/{TENANT_A}/private-channel-rooms/ask-platform", json={}
+            )
+
+        assert asked.status_code == 200
+        assert asked.json() == {
+            "answered": [{"room_id": ops, "channel_type": "channel_private"}],
+            "unanswered": [],
+            "stopped": None,
+            "remaining": 0,
+        }
+
+    async def test_a_member_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        member = await _make_member(
+            session_factory, name="pcr-member", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(member, "pcr-member@example.invalid", TENANT_A)
+        bridge_id, ops, _ = await self._seed(session_factory)
+
+        async with _client(self._app(session_factory, bridge_id), token) as client:
+            preview = await client.get(f"/tenants/{TENANT_A}/private-channel-rooms")
+            applied = await client.post(
+                f"/tenants/{TENANT_A}/private-channel-rooms/make-private",
+                json={"room_ids": [ops]},
+            )
+
+        assert (preview.status_code, applied.status_code) == (403, 403)
+
+    async def test_nothing_confirmed_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin = await _make_member(
+            session_factory, name="pcr-empty", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin, "pcr-empty@example.invalid", TENANT_A)
+        bridge_id, _, _ = await self._seed(session_factory)
+
+        async with _client(self._app(session_factory, bridge_id), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/private-channel-rooms/make-private",
+                json={"room_ids": []},
+            )
+
+        assert response.status_code == 422
+
+    async def test_more_than_200_rooms_at_once_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin = await _make_member(
+            session_factory, name="pcr-many", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin, "pcr-many@example.invalid", TENANT_A)
+        bridge_id, _, _ = await self._seed(session_factory)
+
+        async with _client(self._app(session_factory, bridge_id), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/private-channel-rooms/make-private",
+                json={"room_ids": [f"r{i}" for i in range(201)]},
+            )
+
+        assert response.status_code == 422
+
+
 class TestErasureRoutes:
     async def _member(
         self, session_factory: async_sessionmaker[AsyncSession], name: str, role: str

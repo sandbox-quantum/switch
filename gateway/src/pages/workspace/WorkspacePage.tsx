@@ -12,6 +12,7 @@ import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
 import PeopleSection from "./PeopleSection";
+import PrivateChannelRoomsSection from "./PrivateChannelRoomsSection";
 import RetentionSection from "./RetentionSection";
 
 function WorkspaceHeading({ tenant }: { tenant: TenantMembership }) {
@@ -67,6 +68,13 @@ function DataProtectionSections({ tenant }: { tenant: TenantMembership }) {
   );
 }
 
+/** Making Public rooms on private channels Private, for any admin. */
+function RoomsSections({ tenant }: { tenant: TenantMembership }) {
+  const { capabilities } = useAuth();
+  if (!capabilities.administersWorkspace) return null;
+  return <PrivateChannelRoomsSection tenantId={tenant.id} />;
+}
+
 function DeleteSection({ tenant }: { tenant: TenantMembership }) {
   const { capabilities } = useAuth();
   if (!capabilities.canDeleteWorkspace) return null;
@@ -84,6 +92,7 @@ export default function WorkspacePage() {
       <Stack spacing={4}>
         <UsersSections session={session} tenant={tenant} canAdmin={canAdminTenant} />
         <DataProtectionSections tenant={tenant} />
+        <RoomsSections tenant={tenant} />
         <DeleteSection tenant={tenant} />
       </Stack>
     </Box>
@@ -146,6 +155,7 @@ export function WorkspaceGeneralPage() {
       <Stack spacing={4}>
         <WorkspaceNameField tenant={tenant} />
         <DataProtectionSections tenant={tenant} />
+        <RoomsSections tenant={tenant} />
         <DeleteSection tenant={tenant} />
       </Stack>
     </Box>

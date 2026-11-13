@@ -84,6 +84,8 @@ const ChatConfiguration = observer(function ChatConfiguration({
                 canAttach: chat.canManage,
                 canRemoveMembers: chat.canManage,
                 canManage: chat.canManage,
+                canArchive: chat.canManage,
+                canManageAdmins: false,
                 canUnlink: chat.canManage,
               }}
             />
@@ -182,8 +184,8 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
           )}
           {!permissions.canWrite && (
             <Notice icon={<Lock className="size-3.5" />}>
-              Only {room.ownerName ?? 'the room’s owner'} or a workspace admin can change this
-              room’s settings.
+              Only {room.ownerName ?? 'the room’s owner'}, a room admin or a workspace admin can
+              change this room’s settings.
             </Notice>
           )}
           {/* Keyed on the room so the drafts below belong to the room on screen:
@@ -208,7 +210,8 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
               room={room}
               autoRoute={room.autoRoute}
               canWrite={permissions.canWrite}
-              canManage={permissions.canManage}
+              // Its owner's or an admin's on a server that predates room admins.
+              canChooseTriage={permissions.canManage || room.viewerIsRoomAdmin}
             />
           )}
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
@@ -535,13 +538,13 @@ const AutoRouteSection = observer(function AutoRouteSection({
   room,
   autoRoute,
   canWrite,
-  canManage,
+  canChooseTriage,
 }: {
   workspaceId: string;
   room: RemoteRoomDetail;
   autoRoute: NonNullable<RemoteRoomDetail['autoRoute']>;
   canWrite: boolean;
-  canManage: boolean;
+  canChooseTriage: boolean;
 }) {
   const remoteAgents = useWorkspaceAgents(workspaceId);
   const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
@@ -556,7 +559,7 @@ const AutoRouteSection = observer(function AutoRouteSection({
       autoRoute={autoRoute}
       agents={agents}
       canWrite={canWrite}
-      canManage={canManage}
+      canChooseTriage={canChooseTriage}
       detailKey={roomDetailKey(workspaceId, room.id)}
     />
   );

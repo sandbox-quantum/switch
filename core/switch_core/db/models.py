@@ -920,6 +920,10 @@ class Agent(TenantScoped, Base):
             name="fk_agents_parent_agent",
             ondelete="SET NULL (parent_agent_id)",
         ),
+        CheckConstraint(
+            "mid_turn_delivery IN ('steer', 'queue')",
+            name="ck_agents_mid_turn_delivery",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -964,6 +968,12 @@ class Agent(TenantScoped, Base):
     # agent operations: list the owner's machines and managed agents, and
     # create managed agents on those machines. Off unless the owner turns it
     # on, and never inherited by an agent it creates.
+    # What a message sent while the agent is working does: "steer" hands it
+    # to the running turn where the sender may, "queue" always runs it as a
+    # turn of its own. The owner's choice: re-registration never touches it.
+    mid_turn_delivery: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="steer", default="steer"
+    )
     can_manage_agents: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
@@ -3903,6 +3913,44 @@ class ChatOwnerGrant(TenantScoped, Base):
     )
 
 
+class RoomAdmin(TenantScoped, Base):
+    """A person the room's owner, or a workspace admin, made a room admin.
+
+    A room admin changes the room as its owner does, apart from what stays
+    with the owner and workspace admins: deleting it, handing it to someone
+    else, changing who can see it, and choosing its room admins
+    (`room_policy`). Only a person can be one, and only while they take part
+    in the room: leaving it, or being handed the room, takes them off.
+    """
+
+    __tablename__ = "room_admins"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "room_id", "user_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_admins_room",
+            ondelete="CASCADE",
+        ),
+        Index("ix_room_admins_user", "tenant_id", "user_id"),
+    )
+
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_room_admins_user"),
+        nullable=False,
+    )
+    granted_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_room_admins_granted_by"),
+        nullable=True,
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # `create_all` builds the schema for tests; the trigger has to come with it or
 # the delivery tests would exercise a table that announces nothing. Real
 # databases get the same DDL from a migration.
@@ -4097,6 +4145,11 @@ class AgentSessionActivityItem(TenantScoped, Base):
             "'tool-activity', 'notice')",
             name="ck_session_activity_items_kind",
         ),
+        CheckConstraint(
+            "delivery IS NULL OR (kind = 'user-message' "
+            "AND delivery IN ('steered', 'queued'))",
+            name="ck_session_activity_items_delivery",
+        ),
         Index("ix_session_activity_items_updated_at", "updated_at"),
     )
 
@@ -4118,6 +4171,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message that asked, where a platform puts its work marker.
     message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a user message sent while another turn ran: "steered" into that turn,
+    # or "queued" behind it. Null on every other row.
+    delivery: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -4230,6 +4286,50 @@ class TurnStatusPost(TenantScoped, Base):
     reaction_message_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     mark: Mapped[str | None] = mapped_column(Text, nullable=True)
     attention_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class SteeredMessageMark(TenantScoped, Base):
+    """The work marker on a message steered into a running turn, per bridge.
+
+    A steered message has no turn of its own, so `turn_status_posts` has no
+    row to carry its marker: it is kept here, under the turn it joined, and
+    taken off when that turn ends.
+    """
+
+    __tablename__ = "steered_message_marks"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "turn_id", "message_id"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_steered_message_marks_bridge",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_steered_message_marks_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    reaction_message_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    # True while the marker is (or may be) on the message; false once taken off.
+    marked: Mapped[bool] = mapped_column(Boolean, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

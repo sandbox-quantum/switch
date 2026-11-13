@@ -19,6 +19,7 @@ from switch_core.room_policy import (
 OWNER = RoomCaller(Principal("u-owner", False), in_room=True)
 ADMIN = RoomCaller(Principal("u-admin", True), in_room=False)
 MEMBER = RoomCaller(Principal("u-member", False), in_room=True)
+ROOM_ADMIN = RoomCaller(Principal("u-room-admin", False), in_room=True, room_admin=True)
 UNLINKED_POSTER = RoomCaller(Principal(None, False), in_room=True)
 BYSTANDER = RoomCaller(Principal("u-bystander", False), in_room=False)
 NOBODY = RoomCaller(Principal(None, False), in_room=False)
@@ -36,12 +37,14 @@ PRIVATE = _room(visibility="private")
 PUBLIC = _room(visibility="public")
 
 OWN = {"owner", "admin"}
-OP = OWN | {"member", "unlinked"}
+RA = OWN | {"room_admin"}
+OP = RA | {"member", "unlinked"}
 ALL = OP | {"bystander"}
 
 CALLERS = {
     "owner": OWNER,
     "admin": ADMIN,
+    "room_admin": ROOM_ADMIN,
     "member": MEMBER,
     "unlinked": UNLINKED_POSTER,
     "bystander": BYSTANDER,
@@ -51,18 +54,20 @@ CALLERS = {
 # proposal's "New" columns.
 MATRIX = [
     ("read", OP, ALL),
-    ("configure", OWN, OWN),
-    ("archive", OWN, OWN),
+    ("configure", RA, RA),
+    ("archive", RA, RA),
     ("change_access", OWN, OWN),
     ("delete", OWN, OWN),
+    ("manage_admins", OWN, OWN),
     ("add_agent", OP, OP),
     ("add_person", OP, OP),
     ("attach", OP, OP),
-    ("remove_member", OWN, OWN),
-    ("unlink", OWN, OWN),
-    ("delete_document", OWN, OWN),
-    ("set_alias", OWN, OWN),
-    ("agent_settings", OWN, OWN),
+    ("remove_member", RA, RA),
+    ("remove_owner", OWN, OWN),
+    ("unlink", RA, RA),
+    ("delete_document", RA, RA),
+    ("set_alias", RA, RA),
+    ("agent_settings", RA, RA),
 ]
 
 
@@ -171,6 +176,64 @@ class TestAgentOpenToOthers:
         assert allows(open_admin, PUBLIC, "read")
 
 
+class TestRoomAdmin:
+    """A room admin changes the room as its owner does, apart from what stays
+    with the owner tier."""
+
+    def test_counts_only_while_in_the_room(self) -> None:
+        gone = RoomCaller(ROOM_ADMIN.principal, in_room=False, room_admin=True)
+        assert not allows(gone, PUBLIC, "configure")
+
+    def test_needs_an_identity(self) -> None:
+        unlinked = RoomCaller(Principal(None, False), in_room=True, room_admin=True)
+        assert not allows(unlinked, PUBLIC, "configure")
+
+    def test_changes_a_room_with_no_owner(self) -> None:
+        room = _room(visibility="public", owner_id=None)
+        assert allows(ROOM_ADMIN, room, "configure")
+        assert not allows(ROOM_ADMIN, room, "delete")
+
+    @pytest.mark.parametrize("action", ["delete", "change_access", "manage_admins"])
+    def test_owner_only_refusal_does_not_name_room_admins(self, action) -> None:
+        reason = decide(ROOM_ADMIN, PUBLIC, action, owns_target=False).reason
+        assert reason is not None
+        assert reason.startswith("Only the room's owner or a workspace admin can")
+
+    def test_room_admin_tier_refusal_names_them(self) -> None:
+        reason = decide(MEMBER, PUBLIC, "configure", owns_target=False).reason
+        assert reason == (
+            "Only the room's owner, a room admin or a workspace admin can change "
+            "this room's settings."
+        )
+
+    def test_removes_anyone_but_the_owner(self) -> None:
+        assert allows(ROOM_ADMIN, PUBLIC, "remove_member")
+        decision = decide(ROOM_ADMIN, PUBLIC, "remove_owner", owns_target=False)
+        assert not decision.allowed
+        assert decision.reason == (
+            "Only the room's owner or a workspace admin can remove this room's "
+            "owner from it."
+        )
+
+    def test_their_open_agent_is_capped_at_in_the_room(self) -> None:
+        open_agent = RoomCaller(
+            ROOM_ADMIN.principal, in_room=True, owner_rights=False, room_admin=True
+        )
+        decision = decide(open_agent, PUBLIC, "configure", owns_target=False)
+        assert not decision.allowed
+        assert "takes requests from people other than its owner" in (
+            decision.reason or ""
+        )
+        assert allows(open_agent, PUBLIC, "attach")
+
+    def test_their_open_agent_gets_the_plain_refusal_for_owner_only(self) -> None:
+        open_agent = RoomCaller(
+            ROOM_ADMIN.principal, in_room=True, owner_rights=False, room_admin=True
+        )
+        reason = decide(open_agent, PUBLIC, "delete", owns_target=False).reason
+        assert reason is not None and reason.startswith("Only the room's owner")
+
+
 def test_an_unknown_action_is_refused_not_raised() -> None:
     decision = decide(OWNER, PUBLIC, "write", owns_target=False)  # type: ignore[arg-type]
     assert not decision.allowed
@@ -179,7 +242,8 @@ def test_an_unknown_action_is_refused_not_raised() -> None:
 class TestReasons:
     def test_owner_tier(self) -> None:
         with pytest.raises(
-            RoomPermissionError, match="room's owner or a workspace admin can change"
+            RoomPermissionError,
+            match="room's owner, a room admin or a workspace admin can change",
         ):
             require(MEMBER, PUBLIC, "configure")
 
