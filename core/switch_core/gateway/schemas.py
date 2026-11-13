@@ -342,6 +342,7 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
 
 
 class AgentToolSummary(BaseModel):
@@ -521,6 +522,10 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateAgentMidTurnDeliveryRequest(BaseModel):
+    mid_turn_delivery: Literal["steer", "queue"]
 
 
 class UpdateAgentCanManageAgentsRequest(BaseModel):

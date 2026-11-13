@@ -116,3 +116,25 @@ it('shows a single call with no group line', async () => {
   expect(el.textContent).not.toMatch(/tool calls?/);
   expect(el.textContent).toContain('ls');
 });
+
+it('shows the delivery outcome for each mid-turn message, including after completion', async () => {
+  const el = await render([
+    item('turn', 'completed'),
+    { ...item('initial', 'completed'), kind: 'user-message', text: 'Initial request' },
+    {
+      ...item('steered', 'completed', 'Steered into the running turn'),
+      kind: 'user-message',
+      text: 'Use the other file',
+    },
+    {
+      ...item('queued', 'completed', 'Queued behind the running turn'),
+      kind: 'user-message',
+      text: 'Run the tests next',
+    },
+  ]);
+  expect(rows(el)).toEqual([
+    'Queued behind the running turn: Run the tests next',
+    'Steered into the running turn: Use the other file',
+  ]);
+  expect(el.textContent).not.toContain('Initial request');
+});

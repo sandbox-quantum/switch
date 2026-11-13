@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { Attachment, Command, Surface } from '@switch-console/shared/session-v1';
+import type { Attachment, Command, Origin, Surface } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { ATTACHMENT_MIME_TYPES, MAX_ATTACHMENT_BYTES } from './attachments';
 
@@ -37,6 +37,8 @@ export const roomMessageSchema = z.object({
       .enum(['admin', 'member', 'owner'])
       .nullish()
       .transform((role) => (role === 'owner' ? 'admin' : role)),
+    sender_owns_agent: z.boolean().optional(),
+    mid_turn_delivery: z.enum(['steer', 'queue']).optional(),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
     routed: z.boolean().nullish(),
@@ -207,6 +209,11 @@ export function roomCommand(input: {
    * opening words (`opening_message`), if any, are told.
    */
   firstOfConversation: boolean;
+  /**
+   * How the message is delivered: steered into a running turn, or queued
+   * behind it. `roomMessageSteerTarget` decides; absent means queued.
+   */
+  delivery?: 'queue' | 'steer';
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -280,6 +287,38 @@ export function roomCommand(input: {
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: {
+      type: 'message.send',
+      text,
+      attachments,
+      delivery: input.delivery ?? 'queue',
+    },
   };
+}
+
+/** Select the running turn only for an authorized human in its thread. */
+export function roomMessageSteerTarget(input: {
+  canSteer: boolean;
+  roomId: string;
+  message: RoomMessage;
+  turns: readonly { turnId: string; status: string }[];
+  items: readonly {
+    turnId: string;
+    kind: string;
+    origin: Origin | null;
+  }[];
+}): string | undefined {
+  const { payload } = input.message;
+  if (!input.canSteer || payload.mid_turn_delivery === 'queue' || !payload.sender_role) return;
+  const running = input.turns.find((turn) => turn.status === 'running');
+  if (!running) return;
+  const origin = input.items.find(
+    (item) => item.turnId === running.turnId && item.kind === 'user-message'
+  )?.origin;
+  if (!origin || origin.roomId !== input.roomId || !origin.messageId) return;
+  const incomingThread = payload.thread_id ?? payload.message_id;
+  const runningThread = origin.threadId ?? origin.messageId;
+  if (incomingThread !== runningThread) return;
+  if (payload.sender !== origin.actorId && payload.sender_owns_agent !== true) return;
+  return running.turnId;
 }

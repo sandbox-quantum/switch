@@ -3489,6 +3489,15 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
+- **Messages sent mid-turn now steer the running turn.** On providers that
+  take mid-turn messages (Claude Code, Codex and OpenCode), a message sent
+  while an agent is working — from a room or from the session's own chat —
+  is delivered into the running turn instead of waiting for it to finish,
+  and the transcript shows it under that turn, marked as steered. Providers
+  that cannot steer keep queueing messages as the next turn, exactly as
+  before. A steer the provider refuses at the last moment falls back to
+  queueing with a notice in the transcript, so no message is lost to a
+  steering failure (#801).
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

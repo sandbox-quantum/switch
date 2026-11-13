@@ -86,18 +86,33 @@ def turn_state(
     state = TURN_STATE[turn.status]
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
-            return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
-        return state
-    if elapsed_seconds is not None:
-        worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
-        state = worked if turn.status == "completed" else f"{state} {worked}"
-    unfinished = sum(
-        1 for item in items if is_tool_call(item) and item.status == "in-progress"
+            state = f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
+    else:
+        if elapsed_seconds is not None:
+            worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
+            state = worked if turn.status == "completed" else f"{state} {worked}"
+        unfinished = sum(
+            1 for item in items if is_tool_call(item) and item.status == "in-progress"
+        )
+        if unfinished:
+            step = "step" if unfinished == 1 else "steps"
+            state += f" {unfinished} {step} left unfinished."
+    steered = sum(
+        1
+        for item in items
+        if item.kind == "user-message" and item.title == "Steered into the running turn"
     )
-    if not unfinished:
-        return state
-    step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
+    queued = any(
+        item.kind == "user-message" and item.title == "Queued behind the running turn"
+        for item in items
+    )
+    if steered:
+        state += (
+            f" {steered} message{'s' if steered != 1 else ''} steered into this turn."
+        )
+    if queued:
+        state += " Message queued behind the previous turn."
+    return state
 
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:

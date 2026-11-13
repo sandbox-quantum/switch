@@ -172,6 +172,25 @@ it('reports every message and tool item, streamed parts included, as its own row
   expect(reported[0]).toMatchObject({ turn_id: 'turn', command_id: null, ...placed });
 });
 
+it('reports each user message at its own origin, falling back to the turn origin', async () => {
+  const lines = await reporter();
+  const steered = { ...origin, threadId: 'sw_asked', messageId: 'sw_correction' };
+  const reported = rows(
+    [
+      item({ kind: 'user-message', title: 'Steered into the running turn', origin: steered }),
+      item({ kind: 'user-message', title: 'Queued behind the running turn', origin: null }),
+      item({ kind: 'tool-activity', origin: steered }),
+    ].flatMap((body, index) => lines.reports(event(index + 1, body), originOf, noUsage))
+  );
+  expect(reported[0]).toMatchObject({
+    room_id: 'room-1',
+    thread_id: 'sw_asked',
+    message_id: 'sw_correction',
+  });
+  expect(reported[1]).toMatchObject(placed);
+  expect(reported[2]).toMatchObject(placed);
+});
+
 it('truncates long titles and texts', async () => {
   const lines = await reporter();
   const [row] = rows(

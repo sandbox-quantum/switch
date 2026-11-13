@@ -134,6 +134,16 @@ export function turnWarnings(turn: TurnActivity): ChatActivityItem[] {
   return turn.items.filter((item) => item.kind === 'notice' && item.status === 'warning');
 }
 
+/** Messages delivered during another turn, each with the outcome the host reported. */
+export function turnDeliveries(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items.filter(
+    (item) =>
+      item.kind === 'user-message' &&
+      (item.title === 'Steered into the running turn' ||
+        item.title === 'Queued behind the running turn')
+  );
+}
+
 /** Whether a turn has anything to show in its work log. */
 export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean {
   const running = turn.status === 'queued' || turn.status === 'running';
@@ -147,7 +157,8 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
-    turnWarnings(turn).length > 0
+    turnWarnings(turn).length > 0 ||
+    turnDeliveries(turn).length > 0
   );
 }
 
@@ -219,6 +230,15 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           …{children.length - 5} more subagents not shown.
         </div>
       )}
+      {turnDeliveries(turn).map((item) => (
+        <WorkLogRow
+          key={item.itemId}
+          icon={<ToolKindIcon kind="switch" />}
+          label={`${item.title}${item.text ? `: ${item.text}` : ''}`}
+          title={item.text || item.title}
+          tone="passive"
+        />
+      ))}
       {turnWarnings(turn).map((notice) => (
         <WorkLogRow
           key={notice.itemId}

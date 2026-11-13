@@ -120,8 +120,8 @@ export class ActivityReporter {
     usageOf: (turnId: string) => TokenUsage[]
   ): Report[] {
     const body = event.body;
-    const place = (turnId: string): Placement => {
-      const origin = originOf(turnId);
+    const place = (turnId: string, itemOrigin?: Origin | null): Placement => {
+      const origin = itemOrigin ?? originOf(turnId);
       return {
         room_id: origin?.roomId ?? null,
         thread_id: origin ? (origin.threadId ?? origin.messageId) : null,
@@ -167,7 +167,7 @@ export class ActivityReporter {
               title: truncate(item.title, MAX_TITLE),
               text: truncate(item.text, MAX_TEXT),
               command_id: null,
-              ...place(item.turnId),
+              ...place(item.turnId, item.kind === 'user-message' ? item.origin : null),
               occurred_at: event.occurredAt,
             },
           },

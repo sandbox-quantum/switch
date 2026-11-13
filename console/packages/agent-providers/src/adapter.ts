@@ -133,10 +133,15 @@ export interface ProviderSendTurnInput {
   sessionId: string;
   /** Caller-chosen id; the adapter echoes it in turn events for this turn. */
   turnId: string;
+  /** A steer must not be delivered into any other turn. */
+  expectedTurnId?: string;
   text: string;
   attachments?: TurnAttachment[];
   model?: ModelSelection;
 }
+
+/** The provider confirms no message was sent, so the host may safely queue it. */
+export class SteerNotSentError extends Error {}
 
 export interface ProviderTurnStartResult {
   turnId: string;

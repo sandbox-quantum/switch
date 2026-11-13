@@ -584,9 +584,18 @@ describe('CodexAdapter', () => {
     await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'count' });
     server.notify('turn/started', turnNotification('native-a', 'inProgress'));
 
+    await expect(
+      adapter.sendTurn({
+        sessionId: 'session-1',
+        turnId: 'stale',
+        expectedTurnId: 'other',
+        text: 'wrong',
+      })
+    ).rejects.toThrow('authorized turn');
     const steered = await adapter.sendTurn({
       sessionId: 'session-1',
       turnId: 'caller-2',
+      expectedTurnId: 'caller-1',
       text: 'stop',
     });
     expect(steered).toEqual({ turnId: 'caller-2', steeredInto: 'caller-1' });

@@ -6,6 +6,7 @@ import {
   ROUTED_NOTE,
   roomCommand,
   roomCommandId,
+  roomMessageSteerTarget,
   roomMessageSchema,
 } from './room-prompt';
 
@@ -182,5 +183,96 @@ describe('a room command', () => {
     expect(said).toContain('without tagging anyone, and Switch picked you to answer');
     expect(said).toContain(ROUTED_NOTE);
     expect(said).not.toContain(FALLBACK_NOTE);
+  });
+
+  it('queues the message unless the caller asks for steering', () => {
+    expect(command(event).body).toMatchObject({ delivery: 'queue' });
+    const steered = roomCommand({
+      agentId: 'agent',
+      sessionId: 'session',
+      epoch: 'epoch',
+      roomId: '!room:example.test',
+      message: roomMessageSchema.parse(event),
+      surface: 'switch-web',
+      attachments: [],
+      preface: null,
+      firstOfConversation: false,
+      delivery: 'steer',
+    });
+    expect(steered.body).toMatchObject({ delivery: 'steer' });
+  });
+});
+
+describe('the delivery a room message is sent with', () => {
+  const origin = {
+    surface: 'switch-web' as const,
+    actorId: 'starter',
+    roomId: 'room',
+    threadId: null,
+    messageId: 'root',
+  };
+  const message = (sender = 'starter', thread = 'root', extra = {}) =>
+    roomMessageSchema.parse({
+      type: 'message',
+      payload: {
+        sender,
+        sender_name: sender,
+        sender_role: 'member',
+        message_id: 'reply',
+        thread_id: thread,
+        body: 'correction',
+        ...extra,
+      },
+    });
+  const input = {
+    canSteer: true,
+    roomId: 'room',
+    message: message(),
+    turns: [{ turnId: 'running', status: 'running' }],
+    items: [{ turnId: 'running', kind: 'user-message', origin }],
+  };
+  it('steers the starter or owner in the running thread', () => {
+    expect(roomMessageSteerTarget(input)).toBe('running');
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        message: message('owner', 'root', { sender_owns_agent: true }),
+      })
+    ).toBe('running');
+  });
+  it('steers the current turn when the conversation has imported history', () => {
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        turns: [{ turnId: 'imported', status: 'completed' }, ...input.turns],
+        items: [{ turnId: 'imported', kind: 'user-message', origin: null }, ...input.items],
+      })
+    ).toBe('running');
+  });
+  it('queues another sender, thread, room, unknown sender, or agent', () => {
+    expect(roomMessageSteerTarget({ ...input, message: message('other') })).toBeUndefined();
+    expect(
+      roomMessageSteerTarget({ ...input, message: message('starter', 'other') })
+    ).toBeUndefined();
+    expect(roomMessageSteerTarget({ ...input, roomId: 'other' })).toBeUndefined();
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        message: message('starter', 'root', { sender_role: null }),
+      })
+    ).toBeUndefined();
+  });
+  it('queues when disabled, unsupported, idle, or origin is unknown', () => {
+    expect(
+      roomMessageSteerTarget({
+        ...input,
+        message: message('starter', 'root', { mid_turn_delivery: 'queue' }),
+      })
+    ).toBeUndefined();
+    expect(roomMessageSteerTarget({ ...input, canSteer: false })).toBeUndefined();
+    expect(
+      roomMessageSteerTarget({ ...input, turns: [{ turnId: 'running', status: 'queued' }] })
+    ).toBeUndefined();
+    expect(roomMessageSteerTarget({ ...input, items: [] })).toBeUndefined();
   });
 });

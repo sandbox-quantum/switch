@@ -86,6 +86,7 @@ import {
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
+  updateMidTurnDelivery,
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
@@ -1778,6 +1779,15 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  updateMidTurnDelivery: (params: {
+    workspaceId: string;
+    agentId: string;
+    mode: 'steer' | 'queue';
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateMidTurnDelivery(server, params.agentId, params.mode)
     ),
 
   /** Change an agent's description. Returns the agent as the server now holds it. */

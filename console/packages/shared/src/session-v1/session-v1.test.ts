@@ -181,6 +181,33 @@ describe('session-v1 client transport', () => {
     expect(vi.mocked(wire.api.submit).mock.calls[0][0]).not.toHaveProperty('origin');
     expect(client.getSnapshot().snapshot?.commandStatuses[0].status).toBe('accepted');
   });
+  it('queues a Console message without an authorized room thread', async () => {
+    const wire = transport();
+    const busy = initial();
+    busy.session.capabilities.input = 'steer';
+    // The example snapshot's one turn is running.
+    expect(busy.turns[0].status).toBe('running');
+    vi.mocked(wire.api.snapshot).mockResolvedValue(busy);
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    await client.send('Use the other file instead', 'send');
+    expect(wire.api.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ delivery: 'queue' }) })
+    );
+  });
+  it('queues a message on a steering session with no turn in flight', async () => {
+    const wire = transport();
+    const idle = initial();
+    idle.session.capabilities.input = 'steer';
+    idle.turns = [];
+    vi.mocked(wire.api.snapshot).mockResolvedValue(idle);
+    const client = new SessionChatClient('session-demo', wire.api);
+    await client.connect();
+    await client.send('Hello', 'send');
+    expect(wire.api.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.objectContaining({ delivery: 'queue' }) })
+    );
+  });
   it('reconnects reads after an epoch change without resending an uncertain command', async () => {
     vi.useFakeTimers();
     const wire = transport();

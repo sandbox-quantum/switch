@@ -469,7 +469,7 @@ export async function buildSharedHostConfig(
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: capabilities.steering ? 'steer' : 'queue',
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

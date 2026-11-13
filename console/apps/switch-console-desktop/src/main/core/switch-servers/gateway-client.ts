@@ -1460,6 +1460,7 @@ type AgentSummaryJson = {
   known_agent_type: string | null;
   known_agent_options?: Record<string, unknown> | null;
   addressing_policy?: AddressingPolicy | null;
+  mid_turn_delivery?: 'steer' | 'queue';
   icon_url?: string | null;
   created_at: string;
 };
@@ -1479,6 +1480,7 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
     knownAgentType: json.known_agent_type,
     knownAgentOptions: json.known_agent_options ?? null,
     addressingPolicy: json.addressing_policy ?? null,
+    midTurnDelivery: json.mid_turn_delivery,
     iconUrl: json.icon_url ?? null,
     createdAt: json.created_at,
   };
@@ -1741,6 +1743,23 @@ export async function updateAgentIcon(
     method: 'PUT',
     body: { icon_url: iconUrl },
   });
+  return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+export async function updateMidTurnDelivery(
+  server: SwitchServer,
+  agentId: string,
+  mode: 'steer' | 'queue'
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/mid-turn-delivery`,
+    {
+      authenticated: true,
+      method: 'PUT',
+      body: { mid_turn_delivery: mode },
+    }
+  );
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
 }
 

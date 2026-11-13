@@ -985,3 +985,60 @@ async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -
     pages = [block for block in drawn.blocks if block["type"] == "plan"]
     assert "Running: Grep" not in pages[0]["title"]
     assert pages[1]["title"].endswith("· Running: Grep")
+
+
+async def test_activity_shows_how_messages_were_delivered() -> None:
+    steered = _item(kind="user-message", title="Steered into the running turn")
+    queued = _item(kind="user-message", title="Queued behind the running turn")
+    assert "1 message steered into this turn." in turn_state(
+        [steered], _turn("running"), tool_detail=True
+    )
+    assert "Message queued behind the previous turn." in turn_state(
+        [queued], _turn("completed"), tool_detail=True
+    )
+    assert "steered into this turn" in render_activity_text([steered], _turn())
+
+
+def test_activity_cards_identify_each_delivered_message() -> None:
+    items = [
+        _item(
+            itemId="first",
+            kind="user-message",
+            title="Steered into the running turn",
+            text="Use file A",
+        ),
+        _item(
+            itemId="second",
+            kind="user-message",
+            title="Steered into the running turn",
+            text="Use file B",
+        ),
+        _item(
+            itemId="third",
+            kind="user-message",
+            title="Queued behind the running turn",
+            text="Run tests",
+        ),
+        _item(itemId="original", kind="user-message", title="", text="Original prompt"),
+    ]
+    for drawn in (
+        render_activity(items, _turn()),
+        render_activity_plan(items, _turn()),
+    ):
+        cards = json.dumps(drawn.blocks)
+        assert "Steered into the running turn: Use file A" in cards
+        assert "Steered into the running turn: Use file B" in cards
+        assert "Queued behind the running turn: Run tests" in cards
+        assert "Original prompt" not in cards
+    text = render_activity_text(items, _turn())
+    assert "Steered into the running turn: Use file A" in text
+    assert "Queued behind the running turn: Run tests" in text
+    assert "Original prompt" not in text
+    stream = json.dumps(render_activity_stream(items, _turn()).blocks)
+    assert "Steered into the running turn: Use file A" in stream
+    assert "Queued behind the running turn: Run tests" in stream
+
+    mention = _item(
+        kind="user-message", title="Steered into the running turn", text="<!here>"
+    )
+    assert "&lt;!here&gt;" in render_activity_text([mention], _turn())

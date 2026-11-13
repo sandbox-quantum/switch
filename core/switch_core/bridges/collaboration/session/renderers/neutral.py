@@ -319,6 +319,14 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
+    for item in items:
+        if item.kind != "user-message" or not in_activity_log(item):
+            continue
+        line = _log_line(item, escape=escape)
+        if spent + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        spent += len(line) + 1
     for line in subagent_lines(
         items, fit=lambda text, size: _fit(text, size, escape=escape)
     ):
@@ -400,6 +408,11 @@ def in_activity_log(item: Item) -> bool:
     """
     if item.kind == "tool-activity":
         return True
+    if item.kind == "user-message" and item.title in {
+        "Steered into the running turn",
+        "Queued behind the running turn",
+    }:
+        return True
     return item.kind == "assistant-message" and bool(item.text)
 
 
@@ -410,6 +423,9 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     its own paragraph breaks removed: a sentence spread over four lines is
     indistinguishable from four things having happened.
     """
+    if item.kind == "user-message":
+        text = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
+        return f"{item.title}: {text or '(attachment)'}"
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"

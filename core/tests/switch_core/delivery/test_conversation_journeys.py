@@ -530,6 +530,24 @@ class TestAttachments:
 
         assert await room.reached(told) == {"helper"}
 
+    async def test_followed_text_and_file_keep_steering_metadata(
+        self, room: Journey, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def owns_agent(*_args: object) -> bool:
+            return True
+
+        monkeypatch.setattr(AgentRecipient, "_sender_owns_agent", owns_agent)
+        monkeypatch.setattr(AgentRecipient, "_mid_turn_delivery", lambda _self: "queue")
+        await room.say("alice", "@helper can you read this?", at=0)
+        await room.post("helper", "Yes, send it", at=10)
+        text_id = await room.say("alice", "here is the context", at=20)
+        file_id = await room.send_file("alice", "screen.png", at=30, caption="here")
+
+        for event_id in (text_id, file_id):
+            payload = (await room.payloads(event_id))["helper"]
+            assert payload.sender_owns_agent is True
+            assert payload.mid_turn_delivery == "queue"
+
     async def test_a_file_follows_the_agents_answer(self, room: Journey) -> None:
         await room.say("alice", "@helper can you read a screenshot?", at=0)
         await room.post("helper", "Yes, send it", at=10)

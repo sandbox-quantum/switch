@@ -463,10 +463,17 @@ export function SessionV1Chat({
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
                 <div className="flex flex-col items-end gap-1">
-                  {item.origin?.surface && item.origin.surface !== 'console' && (
+                  {item.title ? (
                     <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
-                      {item.origin.surface}
+                      {item.title}
                     </span>
+                  ) : (
+                    item.origin?.surface &&
+                    item.origin.surface !== 'console' && (
+                      <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
+                        {item.origin.surface}
+                      </span>
+                    )
                   )}
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}

@@ -35,6 +35,32 @@ def _status(items: list[Item], turn_state: str, *, tool_detail: bool) -> list[st
     ).splitlines()
 
 
+def test_status_identifies_each_delivered_message() -> None:
+    items = [
+        _item(
+            kind="user-message",
+            title="Steered into the running turn",
+            text="Use the other file",
+        ),
+        _item(
+            kind="user-message",
+            title="Steered into the running turn",
+            text="Stop and check",
+        ),
+        _item(
+            kind="user-message",
+            title="Queued behind the running turn",
+            text="Run tests",
+        ),
+        _item(kind="user-message", title="", text="Original prompt"),
+    ]
+    text = "\n".join(_status(items, "running", tool_detail=False))
+    assert "Steered into the running turn: Use the other file" in text
+    assert "Steered into the running turn: Stop and check" in text
+    assert "Queued behind the running turn: Run tests" in text
+    assert "Original prompt" not in text
+
+
 # ── A turn that has ended is not still running ────────────────────────────────
 
 
