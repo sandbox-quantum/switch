@@ -6,6 +6,7 @@ import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import type { FeatureFlagKey } from "./data/featureFlags";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
+import { keepLinkForSignIn } from "./data/workspaceLink";
 
 const acme: TenantMembership = {
   id: "t1",
@@ -1079,6 +1080,11 @@ describe("a link naming a workspace", () => {
     });
   });
 
+  const origin = window.location.origin;
+  const sessionReads = () =>
+    vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith("/auth/session"))
+      .length;
+
   const switchedTo = (tenantId: string) =>
     vi
       .mocked(fetch)
@@ -1093,8 +1099,27 @@ describe("a link naming a workspace", () => {
       "/tenants/t2/switch": [200, { ok: true }],
     });
     renderAt("/rooms/r1?workspace=t2");
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/rooms/r1"));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(`${origin}/rooms/r1`));
     expect(switchedTo("t2")).toBe(true);
+    expect(sessionReads()).toBe(1);
+  });
+
+  it("switches an organization admin to a workspace their role covers", async () => {
+    const covered: TenantMembership = {
+      id: "t3",
+      slug: "acme-labs",
+      name: "Acme Labs",
+      role: "admin",
+      organization_role: "org_admin",
+      organization_id: "o1",
+    };
+    mockFetch({
+      ...signedInAs("org_admin", { tenants: [covered] }),
+      "/tenants/t3/switch": [200, { ok: true }],
+    });
+    renderAt("/settings/org?workspace=t3");
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(`${origin}/settings/org`));
+    expect(switchedTo("t3")).toBe(true);
   });
 
   it("picks it for a session that has not picked a workspace yet", async () => {
@@ -1103,7 +1128,7 @@ describe("a link naming a workspace", () => {
       "/tenants/t2/switch": [200, { ok: true }],
     });
     renderAt("/settings?workspace=t2");
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/settings"));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(`${origin}/settings`));
   });
 
   it("stays, and drops it from the address, when the page is already there", async () => {
@@ -1113,6 +1138,7 @@ describe("a link naming a workspace", () => {
     await landsOn("/resources?tab=documents#top");
     expect(switchedTo("t1")).toBe(false);
     expect(replace).not.toHaveBeenCalled();
+    expect(sessionReads()).toBe(1);
     expect(screen.queryByText(/The link you followed/)).toBeNull();
   });
 
@@ -1184,13 +1210,46 @@ describe("a link naming a workspace", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it("leaves a signed-out visitor to sign in", async () => {
+  it("keeps the link for a signed-out visitor, and follows it once they sign in", async () => {
     mockFetch({
       "/auth/session": [401, { detail: "Not authenticated" }],
       "/auth/config": [200, authConfig],
+      "/auth/login": [200, { id: "u1", name: "Ada", email: "ada@example.com" }],
     });
-    renderAt("/rooms?workspace=t2");
+    renderAt("/rooms/r1?tab=documents&workspace=t2");
     expect(await screen.findByText("Switch Gateway")).toBeTruthy();
     expect(switchedTo("t2")).toBe(false);
+
+    fireEvent.change(await screen.findByLabelText(/^Email/), {
+      target: { value: "ada@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() =>
+      expect(replace).toHaveBeenCalledWith(`${origin}/rooms/r1?tab=documents&workspace=t2`),
+    );
+  });
+
+  it("follows a kept link on the first load signed in, as after a sign-in provider", async () => {
+    keepLinkForSignIn({ path: "/agents/a1", workspace: "t2" });
+    mockFetch(signedInAs("member", { tenants: [beta] }));
+    renderAt("/");
+    await waitFor(() =>
+      expect(replace).toHaveBeenCalledWith(`${origin}/agents/a1?workspace=t2`),
+    );
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("does not hand a kept link to the next person after signing out", async () => {
+    mockFetch({
+      ...signedInAs("member", { flags: ["gateway_v2"] }),
+      "/auth/logout": [200, {}],
+    });
+    renderAt("/rooms");
+    await railLabels();
+    keepLinkForSignIn({ path: "/agents/a1", workspace: "t2" });
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    await waitFor(() => expect(window.sessionStorage.length).toBe(0));
   });
 });

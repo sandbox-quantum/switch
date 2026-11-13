@@ -17,7 +17,16 @@ import { type Capabilities, capabilitiesOf } from "./capabilities";
 import { ALL_OFF, type FeatureFlags, GATEWAY_V2 } from "./featureFlags";
 import { landingAfterSwitch } from "./settingsLanding";
 import { clearPendingInvite } from "./sessionState";
-import { followWorkspaceLink, linkedWorkspace, withoutLinkedWorkspace } from "./workspaceLink";
+import {
+  followWorkspaceLink,
+  forgetLinkForSignIn,
+  keepLinkForSignIn,
+  linkAddress,
+  linkedWorkspace,
+  onThisDashboard,
+  takeLinkAfterSignIn,
+  withoutLinkedWorkspace,
+} from "./workspaceLink";
 
 interface AuthState {
   session: Session | null;
@@ -58,7 +67,11 @@ interface Loaded {
  * the server sees the caller in it. All three or an error, never a partial
  * answer that would hide pages for the wrong reason. */
 async function loadAll(): Promise<Loaded> {
-  const session = await fetchSession();
+  return loadFor(await fetchSession());
+}
+
+/** `loadAll` for a session already read. */
+async function loadFor(session: Session | null): Promise<Loaded> {
   if (session === null) return { session: null, tenant: null, flags: ALL_OFF };
   const [flags, tenant] = await Promise.all([
     fetchFeatureFlags(),
@@ -95,34 +108,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // What a link naming a workspace asks of this load, given the session:
+  // true when the page is leaving for another address, so nothing more is
+  // read here. A link followed while signed out is kept, and followed on the
+  // first load signed in.
+  const followLink = useCallback(
+    async (session: Session | null): Promise<boolean> => {
+      if (linked === null) {
+        const kept = session === null ? null : takeLinkAfterSignIn();
+        if (kept === null) return false;
+        window.location.replace(linkAddress(kept));
+        return true;
+      }
+      const here = withoutLinkedWorkspace(arrived.current);
+      navigate(here, { replace: true });
+      if (session === null) {
+        keepLinkForSignIn({ path: here, workspace: linked });
+        return false;
+      }
+      try {
+        const outcome = await followWorkspaceLink(linked, session);
+        if (outcome.switched) {
+          window.location.replace(onThisDashboard(here));
+          return true;
+        }
+        setLinkNotice(outcome.notice);
+      } catch (err) {
+        setLinkNotice(
+          `Couldn't switch to the workspace the link you followed is for: ${errorMessage(err)}`,
+        );
+      }
+      return false;
+    },
+    [linked, navigate],
+  );
+
   // Once per page load, a development build's second run included, so a
   // link switches workspace at most once. A switch reloads the page in the
-  // new workspace before anything is read for the old one.
+  // new workspace before anything is read for the old one. The session is
+  // read once, for the link and the load both.
   const started = useRef(false);
   useEffect(() => {
     if (started.current) return;
     started.current = true;
     void (async () => {
-      if (linked !== null) {
-        const here = withoutLinkedWorkspace(arrived.current);
-        navigate(here, { replace: true });
-        try {
-          const outcome = await followWorkspaceLink(linked);
-          if (outcome.switched) {
-            window.location.replace(here);
-            return;
-          }
-          setLinkNotice(outcome.notice);
-        } catch (err) {
-          setLinkNotice(
-            `Couldn't switch to the workspace the link you followed is for: ${errorMessage(err)}`,
-          );
-        }
+      try {
+        const session = await fetchSession();
+        if (await followLink(session)) return;
+        setLoaded(await loadFor(session));
+        setLoadError(null);
+        setStaleError(null);
+      } catch (err) {
+        setLoadError(errorMessage(err));
       }
-      await refresh();
       setLoading(false);
     })();
-  }, [linked, navigate, refresh]);
+  }, [followLink]);
   const dismissLinkNotice = useCallback(() => setLinkNotice(null), []);
 
   // What this page holds can fall behind the server. Back or forward can
@@ -192,21 +233,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (email: string, password: string) => {
       await apiLogin(email, password);
+      const kept = takeLinkAfterSignIn();
+      if (kept !== null) {
+        window.location.replace(linkAddress(kept));
+        return;
+      }
       await refresh();
     },
     [refresh],
   );
 
   const logout = useCallback(async () => {
-    // The next person to sign in on this tab must not inherit an invitation
-    // they never followed.
+    // The next person to sign in on this tab must not inherit an invitation,
+    // or a link, they never followed.
     clearPendingInvite();
+    forgetLinkForSignIn();
     await apiLogout();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
 
   const logoutEverywhere = useCallback(async () => {
     clearPendingInvite();
+    forgetLinkForSignIn();
     await signOutEverywhere();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);

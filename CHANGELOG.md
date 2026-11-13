@@ -59,7 +59,9 @@ version of their own to them without also giving them a release of their own.
   selected last. It switches only to a workspace you're in, or one your
   organization admin role covers, so a link can't take the platform operator
   into someone else's. For any other workspace the page stays where it was
-  and says so. The address drops the parameter once it has been followed.
+  and says so. The address drops the parameter once it has been followed. A
+  link followed while signed out opens once you sign in, with a password or
+  through single sign-on, if that is within 15 minutes and in the same tab.
   Switch Console's links into the dashboard use it.
 - **Messages sent while an agent works can steer its running turn.** Each
   agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
