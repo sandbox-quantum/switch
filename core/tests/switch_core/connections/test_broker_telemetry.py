@@ -8,6 +8,7 @@ agent, service and reason, since a session host asks again on its own.
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import get_args
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,9 +18,13 @@ from switch_core.connections.adapters import (
     ReauthorizationRequiredError,
 )
 from switch_core.connections.broker import ServiceBroker
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, AdapterName
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
-from switch_core.telemetry.services import TokenRefusals
+from switch_core.telemetry.services import (
+    AUTH_KINDS,
+    TOKEN_REFUSAL_WINDOW_SECONDS,
+    TokenRefusals,
+)
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.test_broker import (
@@ -90,8 +95,8 @@ async def test_a_connection_and_linking_it_again(
         "consent": "write",
     }
     assert sink.events("service_connection_added") == [
-        {**added, "relinked": False, "first_in_workspace": True},
-        {**added, "relinked": True, "first_in_workspace": False},
+        {**added, "relinked": False, "first_for_person": True},
+        {**added, "relinked": True, "first_for_person": False},
     ]
 
 
@@ -169,7 +174,7 @@ def test_a_refusal_is_reported_again_once_the_hour_is_up(
     monkeypatch.setattr(
         "switch_core.telemetry.services.time.monotonic", lambda: clock[0]
     )
-    refusals = TokenRefusals()
+    refusals = TokenRefusals(held=100)
 
     first = refusals.first_in_window("a1", "github", "grant_missing")
     soon = refusals.first_in_window("a1", "github", "grant_missing")
@@ -178,3 +183,67 @@ def test_a_refusal_is_reported_again_once_the_hour_is_up(
     later = refusals.first_in_window("a1", "github", "grant_missing")
 
     assert (first, soon, other, later) == (True, False, True, True)
+
+
+def test_refusals_held_are_capped_dropping_the_oldest_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(
+        "switch_core.telemetry.services.time.monotonic", lambda: clock[0]
+    )
+    refusals = TokenRefusals(held=2)
+
+    for agent in ("a1", "a2", "a3"):
+        assert refusals.first_in_window(agent, "github", "grant_missing")
+        clock[0] += 1
+
+    # a1 was dropped to make room, so it reports again; a3 is still held.
+    assert refusals.first_in_window("a1", "github", "grant_missing")
+    assert not refusals.first_in_window("a3", "github", "grant_missing")
+
+
+def test_a_refusal_reported_again_moves_to_the_back_of_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(
+        "switch_core.telemetry.services.time.monotonic", lambda: clock[0]
+    )
+    refusals = TokenRefusals(held=2)
+    refusals.first_in_window("a1", "github", "grant_missing")
+    clock[0] += TOKEN_REFUSAL_WINDOW_SECONDS + 1
+    refusals.first_in_window("a2", "github", "grant_missing")
+    # a1's window is over: reported again, and now newer than a2.
+    assert refusals.first_in_window("a1", "github", "grant_missing")
+    refusals.first_in_window("a3", "github", "grant_missing")
+
+    assert refusals.first_in_window("a2", "github", "grant_missing")
+    assert not refusals.first_in_window("a3", "github", "grant_missing")
+
+
+def test_every_adapter_has_an_auth_kind() -> None:
+    assert set(AUTH_KINDS) == set(get_args(AdapterName))
+
+
+async def test_a_connection_already_lost_is_not_reported_lost_again(
+    session_factory: async_sessionmaker[AsyncSession], vendor: FakeVendor
+) -> None:
+    """Another request recorded the refusal while this one was asking the
+    vendor: the connection was lost once, so it is reported once."""
+    broker, sink = _reporting(session_factory, vendor)
+    world = await _world(session_factory)
+
+    async def lost_meanwhile() -> None:
+        async with session_factory() as session:
+            assert await STORE.mark_needs_reauthorization(
+                session, world.owner.id, "github", "sign_in_refused"
+            )
+            await session.commit()
+
+    vendor.during_issue = lost_meanwhile
+    vendor.issue_error = ReauthorizationRequiredError("GitHub refused the sign-in.")
+
+    await _refused(broker, session_factory, world.agent.id)
+
+    assert sink.events("service_connection_lost") == []

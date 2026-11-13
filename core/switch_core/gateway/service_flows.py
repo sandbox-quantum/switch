@@ -255,12 +255,11 @@ async def callback(
             flow, code, request.cookies.get(_cookie(state), "")
         )
     except FlowError as error:
-        sign_in_failed(
-            current_telemetry(),
-            service,
-            "vendor",
-            error.reason if isinstance(error, SignInEnded) else "interrupted",
-        )
+        # Only an ending is a failed sign-in. A hit that could not be verified
+        # (a replay, a refresh, another browser, a state gone) leaves the
+        # flow as it was, still able to finish, and is not one.
+        if isinstance(error, SignInEnded):
+            sign_in_failed(current_telemetry(), service, "vendor", error.reason)
         return _page("Connections", INTERRUPTED, 400)
     response = RedirectResponse(
         target,
@@ -304,12 +303,10 @@ async def complete(
             adapter=adapter,
         )
     except FlowError as error:
-        sign_in_failed(
-            telemetry,
-            service,
-            "complete",
-            error.reason if isinstance(error, SignInEnded) else "interrupted",
-        )
+        # As at the callback: a completion that could not be verified (sent
+        # twice, the wrong secret) changes nothing and is not a failure.
+        if isinstance(error, SignInEnded):
+            sign_in_failed(telemetry, service, "complete", error.reason)
         raise HTTPException(400, str(error)) from None
     except ServiceUnavailableError as error:
         sign_in_failed(telemetry, service, "complete", "vendor_unavailable")
