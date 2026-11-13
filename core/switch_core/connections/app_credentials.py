@@ -121,8 +121,8 @@ def github_needs_https(kind: AppKind | None, public_url: str | None) -> bool:
 def not_set_up(name: str) -> str:
     """What members are told about a service whose app is not set up here."""
     return (
-        f"{name} is not set up here. Whoever runs Switch can set it up in "
-        "Switch Console, under Admin → Connector apps."
+        f"{name}'s connector app isn't set up on this server yet. "
+        "Whoever runs Switch can set it up."
     )
 
 

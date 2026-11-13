@@ -246,8 +246,8 @@ async def test_an_app_not_set_up_here_says_who_sets_it_up(
 ) -> None:
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
     reason = (
-        "{} is not set up here. Whoever runs Switch can set it up in "
-        "Switch Console, under Admin → Connector apps."
+        "{}'s connector app isn't set up on this server yet. "
+        "Whoever runs Switch can set it up."
     )
     assert await availability(broker, "example") == reason.format("Example")
     assert await availability(broker, "github") == reason.format("GitHub")
