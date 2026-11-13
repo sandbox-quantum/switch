@@ -4259,6 +4259,7 @@ export async function getConnectionCatalog(
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
+    read_only_reason: entry.enabled ? entry.read_only_reason : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
     agent_access_note: entry.agent_access_note,
@@ -4267,6 +4268,7 @@ export async function getConnectionCatalog(
     external_identity: entry.external_identity,
     consent: entry.consent,
     workspace_enabled: entry.workspace_enabled,
+    organization_locked: entry.organization_locked,
   }));
 }
 
@@ -4283,6 +4285,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         connectable: entry.enabled && entry.slug === 'github',
         unavailable_reason: null,
         unavailable_code: null,
+        read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
         agent_access_note: null,
@@ -4291,6 +4294,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         external_identity: null,
         consent: null,
         workspace_enabled: null,
+        organization_locked: false,
       }))
   );
 }
@@ -4676,6 +4680,24 @@ export async function completeServiceConnection(
       account: z.string(),
     })
     .parse(await response.json());
+}
+/**
+ * Hand on what the vendor sent the listener in place of a code: the server
+ * fails the flow with it, so it reads failed with the vendor's reason at once.
+ */
+export async function failServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  error: string,
+  description: string | null,
+  completionSecret: string
+) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}/fail`, {
+    authenticated: true,
+    method: 'POST',
+    body: { error, error_description: description, completion_secret: completionSecret },
+  });
 }
 export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
   await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {

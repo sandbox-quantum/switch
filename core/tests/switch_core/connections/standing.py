@@ -17,6 +17,10 @@ async def connectable(broker: ServiceBroker, service: str) -> bool:
     return (await standing(broker, service)).connectable
 
 
+async def read_only(broker: ServiceBroker, service: str) -> str | None:
+    return broker.read_only(await standing(broker, service), service)
+
+
 async def availability(broker: ServiceBroker, service: str) -> str | None:
     async with broker._session_factory() as session:
         return await broker.availability(session, service)

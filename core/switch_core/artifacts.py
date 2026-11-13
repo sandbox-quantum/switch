@@ -42,8 +42,8 @@ CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     },
     # The HTTP API switch-core serves to first-party UI clients. Excludes the authentication surface, which is deliberately frozen and unversioned so that a client can always authenticate far enough to be told what is wrong.
     "gateway-api": {
-        "switch-core": ContractRange(speaks=2, accepts=2),
-        "switch-console": ContractRange(speaks=2, accepts=1),
+        "switch-core": ContractRange(speaks=3, accepts=2),
+        "switch-console": ContractRange(speaks=3, accepts=1),
     },
     # The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
     "stack-compose": {

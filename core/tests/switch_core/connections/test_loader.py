@@ -85,6 +85,8 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
     assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
     # Google revokes the whole grant, so a reconnect keeps the old sign-in.
     assert oauth.revocation_ends_grant is True
+    # Revoking the sign-in ends the access tokens agents were given too.
+    assert oauth.revocation_ends_tokens is True
     # Google refuses a made-up code before comparing the redirect URI.
     assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
     assert definition.auth.refresh == "reusable"
@@ -162,6 +164,8 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
     assert oauth.prompt == "consent"
     assert oauth.revocation_discovered is True
+    # Its tokens are taken to outlive a revoked sign-in, up to their 8 hours.
+    assert oauth.revocation_ends_tokens is False
     assert definition.auth.refresh == "rotating"
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == (
@@ -283,7 +287,12 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert "schema.bases:write" not in definition.access.write.scopes
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
-    assert definition.auth.identity.account_id == "id"
+    # whoami names no email without a scope Airtable's MCP server does not
+    # offer, so the account id names the connection too.
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "id",
+        "id",
+    )
 
 
 def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
@@ -429,6 +438,9 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     assert oauth.authorization_url == "https://gitlab.com/oauth/authorize"
     assert oauth.token_url == "https://gitlab.com/oauth/token"
     assert oauth.revocation_url == "https://gitlab.com/oauth/revoke"
+    # Revoking the refresh token also ends the access tokens agents hold.
+    assert oauth.revocation_ends_tokens is True
+    assert oauth.revocation_ends_grant is False
     assert oauth.prompt is None
     assert oauth.revocation_discovered is False
     # A check with a made-up code shows neither the redirect URI nor the
@@ -773,6 +785,24 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     assert oauth.revocation_url == "https://auth.example.test/revoke"
 
 
+def test_rejects_revocation_ending_tokens_on_an_entry_that_passes_none_through(
+    catalog_copy,
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
+            "    revocation_url: https://auth.example.test/revoke\n"
+            "    revocation_ends_tokens: true\n",
+        ).replace(
+            "token: { kind: pass_through, max_lifetime: 3600 }\n",
+            "token: { kind: minted, max_lifetime: 3600 }\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="revocation_ends_tokens"):
+        load_catalog(catalog_copy)
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
@@ -805,6 +835,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    revocation_ends_grant: true\n",
             "revocation_ends_grant",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_ends_tokens: true\n",
+            "revocation_ends_tokens",
         ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),

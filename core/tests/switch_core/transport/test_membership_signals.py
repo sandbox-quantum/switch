@@ -81,6 +81,11 @@ async def _eventually(check: Callable[[], bool]) -> None:
             await asyncio.sleep(0.02)
 
 
+def _listening(process: _Process, room_id: str) -> bool:
+    """Whether the process's copy of the client will be woken for the room."""
+    return bool(process.listener.wakers.get(room_id))
+
+
 async def _settled(transport: PostgresTransport) -> None:
     await _eventually(lambda: not transport._pending and not transport._delivering)
 
@@ -394,7 +399,10 @@ class TestAcrossProcesses:
         )
         # The copy in the process that served the change joined itself.
         assert second_id in here.transport._watching
-        await _eventually(lambda: second_id in there.transport._watching)
+        # Wait for the other copy to be listening for the room, not just to
+        # have claimed it: the claim comes before it reads where to start and
+        # subscribes, and a message announced in between wakes nobody there.
+        await _eventually(lambda: _listening(there, second_id))
         async with session_factory() as session:
             membership = await session.get(
                 ClientRoom, {"client_id": client_id, "room_id": second_id}

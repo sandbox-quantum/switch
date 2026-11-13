@@ -343,7 +343,7 @@ link [Connectors](switchdash://open/connections) to connect it. Once it's
 plain words (which agent, which service, read or write) and wait for a yes to
 that question. A request made earlier in the chat is not a yes.
 For a service that needs their choice, such as which GitHub repositories, link
-the agent's Connections instead:
+the agent's Connectors tab instead:
 `switchdash://open/agent/<agent-id>?tab=connections`.
 
 **Access the machine already has** (its provider's tools, the computer's own logins),

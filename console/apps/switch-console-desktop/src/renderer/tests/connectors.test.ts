@@ -4,6 +4,8 @@ import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  signInHint,
+  signInProgress,
 } from '@renderer/features/connectors/connect-flow';
 import {
   type ConnectorViewer,
@@ -19,9 +21,9 @@ import {
   connectedAsLine,
   connectorsInTab,
   connectorsPageAccess,
-  defaultConnectorsTab,
   keyAccessText,
   profileConnectAction,
+  reconnectNote,
   signInLabel,
   tokenLifetimeLabel,
   workspaceOffNotice,
@@ -32,6 +34,7 @@ import {
 } from '@renderer/features/connectors/github-access';
 import {
   emptyGitHubGrant,
+  githubAccessOptions,
   githubChoiceSummary,
   githubGrantResources,
   withEveryRepository,
@@ -44,8 +47,11 @@ import {
   addableAgents,
   agentsSummary,
   agentsUnlistedText,
+  noAddableAgentsText,
   noAgentsText,
   offersAddAgent,
+  staleGrantsText,
+  usesService,
 } from '@renderer/features/connectors/grant-agents';
 import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 import {
@@ -68,6 +74,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     agent_access_note: null,
@@ -76,6 +83,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     external_identity: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -101,10 +109,6 @@ describe('the state a connector card shows', () => {
       label: 'Reconnect needed',
       detail: 'Switch can no longer use your Example connection. Connect again.',
       tone: 'problem',
-    });
-    expect(connectorCardState(entry({ status: 'error' }), MEMBER)).toMatchObject({
-      kind: 'reconnect',
-      label: 'Connection failed',
     });
     expect(connectorCardState(entry({ status: 'connected' }), MEMBER).kind).toBe('connected');
     expect(connectorCardState(entry(), MEMBER).kind).toBe('connect');
@@ -204,7 +208,8 @@ describe('what each person is told about a connector that cannot be used', () =>
       expect(connectorCardState(github, viewer)).toMatchObject({
         kind: 'unavailable',
         label: 'Unavailable',
-        detail: "GitHub needs a server with an https address, so it can't work on this one.",
+        detail:
+          "GitHub needs a server with an https address, or one on this computer, so it can't work on this one.",
         fix: null,
       });
   });
@@ -212,11 +217,11 @@ describe('what each person is told about a connector that cannot be used', () =>
   it("points at this computer's own GitHub sign-in where the server runs on it", () => {
     const here = { ...MEMBER, onThisComputer: true };
     expect(connectorCardState(github, here).detail).toBe(
-      "GitHub needs a server with an https address, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
+      "GitHub needs this server's address to be https, or http at localhost or 127.0.0.1, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
     );
     // Only GitHub has a sign-in of its own on the computer to fall back on.
     expect(connectorCardState({ ...github, slug: 'example', name: 'Example' }, here).detail).toBe(
-      "Example needs a server with an https address, so it can't work on this one."
+      "Example needs a server with an https address, or one on this computer, so it can't work on this one."
     );
   });
 
@@ -261,6 +266,28 @@ describe('what each person is told about a connector that cannot be used', () =>
     });
   });
 
+  it('offers no one Turn on for a service the organization locked off', () => {
+    const locked = entry({ workspace_enabled: false, organization_locked: true });
+    for (const viewer of [OPERATOR, ADMIN, MEMBER]) {
+      expect(connectorCardState(locked, viewer)).toEqual({
+        kind: 'workspace_off',
+        label: 'Off in this workspace',
+        detail: 'Set by your organization.',
+        tone: 'muted',
+        fix: null,
+      });
+      expect(cardQuickAction(locked, connectorCardState(locked, viewer))).toBeNull();
+    }
+  });
+
+  it('treats a service the organization locked on as on', () => {
+    const locked = entry({ workspace_enabled: true, organization_locked: true });
+    expect(workspaceOffNotice(locked, true)).toBeNull();
+    const state = connectorCardState(locked, ADMIN);
+    expect(state.fix).not.toBe('turn_on');
+    expect(state.kind).not.toBe('workspace_off');
+  });
+
   it('puts the fix on the card in place of Connect, and nothing where there is none', () => {
     const quick = (item: ConnectionCatalogEntry, viewer: ConnectorViewer) =>
       cardQuickAction(item, connectorCardState(item, viewer));
@@ -277,7 +304,7 @@ describe('what each person is told about a connector that cannot be used', () =>
   it('takes Connect off the profile where nothing could be connected', () => {
     expect(profileConnectAction(notSetUp)).toBeNull();
     expect(profileConnectAction(github)).toBeNull();
-    expect(profileConnectAction({ ...github, status: 'error' })).toBeNull();
+    expect(profileConnectAction({ ...github, status: 'needs_reauthorization' })).toBeNull();
     // Connectable where it cannot be granted: still offered.
     expect(
       profileConnectAction(
@@ -307,7 +334,12 @@ describe('the Yours and Discover tabs', () => {
       description: 'Monitors, logs and incidents.',
       status: 'connected',
     }),
-    entry({ slug: 'github', name: 'GitHub', category: 'Source control', status: 'error' }),
+    entry({
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      status: 'needs_reauthorization',
+    }),
     entry({
       slug: 'jira-ish',
       name: 'Linear',
@@ -330,15 +362,6 @@ describe('the Yours and Discover tabs', () => {
       'Linear',
       'Notion',
     ]);
-  });
-
-  it('opens on Yours once the person has a connection, working or not, and on Discover before', () => {
-    expect(defaultConnectorsTab(catalog)).toBe('yours');
-    expect(defaultConnectorsTab([entry({ status: 'needs_reauthorization' })])).toBe('yours');
-    expect(
-      defaultConnectorsTab([entry({ status: 'not_connected' }), entry({ status: 'coming_soon' })])
-    ).toBe('discover');
-    expect(defaultConnectorsTab([])).toBe('discover');
   });
 
   it('searches within the tab by name, category or description', () => {
@@ -382,7 +405,6 @@ describe("a card's own control", () => {
     expect(quick({ workspace_enabled: false })).toBeNull();
     expect(quick({ status: 'coming_soon' })).toBeNull();
     expect(quick({ status: 'needs_reauthorization' })).toBeNull();
-    expect(quick({ status: 'error' })).toBeNull();
   });
 });
 
@@ -441,9 +463,15 @@ describe('the profile', () => {
   it('offers connecting, signing in again, or replacing a key', () => {
     expect(profileConnectAction(entry())).toBe('connect');
     expect(profileConnectAction(entry({ status: 'needs_reauthorization' }))).toBe('reconnect');
-    expect(profileConnectAction(entry({ status: 'error' }))).toBe('reconnect');
-    expect(profileConnectAction(entry({ status: 'connected' }))).toBeNull();
+    // A connected sign-in can be made again, to switch account or consent again.
+    expect(profileConnectAction(entry({ status: 'connected' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ slug: 'github', status: 'connected' }))).toBeNull();
+    expect(
+      profileConnectAction(entry({ status: 'connected', workspace_enabled: false }))
+    ).toBeNull();
+    expect(
+      profileConnectAction(entry({ status: 'connected', unavailable_code: 'app_not_set_up' }))
+    ).toBeNull();
     expect(profileConnectAction(entry({ status: 'connected', auth_type: 'api_key' }))).toBe(
       'replace'
     );
@@ -462,6 +490,15 @@ describe('the profile', () => {
     ).toBeNull();
   });
 
+  it('says what signing in again to another account does', () => {
+    expect(reconnectNote(entry())).toBe(
+      'Signing in to another Example account replaces this one. Each agent then needs Example turned on again.'
+    );
+    expect(reconnectNote(entry({ slug: 'notion', name: 'Notion' }))).toBe(
+      'Choosing another Notion workspace replaces this connection. Each agent then needs Notion turned on again.'
+    );
+  });
+
   it('tells a member who can switch it on, and offers an admin the switch', () => {
     const off = entry({ workspace_enabled: false });
     expect(workspaceOffNotice(off, false)).toEqual({
@@ -475,6 +512,25 @@ describe('the profile', () => {
     expect(workspaceOffNotice(entry(), true)).toBeNull();
     // No workspace layer on this server: nothing to say.
     expect(workspaceOffNotice(entry({ workspace_enabled: null }), false)).toBeNull();
+  });
+
+  it("offers an admin no switch the server can't serve, or the organization locked", () => {
+    expect(
+      workspaceOffNotice(
+        entry({
+          workspace_enabled: false,
+          unavailable_reason: 'Example is not set up on this server.',
+          unavailable_code: 'app_not_set_up',
+        }),
+        true
+      )
+    ).toEqual({ text: 'Example is switched off for this workspace.', canEnable: false });
+    const locked = entry({ workspace_enabled: false, organization_locked: true });
+    for (const administers of [true, false])
+      expect(workspaceOffNotice(locked, administers)).toEqual({
+        text: 'Set by your organization.',
+        canEnable: false,
+      });
   });
 });
 
@@ -531,6 +587,22 @@ describe('the agents on a connector page', () => {
       repositoryIds: [],
       access: 'read',
     });
+  });
+
+  it('offers pushing only where the server lets agents write', () => {
+    expect(githubAccessOptions(null)).toEqual([
+      { value: 'read', label: 'Read', disabled: false },
+      { value: 'write', label: 'Read and push', disabled: false },
+    ]);
+    expect(
+      githubAccessOptions("This server's GitHub App lets agents read only.").map((option) => [
+        option.value,
+        option.disabled,
+      ])
+    ).toEqual([
+      ['read', false],
+      ['write', true],
+    ]);
   });
 
   it('says a GitHub choice in a sentence, naming the account only among several', () => {
@@ -604,6 +676,19 @@ describe('the agents on a connector page', () => {
     expect(OPEN_AGENT_NOTE).toBe('Others can address it; it would act as you.');
   });
 
+  it('counts a grant made for another account as not in use, and offers it again', () => {
+    const changed = { agent_id: 'm4', name: 'M4', granted: true, account_changed: true };
+    const listed = [...agents, { ...changed, addressing_open: false }];
+    expect(listed.filter(usesService).map((agent) => agent.agent_id)).toEqual(['m3']);
+    expect(addableAgents(listed, 'M4').map((agent) => agent.agent_id)).toEqual(['m4']);
+    expect(staleGrantsText(['M4'], 'Example')).toBe(
+      'M4: granted for another Example account, so it has no access now. Turn Example on again for it.'
+    );
+    expect(staleGrantsText(['M4', 'M5'], 'Example')).toBe(
+      'M4, M5: granted for another Example account, so they have no access now. Turn Example on again for them.'
+    );
+  });
+
   it("sends the person to the agent's Connectors where the server cannot list agents", () => {
     expect(agentsUnlistedText('Example')).toBe(
       "This server can't list your agents here. Turn Example on for an agent from the agent's Connectors."
@@ -614,6 +699,14 @@ describe('the agents on a connector page', () => {
     expect(noAgentsText('Example')).toBe(
       "You have no agents in this workspace yet. Once you add one, turn Example on for it from the agent's Connectors."
     );
+  });
+
+  it('says why the search offers no agent, and nothing more when there are none', () => {
+    expect(noAddableAgentsText(agents, 'Example', '')).toBe(
+      'Every one of your agents already uses Example.'
+    );
+    expect(noAddableAgentsText(agents, 'Example', 'M3')).toBe('No agent here matches “M3”.');
+    expect(noAddableAgentsText([], 'Example', '')).toBeNull();
   });
 });
 
@@ -640,6 +733,29 @@ describe('the sign-in flow', () => {
   };
   const run = (state: ConnectFlowState, ...events: Parameters<typeof connectFlowReducer>[1][]) =>
     events.reduce(connectFlowReducer, state);
+
+  it('asks for the browser only while the sign-in can still finish there', () => {
+    const flow = { account: null, error: null, warning: null };
+    expect(signInProgress({ ...flow, status: 'pending' }, 'Example')).toBe(
+      'Finish signing in in your browser, then return here.'
+    );
+    expect(signInProgress(null, 'Example')).toBe(
+      'Finish signing in in your browser, then return here.'
+    );
+    expect(signInProgress({ ...flow, status: 'checking' }, 'Example')).toBe('Connecting Example…');
+    expect(signInProgress({ ...flow, status: 'failed', error: 'Refused.' }, 'Example')).toBeNull();
+  });
+
+  it('suggests what to check only while the browser has not come back', () => {
+    const flow = { account: null, error: null, warning: null };
+    const hint =
+      'If Example showed an error, cancel, and ask the person who set up Example for Switch to check its redirect URI and scopes.';
+    expect(signInHint({ ...flow, status: 'pending' }, 'Example')).toBe(hint);
+    expect(signInHint(null, 'Example')).toBe(hint);
+    expect(signInHint({ ...flow, status: 'checking' }, 'Example')).toBeNull();
+    expect(signInHint({ ...flow, status: 'failed', error: 'Refused.' }, 'Example')).toBeNull();
+    expect(signInHint({ ...flow, status: 'connected' }, 'Example')).toBeNull();
+  });
 
   it('cannot be closed while waiting for the browser, or mid-call', () => {
     expect(canCloseConnectFlow(initialConnectFlow(false))).toBe(true);
@@ -808,9 +924,12 @@ describe('with the service_connections flag off', () => {
 
   it('has no page to show, rather than an empty one', () => {
     expect(connectorsPageAccess(flags(false))).toBe('absent');
+    // Flags that could never be read are said to be, not taken as off.
     expect(connectorsPageAccess({ ...flags(false), fetchedAt: null, error: 'down' })).toBe(
-      'absent'
+      'unreadable'
     );
+    // Once read, the last values read stand while a later read fails.
+    expect(connectorsPageAccess({ ...flags(true), error: 'down' })).toBe('shown');
     expect(connectorsPageAccess(null)).toBe('loading');
     expect(
       connectorsPageAccess({ ...flags(false), fetchedAt: null, error: FLAGS_NOT_READ_YET })

@@ -57,6 +57,7 @@ from switch_core.connections.app_credentials import (
     github_needs_https,
     needs_public_url,
     not_set_up,
+    reads_only,
 )
 from switch_core.connections.loader import (
     TOKEN_PLACEHOLDER,
@@ -156,7 +157,8 @@ UnavailableCode = Literal[
     "coming_soon",
     # The operator switched it off on this server (`DISABLED_SERVICES`).
     "switched_off",
-    # Its app can't be set up on this server: GitHub's needs an https address.
+    # Its app can't be set up on this server: GitHub's needs an https address,
+    # or plain http on this computer.
     "needs_https",
     # Its sign-ins return only to the server's own callback, and the server
     # has no public address (`GATEWAY_PUBLIC_URL`).
@@ -205,7 +207,8 @@ def _client_replaced(
 ) -> bool:
     """Whether `connection` signed in through a client other than the one
     `adapter` signs in through, so it must reconnect. Unknown either side
-    is no."""
+    is no; a client Core registers for itself is known once this process has
+    used it, to sign in or to refresh."""
     current = None if adapter is None else adapter.current_client_id()
     return (
         connection.oauth_client_id is not None
@@ -297,6 +300,36 @@ class ServiceError(Exception):
         }
 
 
+# Who reads a refusal: the person whose connection it is, acting for
+# themselves, or an agent asking for a token on its owner's behalf.
+Reader = Literal["owner", "agent"]
+
+
+def _reconnect(name: str, why: str, reader: Reader) -> ServiceError:
+    """The refusal for a connection that must be signed in again, worded for
+    whoever reads it: the owner reconnects; an agent's owner must."""
+    who = "Reconnect" if reader == "owner" else "The agent's owner must reconnect"
+    return ServiceError(
+        409,
+        CONNECTOR_REVOKED,
+        f"{why} {who} {name} from Connectors in Switch Console.",
+        retryable=False,
+    )
+
+
+class _MustReconnect(ServiceError):
+    """A connection that must be signed in again, and why, raised where who
+    will read the refusal is not known: `_access_token` words it for them."""
+
+    def __init__(self, why: str) -> None:
+        super().__init__(409, CONNECTOR_REVOKED, why, retryable=False)
+        self.why = why
+
+
+def _through_replaced_client(name: str) -> str:
+    return f"{name} was connected through an app Switch no longer uses."
+
+
 @dataclass(frozen=True)
 class Principal:
     """Who asks: a controller acting as the agent, or the agent's own key."""
@@ -353,6 +386,15 @@ class CheckedKey:
     account_id: str
     label: str
     secret: ConnectionSecret = field(repr=False)
+
+
+def _holds_token(secret: ConnectionSecret) -> bool:
+    """Whether `secret` holds a token for the vendor to revoke: one without
+    gives the revocation nothing to send, so it ends nothing."""
+    refresh_token = secret.values.get("refresh_token")
+    return bool(secret.access_token) or (
+        isinstance(refresh_token, str) and bool(refresh_token)
+    )
 
 
 def _passes_through(entry: Connection) -> bool:
@@ -567,13 +609,14 @@ class ServiceBroker:
     async def require_workspace_enabled(
         self, session: AsyncSession, service: str
     ) -> None:
-        """Refuse `service` where a workspace admin switched it off. The
-        server's own switch (`DISABLED_SERVICES`) is checked first, so its
-        reason is the one people see when both apply."""
+        """Refuse `service` where the operator switched it off on this server
+        (`DISABLED_SERVICES`) or a workspace admin switched it off here. The
+        server's switch applies with the workspace gate off too, and is
+        checked first, so its reason is the one people see when both apply."""
         name = self._entry(service).definition.name
+        self._require_switched_on(service)
         if not self._workspace_gate:
             return
-        self._require_switched_on(service)
         switch = (
             await self._workspace_services.switches(
                 session, [service], organizations=self._organization_settings
@@ -648,17 +691,13 @@ class ServiceBroker:
         return (await self._choose(session, service)).adapter
 
     async def _adapter(self, session: AsyncSession, service: str) -> ServiceAdapter:
-        """The adapter that issues for `service`, or the refusal saying why not."""
+        """The adapter that issues for `service`, or the refusal saying why
+        not: `_unavailable` decides, as it does what a session is given."""
         choice = await self._choose(session, service)
-        adapter = self._refusing(service, choice)
-        if not adapter.can_issue:
-            raise ServiceError(
-                503,
-                INTERNAL,
-                self._reason(service, choice),
-                retryable=False,
-            )
-        return adapter
+        unavailable = self._unavailable(service, choice)
+        if unavailable is not None:
+            raise ServiceError(503, INTERNAL, unavailable.reason, retryable=False)
+        return self._refusing(service, choice)
 
     async def _refresher(self, session: AsyncSession, service: str) -> ServiceAdapter:
         """The adapter that keeps `service`'s connections signed in."""
@@ -700,7 +739,6 @@ class ServiceBroker:
         to_record: bool,
     ) -> GrantDecision:
         entry = self._entry(service)
-        self._require_switched_on(service)
         await self.require_workspace_enabled(session, service)
         name = entry.definition.name
         if not _issued_to_agents(entry):
@@ -814,6 +852,9 @@ class ServiceBroker:
             if grant.access == "write"
             else "read"
         )
+        read_only = self.read_only(await self.standing(session, service), service)
+        if access == "write" and read_only is not None:
+            raise ServiceError(403, FORBIDDEN, read_only, retryable=False)
         if access == "write" and connection.consent != "write":
             raise ServiceError(
                 403,
@@ -884,7 +925,9 @@ class ServiceBroker:
         decision = await self.decide(session, agent_id, principal, service)
         adapter = await self._adapter(session, service)
         await session.commit()
-        access = await self._access_token(decision.owner_id, service, adapter)
+        access = await self._access_token(
+            decision.owner_id, service, adapter, reader="agent"
+        )
         request = IssueRequest(
             service=service,
             access=decision.access,
@@ -895,7 +938,7 @@ class ServiceBroker:
             issued = await adapter.issue(access, request)
         except ReauthorizationRequiredError as error:
             raise await self._needs_reauthorization(
-                decision.owner_id, service, error
+                decision.owner_id, service, error, reader="agent"
             ) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
@@ -1123,7 +1166,7 @@ class ServiceBroker:
     # ── Connection credential ────────────────────────────────────────────────
 
     async def _access_token(
-        self, owner_id: str, service: str, adapter: ServiceAdapter
+        self, owner_id: str, service: str, adapter: ServiceAdapter, *, reader: Reader
     ) -> AccessToken:
         """A usable access token for the owner's connection, and its expiry.
 
@@ -1135,7 +1178,8 @@ class ServiceBroker:
         connection's lock still serialises refreshes, but every agent of an
         owner renewing together would otherwise each hold a database
         connection queued on that lock while one refresh takes its time, and
-        give up at the lock's timeout.
+        give up at the lock's timeout. So a refusal to reconnect is worded
+        here, for `reader`, rather than in the fetch they share.
         """
         key = (require_tenant_id(), owner_id, service)
         fetching = self._fetching.get(key)
@@ -1143,7 +1187,11 @@ class ServiceBroker:
             fetching = asyncio.create_task(self._fresh_access_token(*key, adapter))
             self._fetching[key] = fetching
             fetching.add_done_callback(lambda done: self._fetched(key, done))
-        return await asyncio.shield(fetching)
+        try:
+            return await asyncio.shield(fetching)
+        except _MustReconnect as lapsed:
+            name = self._entry(service).definition.name
+            raise _reconnect(name, lapsed.why, reader) from None
 
     def _fetched(
         self, key: tuple[str, str, str], done: asyncio.Task[AccessToken]
@@ -1182,24 +1230,13 @@ class ServiceBroker:
                     retryable=False,
                 )
             if connection.status != "active":
-                raise ServiceError(
-                    409,
-                    CONNECTOR_REVOKED,
-                    f"The agent's owner must reconnect {name} in Switch Console, "
-                    "under Connectors.",
-                    retryable=False,
+                raise _MustReconnect(
+                    _through_replaced_client(name)
+                    if connection.error_code == CLIENT_REPLACED
+                    else f"The {name} sign-in was revoked or has lapsed."
                 )
             if _client_replaced(connection, adapter):
-                await self._store.mark_needs_reauthorization(
-                    session, owner_id, service, CLIENT_REPLACED
-                )
-                await session.commit()
-                raise self._revoked(
-                    service,
-                    ReauthorizationRequiredError(
-                        f"{name} was connected through an app Switch no longer uses."
-                    ),
-                )
+                raise await self._replaced_client(session, owner_id, service)
             secret = self._secret(connection)
             token = secret.access_token
             fresh = secret.expires_at > time.time() + before.total_seconds()
@@ -1215,16 +1252,25 @@ class ServiceBroker:
                 return AccessToken(token, _expiry(secret))
             try:
                 renewed = await adapter.refresh(secret)
-            except ReauthorizationRequiredError as error:
+            except ServiceUnavailableError as error:
+                raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+            except ServiceAdapterError as error:
+                # A client Core registers for itself is known only once it is
+                # used, so one registered anew since this sign-in shows here,
+                # as the vendor refuses the old client's refresh token.
+                if _client_replaced(connection, adapter):
+                    raise await self._replaced_client(
+                        session, owner_id, service
+                    ) from None
+                if not isinstance(error, ReauthorizationRequiredError):
+                    raise ServiceError(
+                        503, INTERNAL, str(error), retryable=False
+                    ) from None
                 await self._store.mark_needs_reauthorization(
                     session, owner_id, service, "refresh_refused"
                 )
                 await session.commit()
-                raise self._revoked(service, error) from None
-            except ServiceUnavailableError as error:
-                raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
-            except ServiceAdapterError as error:
-                raise ServiceError(503, INTERNAL, str(error), retryable=False) from None
+                raise _MustReconnect(str(error)) from None
             token = renewed.access_token
             if token is None:
                 raise ServiceError(
@@ -1243,20 +1289,24 @@ class ServiceBroker:
             await session.commit()
             return AccessToken(token, _expiry(renewed))
 
-    def _revoked(self, service: str, error: Exception) -> ServiceError:
-        name = self._entry(service).definition.name
-        return ServiceError(
-            409,
-            CONNECTOR_REVOKED,
-            f"{error} The agent's owner must reconnect {name} in Switch Console, "
-            "under Connectors.",
-            retryable=False,
+    async def _replaced_client(
+        self, session: AsyncSession, owner_id: str, service: str
+    ) -> _MustReconnect:
+        """Record that the connection signed in through a client its service
+        no longer uses; the refusal to raise."""
+        await self._store.mark_needs_reauthorization(
+            session, owner_id, service, CLIENT_REPLACED
+        )
+        await session.commit()
+        return _MustReconnect(
+            _through_replaced_client(self._entry(service).definition.name)
         )
 
     async def _needs_reauthorization(
-        self, owner_id: str, service: str, error: Exception
+        self, owner_id: str, service: str, error: Exception, *, reader: Reader
     ) -> ServiceError:
-        """Record that the vendor refused the owner's sign-in; the refusal to raise.
+        """Record that the vendor refused the owner's sign-in; the refusal to
+        raise, worded for `reader`.
 
         In a transaction of its own: the vendor's answer stands whatever the
         caller's transaction does next.
@@ -1271,7 +1321,7 @@ class ServiceBroker:
                 await session.commit()
 
         await finish_shielded(mark())
-        return self._revoked(service, error)
+        return _reconnect(self._entry(service).definition.name, str(error), reader)
 
     def _signed_in(self, connection: ServiceConnection) -> SignIn:
         return SignIn(self._secret(connection), connection.oauth_client_id)
@@ -1280,17 +1330,17 @@ class ServiceBroker:
         self,
         service: str,
         held: tuple[str | None, str],
-        revoked: tuple[str | None, str],
+        revoked: tuple[str | None, str | None],
     ) -> bool:
         """Whether revoking a sign-in would also end the one held: the vendor
         ends every sign-in of an account through a client when one is revoked
         (`revocation_ends_grant`), and both are the same account's through the
         same client. Each is (OAuth client, account id); a sign-in from before
-        clients were recorded went through the server's client.
+        clients were recorded went through the server's client. A revoked
+        sign-in whose account is unknown (None) can be the held account's, so
+        it counts as the same account.
         """
-        entry = self._catalog.get(service)
-        oauth = None if entry is None else entry.definition.auth.oauth
-        if oauth is None or not oauth.revocation_ends_grant:
+        if not self._revocation_ends_grant(service):
             return False
         server = self._adapters.get(service)
         server_client = None if server is None else server.current_client_id()
@@ -1298,8 +1348,18 @@ class ServiceBroker:
         return (
             held_client is not None
             and held_client == (revoked[0] or server_client)
-            and held[1] == revoked[1]
+            and revoked[1] in (None, held[1])
         )
+
+    def _revocation_ends_tokens(self, service: str) -> bool:
+        entry = self._catalog.get(service)
+        oauth = None if entry is None else entry.definition.auth.oauth
+        return oauth is not None and oauth.revocation_ends_tokens
+
+    def _revocation_ends_grant(self, service: str) -> bool:
+        entry = self._catalog.get(service)
+        oauth = None if entry is None else entry.definition.auth.oauth
+        return oauth is not None and oauth.revocation_ends_grant
 
     async def _revoker(
         self, session: AsyncSession, service: str, oauth_client_id: str | None
@@ -1350,22 +1410,24 @@ class ServiceBroker:
         issuing holds it to.
         """
         _require_owners_controller(principal, agent.owner_id)
-        # A service the workspace switched off is left out, as if never
-        # granted: the host restarts a running session without it. The grant
-        # is kept, so switching it back on returns it.
+        # A grant whose every token request would be refused is left out, as
+        # if never granted, and the host restarts a running session without
+        # it: the workspace switched the service off, or it can't be handed
+        # out here (its standing's `unavailable`: switched off on this server,
+        # its app not set up, unusable or missing a part, a key that never
+        # expires). The grant is kept, so it comes back once that changes.
         switched_off = await self.workspace_disabled(session)
         grants = []
         for grant in await self._store.list_grants(session, agent.id):
-            if grant.service in switched_off:
+            if (
+                grant.service in switched_off
+                or (await self.standing(session, grant.service)).unavailable is not None
+            ):
                 continue
-            entry = self._catalog.get(grant.service)
-            # Nor is one whose credential never expires: every token request
-            # for it is refused, so the session gets none of its tools.
-            if entry is not None and not _issued_to_agents(entry):
-                continue
-            skill = None if entry is None else entry.skill_files.get("SKILL.md")
-            mcp = None if entry is None else entry.definition.mcp
-            cli = None if entry is None else entry.definition.cli
+            entry = self._catalog[grant.service]
+            skill = entry.skill_files.get("SKILL.md")
+            mcp = entry.definition.mcp
+            cli = entry.definition.cli
             grants.append(
                 {
                     "service": grant.service,
@@ -1426,10 +1488,12 @@ class ServiceBroker:
     def connection_status(
         self, standing: ServiceStanding, connection: ServiceConnection | None
     ) -> str:
-        """The connection's status, as a person or their agent acts on it: one
-        made through an app this server has since replaced, or granted other
-        scopes than this server now asks for, needs reconnecting before anyone
-        uses it and finds out."""
+        """A connection's status as people and agents act on it, where its
+        service stands as `standing`: "not_connected", "active",
+        "needs_reauthorization" or "error". One made through a client its
+        service no longer uses, or granted other scopes than this server now
+        asks for, needs reconnecting before anyone uses it and finds out,
+        though its row stays active until a token is asked for."""
         if connection is None:
             return "not_connected"
         if connection.status == "active" and (
@@ -1470,15 +1534,18 @@ class ServiceBroker:
         unavailable = self._unavailable(service, choice)
         return "Not available here." if unavailable is None else unavailable.reason
 
+    def server_availability(self, service: str) -> str | None:
+        """Why a workspace that goes through the server's app for `service`
+        cannot be granted it, or None if it can."""
+        unavailable = self._unavailable(
+            service, _Choice(self._adapters.get(service), None, "server")
+        )
+        return None if unavailable is None else unavailable.reason
+
     def server_serves(self, service: str) -> bool:
         """Whether a workspace that goes through the server's app for
         `service` can be granted it: switched on, set up, and able to issue."""
-        return (
-            self._unavailable(
-                service, _Choice(self._adapters.get(service), None, "server")
-            )
-            is None
-        )
+        return self.server_availability(service) is None
 
     def _unavailable(self, service: str, choice: _Choice) -> Unavailable | None:
         """Why `service` cannot be granted through `choice`, as a code and
@@ -1516,6 +1583,20 @@ class ServiceBroker:
                 "agents: it is not fully set up.",
             )
         return None
+
+    def read_only(self, standing: ServiceStanding, service: str) -> str | None:
+        """Why agents can only read through `service` where it stands as
+        `standing`, or None where a write grant can be made: the app it goes
+        through lets them read only (a GitHub App short of the write level's
+        permissions). A write grant is refused, and so is a token for one
+        made before."""
+        adapter = standing.adapter
+        if adapter is None or not adapter.read_only:
+            return None
+        return reads_only(
+            self._catalog[service].definition.name,
+            organization=standing.source == "organization",
+        )
 
     async def summary(
         self, session: AsyncSession, agent_name: str, grant: ServiceGrant
@@ -1580,6 +1661,9 @@ class ServiceBroker:
                 )
             access = _consent(connection)
         level_name: AccessLevel = access or "read"
+        read_only = self.read_only(standing, service)
+        if level_name == "write" and read_only is not None:
+            raise ServiceError(403, FORBIDDEN, read_only, retryable=False)
         if level_name == "write" and connection.consent != "write":
             raise ServiceError(
                 422,
@@ -1646,7 +1730,9 @@ class ServiceBroker:
             tools=None,
         )
         await session.commit()
-        owner_token = await self._access_token(owner_id, service, terms.adapter)
+        owner_token = await self._access_token(
+            owner_id, service, terms.adapter, reader="owner"
+        )
         resources: dict[str, Any] = {}
         try:
             if repositories:
@@ -1670,7 +1756,9 @@ class ServiceBroker:
                 ),
             )
         except ReauthorizationRequiredError as error:
-            raise await self._needs_reauthorization(owner_id, service, error) from None
+            raise await self._needs_reauthorization(
+                owner_id, service, error, reader="owner"
+            ) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ServiceAdapterError as error:
@@ -1723,14 +1811,18 @@ class ServiceBroker:
         )
         await session.commit()
 
-        owner_token = await self._access_token(actor_id, service, adapter)
+        owner_token = await self._access_token(
+            actor_id, service, adapter, reader="owner"
+        )
         request = IssueRequest(
             service=service, access=level_name, reach=reach, resources=resources
         )
         try:
             checked = await adapter.check_grant(owner_token.token, request)
         except ReauthorizationRequiredError as error:
-            raise await self._needs_reauthorization(actor_id, service, error) from None
+            raise await self._needs_reauthorization(
+                actor_id, service, error, reader="owner"
+            ) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ServiceAdapterError as error:
@@ -1817,39 +1909,28 @@ class ServiceBroker:
         for a key.
 
         Re-linking keeps the grants (a different account then fails them with
-        `grant_account_changed`) and revokes what was issued on the old
+        `grant_account_changed`, and moves their revision) and revokes what
+        was issued on the old
         sign-in, and the old sign-in itself when it is not the new one.
         Commits `session`; returns a warning naming what could not be revoked.
         """
         entry = self._entry(service)
         name = entry.definition.name
-        self._require_switched_on(service)
-        if not _issued_to_agents(entry):
-            raise ServiceError(403, FORBIDDEN, _never_expires(name), retryable=False)
         try:
+            self._require_switched_on(service)
+            if not _issued_to_agents(entry):
+                raise ServiceError(
+                    403, FORBIDDEN, _never_expires(name), retryable=False
+                )
             await self.require_workspace_enabled(session, service)
         except ServiceError as refusal:
-            # The vendor has already issued this sign-in: one Switch will not
-            # keep is revoked, rather than left live with nobody holding it.
-            previous = await self._store.get_connection(session, user_id, service)
-            kept = previous is not None and (
-                self._secret(previous).access_token == secret.access_token
-                # Revoking it would end the kept one too, at a vendor that
-                # revokes whole grants. It stays live at the vendor, in the
-                # grant the kept one holds.
-                or self._shares_grant(
-                    service,
-                    (previous.oauth_client_id, previous.account_id),
-                    (oauth_client_id, account_id),
-                )
-            )
-            await session.rollback()
-            note = (
-                None
-                if kept
-                else await self._revoke_unkept(
-                    session, service, secret, oauth_client_id
-                )
+            note = await self.discard_sign_in(
+                session,
+                service=service,
+                kept=await self._store.get_connection(session, user_id, service),
+                secret=secret,
+                oauth_client_id=oauth_client_id,
+                account_id=account_id,
             )
             raise ServiceError(
                 refusal.status_code,
@@ -1880,6 +1961,10 @@ class ServiceBroker:
             encrypted_secret=self._keyring.encrypt(json.dumps(secret.values)),
             oauth_client_id=oauth_client_id,
         )
+        if previous is not None and replaced_account != account_id:
+            # The grants were made for the old account and no longer stand:
+            # an agent host drops a token it holds when the revision moves.
+            await self._store.bump_grants(session, user_id, service)
         await record_audit_event(
             session,
             tenant_id=require_tenant_id(),
@@ -1892,6 +1977,8 @@ class ServiceBroker:
         await session.commit()
 
         warnings = []
+        # Whether revoking the old sign-in also ended the tokens agents hold.
+        ended: frozenset[str] = frozenset()
         if (
             replaced is not None
             and replaced.secret.access_token != secret.access_token
@@ -1909,6 +1996,10 @@ class ServiceBroker:
                 )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(replaced.secret)
+                if self._revocation_ends_tokens(service) and _holds_token(
+                    replaced.secret
+                ):
+                    ended = frozenset({service})
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:
@@ -1921,10 +2012,64 @@ class ServiceBroker:
                     f"{name} could not revoke the old sign-in. Revoke it in your "
                     f"{name} settings."
                 )
-        withdrawn = await self.revoke_withdrawn(session, issued_on_it)
+        withdrawn = await self.revoke_withdrawn(session, issued_on_it, ended=ended)
         if withdrawn is not None:
             warnings.append(withdrawn)
         return " ".join(warnings) or None
+
+    async def discard_sign_in(
+        self,
+        session: AsyncSession,
+        *,
+        service: str,
+        kept: ServiceConnection | None,
+        secret: ConnectionSecret,
+        oauth_client_id: str | None,
+        account_id: str | None,
+    ) -> str | None:
+        """The vendor has issued a sign-in that Switch will not keep: revoke
+        it, rather than leave it live with nobody holding it. At a vendor that
+        ends all of an account's sign-ins on one revocation
+        (`revocation_ends_grant`, as Google does), Switch does not revoke it,
+        and says so: the server's client is shared by every workspace, so the
+        revocation could end a connection Switch keeps in another one. `kept`
+        is the connection Switch keeps for the same account or person, if
+        any, and `account_id` is None when Switch could not read the account.
+        The token check compares only with `kept`, because no catalog vendor
+        gives the same access token to two separate sign-ins: Sentry makes
+        each token from a new grant, Airtable has no revocation, and Switch
+        never revokes at Google. Ends `session`'s transaction before it calls the vendor. Returns a
+        sentence for the person when the sign-in was not revoked."""
+        same = (
+            kept is not None and self._secret(kept).access_token == secret.access_token
+        )
+        # The sign-in stays live at the vendor, in the grant the kept one
+        # holds. A sign-in whose account is unknown may be outside it.
+        in_kept = (
+            kept is not None
+            and account_id is not None
+            and self._shares_grant(
+                service,
+                (kept.oauth_client_id, kept.account_id),
+                (oauth_client_id, account_id),
+            )
+        )
+        await session.rollback()
+        if same or in_kept:
+            return None
+        if self._revocation_ends_grant(service):
+            logger.warning(
+                "%s unkept sign-in left live: revoking it could end a kept sign-in",
+                service,
+            )
+            return (
+                f"Switch did not revoke the sign-in "
+                f"{self._entry(service).definition.name} just issued, because "
+                "that could also end a connection Switch keeps."
+            )
+        return await self._revoke_unkept(
+            session, service, secret, oauth_client_id, beside_kept=kept is not None
+        )
 
     async def _revoke_unkept(
         self,
@@ -1932,17 +2077,20 @@ class ServiceBroker:
         service: str,
         secret: ConnectionSecret,
         oauth_client_id: str | None,
+        *,
+        beside_kept: bool,
     ) -> str | None:
         """Revoke a new sign-in that was not kept; a sentence for the person
-        when it could not be. A key is the person's own, and theirs to keep."""
+        when it could not be. A key is the person's own, and theirs to keep.
+        `beside_kept`: Switch keeps a connection for the same account or
+        person, which removing Switch at the vendor would end too."""
         definition = self._entry(service).definition
         if definition.adapter == "api_key":
             return None
         name = definition.name
-        unrevoked = (
-            f"Switch could not revoke the sign-in {name} just issued. Remove "
-            f"Switch from your {name} account's connected apps."
-        )
+        unrevoked = f"Switch could not revoke the sign-in {name} just issued."
+        if not beside_kept:
+            unrevoked += f" Remove Switch from your {name} account's connected apps."
         try:
             adapter = await self._revoker(session, service, oauth_client_id)
             async with asyncio.timeout(VENDOR_CALL_SECONDS):
@@ -2024,7 +2172,10 @@ class ServiceBroker:
         await session.commit()
         return (
             await self._access_token(
-                user_id, service, await self._refresher(session, service)
+                user_id,
+                service,
+                await self._refresher(session, service),
+                reader="owner",
             )
         ).token
 
@@ -2189,6 +2340,8 @@ class ServiceBroker:
         """After the removal has committed: revoke each sign-in at its vendor,
         and the tokens issued on it. A warning names what could not be."""
         warnings = []
+        # Services whose revocation here also ended the tokens agents hold.
+        ended: set[str] = set()
         for service, signed_in in removed:
             entry = self._catalog.get(service)
             name = service if entry is None else entry.definition.name
@@ -2203,6 +2356,10 @@ class ServiceBroker:
             try:
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(signed_in.secret)
+                if self._revocation_ends_tokens(service) and _holds_token(
+                    signed_in.secret
+                ):
+                    ended.add(service)
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:
@@ -2224,6 +2381,7 @@ class ServiceBroker:
                         [service for service, _ in removed]
                     ),
                 ),
+                ended=frozenset(ended),
             )
             if withdrawn is not None:
                 warnings.append(withdrawn)
@@ -2232,7 +2390,11 @@ class ServiceBroker:
     # ── Revocation and retention ─────────────────────────────────────────────
 
     async def revoke_withdrawn(
-        self, session: AsyncSession, conditions: tuple[Any, ...]
+        self,
+        session: AsyncSession,
+        conditions: tuple[Any, ...],
+        *,
+        ended: frozenset[str] = frozenset(),
     ) -> str | None:
         """After an access change has committed: revoke what it withdrew, and
         say what could not be taken back.
@@ -2240,12 +2402,19 @@ class ServiceBroker:
         A token its vendor can revoke that is still pending is retried by the
         periodic tick, and lives an hour at most. One no vendor can revoke
         alone (the owner's own, passed through) stays valid until it expires;
-        the warning names the service and when.
+        the warning names the service and when. `ended` names the services
+        whose sign-in was just revoked at a vendor whose revocation also ends
+        those tokens: the warning leaves those services out. It then also
+        leaves out a token of an earlier sign-in of the same service that a
+        reconnect failed to revoke, which can still be valid; that reconnect
+        already warned about it.
         """
         pending = await self.revoke_pending(session, conditions)
         warnings = [ACCESS_WARNING] if pending else []
         unrevocable = sorted(
-            slug for slug, entry in self._catalog.items() if _passes_through(entry)
+            slug
+            for slug, entry in self._catalog.items()
+            if _passes_through(entry) and slug not in ended
         )
         try:
             async with tenant_session(

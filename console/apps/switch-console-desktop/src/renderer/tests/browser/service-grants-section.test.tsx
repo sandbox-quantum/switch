@@ -202,6 +202,26 @@ it('grants GitHub on the repositories picked, for reading unless asked', async (
   );
 });
 
+it("offers GitHub for reading only where the server's App can't write, saying why", async () => {
+  const reason =
+    "This server's GitHub App lets agents read only, so GitHub can't be granted for writing.";
+  workspaces.getServiceGrants.mockResolvedValue({ grants: [], addressing_open: false });
+  workspaces.getServiceConnections.mockResolvedValue([
+    onOff('connected', {
+      slug: 'github',
+      name: 'GitHub',
+      pass_through: false,
+      read_only_reason: reason,
+    }),
+  ]);
+  const el = await render();
+
+  const push = () => el.querySelector<HTMLButtonElement>('[aria-label="Read and push"]');
+  await vi.waitFor(() => expect(el.textContent).toContain(reason));
+  expect(push()?.disabled).toBe(true);
+  expect(el.querySelector<HTMLButtonElement>('[aria-label="Read"]')?.disabled).toBe(false);
+});
+
 it('draws nothing for someone who does not own the agent', async () => {
   workspaces.getServiceGrants.mockResolvedValue(null);
   const el = await render();
@@ -294,6 +314,7 @@ function onOff(
     status,
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     agent_access_note: null,
@@ -302,6 +323,7 @@ function onOff(
     external_identity: null,
     consent: null,
     workspace_enabled: null,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -357,7 +379,9 @@ it('turns an on/off grant off, and says a longer-lived token outlasts it', async
   await vi.waitFor(() =>
     expect(el.textContent).toContain('helper reads and writes Example as you.')
   );
-  expect(el.textContent).toContain('stays valid at Example until it expires or you disconnect');
+  expect(el.textContent).toContain(
+    'may keep working at Example until it expires, up to 24 hours after it was handed out'
+  );
   // Its grant is the switch, not a card with Change and Remove.
   expect(button(el, 'Remove')).toBeUndefined();
   await act(async () => exampleSwitch(el)!.click());
