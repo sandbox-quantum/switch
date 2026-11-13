@@ -368,9 +368,11 @@ is the kind of machine (`vm` for every machine this server makes today).
   minimum over pods.
 - `switch.hosted.machine_events` with `event:failed` says why a machine
   failed: `not_scheduled`, `never_started`, `never_connected` (a first launch),
-  `wake_failed` (a wake or restart that didn't come back), `owner_left`,
-  `needs_attention`, `reported`, or `stop_failed` (an error while it was
-  wanted stopped). Each failure also writes one log line with the fixed field
+  `wake_failed` (a wake or restart that didn't come back), `launch_refused`
+  (it needs attention and has never been ready: its launch was refused or
+  never came up), `owner_left`, `needs_attention` (after it had been ready),
+  `reported`, or `stop_failed` (an error while it was wanted stopped). "Hosted
+  machine launches failing" counts the first five. Each failure also writes one log line with the fixed field
   `switch.event: hosted.machine_failed`, its reason and the machine id.
 - `switch.hosted.provider_login_problems` counts AI provider logins on cloud
   machines that are `missing` or `expired`, by provider (a fixed list, else

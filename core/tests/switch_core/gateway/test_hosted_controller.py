@@ -1613,6 +1613,135 @@ async def test_an_error_while_stopping_counts_as_stop_failed(
 
 
 @pytest.mark.parametrize(
+    ("first_ready_hours_ago", "state", "observed_revision", "reason"),
+    [
+        # Never ready: the launch was refused or never came up.
+        (None, "provisioning", 2, "launch_refused"),
+        # Ready before: a machine that needs attention later isn't a launch.
+        (2, "provisioning", 2, "needs_attention"),
+        # A late report from an earlier revision, on a machine that is ready.
+        (2, "ready", 1, "needs_attention"),
+        # A late report from an earlier revision on one never ready: stopped
+        # before its first launch came up, then asked to run again. (A late
+        # report while it's queued or provisioning is ignored by design.)
+        (None, "stopped", 1, "launch_refused"),
+    ],
+)
+async def test_needing_attention_before_ever_being_ready_counts_as_launch_refused(
+    controller_app,
+    reported,
+    machine_metrics,
+    first_ready_hours_ago,
+    state,
+    observed_revision,
+    reason,
+):
+    """A machine that reports it needs attention and has never been ready (a
+    launch the controller refused, a box that never got ready) counts as
+    `launch_refused` on the hosted metric, which "launches failing" counts. One
+    that has been ready keeps `needs_attention`, which it doesn't. Product
+    telemetry keeps its `needs_attention` either way."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state=state,
+        revision=2,
+        first_ready_at=(
+            None
+            if first_ready_hours_ago is None
+            else datetime.now(UTC) - timedelta(hours=first_ready_hours_ago)
+        ),
+    )
+    await observe(
+        app.client,
+        app.machine_id,
+        state="error",
+        revision=observed_revision,
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+    )
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "needs_attention"}]
+    assert _failure_reasons(machine_metrics) == [reason]
+
+
+@pytest.mark.parametrize(
+    ("desired_state", "first_ready", "reason", "finer"),
+    [
+        ("running", False, "needs_attention", "launch_refused"),
+        ("running", True, "needs_attention", None),
+        ("running", False, "reported", None),
+        ("deleted", False, "needs_attention", "stop_failed"),
+        ("stopped", True, "reported", "stop_failed"),
+    ],
+)
+def test_the_finer_failure_word(desired_state, first_ready, reason, finer) -> None:
+    """The rule on its own, without a database."""
+    from types import SimpleNamespace
+
+    from switch_core.gateway.hosted_controller import _observed_finer
+
+    machine = SimpleNamespace(
+        desired_state=desired_state,
+        first_ready_at=datetime.now(UTC) if first_ready else None,
+    )
+    assert _observed_finer(machine, reason) == finer  # type: ignore[arg-type]
+
+
+async def test_a_late_report_on_a_never_ready_machine_wanted_stopped_is_stop_failed(
+    controller_app, reported, machine_metrics
+):
+    """The wanted-down twin of the late-report case above: never ready, still
+    wanted stopped, an earlier revision's error counts as `stop_failed`."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="owner",
+        revision=2,
+        first_ready_at=None,
+    )
+    await observe(
+        app.client,
+        app.machine_id,
+        state="error",
+        revision=1,
+        error="The instance failed its status checks.",
+        error_code="machine_needs_attention",
+    )
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "needs_attention"}]
+    assert _failure_reasons(machine_metrics) == ["stop_failed"]
+
+
+async def test_an_error_while_stopping_stays_stop_failed_before_ever_being_ready(
+    controller_app, reported, machine_metrics
+):
+    """Wanted down, an error is `stop_failed` even on a machine never ready."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="stopping",
+        desired_state="deleted",
+        first_ready_at=None,
+    )
+    await observe(
+        app.client,
+        app.machine_id,
+        state="error",
+        revision=1,
+        error="The instance would not stop.",
+        error_code="machine_needs_attention",
+    )
+
+    assert _failure_reasons(machine_metrics) == ["stop_failed"]
+
+
+@pytest.mark.parametrize(
     ("extra", "accepted"),
     [
         ({"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 2}]}, True),

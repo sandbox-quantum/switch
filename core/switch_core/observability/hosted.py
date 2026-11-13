@@ -123,6 +123,9 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
             # A machine started again (a wake or a restart) that didn't connect
             # within the timeout, apart from a first launch's `never_connected`.
             "wake_failed",
+            # A machine that needs attention and has never been ready: its
+            # launch was refused (the controller's own checks) or never came up.
+            "launch_refused",
             "owner_left",
             "needs_attention",
             "reported",

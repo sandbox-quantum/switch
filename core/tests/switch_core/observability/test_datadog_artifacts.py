@@ -92,15 +92,16 @@ def test_monitors_are_individually_importable() -> None:
 
 def test_launches_failing_counts_only_launch_and_wake_failures() -> None:
     """A machine whose owner left, that failed to stop, or that reported an
-    error isn't a launch failing, so none of those page as one."""
+    error after it had been ready isn't a launch failing, so none of those
+    page as one. One that needs attention before it was ever ready is."""
     (monitor,) = [
         m
         for m in _load("monitors.json")  # type: ignore[union-attr]
         if m["name"].endswith("Hosted machine launches failing")
     ]
     assert (
-        "reason IN (never_connected,wake_failed,not_scheduled,never_started)"
-        in monitor["query"]
+        "reason IN (never_connected,wake_failed,not_scheduled,never_started,"
+        "launch_refused)" in monitor["query"]
     )
 
 
