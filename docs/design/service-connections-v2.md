@@ -4,7 +4,7 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 [`service-connections-v1.md`](service-connections-v1.md): any OAuth vendor
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
-session on generic parts. Atlassian (Jira), Google Workspace, Airtable and
+session on generic parts. Atlassian (Jira), Linear, Google Workspace, Airtable and
 Datadog are live; Datadog was built as the first key, and signs in at the
 site people pick now that keys are refused (see [Keys](#keys) and
 [Datadog](#datadog)). v1's tables,
@@ -905,6 +905,48 @@ and pasted keys, each with an agent reading monitors through Switch:
 To connect: Connectors in Switch Console, then Datadog. Nothing needs
 configuring on the server. To roll back, add `datadog` to
 `DISABLED_SERVICES`.
+
+## Linear
+
+Linear's official remote MCP server, `https://mcp.linear.app/mcp`, with no
+new adapter code:
+
+- Linear's MCP server offers OAuth 2.1 with dynamic client registration, so
+  Core registers its client and nothing is set up on the server.
+- A sign-in returns through Core where `GATEWAY_PUBLIC_URL` is set, and
+  otherwise straight to Switch Console on one of five fixed loopback ports.
+  `prompt=consent` is sent on every connect, but Linear shows no consent
+  screen when the browser's Linear login approved the client before
+  (measured). A reconnect then signs in as that login, in the workspace it
+  picked then.
+- Switch asks for the write level (`read write`) on every connect, and a
+  grant is on or off, so a connection can read and write. The read level
+  (`read` alone) is what Linear enforces: such a token lists only the
+  read-only tools (measured). The scope decides, not the separate
+  `/mcp/readonly` URL. `admin` (workspace settings, teams, members) is never
+  asked for.
+- Linear's GraphQL API answers an MCP token 401, so the account is read from
+  the MCP server. Its `whoami` tool is not read-only, and a read sign-in does
+  not list it. Core calls `get_user` with `arguments: { query: me }`.
+  `get_user` is read-only and is listed for both scopes, and Linear documents
+  "me" as a value of `query`. Measured, `get_user` "me" returns one user, the
+  signed-in one, also next to a member named "me". The account is that
+  user's `id`, labelled by its email. The same login has a different id in
+  each Linear workspace.
+- Linear's access tokens live 86100 seconds (measured `expires_in`, first
+  token and after a refresh), hence `max_lifetime: 86100`. An agent's copy
+  may outlive a removed grant by up to that long, though agents ask again
+  hourly. Refresh tokens rotate. The old refresh token still works for a
+  short time after the rotation (measured; the time was not measured).
+- A disconnect revokes at the revocation endpoint the authorization server
+  advertises.
+- Tools pass through unchanged. The skill has the agent read before writing,
+  search before creating, confirm before changing status, assignee or
+  priority, and close, archive or delete only an item the user named.
+
+To connect: Connectors in Switch Console, then Linear. Nothing needs
+configuring on the server. To roll back, add `linear` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
 ## Airtable
 

@@ -76,6 +76,10 @@ version of their own to them without also giving them a release of their own.
   counts with its next observation, which Core counts once the observation is
   saved. Against an older Core that refuses the counts, it sends the
   observation without them and leaves them off for an hour. Deploy Core first.
+- **Linear, connected as you.** Someone who connects their Linear account in
+  Switch Console can grant it to their agents, which then find, comment on and
+  update issues and projects through Linear's own MCP server. Nothing needs
+  configuring on the server.
 - **An MCP identity tool can take fixed arguments.** A catalog entry can give
   fixed `arguments` to the MCP tool that tells Core whose sign-in it is, such
   as `{ query: me }`. Core sends them only if the tool's schema declares each

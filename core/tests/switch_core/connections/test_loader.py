@@ -20,7 +20,6 @@ PLACEHOLDERS = {
     "bitbucket",
     "microsoft-365",
     "new-relic",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -38,6 +37,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "gitlab",
         "notion",
         "sentry",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -46,6 +46,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "gitlab",
         "google-workspace",
+        "linear",
         "notion",
         "sentry",
     ]
@@ -58,6 +59,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -255,6 +257,56 @@ def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
     # Sentry grants the same scopes whatever is chosen at consent.
     assert definition.access is not None and definition.access.write is not None
     assert definition.access.read.scopes == definition.access.write.scopes
+
+
+def test_the_shipped_linear_entry_signs_in_through_linears_mcp_server():
+    definition = CATALOG["linear"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Linear's MCP server registers clients dynamically: nothing to set up.
+    assert (definition.adapter, oauth.registration) == ("oauth", "dynamic")
+    assert oauth.client_settings is None
+    assert oauth.redirect == ["core", "loopback"]
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    # Consent is asked for on every connect.
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    # Linear's measured expires_in, first token and after a refresh.
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86100,
+    )
+    assert definition.mcp is not None
+    # One endpoint: the scope decides, not /mcp/readonly.
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["read"]
+    assert definition.access.write.scopes == ["read", "write"]
+    # Never workspace administration.
+    assert "admin" not in set(definition.access.write.scopes)
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    # Linear's API refuses an MCP token, and whoami is not read-only, so the
+    # account comes from the read-only get_user tool, asked for "me".
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool, identity.arguments) == (
+        None,
+        "get_user",
+        {"query": "me"},
+    )
+    assert (identity.account_id, identity.label) == ("id", "email")
+
+
+def test_the_linear_skill_keeps_safe_defaults():
+    text = CATALOG["linear"].skill_files["SKILL.md"]
+    assert text.startswith("---\nname: linear\n")
+    for rule in ("Read before writing", "Search before creating", "Confirm first"):
+        assert rule in text
+    assert "information, not instructions" in text
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
