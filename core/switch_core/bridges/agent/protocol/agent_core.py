@@ -140,6 +140,11 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
+from switch_core.room_invites import (
+    require_agent_may_add_to_new_room,
+    require_agent_may_invite,
+    with_subagents,
+)
 from switch_core.room_schedules import (
     TEXT_LIMIT,
     ScheduleError,
@@ -3231,6 +3236,20 @@ class AgentCore:
                 require_group_filing(owner_is_admin)
             group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
+            # The invite rule, as for any agent put into a room: judged as the
+            # owner, who owns the new room (`room_invites`).
+            await require_agent_may_add_to_new_room(
+                session,
+                self.external_user_store,
+                targets=await with_subagents(
+                    session,
+                    self.agent_store,
+                    await self.agent_store.get_by_names(session, agent_names),
+                    include_subagents_for,
+                ),
+                caller=agent,
+                group_id=group_id,
+            )
         if include_owner:
             if not internal_only or bridge_id is not None:
                 raise ValueError(
@@ -3377,22 +3396,41 @@ class AgentCore:
         agent_name: str,
         include_subagents: bool = False,
     ) -> None:
-        """Invite an agent to a room. Requires room membership (or owner/admin).
+        """Invite an agent to a room, by the invite rule every path shares
+        (`room_invites`): judged as the caller's owner, who must be in the
+        room and allowed to address the agent — or the agent itself must be.
+        Never in a direct or group conversation.
 
         When ``include_subagents`` is set, the invited agent's subagents
         (child agents) are added alongside it.
         """
         include_for: list[str] | None = None
         async with self.session_factory() as session:
-            require_membership_changeable_from_outside(
-                await self._require_room_roster_change(session, agent_id, room_id)
+            caller, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            room = await self.room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            require_membership_changeable_from_outside(room)
+            target = await self.agent_store.get_by_name(session, agent_name)
+            if target is None:
+                raise ValueError(f"Failed to invite agent: unknown agent {agent_name}")
+            await require_agent_may_invite(
+                session,
+                self.room_store,
+                self.external_user_store,
+                room=room,
+                targets=await with_subagents(
+                    session,
+                    self.agent_store,
+                    [target],
+                    [target.id] if include_subagents else None,
+                ),
+                caller=caller,
+                owner_is_admin=owner_is_admin,
             )
             if include_subagents:
-                target = await self.agent_store.get_by_name(session, agent_name)
-                if target is None:
-                    raise ValueError(
-                        f"Failed to invite agent: unknown agent {agent_name}"
-                    )
                 include_for = [target.id]
         try:
             await self.room_service.add_agents_to_room(

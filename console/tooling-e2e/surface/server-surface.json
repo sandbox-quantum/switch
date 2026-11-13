@@ -826,6 +826,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/agent-candidates",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/template-schema",
       "auth": "session",
       "flags": []

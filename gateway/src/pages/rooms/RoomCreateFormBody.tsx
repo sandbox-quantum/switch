@@ -26,13 +26,14 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { type RoomRoleSpec, createRoom } from "../../data/api";
+import { type RoomRoleSpec, createRoom, invitableAgents } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
 import {
   useAgents,
   useBridges,
   useBridgeUsers,
+  useRoomAgentCandidates,
   useRoomGroups,
 } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
@@ -44,6 +45,8 @@ type ChannelSource = "existing" | "new";
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
   const { data: agents } = useAgents();
+  // Only the agents the server's invite rule lets the viewer put in a new room.
+  const { data: candidates } = useRoomAgentCandidates();
   const { data: bridges } = useBridges();
   const { data: groups } = useRoomGroups();
   // Only a workspace admin may put a room in a group.
@@ -142,7 +145,10 @@ export default function RoomCreateFormBody() {
     [],
   );
 
-  const eligibleAgents = useMemo(() => agents ?? [], [agents]);
+  const eligibleAgents = useMemo(
+    () => invitableAgents(agents ?? [], candidates?.agent_ids),
+    [agents, candidates],
+  );
 
   const agentNameById = useMemo(() => {
     const m = new Map<string, string>();

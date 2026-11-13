@@ -70,12 +70,19 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
       ? {
           canWrite: chat.canManage,
           canChangeMembers: chat.canManage,
+          canInviteAgents: chat.canManage,
           canManage: chat.canManage,
           canUnlink: chat.canManage,
         }
       : room !== null
         ? switchRoomsStore.roomPermissions(workspaceId, room)
-        : { canWrite: false, canChangeMembers: false, canManage: false, canUnlink: false };
+        : {
+            canWrite: false,
+            canChangeMembers: false,
+            canInviteAgents: false,
+            canManage: false,
+            canUnlink: false,
+          };
   const canWrite = permissions.canWrite;
   const canUnlink = permissions.canUnlink;
 

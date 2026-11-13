@@ -388,6 +388,8 @@ export type RemoteRoomSummary = {
   serverPermissions?: {
     canWrite: boolean;
     canChangeMembers: boolean;
+    /** Bringing agents in: being in the room, or a workspace admin. */
+    canInviteAgents: boolean;
     canManage: boolean;
     canUnlink: boolean;
   };

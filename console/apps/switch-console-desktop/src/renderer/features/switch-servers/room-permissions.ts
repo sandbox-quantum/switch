@@ -7,13 +7,16 @@ import type { RoomVisibility } from '@shared/core/switch-servers/switch-servers'
  * write access is public: its description and instructions, its roles, its
  * group, archiving it. `canChangeMembers` is adding and removing its agents
  * and people: `canWrite`, except in a direct or group conversation, whose
- * platform fixes who is in it. `canUnlink` is detaching what is attached to
+ * platform fixes who is in it. `canInviteAgents` is bringing agents in, which
+ * takes being in the room (or a workspace admin) rather than write access;
+ * each agent's own "who can address me" setting can still refuse one. `canUnlink` is detaching what is attached to
  * it: the server now keeps that for those taking part in the room and
  * workspace admins, whatever its write access.
  */
 export type RoomPermissions = {
   canWrite: boolean;
   canChangeMembers: boolean;
+  canInviteAgents: boolean;
   canManage: boolean;
   canUnlink: boolean;
 };
@@ -36,9 +39,21 @@ export function roomPermissionsFor(
 ): RoomPermissions {
   if (room.serverPermissions) return room.serverPermissions;
   if (viewer.userId === null) {
-    return { canWrite: false, canChangeMembers: false, canManage: false, canUnlink: false };
+    return {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canManage: false,
+      canUnlink: false,
+    };
   }
   const canManage = viewer.isAdmin || (room.ownerId !== null && room.ownerId === viewer.userId);
   const canWrite = canManage || room.writeVisibility === 'public';
-  return { canWrite, canChangeMembers: canWrite, canManage, canUnlink: canWrite };
+  return {
+    canWrite,
+    canChangeMembers: canWrite,
+    canInviteAgents: canWrite,
+    canManage,
+    canUnlink: canWrite,
+  };
 }

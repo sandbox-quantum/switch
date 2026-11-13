@@ -172,11 +172,16 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   } else if (!consoleChat && room && workspaceId) {
     const permissions = switchRoomsStore.roomPermissions(workspaceId, room);
     const inviteability = roomInviteability(room, bridgePlatformLabel(room.bridgeType));
-    if (permissions.canWrite) {
+    // Bringing agents in takes being in the room, not write access, so it is
+    // offered on its own where someone in the room may not change the rest.
+    const addAgents = permissions.canInviteAgents ? () => setAdding('agents') : null;
+    if (!permissions.canWrite) {
+      controls = { ...NO_CONTROLS, addAgents };
+    } else {
       // A direct or group conversation's platform fixes who is in it.
       const members = permissions.canChangeMembers;
       controls = {
-        addAgents: members ? () => setAdding('agents') : null,
+        addAgents,
         addPeople: members && inviteability.canInvite ? () => setAdding('people') : null,
         peopleNote: inviteability.canInvite ? null : inviteability.reason,
         removeAgent: members

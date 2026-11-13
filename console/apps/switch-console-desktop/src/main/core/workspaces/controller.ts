@@ -11,6 +11,7 @@ import {
 import {
   addBridgeTeam,
   addRoomAgents,
+  fetchRoomAgentCandidates,
   addRoomUsers,
   createRoomRole,
   deleteRoomRole,
@@ -1379,6 +1380,18 @@ export const workspacesController = createRPCController({
   }: SetRoomAutoRouteParams): Promise<RoomAutoRoute> =>
     withReachableWorkspaceSession(workspaceId, (server) =>
       setRoomAutoRoute(server, roomId, changes)
+    ),
+
+  /**
+   * The agents the signed-in person may bring into `roomId`, or into a new
+   * room when it is null; null from a server that cannot say.
+   */
+  roomAgentCandidates: (params: {
+    workspaceId: string;
+    roomId: string | null;
+  }): Promise<string[] | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomAgentCandidates(server, params.roomId)
     ),
 
   /**

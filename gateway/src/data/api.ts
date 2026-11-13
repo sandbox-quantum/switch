@@ -52,8 +52,12 @@ export interface RoomSummary {
   // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
   // reference, document or package from it; `can_transfer` (managing it,
   // and never for a chat) covers handing it to someone else.
+  // `can_invite_agents` (in the room, or workspace admin, never for a chat)
+  // covers bringing agents in; each agent's own "who can address me" setting
+  // can still refuse a particular one.
   can_write: boolean;
   can_change_members: boolean;
+  can_invite_agents: boolean;
   can_manage: boolean;
   can_unlink: boolean;
   can_transfer: boolean;
@@ -753,6 +757,30 @@ export async function fetchAgents(): Promise<AgentSummary[] | null> {
  * a failure can say why. */
 export async function loadAgents(): Promise<AgentListEntry[]> {
   return jsonRequest<AgentListEntry[]>("/agents", "GET");
+}
+
+/**
+ * The agents the viewer may bring in, as the server's invite rule decides: into
+ * `roomId`, less those already in it, or into a new room when it is absent.
+ * `agent_ids` is null when the server cannot say (one from before the route),
+ * where a picker offers every agent and leaves the refusal to the invite.
+ */
+export async function fetchRoomAgentCandidates(
+  roomId?: string,
+): Promise<{ agent_ids: string[] | null }> {
+  const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
+  const answer = await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
+  return { agent_ids: answer?.agent_ids ?? null };
+}
+
+/** Of `agents`, the ones a picker may offer given the candidates: all when unknown. */
+export function invitableAgents<T extends { id: string }>(
+  agents: readonly T[],
+  candidateIds: readonly string[] | null | undefined,
+): T[] {
+  if (!candidateIds) return [...agents];
+  const allowed = new Set(candidateIds);
+  return agents.filter((agent) => allowed.has(agent.id));
 }
 
 export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {

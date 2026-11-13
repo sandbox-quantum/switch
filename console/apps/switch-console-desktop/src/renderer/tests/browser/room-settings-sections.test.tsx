@@ -12,7 +12,12 @@ const setRoomAgentJoinEvents = vi.hoisted(() => vi.fn());
 const createRoomRole = vi.hoisted(() => vi.fn());
 const setRoomArchived = vi.hoisted(() => vi.fn());
 const permissions = vi.hoisted(() => ({
-  value: { canWrite: true, canChangeMembers: true, canManage: true },
+  value: {
+    canWrite: true,
+    canChangeMembers: true,
+    canInviteAgents: true,
+    canManage: true,
+  },
 }));
 const admin = vi.hoisted(() => ({ value: true }));
 const setRoomGroup = vi.hoisted(() => vi.fn());
@@ -40,6 +45,7 @@ vi.mock('@renderer/lib/ipc', () => ({
         Promise.resolve([{ id: 'a-1', name: 'reviewer-bot', iconUrl: null, knownAgentType: null }])
       ),
       listRoomGroups: vi.fn(() => Promise.resolve([{ id: 'g-1', name: 'Design' }])),
+      roomAgentCandidates: vi.fn(() => Promise.resolve(null)),
       setRoomGroup,
       listBridgePeople,
     },
@@ -75,6 +81,7 @@ vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
 
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
 import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
+import { rpc } from '@renderer/lib/ipc';
 
 const ROOM = {
   id: 'room-1',
@@ -131,7 +138,12 @@ beforeEach(() => {
   setRoomArchived.mockImplementation((params: { archived: boolean }) =>
     Promise.resolve({ ...ROOM, archived: params.archived })
   );
-  permissions.value = { canWrite: true, canChangeMembers: true, canManage: true };
+  permissions.value = {
+    canWrite: true,
+    canChangeMembers: true,
+    canInviteAgents: true,
+    canManage: true,
+  };
   admin.value = true;
   listBridgePeople.mockReset();
   listBridgePeople.mockResolvedValue([]);
@@ -239,7 +251,12 @@ describe('room settings for someone who may write to the room', () => {
   });
 
   it('offers no adding or removing in a direct conversation, whose platform fixes who is in it', async () => {
-    permissions.value = { canWrite: true, canChangeMembers: false, canManage: true };
+    permissions.value = {
+      canWrite: true,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canManage: true,
+    };
     getRoomDetail.mockResolvedValue({ ...ROOM, channelType: 'direct' });
     const el = await renderPanel('side');
     expect(el.textContent).toContain('reviewer-bot');
@@ -338,7 +355,12 @@ describe('putting a room in a group', () => {
 
   it('shows anyone else who may change the room its group, and lets them take it out', async () => {
     admin.value = false;
-    permissions.value = { canWrite: true, canChangeMembers: true, canManage: false };
+    permissions.value = {
+      canWrite: true,
+      canChangeMembers: true,
+      canInviteAgents: true,
+      canManage: false,
+    };
     getRoomDetail.mockResolvedValue({ ...ROOM, groupId: 'g-1', groupName: 'Design' });
     const el = await renderPanel();
     expect(el.querySelector('[aria-label="Group"]')).toBeNull();
@@ -362,7 +384,12 @@ describe('putting a room in a group', () => {
 
 describe('room settings for someone who may only read the room', () => {
   it('says who can change it, and offers no changes', async () => {
-    permissions.value = { canWrite: false, canChangeMembers: false, canManage: false };
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canManage: false,
+    };
     const el = await renderPanel();
     expect(el.textContent).toContain(
       'Only Ada or a workspace admin can change this room’s settings.'
@@ -374,10 +401,39 @@ describe('room settings for someone who may only read the room', () => {
   });
 
   it('lists who is in the room without adding or menus', async () => {
-    permissions.value = { canWrite: false, canChangeMembers: false, canManage: false };
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canManage: false,
+    };
     const el = await renderPanel('side');
     expect(el.textContent).toContain('reviewer-bot');
     expect(el.querySelector('[aria-label="Add agents"]')).toBeNull();
+    expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
+  });
+
+  it('says when it cannot tell which agents may be invited, and offers none', async () => {
+    vi.mocked(rpc.workspaces.roomAgentCandidates).mockRejectedValueOnce(
+      new Error('Switch gateway returned 500')
+    );
+    const el = await renderPanel('side');
+    await click(el.querySelector<HTMLElement>('[aria-label="Add agents"]')!);
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(document.body.textContent).toContain('Switch gateway returned 500');
+    expect(document.body.textContent).not.toContain('already in this room');
+  });
+
+  it('still offers adding agents to someone in the room, and nothing else', async () => {
+    permissions.value = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canManage: false,
+    };
+    const el = await renderPanel('side');
+    expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Add people"]')).toBeNull();
     expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
   });
 });
