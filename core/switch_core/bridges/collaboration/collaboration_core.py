@@ -606,6 +606,10 @@ class CollaborationCore:
         self._adapter.set_user_left_handler(
             self._traced("user_left", self._handle_user_left_channel)
         )
+        self._adapter.set_member_sync_hooks(
+            bridged_channels=lambda: self._channel_to_room.keys(),
+            request_sync=self._resync_members_requested,
+        )
         await self._adapter.start(
             on_message=self._traced("message", self._handle_inbound_message),
             on_command=self._traced("command", self._handle_inbound_command),
@@ -1008,6 +1012,13 @@ class CollaborationCore:
     #: Seconds between channels in one pass, so a start over many rooms does
     #: not crowd out the bot's other calls to its platform.
     MEMBER_SYNC_PAUSE = 2.0
+
+    def _resync_members_requested(self, channel_ids: list[str]) -> None:
+        """The adapter saw something change who is in these channels (a
+        permission change on Discord): line their rooms up again, where this
+        process holds the bridge."""
+        if self._active:
+            self._sync_members_soon(channel_ids)
 
     def _sync_members_soon(self, channel_ids: list[str] | None) -> None:
         """Line rooms up with their channels' members in the background: the
@@ -2863,6 +2874,7 @@ class CollaborationCore:
             external_username=join.external_username,
             room_id=room_id,
             transport_room_id=transport_room_id,
+            quiet=join.quiet,
         )
 
     #: How long a removal Switch asked for waits for the platform's report of

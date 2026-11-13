@@ -183,6 +183,9 @@ class _StartableAdapter:
     def set_user_left_handler(self, handler: Any) -> None:
         pass
 
+    def set_member_sync_hooks(self, **hooks: Any) -> None:
+        pass
+
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
         return None
 

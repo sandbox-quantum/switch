@@ -752,6 +752,13 @@ class PlatformAdapter(ABC):
         # channel or is taken out of it. Unset on an adapter running without
         # a bridge core behind it, where a departure is dropped.
         self._on_user_left: Callable[[InboundUserLeave], Awaitable[None]] | None = None
+        # Set by set_member_sync_hooks: the channels this bridge has rooms for,
+        # and a way to ask for some of them to be lined up with their members
+        # again. For a platform whose membership changes arrive per guild
+        # rather than per channel (Discord), which must not act on channels
+        # nobody bridged.
+        self._bridged_channels: Callable[[], Collection[str]] | None = None
+        self._request_member_sync: Callable[[list[str]], None] | None = None
         # Set by set_interaction_handler. Called when someone operates a control
         # on a message this bridge posted. Left unset on a platform with no such
         # controls, and on an adapter running without a bridge core behind it.
@@ -2245,6 +2252,32 @@ class PlatformAdapter(ABC):
         interactions: a platform that never reports departures needs no
         change to go on working."""
         self._on_user_left = handler
+
+    def set_member_sync_hooks(
+        self,
+        *,
+        bridged_channels: Callable[[], Collection[str]],
+        request_sync: Callable[[list[str]], None],
+    ) -> None:
+        """Install the bridge core's view of which channels have rooms, and
+        its way to line channels' rooms up with their members again.
+
+        A setter for the same reason as `set_user_left_handler`: only a
+        platform whose membership changes arrive per server rather than per
+        channel (Discord) needs them."""
+        self._bridged_channels = bridged_channels
+        self._request_member_sync = request_sync
+
+    def _bridged_channel_ids(self) -> set[str]:
+        """The channels this bridge has rooms for, or none when unknown."""
+        if self._bridged_channels is None:
+            return set()
+        return set(self._bridged_channels())
+
+    def _resync_members(self, channel_ids: list[str]) -> None:
+        """Ask the bridge core to line these channels' rooms up again."""
+        if self._request_member_sync is not None and channel_ids:
+            self._request_member_sync(channel_ids)
 
     async def _user_left(self, leave: InboundUserLeave) -> None:
         """Hand a departure to the bridge core, if one is listening."""

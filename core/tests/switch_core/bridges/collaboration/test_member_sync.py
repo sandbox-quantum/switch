@@ -375,3 +375,16 @@ async def test_someone_joining_while_the_channel_is_listed_stays(
     await _sync(core)
 
     assert core._room_service.removed == []
+
+
+def test_a_resync_the_adapter_asks_for_runs_only_where_the_bridge_is_held() -> None:
+    """Discord asks for rooms to be lined up again when permissions change;
+    only the process that holds the bridge does it."""
+    asked: list[list[str] | None] = []
+    held = SimpleNamespace(_active=True, _sync_members_soon=asked.append)
+    quiet = SimpleNamespace(_active=False, _sync_members_soon=asked.append)
+
+    CollaborationCore._resync_members_requested(held, ["C1"])  # type: ignore[arg-type]
+    CollaborationCore._resync_members_requested(quiet, ["C2"])  # type: ignore[arg-type]
+
+    assert asked == [["C1"]]
