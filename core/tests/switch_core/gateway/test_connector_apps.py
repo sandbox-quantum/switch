@@ -221,15 +221,17 @@ class World:
 
     async def install(self, environ: dict[str, str] | None = None) -> ConnectorApps:
         http = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+        config = _config(gateway_public_url=self.public_url, **self.config)
         registration = ClientRegistration(
             session_factory=self.session_factory,
             keyring=TEST_KEYRING,
             public_url=self.public_url,
             server_name="switch.example.com",
+            redirects=config.service_sign_in_redirect,
         )
         apps = ConnectorApps(
             catalog=self.catalog,
-            config=_config(gateway_public_url=self.public_url, **self.config),
+            config=config,
             environ=environ or {},
             session_factory=self.session_factory,
             store=ServiceAppCredentialStore(TEST_KEYRING),
@@ -255,13 +257,16 @@ class World:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=self.public_url,
+            allow_non_expiring_keys=False,
         )
         app = self.harness.gateway_app
         app.state.service_broker = broker
         app.state.connector_apps = apps
         app.state.github_connections = None
         app.state.service_flows = ServiceFlows(
-            self.public_url, SignInFlows(self.session_factory, TEST_KEYRING)
+            self.public_url,
+            config.service_sign_in_redirect,
+            SignInFlows(self.session_factory, TEST_KEYRING),
         )
         app.include_router(connector_apps_router)
         app.include_router(service_connections_router)
@@ -417,7 +422,7 @@ class TestOnlyTheOperator:
             "data.recordComments:write",
         ]
         # A client Core registers itself is nothing for the operator to set up.
-        assert not {"atlassian", "notion", "sentry"} & set(apps)
+        assert not {"atlassian", "linear", "notion", "sentry"} & set(apps)
         assert set(body) == {"public_url", "apps"}
 
     async def test_an_unknown_service_is_not_found(
@@ -663,9 +668,9 @@ class TestGitHub:
 
 
 READ_ONLY = (
-    "This server's GitHub App lets agents read only, so GitHub can't be granted "
-    "for writing. Whoever runs your Switch server can change that in Switch "
-    "Console, under Admin → Connector apps."
+    "Switch's GitHub App lets agents read only, so GitHub can't be granted "
+    "for writing. Whoever runs Switch can change that in Switch Console, under "
+    "Admin → Connector apps."
 )
 
 
@@ -1198,6 +1203,8 @@ class TestCheckAndImpact:
                         external_identity=f"{name}@example.invalid",
                         encrypted_secret=TEST_KEYRING.encrypt("{}"),
                         oauth_client_id=STATIC_CLIENT_ID,
+                        method="oauth",
+                        choices={},
                     )
                     await session.commit()
                 if name == "ada" and tenant == "default":

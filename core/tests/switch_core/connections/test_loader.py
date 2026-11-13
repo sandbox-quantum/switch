@@ -9,6 +9,8 @@ from switch_core.connections.loader import (
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
+    ChoicesError,
+    choice_key,
     load_catalog,
     with_access_profiles,
 )
@@ -18,7 +20,6 @@ PLACEHOLDERS = {
     "bitbucket",
     "microsoft-365",
     "new-relic",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -36,6 +37,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "gitlab",
         "notion",
         "sentry",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -44,6 +46,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "gitlab",
         "google-workspace",
+        "linear",
         "notion",
         "sentry",
     ]
@@ -51,10 +54,12 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -66,6 +71,20 @@ def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
+
+
+# Identity arguments are fixed self-references that the vendor documents as
+# the caller. A value that names a person would make every sign-in resolve to
+# that person, so a new value needs a deliberate review here.
+SELF_REFERENCES = {"me"}
+
+
+def test_shipped_identity_arguments_only_refer_to_the_caller():
+    for slug, entry in CATALOG.items():
+        identity = entry.definition.auth.identity
+        if identity is None or identity.arguments is None:
+            continue
+        assert set(identity.arguments.values()) <= SELF_REFERENCES, slug
 
 
 def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_must():
@@ -155,10 +174,12 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     definition = CATALOG["atlassian"].definition
     oauth = definition.auth.oauth
     assert oauth is not None
+    # Console's listener by default; Core's callback where the server names it,
+    # since a site's admin must allow-list it first.
     assert (definition.adapter, oauth.registration, oauth.redirect) == (
         "oauth",
         "dynamic",
-        ["loopback"],
+        ["loopback", "core"],
     )
     # Atlassian matches a loopback redirect's port, so the ports are fixed.
     assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
@@ -236,6 +257,56 @@ def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
     # Sentry grants the same scopes whatever is chosen at consent.
     assert definition.access is not None and definition.access.write is not None
     assert definition.access.read.scopes == definition.access.write.scopes
+
+
+def test_the_shipped_linear_entry_signs_in_through_linears_mcp_server():
+    definition = CATALOG["linear"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Linear's MCP server registers clients dynamically: nothing to set up.
+    assert (definition.adapter, oauth.registration) == ("oauth", "dynamic")
+    assert oauth.client_settings is None
+    assert oauth.redirect == ["core", "loopback"]
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    # Consent is asked for on every connect.
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    # Linear's measured expires_in, first token and after a refresh.
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86100,
+    )
+    assert definition.mcp is not None
+    # One endpoint: the scope decides, not /mcp/readonly.
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["read"]
+    assert definition.access.write.scopes == ["read", "write"]
+    # Never workspace administration.
+    assert "admin" not in set(definition.access.write.scopes)
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    # Linear's API refuses an MCP token, and whoami is not read-only, so the
+    # account comes from the read-only get_user tool, asked for "me".
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool, identity.arguments) == (
+        None,
+        "get_user",
+        {"query": "me"},
+    )
+    assert (identity.account_id, identity.label) == ("id", "email")
+
+
+def test_the_linear_skill_keeps_safe_defaults():
+    text = CATALOG["linear"].skill_files["SKILL.md"]
+    assert text.startswith("---\nname: linear\n")
+    for rule in ("Read before writing", "Search before creating", "Confirm first"):
+        assert rule in text
+    assert "information, not instructions" in text
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -981,6 +1052,69 @@ def test_a_get_identity_stays_as_it_was(catalog_copy):
     )
 
 
+CHOICES = (
+    "    choices:\n"
+    "      - name: site\n"
+    "        label: Example site\n"
+    "        secret: false\n"
+    "        choices: [example.test, eu.example.test]\n"
+)
+# Example at two sites, each its own MCP server, account API and
+# authorization server, as a vendor with regional deployments is.
+CHOICES_ENTRY = (
+    OAUTH_ENTRY.replace(
+        "    redirect: [loopback, core]\n", "    redirect: [loopback, core]\n" + CHOICES
+    )
+    .replace("https://api.example.test/me", "https://api.{site}/me")
+    .replace("https://mcp.example.test/v1/mcp", "https://mcp.{site}/v1/mcp")
+)
+
+
+def test_loads_an_oauth_entry_whose_urls_name_its_choices(catalog_copy):
+    _write_example(catalog_copy, CHOICES_ENTRY)
+    definition = load_catalog(catalog_copy)["example"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    [field] = oauth.choices
+    assert (field.name, field.secret, field.choices) == (
+        "site",
+        False,
+        ["example.test", "eu.example.test"],
+    )
+    assert definition.mcp is not None
+    assert definition.mcp.servers[0].url == "https://mcp.{site}/v1/mcp"
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.{site}/me"
+
+
+def test_an_entry_without_choices_has_none(catalog_copy):
+    _write_example(catalog_copy)
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.choices == []
+    assert oauth.checked_choices({}) == {}
+
+
+def test_a_static_client_may_name_its_choices_in_its_endpoints(catalog_copy):
+    _write_example(
+        catalog_copy,
+        CHOICES_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    authorization_url: https://auth.{site}/authorize\n"
+            "    token_url: https://auth.{site}/token\n"
+            "    revocation_url: https://auth.{site}/revoke\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.authorization_url, oauth.token_url, oauth.revocation_url) == (
+        "https://auth.{site}/authorize",
+        "https://auth.{site}/token",
+        "https://auth.{site}/revoke",
+    )
+
+
 @pytest.mark.parametrize(
     ("identity", "message"),
     [
@@ -1038,6 +1172,159 @@ def test_rejects_an_identity_that_is_not_one_clear_source(
         load_catalog(catalog_copy)
 
 
+@pytest.mark.parametrize(
+    ("entry", "old", "new", "message"),
+    [
+        (
+            CHOICES_ENTRY,
+            "        secret: false\n        choices: [example.test, eu.example.test]\n",
+            "        secret: true\n",
+            "never a secret",
+        ),
+        (
+            CHOICES_ENTRY,
+            "        choices: [example.test, eu.example.test]\n",
+            "",
+            "one of the two",
+        ),
+        (
+            CHOICES_ENTRY,
+            "        choices: [example.test, eu.example.test]\n",
+            "        choices: [example.test, Example.test]\n",
+            "choices",
+        ),
+        (
+            CHOICES_ENTRY,
+            "        choices: [example.test, eu.example.test]\n",
+            "        choices: [example.test, eu.example.test]\n"
+            + CHOICES.removeprefix("    choices:\n"),
+            "two choices share a name",
+        ),
+        (
+            CHOICES_ENTRY,
+            "https://mcp.{site}/v1/mcp",
+            "https://mcp.{region}/v1/mcp",
+            "MCP server example's URL may name only a choice field, not 'region'",
+        ),
+        (
+            CHOICES_ENTRY,
+            "https://api.{site}/me",
+            "https://api.{region}/me",
+            "the identity call's URL may name only a choice field",
+        ),
+        (
+            CHOICES_ENTRY,
+            "https://mcp.{site}/v1/mcp",
+            "https://mcp.{site/v1/mcp",
+            "brace that names no field",
+        ),
+        (
+            CHOICES_ENTRY,
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    revocation_url: https://auth.{region}/revoke\n",
+            "the revocation endpoint's URL may name only a choice field",
+        ),
+        (
+            OAUTH_ENTRY,
+            "https://mcp.example.test/v1/mcp",
+            "https://mcp.{site}/v1/mcp",
+            "may name only a choice field, not 'site'",
+        ),
+    ],
+)
+def test_rejects_choices_or_templates_that_do_not_fit(
+    catalog_copy, entry, old, new, message
+):
+    assert old in entry
+    _write_example(catalog_copy, entry.replace(old, new))
+    with pytest.raises(
+        CatalogError, match=f"(?s)example is invalid.*{re.escape(message)}"
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_checks_choices_against_the_entrys_lists(catalog_copy):
+    _write_example(catalog_copy, CHOICES_ENTRY)
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.checked_choices({"site": "eu.example.test"}) == {
+        "site": "eu.example.test"
+    }
+    with pytest.raises(ChoicesError, match="Example site is required"):
+        oauth.checked_choices({})
+    with pytest.raises(
+        ChoicesError, match="Example site must be one of example.test, eu.example.test"
+    ):
+        oauth.checked_choices({"site": "elsewhere.test"})
+    with pytest.raises(ChoicesError, match="no choice named region"):
+        oauth.checked_choices({"site": "example.test", "region": "eu"})
+
+
+def test_keys_choices_by_one_stable_string():
+    assert choice_key({}) == ""
+    assert choice_key({"site": "eu.example.test"}) == "eu.example.test"
+    assert (
+        choice_key({"site": "eu.example.test", "plan": "team"})
+        == choice_key({"plan": "team", "site": "eu.example.test"})
+        == '{"plan":"team","site":"eu.example.test"}'
+    )
+
+
+MARKERS = "  consent: { read: items_read, write: items_write }\n"
+MARKED_ENTRY = OAUTH_ENTRY.replace(
+    "tools: { mode: pass_through }", MARKERS + "tools: { mode: pass_through }"
+)
+
+
+def test_an_oauth_entry_may_read_its_consent_from_markers(catalog_copy):
+    _write_example(catalog_copy, MARKED_ENTRY)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.consent is not None
+    assert (access.consent.read, access.consent.write) == ("items_read", "items_write")
+
+
+def test_an_entry_without_markers_has_none(catalog_copy):
+    _write_example(catalog_copy)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.consent is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            '  write: { scopes: ["read:items", "write:items"] }\n',
+            "",
+            "the entry names both levels",
+        ),
+        (MARKERS, "  consent: { read: items_read }\n", "write"),
+        (
+            MARKERS,
+            "  consent: { read: items_read, write: items_read }\n",
+            "one scope",
+        ),
+        (
+            MARKERS,
+            '  consent: { read: "items read", write: items_write }\n',
+            "read",
+        ),
+        (
+            MARKERS,
+            "  consent: { read: items_read, write: items_write, admin: x }\n",
+            "admin",
+        ),
+    ],
+)
+def test_rejects_consent_markers_that_cannot_tell_the_levels(
+    catalog_copy, old, new, message
+):
+    assert old in MARKED_ENTRY
+    _write_example(catalog_copy, MARKED_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
 @pytest.mark.parametrize("without", ["discovery", "an mcp server"])
 def test_introspection_needs_a_discovered_authorization_server(catalog_copy, without):
     entry = (
@@ -1056,6 +1343,96 @@ def test_introspection_needs_a_discovered_authorization_server(catalog_copy, wit
     _write_example(catalog_copy, entry.replace(GET_IDENTITY, INTROSPECTION_IDENTITY))
     with pytest.raises(CatalogError, match="introspection asks the authorization"):
         load_catalog(catalog_copy)
+
+
+def _mcp_identity(arguments: str) -> str:
+    # JSON is YAML, so the arguments reach the loader exactly as given.
+    return (
+        "  identity:\n"
+        "    mcp_tool: get_user\n"
+        f"    arguments: {arguments}\n"
+        "    account_id: id\n"
+        "    label: email\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"query": "me"},
+        {"a": "1", "b": "2", "c": "3", "_" + "d" * 63: "x" * 64},
+    ],
+)
+def test_loads_an_mcp_identity_with_fixed_arguments(catalog_copy, arguments):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(GET_IDENTITY, _mcp_identity(json.dumps(arguments))),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.mcp_tool, identity.arguments) == ("get_user", arguments)
+
+
+def test_an_identity_has_no_arguments_unless_given(catalog_copy):
+    _write_example(catalog_copy)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None and identity.arguments is None
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        GET_IDENTITY + '    arguments: { query: "me" }\n',
+        INTROSPECTION_IDENTITY + '    arguments: { query: "me" }\n',
+    ],
+    ids=["url", "introspection"],
+)
+def test_rejects_arguments_without_an_mcp_tool(catalog_copy, identity):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(GET_IDENTITY, identity))
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*arguments are for an mcp_tool"
+    ):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"a": "1", "b": "2", "c": "3", "d": "4", "e": "5"},
+        {"1query": "me"},
+        {"que-ry": "me"},
+        {"q" * 65: "me"},
+        {"": "me"},
+        {"query": ""},
+        {"query": "x" * 65},
+        {"query": "{me}"},
+        {"query": "me}"},
+        {"query": "{user_id}"},
+        {"query": "m\ne"},
+        {"query": "me\u0000"},
+        {"query": "me\u007f"},
+        {"query": "me\u0085"},
+        {"query": 1},
+        {"query": None},
+        {"query": ["me"]},
+        ["query", "me"],
+        "me",
+    ],
+    ids=lambda arguments: json.dumps(arguments)[:40],
+)
+def test_rejects_identity_arguments_that_are_not_fixed_short_text(
+    catalog_copy, arguments
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(GET_IDENTITY, _mcp_identity(json.dumps(arguments))),
+    )
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*auth.identity.arguments"
+    ) as raised:
+        load_catalog(catalog_copy)
+    assert "extra_forbidden" not in str(raised.value)
 
 
 def _with_note(note: str) -> str:
@@ -1077,6 +1454,18 @@ def test_takes_a_token_note_of_400_characters(catalog_copy):
     _write_example(catalog_copy, _with_note("x" * 400))
     token = load_catalog(catalog_copy)["example"].definition.token
     assert token is not None and token.note == "x" * 400
+
+
+def test_only_an_oauth_entry_reads_consent_markers(catalog_copy):
+    path = catalog_copy / "asana" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access:\n  read: { scopes: [items_read] }\n"
+        + "  write: { scopes: [items_write] }\n"
+        + MARKERS
+    )
+    with pytest.raises(CatalogError, match="only an oauth entry reads its consent"):
+        load_catalog(catalog_copy)
 
 
 def test_placeholders_keep_their_short_form():
@@ -1337,29 +1726,64 @@ tools: { mode: pass_through }
 """
 
 
-def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
+DATADOG_SITES = [
+    "datadoghq.com",
+    "us3.datadoghq.com",
+    "us5.datadoghq.com",
+    "datadoghq.eu",
+    "ap1.datadoghq.com",
+    "ap2.datadoghq.com",
+    "uk1.datadoghq.com",
+]
+
+
+def test_the_shipped_datadog_entry_signs_in_at_the_site_people_pick():
     definition = CATALOG["datadog"].definition
-    assert definition.adapter == "api_key"
-    sign_in = definition.auth.api_key
-    assert sign_in is not None
-    assert [(f.name, f.secret) for f in sign_in.fields] == [
-        ("api_key", True),
-        ("application_key", True),
-        ("site", False),
-    ]
-    assert definition.mcp is not None
-    [server] = definition.mcp.servers
-    assert server.url == "https://mcp.{site}/api/unstable/mcp-server/mcp"
-    # The MCP server's header names have underscores; the REST API's hyphens.
-    assert server.headers == {
-        "DD_API_KEY": "{api_key}",
-        "DD_APPLICATION_KEY": "{application_key}",
-    }
-    assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
-    # A key never expires, so it is never handed to an agent.
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Datadog registers a public client at each site; Console's listener by
+    # default, Core's callback where the server names it, since an
+    # organization's admin must allow-list it first.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback", "core"],
+    )
+    assert oauth.loopback_ports == [39241, 39242, 39243, 39244, 39245]
+    [site] = oauth.choices
+    assert (site.name, site.secret, site.choices) == ("site", False, DATADOG_SITES)
+    # No revocation endpoint: people remove Switch in Datadog themselves.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.revocation_ends_tokens is False
+    assert oauth.remove_access is not None
+    assert "Authorized Apps" in oauth.remove_access
+    # Refresh tokens are reused, not rotated; access tokens live 3,599 s.
+    assert definition.auth.refresh == "reusable"
     assert definition.token is not None
-    assert definition.token.max_lifetime is None
-    assert definition.token.issued_to_agents is False
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://api.{site}/api/v2/current_user",
+        "data.id",
+        "data.attributes.email",
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url, s.headers) for s in definition.mcp.servers] == [
+        ("datadog", "https://mcp.{site}/v1/mcp", None)
+    ]
+    # Datadog offers the one scope; its consent page decides the level, which
+    # the token's scope says by its markers.
+    access = definition.access
+    assert access is not None and access.write is not None
+    assert access.read.scopes == access.write.scopes == ["mcp_all"]
+    assert access.consent is not None
+    assert (access.consent.read, access.consent.write) == ("mcp_read", "mcp_write")
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    assert "SKILL.md" in CATALOG["datadog"].skill_files
 
 
 def test_loads_an_api_key_entry(catalog_copy):
@@ -1513,7 +1937,7 @@ def test_rejects_a_profile_on_a_disabled_entry(catalog_copy):
 
 
 def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
-    path = catalog_copy / "datadog" / "connection.yaml"
+    path = catalog_copy / "github" / "connection.yaml"
     path.write_text(
         path.read_text()
         + "access_profiles:\n  less:\n    skill: SKILL.md\n"
@@ -1521,7 +1945,22 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
     )
     with pytest.raises(
         CatalogError,
-        match="(?s)datadog is invalid.*only an oauth entry with access levels",
+        match="(?s)github is invalid.*only an oauth entry with access levels",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_on_an_entry_that_takes_a_pasted_credential(catalog_copy):
+    path = catalog_copy / "datadog" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access_profiles:\n  less:\n    skill: SKILL.md\n"
+        + "    access:\n      read: { scopes: [mcp_all] }\n"
+        + "      write: { scopes: [mcp_all] }\n"
+    )
+    with pytest.raises(
+        CatalogError,
+        match="(?s)datadog is invalid.*takes no pasted credential.*no granted scopes",
     ):
         load_catalog(catalog_copy)
 

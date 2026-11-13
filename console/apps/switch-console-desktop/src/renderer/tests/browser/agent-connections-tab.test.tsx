@@ -62,6 +62,13 @@ function entry(slug: string, overrides: Partial<ConnectionCatalogEntry>): Connec
     external_identity: null,
     consent: null,
     read_only_reason: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
+    choices: null,
     workspace_enabled: null,
     organization_locked: false,
     ...overrides,
@@ -175,7 +182,8 @@ it('says why a GitHub the workspace switched off does nothing, as its card does,
 });
 
 it('says why GitHub cannot be turned on here in place of its form', async () => {
-  const reason = 'GitHub cannot work on this server: it needs an https address.';
+  const reason =
+    "GitHub can't be used here: it needs Switch to have an https address, or an http one on your own computer (localhost or 127.0.0.1).";
   const el = await render(
     [github({ unavailable_reason: reason, unavailable_code: 'needs_https' })],
     []
@@ -191,7 +199,7 @@ it('says why GitHub cannot be turned on here in place of its form', async () => 
 });
 
 it('says why a grant it has nothing to change on does nothing, and can remove it', async () => {
-  const reason = 'Gitlab is switched off on this server.';
+  const reason = 'Switched off here.';
   const el = await render(
     [entry('gitlab', { pass_through: false, unavailable_reason: reason })],
     [{ ...GITHUB_GRANT, service: 'gitlab', name: 'Gitlab', summary: 'helper can read Gitlab.' }]

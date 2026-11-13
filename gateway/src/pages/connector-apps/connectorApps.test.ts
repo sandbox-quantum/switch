@@ -371,6 +371,19 @@ describe("Airtable, and an app that sends people back to Switch Console", () => 
     );
   });
 
+  it("names GitLab's Helm value when moving off configuration", () => {
+    const gitlab = app({
+      ...AIRTABLE,
+      slug: "gitlab",
+      name: "GitLab",
+      source: "configuration",
+      configuration_variables: ["GITLAB_CLIENT_CONFIG_PATH"],
+    });
+    expect(moveChecklist(gitlab)[1]!.text).toBe(
+      "Remove GITLAB_CLIENT_CONFIG_PATH from Switch's configuration. For Helm, that is switchCore.gitlabClientSecret.",
+    );
+  });
+
   it("lists every redirect for another vendor that has several", () => {
     const steps = setupInstructions(LOOPBACK, "internal", null);
     expect(steps[0]!.text).toBe("Register an OAuth client for Switch at Example, with these redirect URIs:");

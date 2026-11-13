@@ -1,5 +1,5 @@
 {
-  "revision": 3,
+  "revision": 4,
   "bodies": {
     "switch_core.gateway.agent_sessions.AnswerBody": [
       "answer",
@@ -160,6 +160,11 @@
     "switch_core.gateway.service_connections.KeyBody": [
       "fields"
     ],
+    "switch_core.gateway.service_connections.PasteBody": [
+      "choices",
+      "fields",
+      "method"
+    ],
     "switch_core.gateway.service_flows.CompleteFlow": [
       "code",
       "completion_secret"
@@ -173,6 +178,7 @@
       "completion_secret"
     ],
     "switch_core.gateway.service_flows.StartFlow": [
+      "choices",
       "completion_secret",
       "port",
       "state"

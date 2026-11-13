@@ -3,8 +3,8 @@
 Switch Console starts a flow with a one-time state, the port of its listener
 on 127.0.0.1 and a completion secret. Core keeps the PKCE verifier and
 exchanges the code itself, so neither Console nor the browser ever holds a
-token. The browser comes back one of two ways, as the catalog allows and this
-server can offer:
+token. The browser comes back one of two ways, as the catalog allows, the
+server names (`SERVICE_SIGN_IN_REDIRECT`) and this server can offer:
 
 - **loopback**: the vendor redirects straight to Console's listener.
 - **core**: the vendor redirects to Core's callback, which sends the browser
@@ -19,6 +19,11 @@ it. A vendor that sends the browser back with an error rather than a code
 fails the flow with what it said: at Core's callback in core mode, and
 through Console, whose listener received it, in loopback mode.
 
+What the person picked before signing in, where the entry asks
+(`auth.oauth.choices`, a vendor's site), Console gives with the start. The
+flow keeps it, every step calls the vendor where it says, and the
+connection is written with it.
+
 Flows are rows in `sign_in_flows` (`connections/sign_in_flows.py`), as
 GitHub's are, so any switch-core process can take any step: ten minutes each,
 at most 256 per workspace, one per person.
@@ -28,7 +33,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -48,7 +53,11 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     RedirectMode,
 )
-from switch_core.connections.oauth_clients import core_callback, loopback_redirect
+from switch_core.connections.oauth_clients import (
+    core_callback,
+    loopback_redirect,
+    sign_in_mode,
+)
 from switch_core.connections.sign_in_flows import (
     FlowGoneError,
     FlowsBusyError,
@@ -112,12 +121,24 @@ class ServiceFlow:
         return "core" if self.stored.mode == "core" else "loopback"
 
     @property
+    def callback_url(self) -> str | None:
+        """Core's callback the vendor sends the browser back to, in core
+        mode, which the vendor may refuse until its admin allow-lists it."""
+        return self.stored.redirect_uri if self.mode == "core" else None
+
+    @property
     def status(self) -> str:
         return self.stored.status
 
     @property
     def port(self) -> int:
         return self.stored.port
+
+    @property
+    def choices(self) -> dict[str, str]:
+        """What the person picked before signing in; none from a flow
+        started before flows kept it, when no entry offered a choice."""
+        return dict(self.stored.details.get("choices", {}))
 
     @property
     def error(self) -> str | None:
@@ -140,20 +161,31 @@ class Exchange:
     flow: StoredFlow
     signed_in: SignIn
     account: Identity
+    choices: dict[str, str]
 
 
 class ServiceFlows:
-    def __init__(self, public_url: str | None, flows: SignInFlows) -> None:
+    def __init__(
+        self,
+        public_url: str | None,
+        redirects: Mapping[str, RedirectMode],
+        flows: SignInFlows,
+    ) -> None:
         self._public_url = public_url
+        # The way back each service's sign-ins take where the server names
+        # one (`SERVICE_SIGN_IN_REDIRECT`).
+        self._redirects = redirects
         self._flows = flows
 
     def mode(self, definition: ConnectionDefinition) -> RedirectMode | None:
-        """The first way back the catalog allows that this server can offer."""
+        """The way back the server names for the service where it can offer
+        it, else the first the catalog allows that it can."""
         assert definition.auth.oauth is not None
-        for mode in definition.auth.oauth.redirect:
-            if mode == "loopback" or self._public_url is not None:
-                return mode
-        return None
+        return sign_in_mode(
+            definition.auth.oauth.redirect,
+            self._redirects.get(definition.slug),
+            self._public_url,
+        )
 
     def authorize_url(self, service: str, state: str) -> str:
         """Core's own step in front of the vendor's, in core mode."""
@@ -173,7 +205,10 @@ class ServiceFlows:
         port: int,
         completion_secret: str,
         owner_label: str,
+        choices: dict[str, str],
     ) -> ServiceFlow:
+        """Start a sign-in with `choices`, already checked against the
+        entry's (`OAuthClient.checked_choices`)."""
         mode = self.mode(definition)
         if mode is None:
             raise FlowError(
@@ -217,6 +252,12 @@ class ServiceFlows:
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
+                    "consent_markers": (
+                        None
+                        if access.consent is None
+                        else access.consent.model_dump(mode="json")
+                    ),
+                    "choices": choices,
                 },
                 completion_secret=completion_secret,
             )
@@ -260,7 +301,7 @@ class ServiceFlows:
         help. The `ServiceAdapterError` is raised on."""
         nonce = secrets.token_urlsafe(32)
         try:
-            client_id = await adapter.client_id()
+            client_id = await adapter.client_id(flow.choices)
         except ServiceAdapterError as error:
             await self.refuse(flow.stored, str(error))
             raise
@@ -281,6 +322,7 @@ class ServiceFlows:
                 state=flow.state,
                 code_challenge=s256(flow.stored.verifier),
                 scopes=list(flow.stored.details["scopes"]),
+                choices=flow.choices,
             )
         except ServiceAdapterError as error:
             await self.refuse(taken, str(error))
@@ -390,13 +432,16 @@ class ServiceFlows:
             raise refused
         try:
             recorded = flow.stored.details.get("client_id")
-            if recorded is not None and recorded != await adapter.client_id():
+            if recorded is not None and recorded != await adapter.client_id(
+                flow.choices
+            ):
                 raise ServiceAdapterError(client_changed(flow.name))
             signed_in = await adapter.exchange_code(
                 code=code,
                 verifier=flow.stored.verifier,
                 redirect_uri=flow.stored.redirect_uri,
                 scopes=list(flow.stored.details["scopes"]),
+                choices=flow.choices,
             )
         except ServiceAdapterError as error:
             raise await self._refused(flow, checking, error, None) from None
@@ -404,7 +449,9 @@ class ServiceFlows:
             await self.failed(checking, INTERRUPTED)
             raise
         try:
-            account = await adapter.identify(signed_in.secret.access_token or "")
+            account = await adapter.identify(
+                signed_in.secret.access_token or "", flow.choices
+            )
         except ServiceAdapterError as error:
             try:
                 note = await discard(signed_in)
@@ -418,7 +465,9 @@ class ServiceFlows:
         except BaseException:
             await self.failed(checking, INTERRUPTED)
             raise
-        return Exchange(flow=checking, signed_in=signed_in, account=account)
+        return Exchange(
+            flow=checking, signed_in=signed_in, account=account, choices=flow.choices
+        )
 
     async def _refused(
         self,
@@ -442,16 +491,25 @@ class ServiceFlows:
         return FlowError(message)
 
     def consent(self, exchange: Exchange) -> AccessLevel:
-        """What the person consented to, as the vendor granted it."""
+        """What the person consented to, as the vendor granted it: by the
+        entry's consent markers where it names them, else write where every
+        write scope was granted and read where every read one was."""
         granted = set(exchange.signed_in.granted_scopes)
         details = exchange.flow.details
         if details.get("unscoped"):
             return "write"
-        write_scopes = set(details["write_scopes"])
-        if write_scopes and write_scopes <= granted:
-            return "write"
-        if set(details["read_scopes"]) <= granted:
-            return "read"
+        markers = details.get("consent_markers")
+        if markers is not None:
+            if markers["write"] in granted:
+                return "write"
+            if markers["read"] in granted:
+                return "read"
+        else:
+            write_scopes = set(details["write_scopes"])
+            if write_scopes and write_scopes <= granted:
+                return "write"
+            if set(details["read_scopes"]) <= granted:
+                return "read"
         raise FlowError(
             f"{details['name']} granted less than Switch needs to read. Connect "
             "again and allow what it asks for."

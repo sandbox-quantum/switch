@@ -174,7 +174,7 @@ class GitHubAdapter:
         self.can_issue = signer is not None
         self.read_only = read_only
 
-    def current_client_id(self) -> str | None:
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return self._connections.client_id
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
@@ -296,14 +296,15 @@ class GitHubAdapter:
         except GitHubError as error:
             raise _vendor_error(error) from None
 
-    async def revoke_connection(self, secret: ConnectionSecret) -> None:
+    async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
         token = secret.access_token
         if token is None:
-            return
+            return False
         try:
             await self._connections.revoke(token)
         except GitHubError as error:
             raise _vendor_error(error) from None
+        return True
 
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]

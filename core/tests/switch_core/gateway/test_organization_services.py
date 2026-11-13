@@ -401,6 +401,8 @@ async def _connected_in(session_factory, user: User, tenant_id: str) -> None:
             external_identity=user.name,
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 

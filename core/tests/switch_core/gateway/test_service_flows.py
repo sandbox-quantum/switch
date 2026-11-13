@@ -11,6 +11,7 @@ import asyncio
 import json
 import secrets
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
 from html import escape
 from pathlib import Path
@@ -26,7 +27,7 @@ from switch_core.connections.adapters.oauth import OAuthAdapter, SignIn
 from switch_core.connections.app_credentials import UNREADABLE
 from switch_core.connections.broker import Principal, ServiceBroker, ServiceError
 from switch_core.connections.flows import INTERRUPTED, ServiceFlows
-from switch_core.connections.loader import CATALOG_ROOT, load_catalog
+from switch_core.connections.loader import CATALOG_ROOT, RedirectMode, load_catalog
 from switch_core.connections.oauth_clients import (
     LOOPBACK_CALLBACK_PATH,
     RegisteredClient,
@@ -34,7 +35,12 @@ from switch_core.connections.oauth_clients import (
 )
 from switch_core.connections.organization_apps import OrganizationApp
 from switch_core.connections.sign_in_flows import MAX_FLOWS, SignInFlows
-from switch_core.db.models import ServiceConnection, SignInFlow, User
+from switch_core.db.models import (
+    ServiceConnection,
+    ServiceOAuthClient,
+    SignInFlow,
+    User,
+)
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
@@ -42,9 +48,14 @@ from switch_core.gateway.service_connections import (
 )
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
-from tests.switch_core.connections.fake_vendor import ISSUER, FakeOAuthServer
-from tests.switch_core.connections.standing import availability
+from tests.switch_core.connections.fake_vendor import (
+    ISSUER,
+    FakeOAuthServer,
+    FakeSites,
+)
+from tests.switch_core.connections.standing import availability, standing
 from tests.switch_core.connections.test_loader import (
+    CHOICES_ENTRY,
     GET_IDENTITY,
     INTROSPECTION_IDENTITY,
     OAUTH_ENTRY,
@@ -92,13 +103,17 @@ def _world(
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
     organization_apps: object = None,
+    markers: str = "",
+    named: RedirectMode | None = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
     _write_example(
         root,
-        entry.replace("redirect: [loopback, core]", f"redirect: {redirect}{ports}"),
+        entry.replace(
+            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
+        ).replace("tools: {", f"{markers}tools: {{"),
     )
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
@@ -112,7 +127,7 @@ def _world(
         http=vendor.client(),
         client_name="Switch (switch.example.com)",
         redirect_uris=redirect_uris(
-            "example", oauth.redirect, PUBLIC, oauth.loopback_ports
+            "example", oauth.redirect, named, PUBLIC, oauth.loopback_ports
         ),
         scopes=["read:items", "write:items"],
     )
@@ -132,10 +147,15 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=public_url,
+        allow_non_expiring_keys=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
-    flows = ServiceFlows(public_url, SignInFlows(session_factory, TEST_KEYRING))
+    flows = ServiceFlows(
+        public_url,
+        {} if named is None else {"example": named},
+        SignInFlows(session_factory, TEST_KEYRING),
+    )
     harness.gateway_app.state.service_flows = flows
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)
@@ -151,10 +171,22 @@ class Console:
         self.state = secrets.token_urlsafe(32)
         self.secret = secrets.token_urlsafe(32)
 
-    async def start(self, service: str = "example", port: int = PORT) -> httpx.Response:
+    async def start(
+        self,
+        service: str = "example",
+        port: int = PORT,
+        choices: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        body: dict[str, object] = {
+            "port": port,
+            "state": self.state,
+            "completion_secret": self.secret,
+        }
+        if choices is not None:
+            body["choices"] = choices
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows",
-            json={"port": port, "state": self.state, "completion_secret": self.secret},
+            json=body,
             cookies=cookies_for(self.user),
         )
 
@@ -250,6 +282,7 @@ class TestLoopback:
             started = await console.start()
             assert started.status_code == 200, started.text
             assert started.json()["mode"] == "loopback"
+            assert started.json()["callback_url"] is None
             assert started.json()["id"] == console.state
             url = started.json()["url"]
             query = parse_qs(urlsplit(url).query)
@@ -891,7 +924,7 @@ class TestCoreCallback:
         )
         reason = "Example refused Switch's client."
 
-        async def refused(self: OAuthAdapter) -> str:
+        async def refused(self: OAuthAdapter, choices: object) -> str:
             raise ServiceAdapterError(reason)
 
         ada = await add_member(session_factory, "ada")
@@ -918,6 +951,7 @@ class TestCoreCallback:
             started = await console.start()
             assert started.status_code == 200, started.text
             assert started.json()["mode"] == "core"
+            assert started.json()["callback_url"] == f"{PUBLIC}{FLOWS}/callback"
             authorize = started.json()["url"]
             assert authorize.startswith(f"{PUBLIC}{FLOWS}/authorize?state=")
 
@@ -1116,6 +1150,84 @@ class TestCoreCallback:
             refused = await Console(client, ada).start()
         assert refused.status_code == 409
         assert "GATEWAY_PUBLIC_URL" in refused.json()["detail"]
+
+
+class TestTheWayBackTheServerNames:
+    """An entry that lists both ways back signs in through Switch Console
+    unless the server names Core's callback (`SERVICE_SIGN_IN_REDIRECT`), and
+    registers that callback only then."""
+
+    LOOPBACK = [
+        f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}" for port in (43123, 43124)
+    ]
+
+    async def test_unnamed_it_returns_to_console_and_registers_only_console(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", public_url=PUBLIC)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert (started.json()["mode"], started.json()["callback_url"]) == (
+                "loopback",
+                None,
+            )
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            assert (await console.complete(code)).status_code == 200
+        [registration] = world.vendor.registrations
+        assert registration["redirect_uris"] == self.LOOPBACK
+
+    async def test_named_core_returns_through_the_callback_registered_for_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", public_url=PUBLIC, named="core"
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert (started.json()["mode"], started.json()["callback_url"]) == (
+                "core",
+                f"{PUBLIC}{FLOWS}/callback",
+            )
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            cookie = f"switch_service_{console.state}"
+            # The fake vendor refuses a redirect the client was not registered with.
+            back = urlsplit(world.vendor.authorize(left.headers["location"]))
+            returned = await client.get(
+                f"{back.path}?{back.query}", cookies={cookie: left.cookies[cookie]}
+            )
+            code = _listener_code(returned.headers["location"], console.state)
+            assert (await console.complete(code)).status_code == 200
+        [registration] = world.vendor.registrations
+        assert registration["redirect_uris"] == [
+            *self.LOOPBACK,
+            f"{PUBLIC}{FLOWS}/callback",
+        ]
+
+    async def test_named_core_without_a_public_url_returns_to_console(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", named="core")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert (started.json()["mode"], started.json()["callback_url"]) == (
+                "loopback",
+                None,
+            )
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            assert (await console.complete(code)).status_code == 200
 
 
 class TestRefusals:
@@ -1331,6 +1443,51 @@ class TestWorkspaceSwitch:
             + " Switch has stopped using the Example sign-in but cannot revoke it, "
             "so it still works. Remove Switch under Connected apps in Example.",
         }
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_a_sign_in_whose_account_cannot_be_read_is_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback, core]\n    revocation_discovered: true",
+        )
+        world.vendor.fail[world.vendor.identity_url] = (403, {})
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            refused = await console.complete(code)
+        assert refused.status_code == 400
+        unread = "Example would not say whose sign-in this is (HTTP 403)."
+        assert refused.json()["detail"] == unread
+        assert [form["token_type_hint"] for form in world.vendor.revoked] == [
+            "refresh_token"
+        ]
+        assert world.vendor.live_refresh == {}
+        flow = await _flow_row(session_factory, console.state)
+        assert (flow.status, flow.error) == ("failed", unread)
+
+    async def test_an_unread_sign_in_that_cannot_be_revoked_says_what_to_do(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        world.vendor.fail[world.vendor.identity_url] = (403, {})
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            refused = await console.complete(code)
+        assert refused.status_code == 400
+        told = (
+            "Example would not say whose sign-in this is (HTTP 403). Switch has "
+            "stopped using the Example sign-in but cannot revoke it, so it still "
+            "works. Remove Switch under Connected apps in Example."
+        )
+        assert refused.json()["detail"] == told
+        flow = await _flow_row(session_factory, console.state)
+        assert (flow.status, flow.error) == ("failed", told)
         assert await _connection(session_factory, ada.id) is None
 
 
@@ -1662,3 +1819,366 @@ class TestIntrospectedAccount:
         assert [form["token_type_hint"] for form in world.vendor.revoked] == [
             "refresh_token"
         ]
+
+
+SITES = ("example.test", "eu.example.test")
+
+
+class SitesWorld:
+    def __init__(
+        self, harness: Harness, sites: FakeSites, broker: ServiceBroker
+    ) -> None:
+        self.harness = harness
+        self.sites = sites
+        self.broker = broker
+
+
+def _sites_world(
+    session_factory: async_sessionmaker[AsyncSession], root: Path
+) -> SitesWorld:
+    """Example at two sites, chosen before signing in, each its own
+    authorization server, accounts and MCP server."""
+    shutil.copytree(CATALOG_ROOT, root)
+    _write_example(
+        root,
+        CHOICES_ENTRY.replace(
+            "redirect: [loopback, core]",
+            "redirect: [loopback, core]\n    loopback_ports: [43123, 43124]\n"
+            "    revocation_discovered: true",
+        ),
+    )
+    catalog = load_catalog(root)
+    oauth = catalog["example"].definition.auth.oauth
+    assert oauth is not None
+    sites = FakeSites(*SITES)
+    sites["eu.example.test"].account = {"id": "acct-eu", "email": "ada@eu.example.test"}
+    client = RegisteredClient(
+        service="example",
+        name="Example",
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        http=sites.client(),
+        client_name="Switch (switch.example.com)",
+        redirect_uris=redirect_uris(
+            "example", oauth.redirect, None, PUBLIC, oauth.loopback_ports
+        ),
+        scopes=["read:items", "write:items"],
+    )
+    broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=catalog,
+        adapters={
+            "example": OAuthAdapter(
+                catalog["example"].definition, client, sites.client()
+            )
+        },
+        organization_apps=None,
+        disabled={},
+        store=STORE,
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=None,
+        allow_non_expiring_keys=False,
+    )
+    harness = build_harness(session_factory)
+    harness.gateway_app.state.service_broker = broker
+    harness.gateway_app.state.service_flows = ServiceFlows(
+        None, {}, SignInFlows(session_factory, TEST_KEYRING)
+    )
+    harness.gateway_app.include_router(service_connections_router)
+    harness.gateway_app.include_router(service_flows_router)
+    return SitesWorld(harness, sites, broker)
+
+
+async def _connect_at(world: SitesWorld, console: Console, site: str) -> httpx.Response:
+    started = await console.start(choices={"site": site})
+    assert started.status_code == 200, started.text
+    code = _listener_code(world.sites.authorize(started.json()["url"]), console.state)
+    completed = await console.complete(code)
+    assert completed.status_code == 200, completed.text
+    return completed
+
+
+async def _due_for_renewal(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> None:
+    async with session_factory() as session:
+        connection = await STORE.get_connection(session, user_id, "example")
+        assert connection is not None
+        values = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
+        connection.encrypted_secret = TEST_KEYRING.encrypt(
+            json.dumps({**values, "expires_at": time.time() + 60})
+        )
+        await session.commit()
+
+
+class TestChoices:
+    async def test_signs_in_at_the_site_chosen_and_keeps_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start(choices={"site": "eu.example.test"})
+            assert started.status_code == 200, started.text
+            url = started.json()["url"]
+            assert url.startswith("https://auth.eu.example.test/authorize?")
+            assert parse_qs(urlsplit(url).query)["resource"] == [
+                "https://mcp.eu.example.test/v1/mcp"
+            ]
+            flow = await _flow_row(session_factory, console.state)
+            assert flow.details["choices"] == {"site": "eu.example.test"}
+            code = _listener_code(world.sites.authorize(url), console.state)
+            completed = await console.complete(code)
+            assert completed.status_code == 200, completed.text
+            assert completed.json()["account"] == "ada@eu.example.test"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.choices, connection.method, connection.account_id) == (
+            {"site": "eu.example.test"},
+            "oauth",
+            "acct-eu",
+        )
+        secret = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
+        assert secret["choices"] == {"site": "eu.example.test"}
+        assert world.sites["example.test"].paths == []
+
+    @pytest.mark.parametrize(
+        ("choices", "detail"),
+        [
+            (None, "Example site is required."),
+            ({}, "Example site is required."),
+            (
+                {"site": "elsewhere.test"},
+                "Example site must be one of example.test, eu.example.test.",
+            ),
+            (
+                {"site": "example.test", "region": "eu"},
+                "There is no choice named region.",
+            ),
+        ],
+    )
+    async def test_a_start_without_a_choice_the_entry_offers_is_refused(
+        self, session_factory, tmp_path, choices, detail
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start(choices=choices)
+        assert refused.status_code == 422
+        assert refused.json()["detail"] == detail
+        assert await _flow_ids(session_factory) == set()
+        assert all(world.sites[site].paths == [] for site in SITES)
+
+    async def test_an_entry_without_choices_takes_none(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start(choices={"site": "example.test"})
+            assert refused.status_code == 422
+            assert refused.json()["detail"] == "There is no choice named site."
+            console = Console(client, ada)
+            started = await console.start(choices={})
+            assert started.status_code == 200, started.text
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            assert (await console.complete(code)).status_code == 200
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.choices, connection.method) == ({}, "oauth")
+
+    async def test_refreshes_and_revokes_at_the_connections_own_site(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        eu = world.sites["eu.example.test"]
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "eu.example.test")
+            await _due_for_renewal(session_factory, ada.id)
+            async with session_factory() as session:
+                token = await world.broker.connection_access_token(
+                    session, ada.id, "example"
+                )
+            assert token in eu.live_access
+            assert eu.token_requests[-1]["grant_type"] == "refresh_token"
+            assert eu.token_requests[-1]["resource"] == (
+                "https://mcp.eu.example.test/v1/mcp"
+            )
+            removed = await client.delete(
+                "/gateway/service-connections/example", cookies=cookies_for(ada)
+            )
+            assert removed.status_code == 200, removed.text
+        assert [form["token_type_hint"] for form in eu.revoked] == ["refresh_token"]
+        assert eu.live_refresh == {}
+        assert world.sites["example.test"].paths == []
+
+    async def test_people_at_two_sites_keep_both_connections(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "example.test")
+            await _connect_at(world, Console(client, grace), "eu.example.test")
+        async with session_factory() as session:
+            clients = {
+                row.choice: row.oauth_client_id
+                for row in await session.scalars(select(ServiceOAuthClient))
+            }
+        assert clients == {
+            "example.test": "registered-1-at-example.test",
+            "eu.example.test": "registered-1-at-eu.example.test",
+        }
+        for person, site in ((ada, "example.test"), (grace, "eu.example.test")):
+            connection = await _connection(session_factory, person.id)
+            assert connection is not None
+            assert connection.oauth_client_id == clients[site]
+            assert (
+                world.broker.connection_status(
+                    await standing(world.broker, "example"), connection
+                )
+                == "active"
+            )
+            # Its refresh token is still good at its own site's client.
+            await _due_for_renewal(session_factory, person.id)
+            async with session_factory() as session:
+                token = await world.broker.connection_access_token(
+                    session, person.id, "example"
+                )
+            assert token in world.sites[site].live_access
+
+    async def test_the_list_says_how_and_with_what_each_was_connected(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        # The list answers the catalog the server loaded at import.
+        monkeypatch.setattr(
+            "switch_core.gateway.service_connections.CATALOG",
+            load_catalog(tmp_path / "catalog"),
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "eu.example.test")
+            listed = {
+                person.name: {
+                    entry["slug"]: entry
+                    for entry in (
+                        await client.get(
+                            "/gateway/service-connections", cookies=cookies_for(person)
+                        )
+                    ).json()["connections"]
+                }["example"]
+                for person in (ada, grace)
+            }
+        assert {
+            name: (entry["status"], entry["method"], entry["choices"])
+            for name, entry in listed.items()
+        } == {
+            "ada": ("active", "oauth", {"site": "eu.example.test"}),
+            "grace": ("not_connected", None, None),
+        }
+
+    async def test_a_session_calls_the_mcp_server_at_the_connections_site(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "eu.example.test")
+        async with session_factory() as session:
+            agent = await add_agent(session, name="planner", owner_id=ada.id)
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=ada.id,
+                service="example",
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="acct-eu",
+                created_by=ada.id,
+            )
+            await session.commit()
+            [grant] = await world.broker.grants_for(
+                session, agent, Principal.agent_key()
+            )
+        assert grant["mcp_servers"] == [
+            {
+                "name": "example",
+                "url": "https://mcp.eu.example.test/v1/mcp",
+                "headers": {"Authorization": "Bearer {token}"},
+            }
+        ]
+
+
+MARKERS = "  consent: { read: items_read, write: items_write }\n"
+
+
+def _granting(vendor: FakeOAuthServer, granted: list[str]) -> None:
+    """The vendor answers every sign-in with `granted` as the token's scope,
+    whatever was asked for."""
+    mint = vendor.mint
+    vendor.mint = lambda scopes, client_id: mint(granted, client_id)  # type: ignore[method-assign]
+
+
+class TestConsentMarkers:
+    """A vendor whose token lists its own permissions, rather than the
+    scopes asked for, is read by the entry's consent markers."""
+
+    @pytest.mark.parametrize(
+        ("granted", "consent"),
+        [
+            (["items_read", "items_write", "items_list"], "write"),
+            (["items_read", "items_list"], "read"),
+        ],
+    )
+    async def test_reads_the_level_from_the_marker_the_token_holds(
+        self, session_factory, tmp_path, granted, consent
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", markers=MARKERS)
+        _granting(world.vendor, granted)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            connected = await _loopback_connect(world, Console(client, ada))
+        assert connected.json()["consent"] == consent
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.consent, connection.granted_scopes) == (consent, granted)
+
+    async def test_a_token_with_neither_marker_is_refused(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", markers=MARKERS)
+        # Every scope asked for, but neither marker.
+        _granting(world.vendor, ["read:items", "write:items", "items_list"])
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            refused = await console.complete(await _loopback_code(world, console))
+            assert refused.status_code == 400
+            assert refused.json()["detail"] == (
+                "Example granted less than Switch needs to read. Connect again "
+                "and allow what it asks for."
+            )
+            assert (await console.status()).json()["status"] == "failed"
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_without_markers_the_scopes_asked_for_decide(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        _granting(world.vendor, ["read:items", "items_write"])
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            connected = await _loopback_connect(world, Console(client, ada))
+        assert connected.json()["consent"] == "read"

@@ -94,7 +94,8 @@ function unavailableState(
  * workspace, needing a fresh sign-in, connected, and otherwise ready to
  * connect. A server without the workspace switch sends no
  * `workspace_enabled`, which reads as on. Where the person looking can fix
- * it themselves, the state names the fix.
+ * it themselves, the state names the fix. A connection to reconnect says why
+ * in the server's words, where it gives them.
  */
 export function connectorCardState(
   entry: ConnectionCatalogEntry,
@@ -132,7 +133,9 @@ export function connectorCardState(
     return {
       kind: 'reconnect',
       label: 'Reconnect needed',
-      detail: `Switch can no longer use your ${entry.name} connection. Connect again.`,
+      detail:
+        entry.reconnect_reason ??
+        `Switch can no longer use your ${entry.name} connection. Connect again.`,
       tone: 'problem',
       fix: null,
     };

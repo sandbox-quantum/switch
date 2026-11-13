@@ -195,7 +195,9 @@ def create_gateway_app(
     # sent to WorkOS (`workos_sign_in.py`).
     app.state.workos_sign_in = None
     app.state.service_flows = ServiceFlows(
-        config.gateway_public_url, app.state.sign_in_flows
+        config.gateway_public_url,
+        config.service_sign_in_redirect,
+        app.state.sign_in_flows,
     )
     if config.service_connections_enabled:
         app.include_router(service_connections_router, tags=["service-connections"])

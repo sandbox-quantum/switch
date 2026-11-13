@@ -17,6 +17,46 @@ export const serviceKeyFormSchema = z.object({
 });
 export type ServiceKeyForm = z.infer<typeof serviceKeyFormSchema>;
 
+/** The credentials a service that signs in may take pasted in its place. */
+export const PASTE_METHODS = ['token', 'keys'] as const;
+export type PasteMethodName = (typeof PASTE_METHODS)[number];
+
+/**
+ * A credential a person may paste in place of signing in: what they paste,
+ * where they make one, and who ends it. What they pick (a site) is the
+ * sign-in's own `sign_in_choices`.
+ */
+export const servicePasteMethodSchema = z.object({
+  method: z.enum(PASTE_METHODS),
+  label: z.string(),
+  fields: z.array(serviceKeyFieldSchema).min(1),
+  help_url: z.string().nullable(),
+  /** `vendor`: it ends on the date it was made to end; `never`: only the vendor can revoke it. */
+  expires: z.enum(['vendor', 'never']),
+  /** What a connection made with it reaches, said in place of an access level. */
+  access_note: z.string(),
+});
+export type ServicePasteMethod = z.infer<typeof servicePasteMethodSchema>;
+
+/** A paste method as a server sends it, a newer one's method or expiry included. */
+const servicePasteWireSchema = servicePasteMethodSchema.extend({
+  method: z.string(),
+  expires: z.string(),
+});
+
+/**
+ * The paste methods this Console can offer: a newer server's method or
+ * expiry it does not know is left out, so it is never offered half-understood.
+ */
+export function knownPasteMethods(
+  offered: z.infer<typeof servicePasteWireSchema>[]
+): ServicePasteMethod[] {
+  return offered.flatMap((method) => {
+    const known = servicePasteMethodSchema.safeParse(method);
+    return known.success ? [known.data] : [];
+  });
+}
+
 /**
  * Why a service can't be used on the server, for the screens to say what
  * each person can do about it (`UnavailableCode` in Core's
@@ -98,8 +138,35 @@ export const connectionCatalogEntrySchema = z.object({
   loopback_ports: z.array(z.number().int()).nullable(),
   /** The fields a person pastes to connect it, for a service connected with a key; else null. */
   key: serviceKeyFormSchema.nullable(),
+  /**
+   * What a person picks before signing in (a vendor's site), each from its
+   * list, for a service whose sign-in asks; else null.
+   */
+  sign_in_choices: z.array(serviceKeyFieldSchema).nullable(),
+  /**
+   * What a person may paste in place of signing in (a token, or keys), each
+   * with its fields; empty where the service takes none on this server.
+   */
+  paste: z.array(servicePasteMethodSchema),
   /** The connected account as people recognise it; null when not connected. */
   external_identity: z.string().nullable(),
+  /**
+   * How the person connected: `oauth` (a sign-in), `token` (a pasted token)
+   * or `keys` (pasted keys). Null when not connected, or not said.
+   */
+  method: z.string().nullable(),
+  /** What a pasted connection reaches, said in place of its level; null for any other. */
+  access_note: z.string().nullable(),
+  /**
+   * Why the connection must be reconnected, as a code to act on and the
+   * sentence to show, where its status says it must; null otherwise and from
+   * a server that predates them. `token_refused` asks for a new pasted
+   * credential, made the way the connection was.
+   */
+  reconnect_code: z.string().nullable(),
+  reconnect_reason: z.string().nullable(),
+  /** What the person picked to connect (a site), by name; null when not connected. */
+  choices: z.record(z.string(), z.string()).nullable(),
   /** What the person allowed when they connected; null when not connected or not said. */
   consent: z.enum(['read', 'write']).nullable(),
   /**
@@ -130,7 +197,14 @@ export const connectionCatalogSchema = z.object({
         agent_access_note: true,
         loopback_ports: true,
         key: true,
+        sign_in_choices: true,
+        paste: true,
         external_identity: true,
+        method: true,
+        access_note: true,
+        reconnect_code: true,
+        reconnect_reason: true,
+        choices: true,
         consent: true,
         workspace_enabled: true,
         organization_locked: true,
@@ -159,10 +233,29 @@ export const serviceConnectionsSchema = z.object({
       agent_access_note: z.string().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
+      /** What a person picks before signing in (a vendor's site); null when nothing. */
+      sign_in_choices: z.array(serviceKeyFieldSchema).nullable().default(null),
+      /** What a person may paste in place of signing in; empty when nothing. */
+      paste: z.array(servicePasteWireSchema).default([]),
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),
       workspace_enabled: z.boolean().nullable().default(null),
       organization_locked: z.boolean().default(false),
+      /**
+       * How the person connected: `oauth` (a sign-in), `token` (a pasted
+       * token) or `keys` (pasted keys). Null when not connected.
+       */
+      method: z.string().nullable().default(null),
+      /**
+       * What the person picked from the service's lists to connect (a site),
+       * by name. Null when not connected.
+       */
+      choices: z.record(z.string(), z.string()).nullable().default(null),
+      /** What a pasted connection reaches; null for any other. */
+      access_note: z.string().nullable().default(null),
+      /** Why the connection must be reconnected, where its status says so. */
+      reconnect_code: z.string().nullable().default(null),
+      reconnect_reason: z.string().nullable().default(null),
       status: z.enum(['not_connected', 'active', 'needs_reauthorization']),
     })
   ),

@@ -4,6 +4,7 @@ import {
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { lifetimeText, pasteAgainMethod, pastedConnection } from './connect-flow';
 import type { ConnectorCardState, ConnectorFix } from './connector-card-state';
 
 export type ConnectorsTab = 'yours' | 'discover';
@@ -94,8 +95,9 @@ export function workspaceOffNotice(
 
 /**
  * The profile's way to connect: connect, sign in again (also on a connected
- * sign-in, to change the account or consent again), or replace a connected
- * key. GitHub chooses another account from its own step. None while the workspace has the
+ * sign-in, to change the account or consent again), paste a new token or
+ * keys in place of ones the vendor refused, or replace a connected key.
+ * GitHub chooses another account from its own step. None while the workspace has the
  * service off, whose notice says what to do instead, nor where the server
  * says nothing can be connected until its app is set up, or ever on this
  * server, nor for a key Switch never hands to agents. Another reason the
@@ -104,7 +106,7 @@ export function workspaceOffNotice(
  */
 export function profileConnectAction(
   entry: ConnectionCatalogEntry
-): 'connect' | 'reconnect' | 'replace' | null {
+): 'connect' | 'reconnect' | 'paste_again' | 'replace' | null {
   if (entry.status === 'coming_soon' || entry.workspace_enabled === false) return null;
   if (
     entry.unavailable_code === 'app_not_set_up' ||
@@ -113,7 +115,8 @@ export function profileConnectAction(
   )
     return null;
   if (entry.status === 'not_connected') return 'connect';
-  if (entry.status === 'needs_reauthorization') return 'reconnect';
+  if (entry.status === 'needs_reauthorization')
+    return pasteAgainMethod(entry) === null ? 'reconnect' : 'paste_again';
   if (entry.auth_type === 'api_key') return 'replace';
   return entry.slug === 'github' ? null : 'reconnect';
 }
@@ -128,12 +131,17 @@ export function reconnectNote(entry: Pick<ConnectionCatalogEntry, 'slug' | 'name
 
 /**
  * The profile header's line about the connection; null when there is none.
- * A key's line names no access level: Switch can't read what a key allows.
+ * A connection made at a site the person picked names it beside the account,
+ * as the same email can be an account at several, unless the account's own
+ * name already says it. A key's line names no access level: Switch can't
+ * read what a key allows; nor does a pasted token's or keys', whose reach the
+ * profile says beside it (`pastedConnection`).
  */
 export function connectedAsLine(entry: ConnectionCatalogEntry): string | null {
   if (entry.status === 'not_connected' || entry.status === 'coming_soon') return null;
+  const pasted = pastedConnection(entry) !== null;
   const access =
-    entry.auth_type === 'api_key'
+    entry.auth_type === 'api_key' || pasted
       ? null
       : entry.consent === 'write'
         ? 'Read and write'
@@ -146,9 +154,14 @@ export function connectedAsLine(entry: ConnectionCatalogEntry): string | null {
         ? `Connected with ${entry.external_identity}`
         : 'Connected with your key'
       : entry.external_identity
-        ? `Connected as ${entry.external_identity}`
+        ? `Connected ${pasted ? 'with' : 'as'} ${entry.external_identity}`
         : 'Connected';
-  return access ? `${who} · ${access}` : who;
+  const named = (entry.external_identity ?? '').split(' · ');
+  const picked =
+    entry.auth_type === 'api_key'
+      ? []
+      : Object.values(entry.choices ?? {}).filter((value) => !named.includes(value));
+  return [who, ...picked, ...(access ? [access] : [])].join(' · ');
 }
 
 /** What agents can do with a key, for the profile's side column; null for a sign-in. */
@@ -160,6 +173,8 @@ export function keyAccessText(entry: ConnectionCatalogEntry): string | null {
 /** How the service is connected, for the profile's side column. */
 export function signInLabel(entry: ConnectionCatalogEntry): string {
   if (entry.slug === 'github') return 'GitHub App';
+  const pasted = pastedConnection(entry);
+  if (pasted !== null) return pasted.way;
   return entry.auth_type === 'api_key' ? 'Key' : `Sign in at ${entry.name}`;
 }
 
@@ -168,11 +183,5 @@ export function tokenLifetimeLabel(entry: ConnectionCatalogEntry): string {
   if (entry.auth_type === 'api_key') return "The key itself, which doesn't expire";
   const seconds = entry.token_lifetime;
   if (seconds === null) return 'Not stated';
-  if (seconds < 3600) return plural(Math.round(seconds / 60), 'minute');
-  if (seconds < 86_400) return plural(Math.round(seconds / 3600), 'hour');
-  return plural(Math.round(seconds / 86_400), 'day');
-}
-
-function plural(count: number, unit: string): string {
-  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+  return lifetimeText(seconds);
 }

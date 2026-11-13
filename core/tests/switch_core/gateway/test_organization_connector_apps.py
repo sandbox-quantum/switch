@@ -444,6 +444,8 @@ async def _connected(session_factory, name: str, tenant: str, client_id: str) ->
             external_identity=f"{name}@example.invalid",
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
             oauth_client_id=client_id,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 
