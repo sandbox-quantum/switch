@@ -433,6 +433,64 @@ version of their own to them without also giving them a release of their own.
   every agent reads. One an agent wrote is still that agent's alone, even
   after that agent is deleted. Template documents made before this release
   stay locked; run the template again to get ones agents can maintain.
+- **The grant routes say when a grant was made for another account.** Each
+  grant from `GET /gateway/agents/{agent_id}/service-grants`, and each agent
+  from `GET /gateway/service-connections/{service}/agents`, has
+  `account_changed`. It is true when the grant's account is not the account
+  connected now, so the grant gives no access until it is made again.
+- **An agent stops using a token its grant no longer allows.** An agent host
+  keeps a token while the grant's revision stays the same. Two changes left
+  the revision the same, so the host kept the old token for up to an hour:
+  turning a grant off and on again, which started the new grant at revision
+  1, and reconnecting a service to another account, which kept the grants'
+  revisions. Each grant revision now comes from one database sequence, so it
+  never repeats, and reconnecting to another account moves the revision of
+  each grant on that connection. Agent hosts already installed drop the old
+  token at their next grant check, with no update. The migration adds the
+  `service_grant_revision` sequence.
+- **A sign-in that returns through Switch's public address shows why the
+  vendor cannot be used.** When the vendor's setup stops a sign-in before the
+  browser leaves, for example a vendor with no token introspection, the page
+  said "Sign-in was interrupted. Start it again from Switch Console." Trying
+  again could not help. The page now gives the reason, and Switch Console
+  shows the same reason. A vendor's unsupported client authentication method
+  is now logged and not shown.
+- **The refusal for an account linked to another person names the Switch
+  workspace.** It said "in this workspace", which a person can read as the
+  vendor's workspace, such as a Notion workspace. It now says "in this Switch
+  workspace" for a sign-in, a GitHub sign-in and a key.
+- **A GitHub sign-in refused because its account is linked to another person
+  is revoked at GitHub.** Switch revokes only the second person's new token,
+  so the first person's connection keeps working.
+- **A sign-in refused because its account is linked to another person is
+  revoked at the vendor.** Before, the vendor kept the second person's new
+  sign-in live. The refusal stays a 409 with the code
+  `account_linked_elsewhere`. If Switch cannot revoke or check the sign-in,
+  the message says so. It does not tell the person to remove Switch at the
+  vendor, because that would end the first person's connection. At a vendor
+  that ends all of an account's sign-ins on one revocation, such as Google,
+  Switch does not revoke a sign-in it refuses. Such a revocation could end a
+  connection that Switch keeps for the account, also in another Switch
+  workspace. The message says that Switch did not revoke the sign-in, unless
+  the sign-in is in the grant of the connection that Switch keeps.
+- **A sign-in whose account Switch cannot read is revoked at the vendor.**
+  Before, the vendor kept the new sign-in live, and nobody held it. If
+  Switch cannot revoke it, the message tells the person where to remove it,
+  unless the person keeps a connection to the service, which removing it
+  would end too. If Switch cannot check the sign-in at all, the message says
+  so. At a vendor that ends all of an account's sign-ins on one
+  revocation, such as Google, Switch does not revoke the sign-in, and the
+  message says so.
+- **Google: a sign-in refused because the service is off in the workspace
+  stays live.** Before, Switch revoked it unless the person's own connection
+  held it. At Google, that revocation could also end the same account's
+  connection in another Switch workspace. The message now says that Switch
+  did not revoke the sign-in.
+- **A vendor outage while Switch completes a new sign-in is a 503.** This
+  covers the code exchange and the step where Switch reads the account.
+  Before, the vendor's 5xx or 429 answer gave a 400, so the person could
+  not tell that a new sign-in can succeed. The flow still reads failed,
+  with the same message.
 - **Removing someone from a workspace, or leaving it, says who receives what
   they owned.** Their rooms, packages, references, reference types, library
   documents and templates pass to another admin, and until now nothing said
@@ -3451,6 +3509,12 @@ version of their own to them without also giving them a release of their own.
   in to says so and opens nothing.
 - **A service's note on agent access.** The connector page and the connect
   step show it where a service sets one (Sentry).
+- **Reconnect a connected service.** A connector's page offers Reconnect for a
+  service you are signed in to, except GitHub, which has its own step. Use it
+  to sign in to another account (for Notion, another workspace) or to consent
+  again, without Disconnect, which removes every agent's access. The same
+  account keeps every agent's access. Another account replaces the
+  connection, and each agent must then be granted the service again.
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on
   any model provider Pi is signed in to, with the model chosen in Switch.
   Each session loads a Switch extension with `-e`, written to a directory of
@@ -3628,6 +3692,25 @@ version of their own to them without also giving them a release of their own.
   could be listed as a room, and opening it there said it had been "created
   as an agent-only room". Rooms leaves out every chat the server marks as
   direct, and a Console chat opened as a room says what it is.
+- **An agent is told why a connector's tools are missing.** When Switch
+  refused a connector's token as the session listed the connector's tools,
+  for example while the connector is held back or must be reconnected, the
+  agent's CLI showed the connector with no tools and no reason. The session
+  now shows Switch's reason as a notice, once for each reason.
+- **A notice that a service is unavailable through Switch names the
+  service.** It used the service's id, for example "sentry", and now uses
+  its name, for example "Sentry".
+- **A failed sign-in stops asking you to finish it in the browser.** When
+  Switch refused a sign-in, for example because the account is linked to
+  another person, the connect dialog still showed "Finish signing in in your
+  browser, then return here." above the reason. It now shows only the reason.
+- **A grant made for another account reads as off.** After you reconnect a
+  service to another account, an agent's grant for the old account gives no
+  access. Its Connectors page said "On" all the same, and the connector page
+  listed the agent as using the service. Both now say that the grant was made
+  for another account and must be turned on again. This needs a switch-core
+  that reports `account_changed`; with an older one, Console shows the grant
+  as before.
 - **A room hears about a turn that finished without a reply.** When an agent
   addressed in a room ended its turn without doing anything in the room — it
   wrote its answer only as its final text, or its provider stopped it at a

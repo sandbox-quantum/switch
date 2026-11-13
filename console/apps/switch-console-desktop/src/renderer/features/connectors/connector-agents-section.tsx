@@ -45,6 +45,8 @@ import {
   agentsUnlistedText,
   noAgentsText,
   offersAddAgent,
+  staleGrantsText,
+  usesService,
 } from './grant-agents';
 
 /**
@@ -79,7 +81,8 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
   const remote = useWorkspaceAgents(workspaceId);
   const iconFor = (agentId: string) =>
     remote.data?.find((agent) => agent.id === agentId)?.iconUrl ?? null;
-  const usedBy = agents.data?.filter((agent) => agent.granted) ?? [];
+  const usedBy = agents.data?.filter(usesService) ?? [];
+  const stale = agents.data?.filter((agent) => agent.granted && !usesService(agent)) ?? [];
   const { navigate } = useNavigate();
   const managed = useManagedAgents(serverId);
   const local = agentsStore.agentsInWorkspace(workspaceId);
@@ -213,6 +216,14 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
             );
           })}
         </div>
+      )}
+      {stale.length > 0 && (
+        <p className="text-xs text-foreground-muted">
+          {staleGrantsText(
+            stale.map((agent) => agent.name),
+            name
+          )}
+        </p>
       )}
       {removal.error && (
         <p role="alert" className="text-xs text-destructive">

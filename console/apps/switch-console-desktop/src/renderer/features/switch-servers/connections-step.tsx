@@ -192,7 +192,12 @@ export function ConnectionsStep({
     );
   if (opened)
     return (
-      <ServiceConnectStep calls={serverServiceCalls(serverId)} connection={opened} onBack={back} />
+      <ServiceConnectStep
+        calls={serverServiceCalls(serverId)}
+        connection={opened}
+        reconnecting={false}
+        onBack={back}
+      />
     );
 
   const githubConnected = catalog.connections?.some(

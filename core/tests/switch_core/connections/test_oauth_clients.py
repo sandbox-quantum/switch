@@ -245,8 +245,13 @@ async def test_a_client_registered_for_another_method_is_refused(
 ) -> None:
     vendor.register_as = "private_key_jwt"
     adapter = _adapter(_client(session_factory, vendor), vendor)
-    with pytest.raises(ServiceAdapterError, match="private_key_jwt"):
+    with pytest.raises(ServiceAdapterError) as refused:
         await adapter.client_id()
+    # Fixed text only: a person sees it, and the method is the vendor's value.
+    assert str(refused.value) == (
+        "The vendor registered Switch with a client authentication method "
+        "that Switch does not support."
+    )
     assert await _rows(session_factory) == []
 
 

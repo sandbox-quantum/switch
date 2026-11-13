@@ -51,7 +51,7 @@ export function ungrantedRepositoryNotice(
 
 /** The notice for a service the session could not get through Switch; `fallback` as above. */
 export function serviceFallbackNotice(service: string, reason: string, fallback: boolean): string {
-  const name = service === 'github' ? 'GitHub' : service;
+  const name = serviceName(service);
   const why = `${name} through Switch is unavailable in this session (${reason.replace(/\.$/, '')})`;
   return fallback
     ? `${why}, so ${service === 'github' ? 'git and gh use' : 'it uses'} this machine's own ${name} sign-in instead, if it has one.`
@@ -72,6 +72,7 @@ export function serviceName(service: string): string {
     datadog: 'Datadog',
     github: 'GitHub',
     'google-workspace': 'Google Workspace',
+    notion: 'Notion',
     sentry: 'Sentry',
   };
   return names[service] ?? service;

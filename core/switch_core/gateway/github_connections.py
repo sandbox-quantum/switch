@@ -350,19 +350,35 @@ async def complete(
         {"key": f"github-link:{require_tenant_id()}"},
     )
     account_id = str(credentials["user_id"])
-    taken = await session.scalar(
-        select(ServiceConnection.user_id).where(
+    secret = ConnectionSecret(credentials)
+    holder = await session.scalar(
+        select(ServiceConnection).where(
             ServiceConnection.tenant_id == require_tenant_id(),
             ServiceConnection.service == "github",
             ServiceConnection.user_id != user.id,
             ServiceConnection.account_id == account_id,
         )
     )
-    if taken is not None:
+    if holder is not None:
         linked = (
             "This GitHub account is already linked to another Switch user in "
-            "this workspace. Remove that link first."
+            "this Switch workspace. Remove that link first."
         )
+        try:
+            note = await broker.discard_sign_in(
+                session,
+                service="github",
+                kept=holder,
+                secret=secret,
+                oauth_client_id=github.client_id,
+                account_id=account_id,
+            )
+        except Exception:
+            # The refusal must still reach the person and end the flow.
+            logger.exception("github unkept sign-in discard failed")
+            note = "Switch could not check the sign-in GitHub just issued."
+        if note is not None:
+            linked = f"{linked} {note}"
         await _settled(flows, checking, "failed", error=linked)
         return JSONResponse(
             status_code=409,
@@ -381,7 +397,7 @@ async def complete(
             granted_scopes=[],
             account_id=account_id,
             external_identity=credentials["login"],
-            secret=ConnectionSecret(credentials),
+            secret=secret,
             oauth_client_id=github.client_id,
         )
     except ServiceError as error:

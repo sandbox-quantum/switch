@@ -111,6 +111,7 @@ function connectStep(onConnected: (warning: string | null) => void = () => {}) {
     <ServiceConnectStep
       calls={serverServiceCalls('server')}
       connection={EXAMPLE}
+      reconnecting={false}
       onBack={() => {}}
       onConnected={onConnected}
     />
@@ -133,6 +134,7 @@ it('says what limits agent access before the sign-in starts', async () => {
         ...EXAMPLE,
         agent_access_note: 'Agents have Example for the hour after each sign-in.',
       }}
+      reconnecting={false}
       onBack={() => {}}
       onConnected={() => {}}
     />
@@ -159,6 +161,7 @@ it('still says what limits agent access once the service is connected', async ()
         status: 'connected',
         agent_access_note: 'Agents have Example for up to an hour after each sign-in.',
       }}
+      reconnecting={false}
       onBack={() => {}}
       onConnected={() => {}}
     />
@@ -223,6 +226,24 @@ it("shows the server's reason when it refuses the account, and lets the dialog c
   expect(onConnected).not.toHaveBeenCalled();
   expect(closable()).toBe(true);
   expect(button(/^cancel$/i, dialog())).toBeDefined();
+  // The browser has nothing left to finish.
+  expect(dialog().textContent).not.toMatch(/Finish signing in/);
+});
+
+it('offers a new sign-in on a connected service when it is opened to reconnect', async () => {
+  await render(
+    <ServiceConnectStep
+      calls={serverServiceCalls('server')}
+      connection={{ ...EXAMPLE, status: 'connected' }}
+      reconnecting
+      onBack={() => {}}
+    />
+  );
+
+  expect(button(/^connect example/i, dialog())).toBeDefined();
+  expect(dialog().textContent).toContain(
+    'Signing in to another Example account replaces this one. Each agent then needs Example turned on again.'
+  );
 });
 
 it('counts a cancel of a sign-in the server already dropped as cancelled', async () => {

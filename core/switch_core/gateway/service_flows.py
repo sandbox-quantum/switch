@@ -39,7 +39,7 @@ from switch_core.db.models import ServiceConnection, Tenant, User, require_tenan
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session, get_session_factory
-from switch_core.gateway.service_connections import service_refusal
+from switch_core.gateway.service_connections import STORE, service_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +144,11 @@ async def start(
     else:
         try:
             url, _ = await flows.vendor_url(flow, adapter)
-        except ServiceUnavailableError as error:
-            raise HTTPException(503, str(error)) from None
         except ServiceAdapterError as error:
-            raise HTTPException(502, str(error)) from None
+            # Console reads the reason from this answer, so the flow goes.
+            await flows.discard(flow)
+            status = 503 if isinstance(error, ServiceUnavailableError) else 502
+            raise HTTPException(status, str(error)) from None
     return {"id": body.state, "url": url, "mode": flow.mode}
 
 
@@ -199,8 +200,12 @@ async def authorize(
         return _page("Connections", escape(refusal.message), refusal.status_code)
     try:
         url, nonce = await flows.vendor_url(flow, adapter)
-    except (FlowError, ServiceAdapterError):
+    except FlowError:
         return _page(definition.name, INTERRUPTED, 400)
+    except ServiceUnavailableError as error:
+        return _page(definition.name, escape(str(error)), 503)
+    except ServiceAdapterError as error:
+        return _page(definition.name, escape(str(error)), 502)
     response = RedirectResponse(
         url, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
     )
@@ -267,12 +272,21 @@ async def complete(
         _, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
         return service_refusal(error)
+    own = await STORE.get_connection(session, user.id, service)
     try:
         exchange = await flows.complete(
             flow,
             completion_secret=body.completion_secret,
             code=body.code,
             adapter=adapter,
+            discard=lambda signed_in: broker.discard_sign_in(
+                session,
+                service=service,
+                kept=own,
+                secret=signed_in.secret,
+                oauth_client_id=signed_in.client_id,
+                account_id=None,
+            ),
         )
     except FlowError as error:
         raise HTTPException(400, str(error)) from None
@@ -288,19 +302,34 @@ async def complete(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"service-link:{require_tenant_id()}:{service}"},
     )
-    taken = await session.scalar(
-        select(ServiceConnection.user_id).where(
+    holder = await session.scalar(
+        select(ServiceConnection).where(
             ServiceConnection.tenant_id == require_tenant_id(),
             ServiceConnection.service == service,
             ServiceConnection.user_id != user.id,
             ServiceConnection.account_id == account.account_id,
         )
     )
-    if taken is not None:
+    if holder is not None:
         linked = (
             f"This {flow.name} account is already linked to another Switch "
-            "user in this workspace. Remove that link first."
+            "user in this Switch workspace. Remove that link first."
         )
+        try:
+            note = await broker.discard_sign_in(
+                session,
+                service=service,
+                kept=holder,
+                secret=signed_in.secret,
+                oauth_client_id=signed_in.client_id,
+                account_id=account.account_id,
+            )
+        except Exception:
+            # The refusal must still reach the person and end the flow.
+            logger.exception("%s unkept sign-in discard failed", service)
+            note = f"Switch could not check the sign-in {flow.name} just issued."
+        if note is not None:
+            linked = f"{linked} {note}"
         await flows.failed(exchange.flow, linked)
         return JSONResponse(
             status_code=409,

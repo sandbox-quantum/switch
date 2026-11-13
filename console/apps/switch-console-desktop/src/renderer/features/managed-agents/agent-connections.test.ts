@@ -139,6 +139,30 @@ describe("an agent's connection cards", () => {
     );
     expect(connectionCardDetail(plain)).toBe('What box is.');
   });
+
+  it('shows a grant made for another account as off, and says why', () => {
+    const [changed] = agentConnectionCards(
+      [service('atlassian')],
+      [grant('atlassian', { account_changed: true })]
+    ).cards;
+    expect(connectionCardStatus(changed)).toBe('Off');
+    expect(connectionCardDetail(changed)).toBe(
+      'This was granted for another Atlassian account, so it gives no access now. Turn it on again for the account connected now.'
+    );
+  });
+
+  it('names only the controls a GitHub or other card has for a grant made for another account', () => {
+    const [github, gitlab] = agentConnectionCards(
+      [service('github', { pass_through: false }), service('gitlab', { pass_through: false })],
+      [grant('github', { account_changed: true }), grant('gitlab', { account_changed: true })]
+    ).cards;
+    expect(connectionCardDetail(github)).toBe(
+      'This was granted for another Github account, so it gives no access now. Change it, or remove it.'
+    );
+    expect(connectionCardDetail(gitlab)).toBe(
+      'This was granted for another Gitlab account, so it gives no access now. Remove it.'
+    );
+  });
 });
 
 describe('the note naming unconnected services', () => {

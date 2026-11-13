@@ -90,8 +90,9 @@ export function workspaceOffNotice(
 }
 
 /**
- * The profile's way to connect: connect, sign in again, (GitHub) choose
- * repositories, or replace a connected key. None while the workspace has the
+ * The profile's way to connect: connect, sign in again (also on a connected
+ * sign-in, to change the account or consent again), or replace a connected
+ * key. GitHub chooses another account from its own step. None while the workspace has the
  * service off, whose notice says what to do instead, nor where the server
  * says nothing can be connected until its app is set up, or ever on this
  * server, nor for a key Switch never hands to agents. Another reason the
@@ -110,7 +111,16 @@ export function profileConnectAction(
     return null;
   if (entry.status === 'not_connected') return 'connect';
   if (entry.status === 'needs_reauthorization' || entry.status === 'error') return 'reconnect';
-  return entry.auth_type === 'api_key' ? 'replace' : null;
+  if (entry.auth_type === 'api_key') return 'replace';
+  return entry.slug === 'github' ? null : 'reconnect';
+}
+
+/** What the sign-in dialog says when the person signs in again to a connected service. */
+export function reconnectNote(entry: Pick<ConnectionCatalogEntry, 'slug' | 'name'>): string {
+  const again = `Each agent then needs ${entry.name} turned on again.`;
+  return entry.slug === 'notion'
+    ? `Choosing another ${entry.name} workspace replaces this connection. ${again}`
+    : `Signing in to another ${entry.name} account replaces this one. ${again}`;
 }
 
 /**
