@@ -167,4 +167,14 @@ describe("ChatsPage", () => {
     expect(offered).toEqual(["Mine", "Theirs"]);
     expect(screen.queryByText("Group chats are not turned on here.")).toBeNull();
   });
+
+  it("says a room that is not one of the person's chats is not, rather than asking for its messages", async () => {
+    api.fetchRoom.mockResolvedValue({ name: "Ship review" } as never);
+    const store = storeWith([chat("r1")]);
+    store.userId = "me";
+    renderAt("/chats/elsewhere", store);
+    expect(screen.getByText("This room isn't one of your chats")).toBeTruthy();
+    expect(screen.queryByTestId("chat-panel")).toBeNull();
+    await waitFor(() => expect(screen.getByText("Ship review")).toBeTruthy());
+  });
 });

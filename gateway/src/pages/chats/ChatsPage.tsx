@@ -20,7 +20,7 @@ import { useChatHost, useOptionalChatHost } from "@switch-console/chat-ui/host";
 import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
 import { observer } from "mobx-react-lite";
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { Link as RouterLink, useNavigate, useParams } from "react-router";
 import { type AgentSummary, fetchAgents, fetchRoom } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { ChatRequestError, webChatsClient, webFailures } from "./webChatClient";
@@ -231,9 +231,29 @@ const ChatPane = observer(function ChatPane({ roomId }: { roomId: string }) {
           </Typography>
         )}
       </Box>
-      <Box className={SHARED_UI_CLASS} sx={{ flex: 1, minHeight: 0 }}>
-        <ChatPanel key={roomId} serverId={WEB_SERVER_ID} roomId={roomId} />
-      </Box>
+      {chat ? (
+        <Box className={SHARED_UI_CLASS} sx={{ flex: 1, minHeight: 0 }}>
+          <ChatPanel key={roomId} serverId={WEB_SERVER_ID} roomId={roomId} />
+        </Box>
+      ) : (
+        <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1.5, p: 4 }}>
+          {/* The list is read once the feed is up; until then a chat may still be on it. */}
+          {chats.userId === null && !chats.listError ? (
+            <Typography color="text.secondary">Loading the chat…</Typography>
+          ) : (
+            <>
+              <Typography sx={{ fontWeight: 600 }}>This room isn't one of your chats</Typography>
+              <Typography color="text.secondary" sx={{ maxWidth: 420, textAlign: "center" }}>
+                Being able to see a room doesn't let you read its conversation. Ask its owner to
+                add you.
+              </Typography>
+              <Button component={RouterLink} to={`/rooms/${encodeURIComponent(roomId)}`}>
+                Open the room's page
+              </Button>
+            </>
+          )}
+        </Stack>
+      )}
     </Stack>
   );
 });
