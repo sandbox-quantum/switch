@@ -27,6 +27,7 @@ const rpcMock = vi.hoisted(() => ({
     listRoomGroups: vi.fn(async () => []),
     listBridgePeople: vi.fn(async (_params: { bridgeId: string }): Promise<unknown[]> => []),
     listMyIdentities: vi.fn(async (): Promise<unknown[]> => []),
+    roomAgentCandidates: vi.fn(async () => null),
     createRoom: vi.fn(),
   },
   chats: {

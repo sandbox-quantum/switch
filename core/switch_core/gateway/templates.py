@@ -28,7 +28,7 @@ from switch_core.authz import (
     validate_visibility_pair,
 )
 from switch_core.config import SwitchConfig
-from switch_core.content_disposition import content_disposition
+from switch_core.content_disposition import UNTRUSTED_FILE_CSP, content_disposition
 from switch_core.db.models import Template, User
 from switch_core.db.stores.template_store import (
     TemplateListing,
@@ -483,6 +483,7 @@ async def get_template_content(
             # The bytes are whatever someone uploaded, so a browser must not be
             # talked into sniffing them into something it will render.
             "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": UNTRUSTED_FILE_CSP,
         },
     )
 

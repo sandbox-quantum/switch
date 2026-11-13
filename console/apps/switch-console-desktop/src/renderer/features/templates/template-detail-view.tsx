@@ -29,6 +29,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
+import { recordTemplateOpened } from './recent-templates';
 import { accessLine, accessOf } from './template-visibility';
 import { isRequired, paramLabel, typeLabel } from './use/use-template-model';
 
@@ -196,6 +197,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
       setCurrentName(null);
     };
   }, [workspaceId, templateId]);
+
+  const meId = me?.id ?? null;
+  useEffect(() => {
+    if (loaded !== null && workspaceId !== null) {
+      recordTemplateOpened({ workspaceId, userId: meId }, templateId);
+    }
+  }, [loaded, workspaceId, meId, templateId]);
 
   const back = (
     <Button

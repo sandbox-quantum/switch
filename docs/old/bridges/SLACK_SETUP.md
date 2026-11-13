@@ -46,8 +46,8 @@ You need one Slack app for the whole bridge. There are two ways to create it —
     "features": {
         "app_home": {
             "home_tab_enabled": true,
-            "messages_tab_enabled": false,
-            "messages_tab_read_only_enabled": false
+            "messages_tab_enabled": true,
+            "messages_tab_read_only_enabled": true
         },
         "bot_user": {
             "display_name": "Agent Switch",
@@ -138,6 +138,15 @@ You need one Slack app for the whole bridge. There are two ways to create it —
 </details>
 
 Then continue with [Generate tokens and install](#2-generate-tokens-and-install).
+
+The manifest turns on the app's **Messages tab**, read only. That's where Switch
+sends the message someone taps to confirm that a Slack account is theirs when
+they link it from Switch Console. People can read the app's messages and press
+their buttons there, but can't write to the app. An app created from an older
+manifest has the tab off: re-apply the manifest (**App Manifest** in the app's
+settings) or turn on **App Home → Messages Tab** and leave "Allow users to send
+Slash commands and messages from the messages tab" unchecked. Until then,
+linking still works with the code Switch Console shows.
 
 ### Alternative: from scratch (manual)
 

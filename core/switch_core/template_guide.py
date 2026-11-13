@@ -134,7 +134,8 @@ the run; a full entry creates a new one of a reference type (google_drive,
 confluence, github, jira, or one the server defines), private unless
 read_visibility / write_visibility say otherwise. docs are documents created
 in the room; its agents see each one's description, load the content
-when they need it, and any of them may update or delete it. Capturing a room writes roles and docs in full and
+when they need it, and one whose owner can edit the room may update or
+delete it. Capturing a room writes roles and docs in full and
 references by id:
 
     roles:

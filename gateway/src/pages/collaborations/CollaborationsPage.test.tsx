@@ -7,6 +7,7 @@ import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import type { UseQueryResult } from "../../data/hooks";
 import CollaborationsPage from "./CollaborationsPage";
+import { bridgeDetail } from "./testFixtures";
 
 vi.mock("../../data/AuthContext", () => ({
   useAuth: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("../../data/api", async (importOriginal) => {
   return {
     ...actual,
     beginAppInstall: vi.fn(),
+    updateBridge: vi.fn(),
   };
 });
 
@@ -58,24 +60,7 @@ function queryResult<T>(data: T | null): UseQueryResult<T> {
   return { data, loading: false, error: null, refetch: vi.fn() };
 }
 
-function bridge(overrides: Partial<BridgeDetail> = {}): BridgeDetail {
-  return {
-    bridge_id: "b1",
-    bridge_type: "teams",
-    display_name: "Acme Corp",
-    status: "active",
-    agent_greetings_enabled: true,
-    channel_creation_supported: true,
-    channel_creation_enabled: false,
-    room_count: 2,
-    created_at: "2026-01-01",
-    attention: null,
-    team_placement_supported: false,
-    can_manage: true,
-    can_delete: true,
-    ...overrides,
-  };
-}
+const bridge = bridgeDetail;
 
 function setup({
   isAdmin = true,
@@ -318,6 +303,31 @@ describe("CollaborationsPage", () => {
     for (const toggle of screen.getAllByRole("switch")) {
       expect((toggle as HTMLInputElement).disabled).toBe(true);
     }
+  });
+
+  it("says so when a switch is refused, rather than flicking back silently", async () => {
+    setup({ bridges: [bridge({ display_name: "Acme Corp" })] });
+    vi.mocked(api.updateBridge).mockRejectedValue(new Error("Only an admin may change this."));
+    render(<CollaborationsPage />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Agent greetings for Acme Corp" }));
+
+    expect(await screen.findByText("Only an admin may change this.")).toBeTruthy();
+    expect(api.updateBridge).toHaveBeenCalledWith("b1", { agent_greetings_enabled: false });
+  });
+
+  it("says the list could not be loaded instead of claiming there are no apps", () => {
+    setup();
+    vi.mocked(hooks.useBridges).mockReturnValue({
+      data: null,
+      loading: false,
+      error: "Failed to fetch data",
+      refetch: vi.fn(),
+    });
+    render(<CollaborationsPage />);
+
+    expect(screen.getByText(/Could not load the messaging apps/)).toBeTruthy();
+    expect(screen.queryByText("No messaging apps yet")).toBeNull();
   });
 
   it("labels the type column with the platform's own name", () => {

@@ -862,6 +862,70 @@ class TestListingYourLinks:
         assert [(i.id, i.verified) for i in linked] == [(world.account.id, False)]
         assert pending == []
 
+    async def test_a_link_says_when_it_started_counting(self, world: _World) -> None:
+        await _claim(world, world.ada)
+        await _verify(world, world.ada, _Adapter("U-ada"))
+        async with world.session_factory() as session:
+            confirmed = await _STORE.get_claim(session, world.account.id, world.ada.id)
+            linked = await my_identities(
+                session, _STORE, CollaborationBridgeStore(), world.ada
+            )
+
+        assert confirmed is not None
+        assert [(i.verified, i.linked_at) for i in linked] == [
+            (True, confirmed.created_at)
+        ]
+
+    async def test_confirming_an_old_link_keeps_when_it_started_counting(
+        self, world: _World
+    ) -> None:
+        started = datetime.fromisoformat("2026-01-14T09:00:00+00:00")
+        async with world.session_factory() as session:
+            session.add(
+                ExternalUserClaim(
+                    external_user_id=world.account.id,
+                    user_id=world.ada.id,
+                    created_at=started,
+                )
+            )
+            await session.commit()
+        await _issue(world, world.ada)
+        await _verify(world, world.ada, _Adapter("U-ada"))
+
+        async with world.session_factory() as session:
+            linked = await my_identities(
+                session, _STORE, CollaborationBridgeStore(), world.ada
+            )
+
+        assert [(i.verified, i.linked_at) for i in linked] == [(True, started)]
+
+    async def test_an_old_link_says_while_a_confirmation_waits_for_it(
+        self, world: _World
+    ) -> None:
+        async with world.session_factory() as session:
+            session.add(
+                ExternalUserClaim(
+                    external_user_id=world.account.id, user_id=world.ada.id
+                )
+            )
+            await session.commit()
+
+        async def waiting() -> list[bool]:
+            async with world.session_factory() as session:
+                linked = await my_identities(
+                    session, _STORE, CollaborationBridgeStore(), world.ada
+                )
+            return [i.awaiting_confirmation for i in linked]
+
+        assert await waiting() == [False]
+        await _issue(world, world.ada)
+        assert await waiting() == [True]
+        async with world.session_factory() as session:
+            await _STORE.cancel_link_request(session, world.account, world.ada.id)
+            await session.commit()
+        # The request went (a wrong number tapped, say) and the link stayed.
+        assert await waiting() == [False]
+
     async def test_confirming_an_old_link_does_not_list_it_as_waiting(
         self, world: _World
     ) -> None:

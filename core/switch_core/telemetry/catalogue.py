@@ -183,6 +183,9 @@ ACTOR_KIND = one_of("user", "agent", "system")
 # sender whose client could not be looked up.
 SENDER_KIND = one_of("user", "member", "bot", "agent", "platform", "unknown")
 
+# Who joined or left a room through Switch Console.
+CONSOLE_MEMBER_KIND = one_of("person", "agent")
+
 OUTCOME = one_of("success", "failure")
 
 # The four built-in types. A user-defined type's slug is free text, so it
@@ -276,6 +279,11 @@ _SNAPSHOT_COUNTS = (
     "room_active_7d",
     "room_archived_count",
     "room_internal_only_count",
+    # Switch Console chats: 1-1 with an agent, with more than one person, and
+    # used in the last week. Already in the counts above by origin.
+    "room_console_chat_direct_count",
+    "room_console_chat_group_count",
+    "room_console_chat_active_7d",
     "room_membership_total",
     "room_users_mean",
     "room_users_max",
@@ -340,6 +348,10 @@ _PERIOD_COUNTS: Mapping[str, PropertyType] = {
     "turn_human_to_agent": NUMBER,
     "turn_agent_to_human": NUMBER,
     "turn_agent_to_agent": NUMBER,
+    # Accounts that spoke in Switch Console chat, and of those, the ones no
+    # platform account of theirs spoke for in the same period.
+    "console_account_active": NUMBER,
+    "console_only_account_active": NUMBER,
     "is_partial": BOOLEAN,
     "tenant_failed_count": NUMBER,
 }
@@ -451,6 +463,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "has_instructions": BOOLEAN,
         "created_by_kind": ACTOR_KIND,
         "from_template": BOOLEAN,
+        "console_chat": BOOLEAN,
     },
     "room_became_active": {
         "seconds_since_room_created": NUMBER,
@@ -458,11 +471,13 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "channel_type": CHANNEL_TYPE,
         "agent_count": NUMBER,
         "created_by_kind": ACTOR_KIND,
+        "console_chat": BOOLEAN,
     },
     "room_archived": {
         "bridge_platform": BRIDGE_PLATFORM,
         "age_days": optional(NUMBER),
         "was_ever_active": TRISTATE,
+        "console_chat": BOOLEAN,
     },
     "room_agents_added": {"agent_count": NUMBER, "added_by_kind": ACTOR_KIND},
     "room_agents_removed": {"agent_count": NUMBER, "removed_by_kind": ACTOR_KIND},
@@ -476,6 +491,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "age_days": optional(NUMBER),
         "was_ever_active": TRISTATE,
         "agent_count": NUMBER,
+        "console_chat": BOOLEAN,
     },
     "agent_deleted": {
         "known_agent_type": KNOWN_AGENT_TYPE,
@@ -577,6 +593,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "known_agent_type": optional(LOOKED_UP_AGENT_TYPE),
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
+        "console_chat": TRISTATE,
         "room_user_count": optional(NUMBER),
         "room_agent_count": optional(NUMBER),
         "has_attachment": BOOLEAN,
@@ -595,8 +612,52 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "known_agent_type": KNOWN_AGENT_TYPE,
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
+        "console_chat": TRISTATE,
         "has_attachment": BOOLEAN,
         "agent_live": BOOLEAN,
+    },
+    # ── Switch Console chats ─────────────────────────────────────────────────
+    # What people do to their chats in Switch Console, reported by the chat
+    # service once committed. A chat being made is `room_created` with
+    # `console_chat`. Console manages any room a person is in, not only the
+    # chats it made, so the membership and list events say which.
+    #
+    # A direct chat turned group, for good: by a second person or a second
+    # agent joining it.
+    "console_chat_became_group": {
+        "trigger": one_of("person_added", "agent_added"),
+        "age_days": optional(NUMBER),
+    },
+    # Someone added to a room from Console by one of its managers; already in
+    # is not an add. A person added is also a `room_users_added`, which counts
+    # adds from everywhere; this one says it was Console. `channel_type` is the room's after the add, so a direct
+    # chat that this made a group reads `channel_private`.
+    "console_member_added": {
+        "member_kind": CONSOLE_MEMBER_KIND,
+        "channel_type": CHANNEL_TYPE,
+        "console_chat": BOOLEAN,
+    },
+    # Someone taken out of a room from Console. `left` is a person taking
+    # themselves out, as against a manager removing them; always false for an
+    # agent.
+    "console_member_removed": {
+        "member_kind": CONSOLE_MEMBER_KIND,
+        "left": BOOLEAN,
+        "channel_type": CHANNEL_TYPE,
+        "console_chat": BOOLEAN,
+    },
+    # A person taking a room off their own Console list, and putting it back.
+    # Only a change is reported: hiding a hidden room is not, and nor is a
+    # room coming back on its own because something new was said in it.
+    "console_room_hidden": {
+        "channel_type": CHANNEL_TYPE,
+        "age_days": optional(NUMBER),
+        "console_chat": BOOLEAN,
+    },
+    "console_room_shown": {
+        "channel_type": CHANNEL_TYPE,
+        "age_days": optional(NUMBER),
+        "console_chat": BOOLEAN,
     },
     # ── Decision routing ─────────────────────────────────────────────────────
     # One per message auto-route asked a decision service about. Which agent,
@@ -687,6 +748,12 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "room_role_defined": {"exclusive": BOOLEAN},
     "room_role_deleted": {},
     "room_users_added": {"user_count": NUMBER},
+    # People taken out of a room: by someone through Switch ("user"), or
+    # because their platform said they left the channel ("platform").
+    "room_users_removed": {
+        "user_count": NUMBER,
+        "removed_by_kind": one_of("user", "platform"),
+    },
     # The inverse of the attaches: tried and dropped, as against never used.
     "reference_detached_from_room": {"reference_type": REFERENCE_TYPE},
     "document_detached_from_room": {},
