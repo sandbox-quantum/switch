@@ -55,8 +55,7 @@ async def test_a_person_is_named_by_their_role_now(
             await AgentRecipient._sender_role(
                 _recipient(person),  # type: ignore[arg-type]
                 session,
-                "@olivia:test",
-                {},
+                person,
             )
             == "admin"
         )
@@ -70,8 +69,7 @@ async def test_a_person_is_named_by_their_role_now(
             await AgentRecipient._sender_role(
                 _recipient(person),  # type: ignore[arg-type]
                 session,
-                "@olivia:test",
-                {},
+                person,
             )
             == "member"
         )
@@ -90,8 +88,7 @@ async def test_an_agent_or_an_unclaimed_person_has_no_role(
                 await AgentRecipient._sender_role(
                     _recipient(principal),  # type: ignore[arg-type]
                     session,
-                    "@someone:test",
-                    {},
+                    principal,
                 )
                 is None
             )
@@ -149,8 +146,7 @@ async def test_an_organization_admin_without_a_membership_is_an_admin(
             await AgentRecipient._sender_role(
                 _recipient(person),  # type: ignore[arg-type]
                 session,
-                "@oscar:test",
-                {},
+                person,
             )
             == "admin"
         )

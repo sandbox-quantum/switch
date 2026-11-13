@@ -604,20 +604,23 @@ async def update_mid_turn_delivery(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> AgentSummary:
-    """Choose how this agent handles messages arriving during a turn."""
+    """Choose what a message sent while the agent is working does: steer into
+    the running turn where its sender may, or always queue behind it.
+
+    Only the agent's owner (or an admin) can change it. It is sent with every
+    message, so the next one follows it without restarting the agent.
+    """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
     try:
         require_manage(Principal(user.id, is_admin), agent.owner_id)
     except PermissionError:
         raise HTTPException(
             status_code=403,
-            detail="Only the agent's owner or an admin can change this setting.",
+            detail="Only the agent's owner or an admin can change how it takes messages sent while it works.",
         )
-    metadata = dict(agent.metadata_) if isinstance(agent.metadata_, dict) else {}
-    metadata["mid_turn_delivery"] = req.mid_turn_delivery
-    await agent_store.update(session, agent_id, metadata_=metadata)
+    await agent_store.update(session, agent_id, mid_turn_delivery=req.mid_turn_delivery)
     await session.commit()
     await session.refresh(agent)
     return await build_agent_summary(

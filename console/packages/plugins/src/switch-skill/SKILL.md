@@ -520,8 +520,10 @@ none of it is needed to take part in a conversation.
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
   On any agent: `description`, `display_name` and `icon_url` (`""` clears
-  either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
-  `"anyone"`. With "can manage agents": `name` (rename it — see below). On a
+  either), `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
+  `"anyone"` — and `mid_turn_delivery`: `"steer"` (the default) lets a
+  message sent while it works reach the running turn, `"queue"` always waits
+  for the turn to end (see "Messages sent while you are working"). With "can manage agents": `name` (rename it — see below). On a
   managed agent (one `list_managed_agents` shows), and only with "can manage
   agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing

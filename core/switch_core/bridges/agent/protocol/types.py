@@ -283,7 +283,15 @@ class MessagePayload(BaseModel):
     # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # Who the sender is for steering a running turn: the Switch user behind a
+    # person when exactly one has claimed them, else the person's own chat
+    # account. None for an agent, the platform (including a message carried
+    # for someone) and anyone Switch could not identify, none of whom steer.
+    sender_person: str | None = None
+    # True when `sender_person` is the Switch user who owns the receiving agent.
     sender_owns_agent: bool = False
+    # The receiving agent's setting for messages sent while it works: "steer"
+    # into the running turn where the sender may, or "queue" always.
     mid_turn_delivery: Literal["steer", "queue"] = "steer"
     # What Switch has to tell the agent before this message, such as that
     # its template has a new revision it was not brought fully up to; told

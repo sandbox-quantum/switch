@@ -133,9 +133,7 @@ def agent_summary(
         known_agent_options=known_agent_options
         if isinstance(known_agent_options, dict)
         else None,
-        mid_turn_delivery="queue"
-        if md.get("mid_turn_delivery") == "queue"
-        else "steer",
+        mid_turn_delivery="queue" if agent.mid_turn_delivery == "queue" else "steer",
         addressing_policy=(
             AddressingPolicy.model_validate(agent.addressing_policy)
             if isinstance(agent.addressing_policy, dict)
@@ -531,6 +529,7 @@ class AgentProfileUpdate:
         display_name: str | None,
         icon_url: str | None,
         addressing: str | None,
+        mid_turn_delivery: str | None,
         third_party_avatars: bool,
     ) -> AgentProfileUpdate:
         """None leaves a field as it is; an empty `display_name` or `icon_url`
@@ -550,4 +549,10 @@ class AgentProfileUpdate:
             )
         if addressing is not None:
             columns["addressing_policy"] = addressing_policy_for(addressing)
+        if mid_turn_delivery is not None:
+            if mid_turn_delivery not in ("steer", "queue"):
+                raise ValueError(
+                    f'mid_turn_delivery must be "steer" or "queue", not {mid_turn_delivery!r}'
+                )
+            columns["mid_turn_delivery"] = mid_turn_delivery
         return cls(columns=columns)

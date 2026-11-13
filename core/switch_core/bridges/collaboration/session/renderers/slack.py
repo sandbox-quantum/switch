@@ -1133,8 +1133,7 @@ def render_activity_text(
     did = [
         item
         for item in items
-        if is_tool_call(item)
-        or (item.kind == "user-message" and in_activity_log(item))
+        if is_tool_call(item) or (item.kind == "user-message" and in_activity_log(item))
     ]
 
     lines: list[str] = []
