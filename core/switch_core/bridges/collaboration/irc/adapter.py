@@ -43,6 +43,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -684,8 +685,13 @@ class IrcAdapter(PlatformAdapter):
     # ── Channels ─────────────────────────────────────────────────────────
 
     async def create_channel(
-        self, name: str, topic: str, *, channel_type: ChannelType = "channel_public"
-    ) -> str:
+        self,
+        name: str,
+        topic: str,
+        *,
+        channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "The IRC bot joins the channels named in its connection; it does "
             "not create new ones."
