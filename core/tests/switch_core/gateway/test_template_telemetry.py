@@ -31,8 +31,14 @@ async def test_saving_and_changing_say_a_person_did(
     changed = await client.patch(
         f"/templates/{created['id']}", json={"description": "now with more"}
     )
+    unchanged = await client.patch(
+        f"/templates/{created['id']}", json={"description": "now with more"}
+    )
+    empty = await client.patch(f"/templates/{created['id']}", json={})
 
     assert changed.status_code == 200, changed.text
+    assert unchanged.status_code == 200, unchanged.text
+    assert empty.status_code == 200, empty.text
     assert sink.events("template_created") == [
         {"template_kind": "room", "author": "person"}
     ]

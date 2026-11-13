@@ -23,7 +23,11 @@ from switch_core.agent_refusals import AgentRefused
 from switch_core.agent_templates import agent_slots, template_kind
 from switch_core.authz import Principal, can
 from switch_core.db.models import Agent, Template, User
-from switch_core.db.stores.template_store import TemplateNameTaken, TemplateStore
+from switch_core.db.stores.template_store import (
+    TemplateNameTaken,
+    TemplateStore,
+    edited_state,
+)
 from switch_core.official_templates import (
     OfficialTemplate,
     is_official,
@@ -347,6 +351,7 @@ class AgentTemplates:
             if content is not None
             else (None, [])
         )
+        before = edited_state(template)
         try:
             updated = await self._store.update_fields(
                 session,
@@ -361,16 +366,17 @@ class AgentTemplates:
             )
         except TemplateNameTaken as e:
             raise self._name_taken(label) from e
-        emit_after_commit(
-            session,
-            self._telemetry,
-            "template_updated",
-            {
-                "template_kind": normalise_template_kind(updated.kind),
-                "author": "agent",
-                "age_days": age_days(updated.created_at),
-            },
-        )
+        if edited_state(updated) != before:
+            emit_after_commit(
+                session,
+                self._telemetry,
+                "template_updated",
+                {
+                    "template_kind": normalise_template_kind(updated.kind),
+                    "author": "agent",
+                    "age_days": age_days(updated.created_at),
+                },
+            )
         return updated, warnings
 
     @staticmethod

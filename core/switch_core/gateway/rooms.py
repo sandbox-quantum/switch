@@ -728,6 +728,40 @@ def _refused_run(error: AgentsNotCreated | RunUndone) -> _RefusedRun:
     return _RefusedRun(error.reason, content)
 
 
+def _run_failure(error: HTTPException) -> str:
+    """A refused run's reason, from the error the route raised it from where
+    there is one: the status alone cannot tell a channel in use from any other
+    conflict."""
+    cause = error.__cause__
+    if isinstance(cause, ChannelInUse):
+        return "channel_in_use"
+    if isinstance(cause, ValueError):
+        return "invalid"
+    if isinstance(cause, PermissionError):
+        return "forbidden"
+    if isinstance(cause, BridgeOperationError):
+        return "bridge_unavailable"
+    return failure_for_status(error.status_code)
+
+
+def _report_success(report: TemplateRunReport, result: object) -> None:
+    """Report a run that has made what it made. Guarded: the run is
+    committed, and an answer it did not expect must not fail it for the
+    caller, who would run it again."""
+    try:
+        if isinstance(result, dict):
+            report.succeeded(
+                agents_created=len(result.get("created_agents") or []),
+                rooms_created=rooms_in(result.get("room")),
+            )
+        elif isinstance(result, BaseModel):
+            report.succeeded(
+                agents_created=0, rooms_created=rooms_in(result.model_dump())
+            )
+    except Exception:
+        logger.exception("Could not report a template run that succeeded")
+
+
 async def _reported[T: dict[str, Any] | JSONResponse | BaseModel](
     report: TemplateRunReport, run: Awaitable[T]
 ) -> T:
@@ -736,20 +770,15 @@ async def _reported[T: dict[str, Any] | JSONResponse | BaseModel](
     try:
         result = await run
     except HTTPException as error:
-        report.failed(failure_for_status(error.status_code))
+        report.failed(_run_failure(error))
         raise
     except Exception:
         report.failed("error")
         raise
     if isinstance(result, _RefusedRun):
         report.failed(result.code)
-    elif isinstance(result, dict):
-        report.succeeded(
-            agents_created=len(result["created_agents"]),
-            rooms_created=rooms_in(result["room"]),
-        )
-    elif isinstance(result, BaseModel):
-        report.succeeded(agents_created=0, rooms_created=rooms_in(result.model_dump()))
+    else:
+        _report_success(report, result)
     return result
 
 
@@ -840,7 +869,7 @@ async def run_template_document(
         )
     except HTTPException as error:
         TemplateRunReport(current_telemetry(), None, "person", user.created_at).failed(
-            failure_for_status(error.status_code)
+            _run_failure(error)
         )
         raise
     source = vouched_source(

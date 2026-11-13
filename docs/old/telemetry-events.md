@@ -1030,7 +1030,7 @@ only when there was something to detach or remove.
 | `room_group_created` | `has_parent` (boolean) |
 | `room_group_deleted` | `room_count` (number); `age_days` (number) |
 | `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `author` (`person` \| `agent`) |
-| `template_updated` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `author` (`person` \| `agent`): who changed it; `age_days` (number) |
+| `template_updated` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `author` (`person` \| `agent`): who changed it; `age_days` (number). An edit that changed nothing sends nothing |
 | `template_deleted` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `age_days` (number) |
 | `official_template_hidden` | `official_slug`: the template a workspace admin removed. Removing it again sends nothing |
 | `template_run` | `source` (`official` \| `saved` \| `document`); `official_slug`; `runner` (`person` \| `agent`); `agents_created` (number); `rooms_created` (number); `account_age_days` (number); `outcome`; `failure_reason` (`none` \| `agents_not_created` \| `run_undone` \| `invalid` \| `not_found` \| `channel_in_use` \| `forbidden` \| `bridge_unavailable` \| `refused` \| `error`) |

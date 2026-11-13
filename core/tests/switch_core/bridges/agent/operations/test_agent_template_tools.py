@@ -311,6 +311,26 @@ async def test_a_run_is_reported_with_what_it_made_and_who_ran_it(tools):
 
 
 @pytest.mark.asyncio
+async def test_a_run_whose_template_cannot_be_read_is_reported_as_an_error(
+    tools, monkeypatch
+):
+    telemetry, sink = recording_telemetry()
+    tools["protocol"].telemetry = telemetry
+
+    async def unreadable(self, session, acting, template_id):
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr(AgentTemplates, "load", unreadable)
+    with pytest.raises(RuntimeError, match="database gone"):
+        await _as(tools["agent_id"], run_template, template_id="any")
+
+    assert [
+        (e["source"], e["outcome"], e["failure_reason"])
+        for e in sink.events("template_run")
+    ] == [("document", "failure", "error")]
+
+
+@pytest.mark.asyncio
 async def test_a_refused_run_is_reported_as_made_nothing(tools):
     telemetry, sink = recording_telemetry()
     tools["protocol"].telemetry = telemetry
@@ -675,9 +695,10 @@ async def test_saving_and_deleting_are_reported_as_in_the_gateway(tools):
         description="",
         yaml=ROOM_TEMPLATE,
     )
-    await _as(
-        tools["agent_id"], update_template, template_id=saved["id"], description="x"
-    )
+    for _ in range(2):
+        await _as(
+            tools["agent_id"], update_template, template_id=saved["id"], description="x"
+        )
     await _as(tools["agent_id"], delete_template, template_id=saved["id"])
 
     assert sink.events("template_created") == [

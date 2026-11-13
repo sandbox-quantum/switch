@@ -2216,7 +2216,7 @@ async def run_template(
         ``created_agents``.
     """
     protocol = get_protocol()
-    telemetry = getattr(protocol, "telemetry", None)
+    telemetry = protocol.telemetry
     async with _refusals_reported("run_template"):
         acting = await _acting_for()
         try:
@@ -2226,6 +2226,11 @@ async def run_template(
         except AgentRefused as refusal:
             TemplateRunReport(telemetry, None, "agent", acting.owner.created_at).failed(
                 failure_for_refusal(refusal.reason)
+            )
+            raise
+        except Exception:
+            TemplateRunReport(telemetry, None, "agent", acting.owner.created_at).failed(
+                "error"
             )
             raise
         source = source_of(template)

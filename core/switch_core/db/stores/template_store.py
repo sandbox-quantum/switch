@@ -16,6 +16,19 @@ from switch_core.db.models import (
 _LIKE_ESCAPE = "\\"
 
 
+def edited_state(template: Template) -> tuple[object, ...]:
+    """What `TemplateStore.update_fields` can change, to tell an edit from an
+    update that left the template as it was."""
+    return (
+        template.name,
+        template.description,
+        template.kind,
+        template.content,
+        template.read_visibility,
+        template.write_visibility,
+    )
+
+
 class TemplateNameTaken(ValueError):
     """This owner already has a template by that name.
 

@@ -46,12 +46,13 @@ def failure_for_refusal(reason: str) -> str:
 
 
 def failure_for_status(status: int) -> str:
-    """A refused run's reason, from the status a person's run answered."""
+    """A refused run's reason, from the status alone, for an error raised
+    with no cause to name it by. A conflict is not one of them: only the
+    cause can say it was a channel in use."""
     return {
         400: "invalid",
         403: "forbidden",
         404: "not_found",
-        409: "channel_in_use",
         502: "bridge_unavailable",
     }.get(status, "error")
 
