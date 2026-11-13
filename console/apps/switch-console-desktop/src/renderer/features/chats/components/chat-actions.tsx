@@ -1,5 +1,6 @@
 import { Archive, ArchiveRestore, LogOut, Pencil, Trash2 } from 'lucide-react';
 import { Fragment, type ReactNode } from 'react';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { showModal } from '@renderer/lib/modal/modal-provider';
@@ -35,7 +36,7 @@ function leaveIfOpen(roomId: string): void {
     roomRoomId: (navigation.viewParamsStore.room as { roomId?: string } | undefined)?.roomId,
     agentRoomId: navigation.viewParamsStore.managedAgent?.roomId,
   });
-  if (leaveChatView) navigation.navigate('home');
+  if (leaveChatView) navigateHome();
   if (clearAgentChat) navigation.updateViewParams('managedAgent', { roomId: undefined });
 }
 

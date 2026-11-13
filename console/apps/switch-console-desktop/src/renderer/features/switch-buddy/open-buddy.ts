@@ -100,6 +100,38 @@ export async function openBuddyChat(
 }
 
 /**
+ * Opens the buddy's chat with `text` sent in it, as if typed there. The
+ * message goes through the chat's own timeline, so it shows as sending and is
+ * retried there; a buddy that is starting or offline reads it when it is up.
+ *
+ * Raises when the chat cannot be had, before anything is sent or opened, so
+ * the caller can keep the text rather than lose it.
+ */
+export async function askBuddy(
+  serverId: string,
+  agent: { agentId: string; name: string },
+  text: string
+): Promise<void> {
+  const { roomId } = await buddyChat(serverId, agent);
+  chatsStore.timelines.get(serverId, roomId).send({
+    body: text,
+    threadRootId: null,
+    mentionAgentIds: [],
+    mentionUserIds: [],
+    mentionSpans: [],
+    files: [],
+    requestId: null,
+  });
+  focusComposerWhenOpened(roomId);
+  appState.navigation.navigate('managedAgent', {
+    serverId,
+    agentId: agent.agentId,
+    name: agent.name,
+    roomId,
+  });
+}
+
+/**
  * Where the first run ends: the buddy's chat once it exists, else its page,
  * which waits for an AI provider. Skipping the buddy there also keeps its
  * pop-up away for the rest of this launch: it was just declined.

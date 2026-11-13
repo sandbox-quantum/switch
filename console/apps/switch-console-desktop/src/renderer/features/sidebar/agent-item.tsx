@@ -21,6 +21,7 @@ import {
   hasSessionError,
 } from '@renderer/features/sessions/stores/session-selectors';
 import { useAgentConnection } from '@renderer/features/switch-rooms/connection-health';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { ProviderIssueIndicator } from '@renderer/lib/components/provider-issue-indicator';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -273,7 +274,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
               agentId: agent.id,
               locationLabel: label,
               onDeleted: () => {
-                if (isActive) navigate('home');
+                if (isActive) navigateHome();
               },
             });
           }}

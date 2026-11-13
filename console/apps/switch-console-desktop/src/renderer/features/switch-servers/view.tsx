@@ -1,55 +1,26 @@
-import { useQueryClient } from '@tanstack/react-query';
-import {
-  ExternalLink,
-  House,
-  MoreVertical,
-  Pencil,
-  PlugZap,
-  RefreshCw,
-  Trash2,
-  Unplug,
-} from 'lucide-react';
+import { PlugZap, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { useEffect } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
-import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
-import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { toast } from '@renderer/lib/hooks/use-toast';
+import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { homeRedirect } from './home-target';
+import { HomeFooter } from './home/home-footer';
+import { HomeHeader } from './home/home-header';
+import { AskBuddyPanel, ConnectAiPanel, SignedOutPanel, useHomeChips } from './home/home-panels';
+import { type HomeState, homeState } from './home/home-state';
+import { useAiConnected } from './home/use-ai-connected';
 import { localServerStore } from './local-server-store';
 import { remoteServerStore } from './remote-server-store';
-import { serverIcon } from './server-icon';
-import { serverPlacementLabel } from './server-presentation';
-import { ServerSectionTitlebar } from './server-section-titlebar';
-import {
-  machineUnavailableReason,
-  type SignedIn,
-  ServerSignInFields,
-  useServerSignIn,
-} from './server-sign-in';
-import { ServerStatTiles } from './server-stat-tiles';
-import { loadSwitchCloudOrigin, managedCloudServerId } from './switch-cloud-origin';
-import { isSwitchCloudServer } from './switch-cloud-store';
-import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
-import { myIdentitiesQueryKey } from './use-my-identities';
 
 /** Whether a managed server's stack is currently running (via the store that
  * owns its lifecycle). Non-managed servers are always "reachable". */
@@ -62,66 +33,39 @@ function isManagedRunning(server: SwitchServer): boolean {
 
 const card = 'rounded-lg border border-border bg-card p-4';
 
-/** How long Refresh keeps spinning at minimum. Long enough to be seen as a
- * response to the click, short enough not to feel like waiting. */
-const MIN_REFRESH_FEEDBACK_MS = 600;
-
 function useServerId(): string {
   return useParams('server').params.serverId;
 }
 
+/** Home's header sits where the other workspace pages keep their breadcrumb. */
 const ServerTitlebar = observer(function ServerTitlebar() {
-  return <ServerSectionTitlebar serverId={useServerId()} icon={House} label="Home" />;
+  const serverId = useServerId();
+  const store = switchServersStore;
+  const server = store.servers.find((s) => s.id === serverId);
+  const detailsVisible = !server?.managed || isManagedRunning(server);
+  return (
+    <Titlebar
+      leftSlot={
+        server && (
+          <HomeHeader
+            server={server}
+            canRefresh={detailsVisible && !store.isHostBlocked(serverId)}
+          />
+        )
+      }
+    />
+  );
 });
 
 const ServerMainPanel = observer(function ServerMainPanel() {
   const serverId = useServerId();
   const store = switchServersStore;
   const server = store.servers.find((s) => s.id === serverId);
-  const showEditServerModal = useShowModal('addServerModal');
-  const showRenameServerModal = useShowModal('renameServerModal');
-  const showDeleteServerModal = useShowModal('deleteServerModal');
-  const { navigate } = useNavigate();
-  const queryClient = useQueryClient();
-
-  const [refreshingPage, setRefreshingPage] = useState(false);
-
-  /**
-   * Everything the page is showing, re-read.
-   *
-   * The button sits in the page header, so its scope has to be the page: the
-   * connection alone would leave the counts, the messaging apps and the rooms
-   * exactly as stale as they were, under a control that claims to have
-   * refreshed them.
-   *
-   * Held on screen for a moment even when the reads come back instantly. A
-   * spinner that appears and vanishes inside one frame reads as a button that
-   * did nothing, which is the opposite of what it did.
-   */
-  const refreshEverything = async (): Promise<void> => {
-    setRefreshingPage(true);
-    // The three caches below are keyed by workspace, so a server id would
-    // invalidate nothing and the button would spin over stale cards.
-    const workspaceId = workspacesStore.idOnServerInScope(serverId);
-    try {
-      await Promise.all([
-        store.refreshServer(serverId),
-        queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] }),
-        queryClient.invalidateQueries({ queryKey: myIdentitiesQueryKey(workspaceId) }),
-        queryClient.invalidateQueries({ queryKey: ['owns-owner-addressed-agent', workspaceId] }),
-        switchRoomsStore.refreshRoomState(),
-        agentsStore.load(),
-        new Promise((resolve) => setTimeout(resolve, MIN_REFRESH_FEEDBACK_MS)),
-      ]);
-    } finally {
-      setRefreshingPage(false);
-    }
-  };
 
   // A managed server that isn't running has no gateway to reach — its
-  // connection status, sign-in, and web-app links are meaningless until it's up,
-  // so we neither fetch nor render them (the workspace banner above says it is
-  // down, with the way to start it and to its status page).
+  // connection status and sign-in are meaningless until it's up, so we neither
+  // fetch nor render them (the workspace banner says it is down, with the way
+  // to start it and to its status page).
   const detailsVisible = !server?.managed || isManagedRunning(server);
 
   useEffect(() => {
@@ -152,203 +96,106 @@ const ServerMainPanel = observer(function ServerMainPanel() {
     );
   }
 
-  // A remote-managed server is only as reachable as its host. While the host is
-  // blocked, everything on this page (stack status, Docker, sign-in, web app)
-  // would be a stale or doomed read, so the modeled host state replaces it
-  // outright rather than sitting under a green badge (CHOO-1780).
-  const blockedHost =
-    server.managed && server.managementKind === 'remote' && server.sshHost
-      ? hostReachabilityStore.get(server.sshHost)
-      : null;
-  if (blockedHost && hostReachabilityStore.isBlocked(blockedHost.sshHost)) {
-    return (
-      <div className="relative z-10 flex min-h-0 flex-1 overflow-auto bg-background">
-        <HostUnreachablePanel reachability={blockedHost} />
-      </div>
-    );
-  }
-
-  const status = store.statusFor(serverId);
-  const connected = status?.connected ?? false;
-  // A background status poll spins the button too: it is the same reading the
-  // button asks for, so the page should not look idle while one is in flight.
-  const busy = refreshingPage || store.refreshing.has(serverId);
-  const unreachable = store.isUnreachable(serverId);
-  const PlacementIcon = serverIcon(server);
-  const title = workspaceTitle(server);
+  const workspaceId = workspacesStore.idOnServerInScope(serverId);
 
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-[880px] space-y-6 p-6">
-        <header className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <WorkspaceAvatar name={title} size="lg" active />
-            <div className="min-w-0">
-              <h2 className="truncate text-2xl font-semibold text-foreground">{title}</h2>
-              {/* The server it is on, said only where the title does not
-                  already: the placeholder before sign-in is named after it. */}
-              <div className="flex min-w-0 items-center gap-1.5 text-xs text-foreground-muted">
-                {/* Where the server lives, as the icon the switcher and the
-                  sidebar already use for it rather than as a second vocabulary
-                  in words. */}
-                <PlacementIcon
-                  aria-label={
-                    serverPlacementLabel(server) ??
-                    (isSwitchCloudServer(server) ? 'Switch Cloud' : 'Reached over the network')
-                  }
-                  className="size-3.5 shrink-0"
-                />
-                {title !== server.name && <span className="truncate">{server.name}</span>}
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {detailsVisible && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                onClick={() => void refreshEverything()}
-              >
-                {busy ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
-                Refresh
-              </Button>
-            )}
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="outline"
-                    size="icon-sm"
-                    className="shrink-0"
-                    aria-label="Server actions"
-                  >
-                    <MoreVertical className="size-4" />
-                  </Button>
-                }
-              />
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => showRenameServerModal({ serverId, currentName: server.name })}
-                >
-                  <Pencil className="size-4" />
-                  Rename…
-                </DropdownMenuItem>
-                {!server.managed && (
-                  <DropdownMenuItem
-                    onClick={() =>
-                      showEditServerModal({
-                        serverId,
-                        initialName: server.name,
-                        initialUrl: server.url,
-                      })
-                    }
-                  >
-                    <ExternalLink className="size-4" />
-                    Edit connection…
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                {/* Only a server Switch Console runs is one it can delete; for
-                    anyone else's, all we can do is let go of it. A remote one
-                    offers both, since its host is shared. All stay red: either
-                    way every agent pointed at this server loses it. */}
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() =>
-                    showDeleteServerModal({ serverId, onSuccess: () => navigate('home') })
-                  }
-                >
-                  {server.managed && server.managementKind !== 'remote' ? (
-                    <Trash2 className="size-4" />
-                  ) : (
-                    <Unplug className="size-4" />
-                  )}
-                  {!server.managed
-                    ? 'Disconnect from server…'
-                    : server.managementKind === 'remote'
-                      ? 'Disconnect or delete…'
-                      : 'Delete server…'}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </header>
-
-        {store.error && (
+      {store.error && (
+        <div className="mx-auto w-full max-w-[720px] px-6 pt-2">
           <Alert variant="destructive">
             <AlertTitle>{store.error}</AlertTitle>
             {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
-        )}
-
-        {detailsVisible && unreachable && <ServerUnreachableCard server={server} />}
-
-        {detailsVisible && !unreachable && (
-          <>
-            {connected ? (
-              <SignedInCard serverId={serverId} />
-            ) : (
-              <>
-                <div className={`${card} flex items-center justify-between gap-3`}>
-                  <div className="flex items-center gap-2 text-sm">
-                    <StatusDot connected={false} />
-                    <span className="text-foreground-muted">Not signed in</span>
-                  </div>
-                </div>
-                <LoginPanel serverId={serverId} key={serverId} />
-              </>
-            )}
-
-            {connected && <ServerStatTiles serverId={serverId} />}
-          </>
-        )}
-      </div>
+        </div>
+      )}
+      {/* Keyed by workspace: switching while one is loading starts over, and
+          nothing read for the last one is shown for the next. */}
+      <HomeBody
+        key={`${serverId}:${workspaceId ?? ''}`}
+        server={server}
+        workspaceId={workspaceId}
+      />
+      <HomeFooter />
     </div>
   );
 });
 
-/**
- * Who you are on this server. Signing out and the rest of your account are in
- * Settings.
- *
- * The account leads with a face and a name because that is the question being
- * answered — which of your identities this server sees — rather than with the
- * fact of a connection, which the titlebar's pill already carries.
- */
-const SignedInCard = observer(function SignedInCard({ serverId }: { serverId: string }) {
+/** Everything between the header and the footer, by {@link homeState}. */
+const HomeBody = observer(function HomeBody({
+  server,
+  workspaceId,
+}: {
+  server: SwitchServer;
+  workspaceId: string | null;
+}) {
   const store = switchServersStore;
-  const user = store.statusFor(serverId)?.user;
-  const { navigate } = useNavigate();
-  const displayName = user?.name || user?.email || 'Signed in';
-  const initial = displayName.trim().charAt(0).toUpperCase() || '?';
+  const serverId = server.id;
+  const reducedMotion = useReducedMotion() ?? false;
+
+  // A remote-managed server is only as reachable as its host. While the host is
+  // blocked, everything on this page would be a stale or doomed read, so the
+  // modeled host state replaces it outright (CHOO-1780).
+  const blockedHost =
+    server.managed && server.managementKind === 'remote' && server.sshHost
+      ? hostReachabilityStore.get(server.sshHost)
+      : null;
+  const hostBlocked = blockedHost !== null && hostReachabilityStore.isBlocked(blockedHost.sshHost);
+  const stopped = server.managed && !isManagedRunning(server);
+  const unreachable = store.isUnreachable(serverId);
+  const status = store.statusFor(serverId);
+  const signedIn = status === null ? null : status.connected;
+  const active = signedIn === true && !hostBlocked && !stopped && !unreachable;
+
+  const ai = useAiConnected(serverId, workspaceId, active);
+  const chips = useHomeChips(serverId, workspaceId, ai.buddy);
+  const state = homeState({
+    hostBlocked,
+    stopped,
+    unreachable,
+    signedIn,
+    aiConnected: ai.connected,
+    suggestionsReady: chips !== null,
+  });
+
+  const content = ((): React.ReactNode => {
+    switch (state) {
+      case 'hostUnreachable':
+        return blockedHost && <HostUnreachablePanel reachability={blockedHost} />;
+      case 'stopped':
+        return null;
+      case 'unreachable':
+        return (
+          <div className="w-full max-w-[720px]">
+            <ServerUnreachableCard server={server} />
+          </div>
+        );
+      case 'signedOut':
+        return <SignedOutPanel serverId={serverId} />;
+      case 'loading':
+        return <Spinner className="size-6 text-foreground-muted" />;
+      case 'connectAi':
+        return <ConnectAiPanel serverId={serverId} workspaceId={workspaceId} />;
+      case 'askBuddy':
+        return (
+          ai.buddy && <AskBuddyPanel serverId={serverId} buddy={ai.buddy} chips={chips ?? []} />
+        );
+    }
+  })();
 
   return (
-    <div className={`${card} flex items-center justify-between gap-3`}>
-      <div className="flex min-w-0 items-center gap-3">
-        <span
-          aria-hidden
-          className="flex size-8 shrink-0 items-center justify-center rounded-full bg-background-tertiary text-sm font-medium text-foreground"
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-8">
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={state satisfies HomeState}
+          className="flex w-full flex-col items-center"
+          initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+          animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.25, ease: 'easeOut' }}
         >
-          {initial}
-        </span>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
-          <p className="truncate text-xs text-foreground-muted">
-            Signed in{user?.role ? ` · ${user.role}` : ''}
-          </p>
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {user?.role && <Badge variant="secondary">{user.role}</Badge>}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => navigate('settings', { tab: 'account' })}
-        >
-          Your account
-        </Button>
-      </div>
+          {content}
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 });
@@ -436,49 +283,6 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
   );
 });
 
-function StatusDot({ connected }: { connected: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={`inline-block size-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`}
-    />
-  );
-}
-
-const LoginPanel = observer(function LoginPanel({ serverId }: { serverId: string }) {
-  const signIn = useServerSignIn(serverId);
-  const onSignedIn = (signedIn: SignedIn) => {
-    void loadSwitchCloudOrigin().then(() => {
-      if (serverId !== managedCloudServerId()) return;
-      const reason = machineUnavailableReason(signedIn);
-      if (reason) toast({ title: 'Your cloud machine is not starting', description: reason });
-    });
-  };
-
-  return (
-    <div className={`${card} space-y-4`}>
-      <p className="text-sm text-foreground-muted">Sign in to connect to this server.</p>
-      <ServerSignInFields
-        signIn={signIn}
-        idPrefix="switch-login"
-        onSignedIn={onSignedIn}
-        passwordSubmit={
-          <Button
-            size="sm"
-            className="self-start"
-            disabled={!signIn.canSubmitForm}
-            onClick={() =>
-              void signIn.submitForm().then((signedIn) => signedIn && onSignedIn(signedIn))
-            }
-          >
-            {signIn.submitLabel}
-          </Button>
-        }
-      />
-    </div>
-  );
-});
-
 export const serverView = {
   WrapView: ({ children }: { children: React.ReactNode; serverId: string }) => <>{children}</>,
   TitlebarSlot: ServerTitlebar,
@@ -489,14 +293,14 @@ export const serverView = {
         ? (params as { serverId?: unknown }).serverId
         : undefined;
     if (typeof serverId !== 'string') {
-      return { ok: false, redirect: 'home' };
+      return homeRedirect();
     }
     // Saved params outlive the server they name: deleting one leaves its id
     // here, and a page restored onto it reads a gateway nothing can resolve.
     // Until the list has been read, an absent server means "not asked yet" —
     // the store revalidates once it knows.
     if (switchServersStore.loaded && !switchServersStore.servers.some((s) => s.id === serverId)) {
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     }
     return { ok: true };
   },

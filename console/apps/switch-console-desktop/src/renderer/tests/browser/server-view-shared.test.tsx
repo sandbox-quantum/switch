@@ -103,8 +103,12 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
 vi.mock('@renderer/features/switch-servers/MessagingAppsCard', () => ({
   MessagingAppsCard: () => null,
 }));
-vi.mock('@renderer/features/switch-servers/server-stat-tiles', () => ({
-  ServerStatTiles: () => null,
+vi.mock('@renderer/features/switch-servers/home/use-ai-connected', () => ({
+  useAiConnected: () => ({ connected: null, buddy: null }),
+}));
+vi.mock('@renderer/features/switch-servers/home/home-panels', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useHomeChips: () => null,
 }));
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
   ServerSignInFields: () => null,
@@ -164,10 +168,18 @@ afterEach(async () => {
 
 async function render() {
   const Page = serverView.MainPanel;
+  const Titlebar = serverView.TitlebarSlot;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<Page />));
+  await act(async () =>
+    root!.render(
+      <>
+        <Titlebar />
+        <Page />
+      </>
+    )
+  );
 }
 
 function button(label: RegExp): HTMLElement {

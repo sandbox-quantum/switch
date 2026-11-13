@@ -13,10 +13,10 @@ type ViewParamsStore = Partial<{ [K in ViewId]: WrapParams<K> }>;
 export type LeaveGuard = (viewId: ViewId, params: unknown) => Promise<boolean>;
 
 export class NavigationStore implements Snapshottable<NavigationSnapshot> {
-  currentViewId: ViewId = 'home';
+  currentViewId: ViewId = 'noServer';
   viewParamsStore: ViewParamsStore = {};
   isNavigating: boolean = false;
-  lastNonSettingsView: NonSettingsViewId = 'home';
+  lastNonSettingsView: NonSettingsViewId = 'noServer';
 
   private readonly _guards = new Map<ViewId, (params: unknown) => GuardResult>();
   private readonly _registeredViewIds = new Set<ViewId>();

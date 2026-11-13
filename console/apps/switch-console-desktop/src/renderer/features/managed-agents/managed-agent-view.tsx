@@ -11,6 +11,7 @@ import {
   OpenInMessagingApp,
   RoomTabs,
 } from '@renderer/features/switch-rooms/view';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import {
   ServerStatusPill,
@@ -253,7 +254,7 @@ export const managedAgentView = {
       (value.section !== undefined && !isAgentSection(value.section)) ||
       (value.room !== undefined && typeof value.room !== 'string')
     )
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     return { ok: true };
   },
 } satisfies ViewDefinition<ManagedAgentParams>;

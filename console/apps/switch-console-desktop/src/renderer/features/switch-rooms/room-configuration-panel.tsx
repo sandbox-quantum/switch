@@ -6,6 +6,7 @@ import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actio
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
@@ -247,7 +248,6 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
   room: RemoteRoomDetail;
 }) {
   const showDeleteRoomModal = useShowModal('deleteRoomModal');
-  const { navigate } = useNavigate();
 
   if (!switchRoomsStore.canDeleteRoom(workspaceId, room)) return null;
 
@@ -274,7 +274,7 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
               roomName: roomTitle(room),
               // The page this is on is the deleted room's own, so staying would
               // leave a settings form for something that no longer exists.
-              onSuccess: () => navigate('home'),
+              onSuccess: () => navigateHome(),
             })
           }
         >

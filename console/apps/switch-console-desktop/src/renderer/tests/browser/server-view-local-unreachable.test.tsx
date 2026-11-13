@@ -84,8 +84,12 @@ vi.mock('@renderer/features/switch-servers/MessagingAppsCard', () => ({
 vi.mock('@renderer/features/switch-servers/GuardrailsSection', () => ({
   GuardrailsSection: () => null,
 }));
-vi.mock('@renderer/features/switch-servers/server-stat-tiles', () => ({
-  ServerStatTiles: () => null,
+vi.mock('@renderer/features/switch-servers/home/use-ai-connected', () => ({
+  useAiConnected: () => ({ connected: null, buddy: null }),
+}));
+vi.mock('@renderer/features/switch-servers/home/home-panels', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useHomeChips: () => null,
 }));
 vi.mock('@renderer/features/switch-servers/server-sign-in', () => ({
   ServerSignInFields: () => null,

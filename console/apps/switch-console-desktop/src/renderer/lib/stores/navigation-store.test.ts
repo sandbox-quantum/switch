@@ -14,7 +14,7 @@ const { NavigationStore } = await import('./navigation-store');
 
 function buildStore() {
   const store = new NavigationStore();
-  store.registerView('home');
+  store.registerView('noServer');
   store.registerView('location');
   store.registerView('session');
   store.registerView('settings');
@@ -43,14 +43,14 @@ describe('NavigationStore.restoreSnapshot', () => {
       currentViewId: 'phantom-view-from-old-build',
       viewParams: { location: { locationId: 'p1' } },
     });
-    expect(store.currentViewId).toBe('home');
-    expect(store.lastNonSettingsView).toBe('home');
+    expect(store.currentViewId).toBe('noServer');
+    expect(store.lastNonSettingsView).toBe('noServer');
   });
 
   it('strips viewParams entries whose key is not a registered view', () => {
     const store = buildStore();
     store.restoreSnapshot({
-      currentViewId: 'home',
+      currentViewId: 'noServer',
       viewParams: {
         location: { locationId: 'p1' },
         ghostView: { stale: true },
@@ -64,17 +64,17 @@ describe('NavigationStore.restoreSnapshot', () => {
     const store = buildStore();
     store.restoreSnapshot({ currentViewId: 'settings' });
     expect(store.currentViewId).toBe('settings');
-    expect(store.lastNonSettingsView).toBe('home');
+    expect(store.lastNonSettingsView).toBe('noServer');
   });
 
   it('honors a guard redirect after a valid view is restored', () => {
     const store = buildStore();
-    store.registerGuard('location', () => ({ ok: false, redirect: 'home' }));
+    store.registerGuard('location', () => ({ ok: false, redirect: 'noServer' }));
     store.restoreSnapshot({
       currentViewId: 'location',
       viewParams: { location: { locationId: 'gone' } },
     });
-    expect(store.currentViewId).toBe('home');
+    expect(store.currentViewId).toBe('noServer');
   });
 });
 
@@ -96,7 +96,7 @@ describe('NavigationStore leave guard', () => {
     store.setLeaveGuard(guard);
     store.navigate('location', { locationId: 'p1' });
     expect(guard).toHaveBeenCalledWith('location', { locationId: 'p1' });
-    expect(store.currentViewId).toBe('home');
+    expect(store.currentViewId).toBe('noServer');
     answer(true);
     await vi.waitFor(() => expect(store.currentViewId).toBe('location'));
   });
@@ -107,7 +107,7 @@ describe('NavigationStore leave guard', () => {
     store.navigate('location', { locationId: 'p1' });
     await Promise.resolve();
     await Promise.resolve();
-    expect(store.currentViewId).toBe('home');
+    expect(store.currentViewId).toBe('noServer');
   });
 
   it("guards a change to the current view's params, and not to another view's", async () => {

@@ -14,6 +14,7 @@ import {
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -568,7 +569,7 @@ export const templateDetailView = {
     const p =
       typeof params === 'object' && params !== null ? (params as Record<string, unknown>) : {};
     if (typeof p.serverId !== 'string' || typeof p.templateId !== 'string') {
-      return { ok: false, redirect: 'home' };
+      return homeRedirect();
     }
     return { ok: true };
   },

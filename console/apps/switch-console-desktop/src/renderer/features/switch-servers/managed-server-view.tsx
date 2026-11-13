@@ -19,6 +19,7 @@ import {
 import { explainStartFailure } from '@shared/core/managed-switch-server/start-failure';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { DOCKER_RECHECK_MS, recheckDocker } from './docker-recheck';
+import { homeRedirect } from './home-target';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
 import {
@@ -786,9 +787,9 @@ export const managedServerView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     if (switchServersStore.loaded && !switchServersStore.servers.some((s) => s.id === serverId)) {
-      return { ok: false, redirect: 'home', discardParams: true };
+      return { ...homeRedirect(), discardParams: true };
     }
     return { ok: true };
   },

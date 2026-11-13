@@ -2,7 +2,7 @@ import { AlertCircle, Check, Loader2, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type UnregisteredLocation } from '@renderer/features/locations/stores/location';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
-import { useNavigate } from '@renderer/lib/layout/navigation-provider';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { Button } from '@renderer/lib/ui/button';
 
 type Stage = 'creating-repo' | 'cloning' | 'registering';
@@ -24,14 +24,13 @@ export const PendingLocationStatus = observer(function PendingLocationStatus({
 }: {
   location: UnregisteredLocation;
 }) {
-  const { navigate } = useNavigate();
   const stages = STAGES_BY_MODE[location.mode];
   const currentStageIndex = stages.indexOf(location.phase as Stage);
   const isError = location.phase === 'error';
 
   const handleDismiss = () => {
     getLocationManagerStore().removeUnregisteredLocation(location.id);
-    navigate('home');
+    navigateHome();
   };
 
   return (

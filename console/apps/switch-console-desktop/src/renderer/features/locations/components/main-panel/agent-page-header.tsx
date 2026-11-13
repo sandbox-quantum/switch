@@ -5,6 +5,7 @@ import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
@@ -122,7 +123,7 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
           locationId,
           agentId: agent.id,
           locationLabel: title,
-          onDeleted: () => navigate('home'),
+          onDeleted: () => navigateHome(),
         })
     : null;
 

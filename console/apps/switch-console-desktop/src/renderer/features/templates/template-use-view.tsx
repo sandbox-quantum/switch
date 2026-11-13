@@ -32,6 +32,7 @@ import {
   UserListField,
 } from '@renderer/features/room-templates/entity-fields';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
@@ -2217,7 +2218,7 @@ export const templateUseView = {
   MainPanel: TemplateUsePanel,
   canActivate: (params: unknown): GuardResult => {
     const p = params as Partial<Params> | null;
-    if (typeof p?.serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof p?.serverId !== 'string') return homeRedirect();
     if (!p.templateId && !p.yamlText)
       return { ok: false, redirect: 'templates', params: { serverId: p.serverId } };
     return { ok: true };
