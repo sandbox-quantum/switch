@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from switch_core import messaging_platforms
-from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG, SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     Agent,
@@ -160,6 +160,11 @@ class UsageCounts:
     room_internal_only_count: int = 0
     room_membership_total: int = 0
     room_users_max: int = 0
+    # Unarchived Switch Console chats: 1-1 with an agent, and with more than
+    # one person in them; and those with an interaction in the last week.
+    room_console_chat_direct_count: int = 0
+    room_console_chat_group_count: int = 0
+    room_console_chat_active_7d: int = 0
     agent_count: int = 0
     agent_active_7d: int = 0
     agent_claude_code_count: int = 0
@@ -220,6 +225,9 @@ class UsageCounts:
                 else 0.0
             ),
             "room_users_max": self.room_users_max,
+            "room_console_chat_direct_count": self.room_console_chat_direct_count,
+            "room_console_chat_group_count": self.room_console_chat_group_count,
+            "room_console_chat_active_7d": self.room_console_chat_active_7d,
             "agent_count": self.agent_count,
             "agent_active_7d": self.agent_active_7d,
             "agent_claude_code_count": self.agent_claude_code_count,
@@ -260,6 +268,7 @@ class NewlyActiveRoom:
     channel_type: str
     agent_count: int
     created_by_kind: str
+    console_chat: bool
 
 
 def _rooms_with_an_agent(tenant_id: str) -> CompoundSelect:
@@ -649,6 +658,33 @@ async def collect_tenant_counts(
     counts.room_internal_only_count += await _scalar(
         session,
         select(func.count()).select_from(Room).where(*live, Room.bridge_id.is_(None)),
+    )
+    # Switch Console chats, of every origin `room_count` splits by: a chat is
+    # one whoever made it. A direct chat becomes a private channel once a
+    # second person is in it, so everything that is not direct is a group.
+    console_chat = Room.metadata_.has_key(CHAT_OPERATION_ID_KEY)
+    direct = Room.channel_type == "direct"
+    counts.room_console_chat_direct_count += await _scalar(
+        session,
+        select(func.count()).select_from(Room).where(*live, console_chat, direct),
+    )
+    counts.room_console_chat_group_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Room)
+        .where(*live, console_chat, ~direct | Room.channel_type.is_(None)),
+    )
+    counts.room_console_chat_active_7d += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Room)
+        .where(
+            *live,
+            console_chat,
+            Room.id.in_(
+                _human_interaction(tenant_id, week_ago, now, PERSON_CLIENT_TYPES)
+            ),
+        ),
     )
 
     # Human membership per room, as a total and a maximum. The mean is derived
@@ -1097,6 +1133,11 @@ class PeriodCounts:
     person_identity_active: int = 0
     bot_identity_active: int = 0
     account_ids: set[str] = field(default_factory=set)
+    # The accounts that spoke in Switch Console chat, and of those, the ones
+    # no platform account of theirs spoke for: people Switch reaches only
+    # through Console. Sets across tenants, like `account_ids`.
+    console_account_ids: set[str] = field(default_factory=set)
+    platform_account_ids: set[str] = field(default_factory=set)
     agent_active: int = 0
     message_count: int = 0
     turn_human_to_agent: int = 0
@@ -1107,6 +1148,14 @@ class PeriodCounts:
     @property
     def account_active(self) -> int:
         return len(self.account_ids)
+
+    @property
+    def console_account_active(self) -> int:
+        return len(self.console_account_ids)
+
+    @property
+    def console_only_account_active(self) -> int:
+        return len(self.console_account_ids - self.platform_account_ids)
 
 
 async def collect_period_counts(
@@ -1133,12 +1182,12 @@ async def collect_period_counts(
                 people, bots = (
                     await session.execute(_identity_activity(tenant_id, start, end))
                 ).one()
-                accounts = set(
+                platform = set(
                     (
                         await session.execute(_active_accounts(tenant_id, start, end))
                     ).scalars()
                 )
-                accounts |= {
+                console = {
                     user_id
                     for user_id in (
                         await session.execute(
@@ -1161,7 +1210,9 @@ async def collect_period_counts(
         counts.room_active += rooms
         counts.person_identity_active += people
         counts.bot_identity_active += bots
-        counts.account_ids |= accounts
+        counts.account_ids |= platform | console
+        counts.platform_account_ids |= platform
+        counts.console_account_ids |= console
         counts.agent_active += agents
         counts.message_count += messages
         counts.turn_human_to_agent += turns[0]
@@ -1440,6 +1491,7 @@ async def newly_active_rooms(
                         Room.bridge_id,
                         Room.metadata_["created_by_kind"].astext,
                         agent_count,
+                        Room.metadata_.has_key(CHAT_OPERATION_ID_KEY),
                     )
                     .join(
                         activation.first_interaction,
@@ -1471,6 +1523,7 @@ async def newly_active_rooms(
                     bridge_id,
                     kind,
                     agents,
+                    console_chat,
                 ) in rows:
                     tenant_found.append(
                         NewlyActiveRoom(
@@ -1484,6 +1537,7 @@ async def newly_active_rooms(
                             channel_type=normalise_channel_type(channel_type),
                             agent_count=int(agents or 0),
                             created_by_kind=normalise_actor_kind(kind),
+                            console_chat=bool(console_chat),
                         )
                     )
         except Exception:
