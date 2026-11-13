@@ -66,10 +66,6 @@ function built(path: string, open: readonly Persona[]): MatrixPage {
   return { path, open, status: "built" };
 }
 
-function planned(path: string, open: readonly Persona[]): MatrixPage {
-  return { path, open, status: "planned" };
-}
-
 export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
   current: [
     built("/ecosystem", EVERYONE),
@@ -116,7 +112,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/templates/:id", EVERYONE),
     built("/agents", EVERYONE),
     built("/agents/:agentId", EVERYONE),
-    planned("/connectors", EVERYONE),
+    built("/connectors", EVERYONE),
     built("/connectors/:connectorId", EVERYONE),
 
     built("/settings/general", EVERYONE),

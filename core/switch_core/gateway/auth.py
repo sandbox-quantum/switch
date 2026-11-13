@@ -420,6 +420,37 @@ async def get_authenticated_session(
     )
 
 
+async def session_belongs_to(
+    request: Request,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    config: SwitchConfig,
+    *,
+    user_id: str,
+    tenant_id: str,
+) -> bool:
+    """Whether the request carries `user_id`'s current session, and they may
+    still bind `tenant_id`, as `get_current_user` would let them: a member, an
+    organization admin over it, or the platform operator.
+
+    For a route a browser reaches with or without a session, which acts for a
+    person and workspace it already knows rather than for whoever is signed
+    in: a sign-in's return from a vendor (`gateway/service_flows.py`). A
+    missing, expired or ended session is False, not an error.
+    """
+    try:
+        caller = await get_authenticated_session(
+            request, session_factory, user_store, config
+        )
+    except HTTPException:
+        return False
+    if caller.user_id != user_id:
+        return False
+    if tenant_id in await tenants_bindable_by(session_factory, user_id):
+        return True
+    return await _operator_may_enter(session_factory, user_store, user_id, tenant_id)
+
+
 @dataclass(frozen=True)
 class AuthenticatedCaller:
     """An authenticated caller with no tenant bound — read from `users`, which

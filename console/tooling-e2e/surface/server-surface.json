@@ -1533,6 +1533,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/provider-connections/github/flows/web",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/provider-connections/github/flows/{flow_id}/complete",
       "auth": "session",
       "flags": []
@@ -1644,6 +1649,13 @@
     },
     {
       "route": "POST /gateway/service-connections/{service}/flows",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "POST /gateway/service-connections/{service}/flows/web",
       "auth": "session",
       "flags": [
         "service_connections"

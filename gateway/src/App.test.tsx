@@ -911,14 +911,6 @@ describe("the new layout (gateway_v2)", () => {
       expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
     });
   });
-
-  it("shows a page that is not built yet as such", async () => {
-    mockFetch(signedInAs("org_admin", { flags: [...V2, "service_connections"] }));
-    renderAt("/connectors");
-    expect(
-      await screen.findByText("This page is part of the new layout and isn't built yet."),
-    ).toBeTruthy();
-  });
 });
 
 describe("renaming the workspace (gateway_v2)", () => {
