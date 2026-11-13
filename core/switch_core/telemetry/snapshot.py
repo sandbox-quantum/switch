@@ -49,12 +49,16 @@ from switch_core.db.models import (
     Document,
     ExternalUser,
     ExternalUserClaim,
+    HiddenOfficialTemplate,
     Message,
     MessageAttachment,
     Package,
     Reference,
     Room,
     RoomGroup,
+    Template,
+    TemplateInstall,
+    TemplateRunRecord,
     User,
     room_documents,
     room_references,
@@ -192,6 +196,16 @@ class UsageCounts:
     package_count: int = 0
     room_group_count: int = 0
     api_key_count: int = 0
+    template_count: int = 0
+    template_agent_saved_count: int = 0
+    template_run_7d: int = 0
+    official_template_hidden_count: int = 0
+    # Accounts, counted from the ids below once every tenant is in: one
+    # person may own templates, or have run them, in several workspaces.
+    template_author_ids: set[str] = field(default_factory=set)
+    template_author_active_ids_7d: set[str] = field(default_factory=set)
+    template_official_installer_ids: set[str] = field(default_factory=set)
+    template_saved_installer_ids: set[str] = field(default_factory=set)
 
     def as_event_properties(self, *, session_live_count: int) -> dict[str, float]:
         """Flatten to exactly the properties `usage_snapshot` declares."""
@@ -250,6 +264,16 @@ class UsageCounts:
             "package_count": self.package_count,
             "room_group_count": self.room_group_count,
             "api_key_count": self.api_key_count,
+            "template_count": self.template_count,
+            "template_agent_saved_count": self.template_agent_saved_count,
+            "template_author_count": len(self.template_author_ids),
+            "template_author_active_7d": len(self.template_author_active_ids_7d),
+            "template_run_7d": self.template_run_7d,
+            "template_official_installer_count": len(
+                self.template_official_installer_ids
+            ),
+            "template_saved_installer_count": len(self.template_saved_installer_ids),
+            "official_template_hidden_count": self.official_template_hidden_count,
         }
         for platform, count in self.connector_counts.items():
             properties[connector_count_property(platform)] = count
@@ -778,6 +802,7 @@ async def collect_tenant_counts(
             counts.message_from_agent_1d += count
 
     await _collect_resource_counts(session, tenant_id, counts)
+    await _collect_template_counts(session, tenant_id, counts, week_ago)
 
     (
         human_to_agent,
@@ -845,6 +870,69 @@ async def _collect_resource_counts(
                 ),
             ),
         )
+
+
+async def _collect_template_counts(
+    session: AsyncSession, tenant_id: str, counts: UsageCounts, week_ago: datetime
+) -> None:
+    """Who builds templates and who runs them, in one tenant."""
+    counts.template_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Template)
+        .where(Template.tenant_id == tenant_id),
+    )
+    counts.template_agent_saved_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Template)
+        .where(
+            Template.tenant_id == tenant_id, Template.created_by_agent_id.is_not(None)
+        ),
+    )
+    counts.template_author_ids |= set(
+        (
+            await session.execute(
+                select(Template.owner_id)
+                .where(Template.tenant_id == tenant_id)
+                .distinct()
+            )
+        ).scalars()
+    )
+    counts.template_author_active_ids_7d |= set(
+        (
+            await session.execute(
+                select(Template.owner_id)
+                .where(Template.tenant_id == tenant_id, Template.updated_at >= week_ago)
+                .distinct()
+            )
+        ).scalars()
+    )
+    counts.template_run_7d += await _scalar(
+        session,
+        select(func.count())
+        .select_from(TemplateRunRecord)
+        .where(
+            TemplateRunRecord.tenant_id == tenant_id,
+            TemplateRunRecord.created_at >= week_ago,
+        ),
+    )
+    installers = await session.execute(
+        select(TemplateInstall.source, TemplateInstall.owner_id)
+        .where(TemplateInstall.tenant_id == tenant_id)
+        .distinct()
+    )
+    for source, owner_id in installers:
+        if source == "official":
+            counts.template_official_installer_ids.add(owner_id)
+        else:
+            counts.template_saved_installer_ids.add(owner_id)
+    counts.official_template_hidden_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(HiddenOfficialTemplate)
+        .where(HiddenOfficialTemplate.tenant_id == tenant_id),
+    )
 
 
 async def _turns(
@@ -1023,6 +1111,10 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "active_user_ids_7d",
         "room_users_max",
         "connector_counts",
+        "template_author_ids",
+        "template_author_active_ids_7d",
+        "template_official_installer_ids",
+        "template_saved_installer_ids",
     }
     for f in fields(UsageCounts):
         if f.name in skip:
@@ -1031,6 +1123,10 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
     total.room_users_max = max(total.room_users_max, tenant.room_users_max)
     total.active_user_ids_1d |= tenant.active_user_ids_1d
     total.active_user_ids_7d |= tenant.active_user_ids_7d
+    total.template_author_ids |= tenant.template_author_ids
+    total.template_author_active_ids_7d |= tenant.template_author_active_ids_7d
+    total.template_official_installer_ids |= tenant.template_official_installer_ids
+    total.template_saved_installer_ids |= tenant.template_saved_installer_ids
     for platform, count in tenant.connector_counts.items():
         total.connector_counts[platform] += count
 

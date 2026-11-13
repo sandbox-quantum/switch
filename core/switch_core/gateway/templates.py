@@ -381,7 +381,7 @@ async def create_template(
     emit_safely(
         current_telemetry(),
         "template_created",
-        {"template_kind": normalise_template_kind(req.kind)},
+        {"template_kind": normalise_template_kind(req.kind), "author": "person"},
     )
     return _detail(
         template,
@@ -580,6 +580,15 @@ async def patch_template(
         # delete that landed in between — gone, not in conflict.
         raise HTTPException(status_code=404, detail=str(e)) from e
     await session.commit()
+    emit_safely(
+        current_telemetry(),
+        "template_updated",
+        {
+            "template_kind": normalise_template_kind(template.kind),
+            "author": "person",
+            "age_days": age_days(template.created_at),
+        },
+    )
     return _detail(
         template,
         await _owner_name(session, user_store, template.owner_id),
@@ -647,6 +656,11 @@ async def _remove_official(
                 "remove it from the workspace."
             ),
         )
-    await store.hide_official(session, slug_of(template_id), user.id)
+    slug = slug_of(template_id)
+    hidden = await store.hide_official(session, slug, user.id)
     await session.commit()
+    if hidden:
+        emit_safely(
+            current_telemetry(), "official_template_hidden", {"official_slug": slug}
+        )
     return TemplateDeleteResponse(deleted_id=template_id)

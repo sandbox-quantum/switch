@@ -12,7 +12,9 @@ that knew its layout would fail on every rewrite of it.
 Only what follows the platform registry is left out: the platform names
 `bridge_platform` accepts and the `connector_<platform>_count` snapshot keys,
 so adding a platform stays a change to that platform alone; the doc covers them
-generically. `bridge_platform`'s fixed values are checked like any other.
+generically. `bridge_platform`'s fixed values are checked like any other. The
+same goes for `official_slug`: the slugs follow the templates this release
+ships, and only its `none` is checked.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from switch_core.telemetry.catalogue import (
     PropertyType,
     _Boolean,
     _Number,
+    _OfficialTemplateSlug,
     _OneOf,
     _Optional,
     _RegisteredPlatform,
@@ -40,6 +43,8 @@ def _closed_values(spec: PropertyType) -> frozenset[str]:
         return spec.values
     if isinstance(spec, _RegisteredPlatform):
         return spec.extra
+    if isinstance(spec, _OfficialTemplateSlug):
+        return frozenset({"none"})
     if isinstance(spec, _Number | _Boolean):
         return frozenset()
     raise AssertionError(

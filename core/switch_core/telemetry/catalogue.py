@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from switch_core import messaging_platforms
+from switch_core import messaging_platforms, official_templates
 
 # The wire prefix. One Amplitude project holds several products, so every event
 # is namespaced by the one that sent it — the Console sends `switch_console.*`
@@ -207,6 +207,55 @@ VISIBILITY = one_of("private", "public")
 # product itself uses, and anything an operator invents reports as `other`.
 TEMPLATE_KIND = one_of("room", "group", "agent", "other")
 
+
+@dataclass(frozen=True)
+class _OfficialTemplateSlug(PropertyType):
+    """A template that comes with Switch, by its slug, or `none`.
+
+    Closed like `one_of`, read from the templates this release ships
+    (`official_templates.all_slugs`), so a new official template reports
+    without an edit here. A slug is a file name in this repository, never
+    something a person typed; a saved template's name is never sent.
+    """
+
+    @property
+    def values(self) -> frozenset[str]:
+        return official_templates.all_slugs() | {"none"}
+
+    def check(self, value: object) -> str | None:
+        if not isinstance(value, str):
+            return f"expected an official template slug, got {type(value).__name__}"
+        if value not in self.values:
+            return f"expected an official template slug or 'none', got {value!r}"
+        return None
+
+
+OFFICIAL_TEMPLATE_SLUG = _OfficialTemplateSlug()
+
+# Who wrote a template, or ran one: a person, or an agent acting for its owner.
+TEMPLATE_ACTOR = one_of("person", "agent")
+
+# What a run was of: a template that comes with Switch, one saved on this
+# server, or a document the server cannot vouch for — written or changed by
+# hand, or sent by a client that did not say which template it was.
+TEMPLATE_RUN_SOURCE = one_of("official", "saved", "document")
+
+# Why a run made nothing, or undid what it made. The first two are the run's
+# own refusals: a check failed before anything was created, or the rooms
+# failed after the agents were and the agents were deleted again.
+TEMPLATE_RUN_FAILURE = one_of(
+    "none",
+    "agents_not_created",
+    "run_undone",
+    "invalid",
+    "not_found",
+    "channel_in_use",
+    "forbidden",
+    "bridge_unavailable",
+    "refused",
+    "error",
+)
+
 # Shared by the connect and disconnect events: one classifier feeds both, so a
 # value only one of them declares fails validation when a bridge drops.
 BRIDGE_FAILURE_REASON = one_of(
@@ -330,6 +379,23 @@ _SNAPSHOT_COUNTS = (
     "package_count",
     "room_group_count",
     "api_key_count",
+    # Templates saved on the server, and how many an agent saved for its
+    # owner. Authors are distinct accounts across the deployment: anyone who
+    # owns a saved template, and anyone who saved or changed one this week.
+    "template_count",
+    "template_agent_saved_count",
+    "template_author_count",
+    "template_author_active_7d",
+    # Runs Switch Console reported as finished and agents' runs, from the run
+    # counter, which records nobody. `template_run` is the event per run.
+    "template_run_7d",
+    # Distinct accounts that ever ran an official, or a saved, template that
+    # created agents: the runs the server records as installs. A run that
+    # made only rooms leaves no install, so these undercount room templates.
+    "template_official_installer_count",
+    "template_saved_installer_count",
+    # Templates that come with Switch which a workspace admin removed.
+    "official_template_hidden_count",
 )
 
 # What each period event counts (`snapshot.PeriodCounts`), read from the
@@ -708,8 +774,35 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # point at.
     "reference_type_created": {},
     "reference_type_deleted": {"age_days": optional(NUMBER)},
-    "template_created": {"template_kind": TEMPLATE_KIND},
+    "template_created": {"template_kind": TEMPLATE_KIND, "author": TEMPLATE_ACTOR},
+    # A saved template's document or details changed. `author` is who changed
+    # it, which may not be who saved it.
+    "template_updated": {
+        "template_kind": TEMPLATE_KIND,
+        "author": TEMPLATE_ACTOR,
+        "age_days": optional(NUMBER),
+    },
     "template_deleted": {"template_kind": TEMPLATE_KIND, "age_days": optional(NUMBER)},
+    # A workspace admin removing a template that comes with Switch from their
+    # workspace: the catalogue saying what people do not want.
+    "official_template_hidden": {"official_slug": OFFICIAL_TEMPLATE_SLUG},
+    # A template run by a person or an agent, whether it made anything or
+    # not. `official_slug` names a template that comes with Switch, `none`
+    # otherwise. `account_age_days` is how old the account of the person
+    # running it (or the agent's owner) was, so "started off with an official
+    # template" is an official run from a new account; left out when the
+    # account's age could not be read. Counts are what the run made: zero on
+    # a failure.
+    "template_run": {
+        "source": TEMPLATE_RUN_SOURCE,
+        "official_slug": OFFICIAL_TEMPLATE_SLUG,
+        "runner": TEMPLATE_ACTOR,
+        "agents_created": NUMBER,
+        "rooms_created": NUMBER,
+        "account_age_days": optional(NUMBER),
+        "outcome": OUTCOME,
+        "failure_reason": TEMPLATE_RUN_FAILURE,
+    },
     # An agent asked for something and was told no, on purpose. Which rule
     # people run into is what a finer rights model is designed from; who and
     # what stays in the server log (see `agent_refusals`).

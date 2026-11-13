@@ -64,6 +64,7 @@ from tests.switch_core.management.harness import (
     provider,
     report_status,
 )
+from tests.telemetry_records import recording_telemetry
 
 MANAGEMENT_OPERATIONS = {
     "list_machines",
@@ -1605,6 +1606,75 @@ class TestARunOfAKnownTemplateIsRecorded:
             json={"template": document, "template_name": "t", **extra},
             cookies=cookies_for(owner),
         )
+
+    async def test_a_run_is_reported_with_its_official_template_and_what_it_made(
+        self,
+        harness: Harness,
+        client: httpx.AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        telemetry, sink = recording_telemetry()
+        monkeypatch.setattr(gateway_rooms, "current_telemetry", lambda: telemetry)
+        owner = await add_member(harness.session_factory, "ada")
+
+        response = await self._run(
+            harness,
+            client,
+            owner,
+            _buddy_document(),
+            inputs={"agent_name": "switch-buddy-ada", "provider": "claude"},
+        )
+
+        assert response.status_code == 201, response.text
+        [run] = sink.events("template_run")
+        assert run["account_age_days"] >= 0
+        assert {k: v for k, v in run.items() if k != "account_age_days"} == {
+            "source": "official",
+            "official_slug": "switch-buddy",
+            "runner": "person",
+            "agents_created": 1,
+            "rooms_created": 0,
+            "outcome": "success",
+            "failure_reason": "none",
+        }
+
+    async def test_a_refused_run_of_a_document_is_reported_as_made_nothing(
+        self,
+        harness: Harness,
+        client: httpx.AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        telemetry, sink = recording_telemetry()
+        monkeypatch.setattr(gateway_rooms, "current_telemetry", lambda: telemetry)
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(
+            client, controller, providers=[provider("claude", auth="expired")]
+        )
+
+        response = await client.post(
+            "/gateway/rooms/from-template-document",
+            json={"template": DOCUMENT_TEMPLATE, "template_name": "helper"},
+            cookies=cookies_for(owner),
+        )
+        missing = await client.post(
+            "/gateway/rooms/from-template-document",
+            json={
+                "template": DOCUMENT_TEMPLATE,
+                "template_name": "helper",
+                "template_id": "no-such-template",
+            },
+            cookies=cookies_for(owner),
+        )
+
+        assert (response.status_code, missing.status_code) == (409, 404)
+        assert [
+            (e["source"], e["agents_created"], e["outcome"], e["failure_reason"])
+            for e in sink.events("template_run")
+        ] == [
+            ("document", 0, "failure", "agents_not_created"),
+            ("document", 0, "failure", "not_found"),
+        ]
 
     async def test_switch_buddy_is_recorded_from_its_document_alone(
         self, harness: Harness, client: httpx.AsyncClient

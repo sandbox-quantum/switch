@@ -286,6 +286,53 @@ async def test_run_creates_the_room_under_the_templates_name(tools):
 
 
 @pytest.mark.asyncio
+async def test_a_run_is_reported_with_what_it_made_and_who_ran_it(tools):
+    telemetry, sink = recording_telemetry()
+    tools["protocol"].telemetry = telemetry
+    template_id = await _stored(
+        tools, tools["stranger_id"], "Topic room", ROOM_TEMPLATE
+    )
+
+    await _as(
+        tools["agent_id"], run_template, template_id=template_id, inputs={"topic": "jq"}
+    )
+
+    [run] = sink.events("template_run")
+    assert run["account_age_days"] >= 0
+    assert {k: v for k, v in run.items() if k != "account_age_days"} == {
+        "source": "saved",
+        "official_slug": "none",
+        "runner": "agent",
+        "agents_created": 0,
+        "rooms_created": 1,
+        "outcome": "success",
+        "failure_reason": "none",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_refused_run_is_reported_as_made_nothing(tools):
+    telemetry, sink = recording_telemetry()
+    tools["protocol"].telemetry = telemetry
+    template_id = await _stored(
+        tools, tools["user_id"], "jq", AGENT_TEMPLATE, kind="agent"
+    )
+
+    with pytest.raises(AgentRefused):
+        await _as(tools["agent_id"], run_template, template_id=template_id)
+    with pytest.raises(AgentRefused):
+        await _as(tools["agent_id"], run_template, template_id="no-such-template")
+
+    assert [
+        (e["source"], e["agents_created"], e["outcome"], e["failure_reason"])
+        for e in sink.events("template_run")
+    ] == [
+        ("saved", 0, "failure", "agents_not_created"),
+        ("document", 0, "failure", "not_found"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_a_team_template_with_existing_agents(tools):
     template_id = await _stored(
         tools, tools["user_id"], "team", TEAM_TEMPLATE, kind="group"
@@ -628,9 +675,17 @@ async def test_saving_and_deleting_are_reported_as_in_the_gateway(tools):
         description="",
         yaml=ROOM_TEMPLATE,
     )
+    await _as(
+        tools["agent_id"], update_template, template_id=saved["id"], description="x"
+    )
     await _as(tools["agent_id"], delete_template, template_id=saved["id"])
 
-    assert sink.events("template_created") == [{"template_kind": "room"}]
+    assert sink.events("template_created") == [
+        {"template_kind": "room", "author": "agent"}
+    ]
+    [updated] = sink.events("template_updated")
+    assert (updated["template_kind"], updated["author"]) == ("room", "agent")
+    assert updated["age_days"] >= 0
     [deleted] = sink.events("template_deleted")
     assert deleted["template_kind"] == "room"
     assert deleted["age_days"] >= 0

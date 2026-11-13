@@ -76,6 +76,18 @@ version of their own to them without also giving them a release of their own.
   counts with its next observation, which Core counts once the observation is
   saved. Against an older Core that refuses the counts, it sends the
   observation without them and leaves them off for an hour. Deploy Core first.
+- **Usage telemetry reports template runs and who builds templates.** Every
+  run, by a person or an agent, is a `template_run`. It says whether the run
+  was of an official template (by its slug), a saved one, or a document, and
+  how many agents and rooms it made. A failed run says why. It also carries
+  the account's age, so official runs from new accounts can be told apart.
+  `template_created` now says whether a person or an agent saved the
+  template. Changing a template sends `template_updated`, and an admin
+  removing an official template from a workspace sends
+  `official_template_hidden`. The daily snapshot adds counts of saved
+  templates, authors, runs, people who ran official and saved templates, and
+  hidden official templates. A saved template's name and document are never
+  sent.
 - **Usage telemetry counts Switch Console chat.** Messages people post in a
   Switch Console chat were stored without being counted, so desktop chat was
   invisible to the message events and the period counts. Each post is now a

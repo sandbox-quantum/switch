@@ -429,6 +429,19 @@ never invisible.
 | `package_count` | number | packages |
 | `room_group_count` | number | room groups |
 | `api_key_count` | number | API keys |
+| `template_count` | number | templates saved on the server |
+| `template_agent_saved_count` | number | of those, saved by an agent for its owner |
+| `template_author_count` | number | distinct accounts that own a saved template, across the deployment |
+| `template_author_active_7d` | number | distinct accounts with a saved template created or changed in the last 7 days |
+| `template_run_7d` | number | template runs counted in the last 7 days: runs Switch Console reported as finished, and agents' runs |
+| `template_official_installer_count` | number | distinct accounts that ever ran an official template that created agents |
+| `template_saved_installer_count` | number | distinct accounts that ever ran a saved template that created agents |
+| `official_template_hidden_count` | number | official templates a workspace admin removed from their workspace |
+
+The installer counts come from the runs the server records as installs, which
+are only the runs that created an agent: a run that made rooms and nothing
+else leaves no install, so they undercount room templates. `template_run`
+reports every run as it happens, with whether it was official.
 
 Per-platform counts are separate properties rather than one map because the
 platform set is closed and small, and because Amplitude charts a property far
@@ -1016,8 +1029,11 @@ only when there was something to detach or remove.
 | `api_key_revoked` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`); `age_days` (number) |
 | `room_group_created` | `has_parent` (boolean) |
 | `room_group_deleted` | `room_count` (number); `age_days` (number) |
-| `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`) |
+| `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `author` (`person` \| `agent`) |
+| `template_updated` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `author` (`person` \| `agent`): who changed it; `age_days` (number) |
 | `template_deleted` | `template_kind` (`room` \| `group` \| `agent` \| `other`); `age_days` (number) |
+| `official_template_hidden` | `official_slug`: the template a workspace admin removed. Removing it again sends nothing |
+| `template_run` | `source` (`official` \| `saved` \| `document`); `official_slug`; `runner` (`person` \| `agent`); `agents_created` (number); `rooms_created` (number); `account_age_days` (number); `outcome`; `failure_reason` (`none` \| `agents_not_created` \| `run_undone` \| `invalid` \| `not_found` \| `channel_in_use` \| `forbidden` \| `bridge_unavailable` \| `refused` \| `error`) |
 | `agent_request_refused` | `operation` (`list_templates` \| `get_template` \| `run_template` \| `save_template` \| `update_template` \| `delete_template` \| `create_room` \| `create_room_from_yaml`); `reason` (`not_found` \| `not_yours` \| `name_taken` \| `visibility_not_allowed` \| `invalid` \| `too_large` \| `has_warnings` \| `missing_agents` \| `agent_creation_console_only` \| `agents_not_created` \| `run_undone` \| `busy` \| `run_paused` \| `run_stopped` \| `repeat` \| `kickoff_ignored`) |
 | `room_link_created` | none |
 | `room_link_removed` | none |
@@ -1058,6 +1074,12 @@ client could not be looked up.
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
 
+`official_slug`: a template that comes with Switch, by its slug (for example
+`switch-buddy` or `incident-war-room`), or `none`. The set is read from the
+templates this release ships when an event is checked, so a new official
+template adds its own value. A slug is a file name in this repository, never
+anything a person typed; a saved template's name is never sent.
+
 `bridge_connected.failure_reason` is `none` | `auth_failed` | `network` |
 `platform_error` | `config_invalid` | `unknown`. `bridge_disconnected.reason`
 takes the same failure codes without `none`, plus `shutdown` and `restart`. The
@@ -1083,6 +1105,7 @@ is summed and averaged like any other value unless every chart filters it,
 where an absent property is skipped by every aggregation. These are the only
 properties that may be missing: `age_days`, `age_hours`,
 `seconds_since_install` and `seconds_since_configured` on `connector_added`,
+`account_age_days` on `template_run`,
 `duration_ms` on `bridge_connected`, `provisioning_seconds`, the room sizes on
 `message_sent`, and `known_agent_type` on `message_sent`, which only an agent's
 message carries. Servers released before this sent `-1` instead.
@@ -1376,9 +1399,23 @@ reason.
 
 - `reference_type_created` / `reference_type_deleted` — registering a *type*,
   which is an owner extending what Switch can point at, not making a reference.
-- `template_created` / `template_deleted` — `template_kind` names the three the
-  product uses and reports anything an operator invents as `other`. Saved or
-  deleted in the gateway or by an agent's `save_template` / `delete_template`.
+- `template_created` / `template_updated` / `template_deleted` —
+  `template_kind` names the three the product uses and reports anything an
+  operator invents as `other`. Saved, changed or deleted in the gateway or by
+  an agent's `save_template` / `update_template` / `delete_template`; `author`
+  says which.
+- `official_template_hidden` — a workspace admin removes a room template that
+  comes with Switch (Delete on it in Switch Console or the dashboard).
+- `template_run` — run a template: from Switch Console or the dashboard
+  (`POST /rooms/from-template-document`, `/rooms/from-template` or
+  `/rooms/from-yaml`), or by an agent's `run_template`. A run refused before
+  it made anything, or undone after, is sent with `outcome` `failure`.
+  `source` is `official` or `saved` only where the server can vouch for the
+  document: a whole-document run of a template the client named, or whose
+  document is an official one word for word, and every agent run. A run
+  Switch Console resolved itself (`/rooms/from-template`, `/rooms/from-yaml`)
+  is `document`. "Started off with an official template" is an official run
+  with a small `account_age_days`.
 - `agent_request_refused`: an agent asked for something a rule says no to:
   a template it did not save, a run that would need a new agent, a room in a
   paused or stopped run. `operation` and `reason` are fixed lists; which agent

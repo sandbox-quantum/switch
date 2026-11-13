@@ -243,6 +243,15 @@ def current_revision(slug: str) -> int:
     return int(_revisions(slug)[-1]["revision"])
 
 
+@cache
+def all_slugs() -> frozenset[str]:
+    """Every official template this release ships, whichever this server
+    serves: the closed set a template's slug is reported from."""
+    return frozenset(shipped.slug for shipped in _SHIPPED) | frozenset(
+        slug_of(template.id) for template in _room_templates()
+    )
+
+
 def slug_of(template_id: str) -> str:
     return template_id.removeprefix(OFFICIAL_PREFIX)
 

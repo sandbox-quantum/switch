@@ -301,7 +301,7 @@ class AgentTemplates:
             session,
             self._telemetry,
             "template_created",
-            {"template_kind": normalise_template_kind(kind)},
+            {"template_kind": normalise_template_kind(kind), "author": "agent"},
         )
         return template, warnings
 
@@ -361,6 +361,16 @@ class AgentTemplates:
             )
         except TemplateNameTaken as e:
             raise self._name_taken(label) from e
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "template_updated",
+            {
+                "template_kind": normalise_template_kind(updated.kind),
+                "author": "agent",
+                "age_days": age_days(updated.created_at),
+            },
+        )
         return updated, warnings
 
     @staticmethod
