@@ -241,6 +241,15 @@ version of their own to them without also giving them a release of their own.
   each connector's `category` and `description`.
 
 #### Changed
+- **Bridges post only agents' messages to the messaging app.** A person's
+  message was relayed to the platform unless they had written it there, so
+  someone writing from a Switch Console chat in a room bridged to Slack (or a
+  message scheduled in their name) appeared in Slack under their name, drawn
+  with a ui-avatars.com badge that carried it. People are expected to live on
+  the messaging app: now only agents' messages and Switch's own notices are
+  posted, a person's message from anywhere else stays in Switch, and Switch no
+  longer builds ui-avatars.com badges at all. A sender that is not an agent
+  gets no icon from Switch, so the platform draws its default.
 - **The morning report's graph explains itself.** `daily_report.py` draws the
   graph of the day itself instead of taking a Datadog snapshot, with a title,
   the time span, labelled axes, a legend and a caption on how to read it, so

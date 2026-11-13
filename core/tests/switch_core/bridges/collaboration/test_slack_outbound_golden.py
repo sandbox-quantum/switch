@@ -221,7 +221,7 @@ async def test_agent_identity() -> None:
     await _relay(adapter, CHANNEL, "scout", "Generated face, display name.", None)
     await _relay(adapter, CHANNEL, "reviewer", "Own icon, marked-up name.", None)
     await _relay(adapter, CHANNEL, "wide-icon", "Icon URL over Slack's limit.", None)
-    await _relay(adapter, CHANNEL, "jane", "Not an agent: lettered badge.", None)
+    await _relay(adapter, CHANNEL, "jane", "Not an agent: no icon.", None)
 
     _assert_golden("agent_identity", client.calls)
 
@@ -231,7 +231,7 @@ async def test_agent_identity_without_third_party_avatars() -> None:
 
     await _relay(adapter, CHANNEL, "scout", "No generated face.", None)
     await _relay(adapter, CHANNEL, "reviewer", "Own icon kept.", None)
-    await _relay(adapter, CHANNEL, "jane", "No lettered badge.", None)
+    await _relay(adapter, CHANNEL, "jane", "Not an agent: no icon.", None)
 
     _assert_golden("agent_identity_without_third_party_avatars", client.calls)
 

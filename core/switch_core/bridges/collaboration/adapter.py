@@ -21,7 +21,6 @@ from typing import (
 from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import (
     generated_icon_url,
-    initials_icon_url,
     is_third_party_avatar,
 )
 from switch_core.bridges.collaboration.ingress import CallbackEndpoint
@@ -2400,11 +2399,11 @@ class PlatformAdapter(ABC):
         :attr:`AgentRendering.field_label` is reachable only alongside the
         escaped one, so choosing it is a choice."""
         # An agent with no icon wears the face its name generates; a name the
-        # resolver says is no agent keeps a lettered badge, so a person relayed
-        # from elsewhere is never drawn as an agent. The name is the sending
-        # actor's own (an agent's is its identifier, never a room alias), so a
-        # miss is a sender that is not an agent rather than an agent the lookup
-        # failed to recognise.
+        # resolver says is no agent gets no icon, and the platform draws its
+        # own default, so it is never drawn as an agent and its name goes to no
+        # avatar service. The name is the sending actor's own (an agent's is
+        # its identifier, never a room alias), so a miss is a sender that is
+        # not an agent rather than an agent the lookup failed to recognise.
         #
         # Without a resolver nothing can say who is who. The senders an adapter
         # draws are overwhelmingly agents, so it draws them as agents rather
@@ -2412,10 +2411,10 @@ class PlatformAdapter(ABC):
         # before the adapter starts, so a running bridge without it is a wiring
         # fault, and said so once.
         #
-        # The face and the badge are both drawn by outside services that see
-        # the name. With third-party avatars off neither is built, and a stored
-        # icon on one of those services is withheld too, so the sender goes out
-        # with no icon and the platform draws its own default.
+        # The face is drawn by an outside service. With third-party avatars
+        # off it is not built, and a stored icon on such a service is withheld
+        # too, so the sender goes out with no icon and the platform draws its
+        # own default.
         if self._resolve_agent_presentation is None:
             if not self._reported_missing_resolver:
                 self._reported_missing_resolver = True
@@ -2430,9 +2429,7 @@ class PlatformAdapter(ABC):
             found = await self._resolve_agent_presentation(agent_name)
             label = (found.display_name if found else None) or agent_name
             if found is None:
-                icon_url = (
-                    initials_icon_url(agent_name) if self._third_party_avatars else None
-                )
+                icon_url = None
             elif found.icon_url is None:
                 icon_url = self._generated_icon(agent_name)
             elif not self._third_party_avatars and is_third_party_avatar(

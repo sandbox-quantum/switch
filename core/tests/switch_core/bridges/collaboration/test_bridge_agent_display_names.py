@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 import discord
 import pytest
 
-from switch_core.agent_icon import generated_icon_url, initials_icon_url
+from switch_core.agent_icon import generated_icon_url
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
@@ -238,15 +238,16 @@ class TestAdapterLabelSelection:
         assert (await adapter.agent_rendering("worker")).icon_url == _DICEBEAR
 
     async def test_a_name_that_is_no_agent_renders_as_itself(self) -> None:
-        """A resolver answering None must leave the adapter exactly where it
-        would be with no resolver at all."""
+        """A resolver answering None keeps the sender's own name and gives it
+        no icon, so the platform draws its default and no avatar service
+        sees the name."""
         adapter = _BareAdapter()
         bridge = _bridge()
         adapter.set_agent_presentation_resolver(bridge._agent_presentation)
 
         rendering = await adapter.agent_rendering("some-slack-bot")
         assert rendering.field_label == "some-slack-bot"
-        assert rendering.icon_url == initials_icon_url("some-slack-bot")
+        assert rendering.icon_url is None
 
 
 def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
