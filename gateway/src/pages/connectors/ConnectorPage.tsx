@@ -42,10 +42,10 @@ import {
   CONSOLE_CONNECT_NOTE,
   accessLastsLabel,
   brokenLine,
-  isPasted,
   connectWay,
   connectedAsLine,
   isConnected,
+  isPasted,
   offNotice,
   personLine,
   revokeConfirmation,
@@ -398,6 +398,11 @@ export default function ConnectorPage() {
   const off = offNotice(connection, workspaceName);
   const connected = isConnected(connection);
   const broken = brokenLine(connection);
+  // What a pasted connection is replaced with: pasted the same way where
+  // that is still offered here, else the first way that is.
+  const replaceWith = isPasted(connection)
+    ? (connection.paste.find((way) => way.method === connection.method) ?? connection.paste[0] ?? null)
+    : null;
 
   return (
     <Stack spacing={4}>
@@ -450,9 +455,9 @@ export default function ConnectorPage() {
                 Connect
               </Button>
             )}
-            {connected && isPasted(connection) && connection.paste.length > 0 && (
+            {connected && replaceWith && (
               <Button variant={broken ? "contained" : "outlined"} onClick={() => setPasteDialog("replace")}>
-                {connection.method === "token" ? "Replace token" : "Replace keys"}
+                {replaceWith.method === "token" ? "Replace token" : "Replace keys"}
               </Button>
             )}
             {!connected && way === "console" && (
@@ -548,7 +553,7 @@ export default function ConnectorPage() {
           onClose={() => setPasteDialog(null)}
           onSaved={(warning) => {
             setPasteDialog(null);
-            changed(pasteDialog === "replace" ? "Replaced." : `${connection.name} is connected.`, warning);
+            changed(pasteDialog === "replace" ? `${connection.name} is reconnected.` : `${connection.name} is connected.`, warning);
           }}
         />
       )}

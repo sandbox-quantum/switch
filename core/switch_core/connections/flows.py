@@ -297,9 +297,9 @@ class ServiceFlows:
         tenant_id: str,
         user_id: str,
         owner_label: str,
-        choices: dict[str, str],
     ) -> ServiceFlow:
-        """A flow the gateway starts, which finishes at Core's callback."""
+        """A flow the gateway starts, which finishes at Core's callback. It
+        picks nothing: an entry that asks is not `web_ready`."""
         if not self.web_ready(definition):
             raise FlowError(
                 f"{definition.name} can't be connected from the web here. "
@@ -314,7 +314,7 @@ class ServiceFlows:
             port=NO_LISTENER,
             completion_secret=secrets.token_urlsafe(32),
             owner_label=owner_label,
-            choices=choices,
+            choices={},
             marks=RETURNS_TO_WEB,
         )
 

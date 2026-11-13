@@ -229,7 +229,6 @@ async def start_web(
             tenant_id=require_tenant_id(),
             user_id=user.id,
             owner_label=f"{user.name} ({user.email}) in {tenant.name}",
-            choices={},
         )
     except FlowError as error:
         raise HTTPException(409, str(error)) from None

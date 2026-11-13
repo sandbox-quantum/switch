@@ -650,6 +650,26 @@ describe("connecting by pasting a token in place of a sign-in", () => {
     expect(await within(dialog).findByText("Datadog refused the token.")).toBeTruthy();
   });
 
+  it("replaces keys the server no longer takes with a token", async () => {
+    signedIn();
+    const tokenOnly = pastedConnector().paste.filter((way) => way.method === "token");
+    server(
+      pastedConnector({
+        paste: tokenOnly,
+        status: "active",
+        can_revoke: true,
+        method: "keys",
+        choices: { site: "datadoghq.com" },
+        access_note: "Reaches what your keys allow.",
+      }),
+    );
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Replace token" }));
+    expect(await screen.findByRole("dialog", { name: "Replace your Datadog token" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Replace keys" })).toBeNull();
+  });
+
   it("replaces a token the vendor refused, at the site it was for", async () => {
     signedIn();
     const calls = server(
@@ -683,5 +703,6 @@ describe("connecting by pasting a token in place of a sign-in", () => {
         body: { method: "token", fields: { pat: "ddpat_new" }, choices: { site: "datadoghq.eu" } },
       }),
     );
+    expect(await screen.findByText("Datadog is reconnected.")).toBeTruthy();
   });
 });
