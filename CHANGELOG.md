@@ -137,7 +137,7 @@ version of their own to them without also giving them a release of their own.
   requests, files and pipelines, as that person, through GitLab's MCP server. Each server's operator registers a
   GitLab OAuth application with the scopes `mcp`, `read_api`, `read_user`
   and `api`, and saves it under Connector apps or names it in
-  `GITLAB_CLIENT_CONFIG_PATH`. Like Google Workspace and Airtable, it needs
+  `GITLAB_CLIENT_CONFIG_PATH` (Helm: `switchCore.gitlabClientSecret`). Like Google Workspace and Airtable, it needs
   `GATEWAY_PUBLIC_URL`. GitLab's dynamic registration grants only `mcp` and
   no refresh, so Switch does not use it. Every connection can write: a
   sign-in asks for `api`, and GitLab's MCP server lets a token write even

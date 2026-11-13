@@ -296,6 +296,20 @@ switchCore:
   it to agents. Such a key can only be revoked at the vendor: disconnecting it
   or removing a grant forgets it in Switch but leaves it working.
 
+The OAuth apps that the operator registers at a vendor can also come from an
+existing Secret with `client.json` (`{"client_id", "client_secret"}`), in
+place of the dashboard's Connectors page:
+
+```yaml
+switchCore:
+  airtableClientSecret: switch-airtable-client         # AIRTABLE_CLIENT_CONFIG_PATH
+  gitlabClientSecret: switch-gitlab-client             # GITLAB_CLIENT_CONFIG_PATH
+  googleWorkspaceClientSecret: switch-google-client    # GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH
+```
+
+A value set here wins over an app saved in the dashboard. A Secret that is
+named but missing stops switch-core from starting.
+
 ## Auto-route and the decision service
 
 Off by default. With the `decision_routing` feature flag on (it needs

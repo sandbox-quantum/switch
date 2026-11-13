@@ -218,6 +218,12 @@ switchCore:
   # Without it, Airtable shows as not set up.
   airtableClientSecret: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
+  # GitLab OAuth application for the GitLab connection, with the scopes mcp,
+  # read_api, read_user and api, and the redirect URI
+  # https://<public URL>/gateway/service-connections/gitlab/flows/callback.
+  # Without it or one saved under Connectors, GitLab shows as not set up.
+  gitlabClientSecret: ""
+  # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback
   # as its redirect URI. Without it or one saved under Connectors, Google
