@@ -14,7 +14,7 @@ which a later `nextval` can give again to the same grant. The host then keeps
 a token for up to `useUntil`, as before this change.
 
 Revision ID: c5d1e8f3a6b2
-Revises: c8e4a1f7d392
+Revises: b7e2c4a9d1f6
 Create Date: 2026-11-12 00:00:00.000000
 
 """
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "c5d1e8f3a6b2"
-down_revision: str | None = "c8e4a1f7d392"
+down_revision: str | None = "b7e2c4a9d1f6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
