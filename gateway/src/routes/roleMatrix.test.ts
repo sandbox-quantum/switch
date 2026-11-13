@@ -26,7 +26,7 @@ const LAYOUTS: readonly MatrixLayout[] = ["current", "v2"];
  * organization, on a server with the flags the harness's stack turns on. */
 function capabilitiesOf(persona: Persona, layout: MatrixLayout): Capabilities {
   const features = featureFlagsFrom(
-    ["agent_management", "service_connections", "organization_connector_apps"]
+    ["agent_management", "service_connections", "organization_connector_apps", "gateway_chats"]
       .concat(layout === "v2" ? ["gateway_v2"] : [])
       .map((key) => ({ key, enabled: true })),
   );

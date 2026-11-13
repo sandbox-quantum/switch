@@ -69,6 +69,11 @@ export function useChatHost(): ChatHost {
   return host;
 }
 
+/** The host, or null where none is provided yet (an app still loading it, say). */
+export function useOptionalChatHost(): ChatHost | null {
+  return useContext(ChatHostContext);
+}
+
 /** The host's avatar for an agent. */
 export function AgentAvatar(props: AgentAvatarProps) {
   const { AgentAvatar: HostAvatar } = useChatHost();

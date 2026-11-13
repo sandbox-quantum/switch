@@ -4,10 +4,9 @@ import {
   type ChatApproval,
   chatApprovalSchema,
   SERVER_TOO_OLD_FOR_ACTIVITY,
-} from '@switch-console/chat-ui/contracts/activity';
-import type { ChatStreamState } from '@switch-console/chat-ui/contracts/chats';
-import { log } from '@main/lib/logger';
-import { sseFrames, STALL_MS } from './chat-stream';
+} from '../contracts/activity';
+import type { ChatStreamState } from '../contracts/chats';
+import { bodyChunks, sseFrames, STALL_MS } from './chat-stream';
 
 /**
  * The server's activity feed (`GET /chats/activity/events`): turn steps and
@@ -31,6 +30,7 @@ export type ChatActivityStreamDeps = {
   sink: ChatActivitySink;
   backoffMs: (attempt: number) => number;
   setTimer: (fn: () => void, ms: number) => () => void;
+  warn: (message: string, context: Record<string, unknown>) => void;
 };
 
 export class ChatActivityStream {
@@ -88,7 +88,7 @@ export class ChatActivityStream {
             : error instanceof Error
               ? error.message
               : String(error);
-          log.warn('Chat activity feed dropped; agent activity may lag until it reconnects', {
+          this.deps.warn('Chat activity feed dropped; agent activity may lag until it reconnects', {
             event: 'chat_activity_stream_offline',
             error: detail,
           });
@@ -125,15 +125,12 @@ export class ChatActivityStream {
       this.tooOld = response.status === 404;
       if (!response.ok) throw new Error(`The activity feed was refused (${response.status}).`);
       if (!response.body) throw new Error('The activity feed has no body.');
-      for await (const frame of sseFrames(
-        response.body as unknown as AsyncIterable<Uint8Array>,
-        armStall
-      )) {
+      for await (const frame of sseFrames(bodyChunks(response.body), armStall)) {
         if (this.stopped) return;
         try {
           this.handle(frame.event, frame.data);
         } catch (error) {
-          log.warn('Skipped a chat activity event that does not match the contract', {
+          this.deps.warn('Skipped a chat activity event that does not match the contract', {
             event: 'chat_activity_event_invalid',
             frameEvent: frame.event,
             error: error instanceof Error ? error.message : String(error),

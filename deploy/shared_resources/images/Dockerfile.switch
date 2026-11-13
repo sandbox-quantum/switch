@@ -5,9 +5,11 @@
 # every architecture the image targets.
 FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS gateway-ui
 
-WORKDIR /gateway
+WORKDIR /src/gateway
 COPY gateway/package.json gateway/package-lock.json ./
 RUN npm ci
+# The chat UI it shares with Switch Console, compiled from source beside it.
+COPY console/packages/chat-ui/ /src/console/packages/chat-ui/
 COPY gateway/ .
 RUN npm run build
 
@@ -47,7 +49,7 @@ COPY core/README.md ./
 
 RUN uv sync --frozen --no-dev
 
-COPY --from=gateway-ui /gateway/dist /app/gateway-ui
+COPY --from=gateway-ui /src/gateway/dist /app/gateway-ui
 ENV GATEWAY_UI_DIR=/app/gateway-ui
 
 # The commit and repository this image was built from, reported with every

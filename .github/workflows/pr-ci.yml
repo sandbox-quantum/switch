@@ -129,6 +129,8 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
+              # The chat UI the gateway compiles from Console's package.
+              - 'console/packages/chat-ui/**'
             # The step of the local-server bundle that builds the gateway's
             # pages. The bundle itself is only built at release, so the console
             # jobs below run (with this step) when it, or what it installs,
@@ -154,6 +156,7 @@ jobs:
             e2e_browser:
               - *shared
               - 'gateway/**'
+              - 'console/packages/chat-ui/**'
               - 'core/**'
               - 'console/tooling-e2e/**'
               - 'console/pnpm-lock.yaml'

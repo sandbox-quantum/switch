@@ -3,6 +3,7 @@
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover';
 import * as React from 'react';
 import { cn } from '../model/cn';
+import { SHARED_UI_CLASS } from '../model/scope';
 
 function Popover({ ...props }: PopoverPrimitive.Root.Props) {
   return <PopoverPrimitive.Root data-slot="popover" {...props} />;
@@ -26,7 +27,7 @@ function PopoverContent({
     'align' | 'alignOffset' | 'side' | 'sideOffset' | 'anchor'
   >) {
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal className={SHARED_UI_CLASS}>
       <PopoverPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}

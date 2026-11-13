@@ -1,5 +1,6 @@
 import { Tooltip as TooltipPrimitive } from '@base-ui/react/tooltip';
 import { cn } from '../model/cn';
+import { SHARED_UI_CLASS } from '../model/scope';
 
 function TooltipProvider({ delay = 0, ...props }: TooltipPrimitive.Provider.Props) {
   return <TooltipPrimitive.Provider data-slot="tooltip-provider" delay={delay} {...props} />;
@@ -27,7 +28,7 @@ function TooltipContent({
     showArrow?: boolean;
   }) {
   return (
-    <TooltipPrimitive.Portal>
+    <TooltipPrimitive.Portal className={SHARED_UI_CLASS}>
       <TooltipPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}

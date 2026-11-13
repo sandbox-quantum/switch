@@ -14,8 +14,9 @@
  * same change: the first test fails until the two agree.
  *
  * Plain data with no imports, because the harness reads it too. Every page
- * assumes the server has `agent_management`, `service_connections` and
- * `organization_connector_apps` on, as the harness's stack does. */
+ * assumes the server has `agent_management`, `service_connections`,
+ * `organization_connector_apps` and `gateway_chats` on, as the harness's
+ * stack does. */
 
 /** The roles, each a real account in the harness:
  *
@@ -72,6 +73,8 @@ function planned(path: string, open: readonly Persona[]): MatrixPage {
 
 export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
   current: [
+    built("/chats", EVERYONE),
+    built("/chats/:roomId", EVERYONE),
     built("/ecosystem", EVERYONE),
     built("/rooms", EVERYONE),
     built("/rooms/new", EVERYONE),
@@ -100,6 +103,8 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
   ],
   v2: [
     built("/overview", EVERYONE),
+    built("/chats", EVERYONE),
+    built("/chats/:roomId", EVERYONE),
     built("/ecosystem", EVERYONE),
     built("/rooms", EVERYONE),
     built("/rooms/new", EVERYONE),
@@ -190,6 +195,7 @@ export const REDIRECTS: Record<MatrixLayout, readonly MatrixRedirect[]> = {
 };
 
 const CURRENT_RAIL_MEMBER = [
+  "Chats",
   "Ecosystem",
   "Rooms",
   "Resources",
@@ -201,7 +207,16 @@ const CURRENT_RAIL_MEMBER = [
   "Devices",
 ];
 // The ecosystem graph has no rail item of its own: Overview links to it.
-const V2_RAIL = ["Overview", "Agents", "Rooms", "Templates", "Connectors", "Resources", "Settings"];
+const V2_RAIL = [
+  "Overview",
+  "Chats",
+  "Agents",
+  "Rooms",
+  "Templates",
+  "Connectors",
+  "Resources",
+  "Settings",
+];
 
 /** The navigation rail's labels, in order. */
 export const RAIL: Record<MatrixLayout, Record<Persona, readonly string[]>> = {

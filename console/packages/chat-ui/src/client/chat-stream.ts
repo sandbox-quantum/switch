@@ -6,8 +6,7 @@ import {
   type ChatStreamState,
   type ChatSummary,
   chatSummarySchema,
-} from '@switch-console/chat-ui/contracts/chats';
-import { log } from '@main/lib/logger';
+} from '../contracts/chats';
 
 /**
  * One live feed of a person's chats on one server and tenant.
@@ -40,6 +39,7 @@ export type ChatStreamDeps = {
   /** Delay before reconnect attempt `attempt` (0-based). */
   backoffMs: (attempt: number) => number;
   setTimer: (fn: () => void, ms: number) => () => void;
+  warn: (message: string, context: Record<string, unknown>) => void;
 };
 
 export function defaultBackoffMs(attempt: number): number {
@@ -47,6 +47,20 @@ export function defaultBackoffMs(attempt: number): number {
 }
 
 type Frame = { event: string; data: string };
+
+/** A response body's chunks, read the same way in Node and in every browser. */
+export async function* bodyChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 /** Server-sent event frames from a byte stream; `onChunk` fires for every chunk, pings included. */
 export async function* sseFrames(
@@ -195,15 +209,12 @@ export class ChatStream {
       if (!response.ok) throw new Error(`The live feed was refused (${response.status}).`);
       if (!response.body) throw new Error('The live feed has no body.');
       this.setState('catching-up', null);
-      for await (const frame of sseFrames(
-        response.body as unknown as AsyncIterable<Uint8Array>,
-        armStall
-      )) {
+      for await (const frame of sseFrames(bodyChunks(response.body), armStall)) {
         if (this.stopped) return;
         try {
           this.handle(frame);
         } catch (error) {
-          log.warn('Skipped a live chat event that does not match the contract', {
+          this.deps.warn('Skipped a live chat event that does not match the contract', {
             event: 'chat_event_invalid',
             frameEvent: frame.event,
             roomId: roomIdOf(frame.data),

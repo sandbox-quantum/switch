@@ -2,6 +2,7 @@ import { Dialog as DialogPrimitive } from '@base-ui/react/dialog';
 import { XIcon } from 'lucide-react';
 import * as React from 'react';
 import { cn } from '../model/cn';
+import { SHARED_UI_CLASS } from '../model/scope';
 import { Button } from './button';
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
@@ -13,7 +14,9 @@ function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
 }
 
 function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
+  return (
+    <DialogPrimitive.Portal data-slot="dialog-portal" className={SHARED_UI_CLASS} {...props} />
+  );
 }
 
 function DialogClose({ ...props }: DialogPrimitive.Close.Props) {

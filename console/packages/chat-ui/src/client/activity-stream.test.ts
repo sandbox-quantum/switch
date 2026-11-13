@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-
-vi.mock('@main/lib/logger', () => ({ log: { warn: () => {} } }));
-
-const { ChatActivityStream } = await import('./activity-stream');
-const { SERVER_TOO_OLD_FOR_ACTIVITY } = await import('@switch-console/chat-ui/contracts/activity');
+import { SERVER_TOO_OLD_FOR_ACTIVITY } from '../contracts/activity';
+import { ChatActivityStream } from './activity-stream';
 
 const item = {
   agentId: 'a',
@@ -37,6 +34,7 @@ describe('ChatActivityStream', () => {
     const stream = new ChatActivityStream({
       open: async () => new Response(body),
       isUnauthorized: () => false,
+      warn: () => {},
       backoffMs: () => 60_000,
       setTimer: () => () => {},
       sink: {
@@ -62,6 +60,7 @@ describe('ChatActivityStream', () => {
         return new Response('Not Found', { status: 404 });
       },
       isUnauthorized: () => false,
+      warn: () => {},
       backoffMs: () => 0,
       setTimer: (fn) => {
         fn();
@@ -93,6 +92,7 @@ describe('ChatActivityStream', () => {
         return new Response('Bad Gateway', { status: 502 });
       },
       isUnauthorized: () => false,
+      warn: () => {},
       backoffMs: () => 30_000,
       setTimer: () => {
         const timer = { cancelled: false };

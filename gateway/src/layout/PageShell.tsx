@@ -1,9 +1,25 @@
 import { Alert, Box, Button, Stack } from "@mui/material";
+import { type ReactNode, Suspense, lazy } from "react";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
+import { GATEWAY_CHATS } from "../data/featureFlags";
 import { type Layout, areaOf } from "../routes/routeTable";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
+
+// Loaded only on a server with chats in the dashboard: it carries the chat UI.
+const WebChatHost = lazy(() => import("../pages/chats/WebChatHost"));
+
+/** Keeps the person's chats live under every page, where the server has them. */
+function WithChats({ children }: { children: ReactNode }) {
+  const { capabilities } = useAuth();
+  if (!capabilities.features[GATEWAY_CHATS]) return <>{children}</>;
+  return (
+    <Suspense fallback={children}>
+      <WebChatHost>{children}</WebChatHost>
+    </Suspense>
+  );
+}
 
 /** The signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
@@ -48,7 +64,9 @@ export default function PageShell({ layout }: { layout: Layout }) {
           }}
         >
           <StaleSessionBanner />
-          <Outlet />
+          <WithChats>
+            <Outlet />
+          </WithChats>
         </Stack>
       </Stack>
     </Box>

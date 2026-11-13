@@ -1,13 +1,8 @@
-import type {
-  ChatMessage,
-  ChatStreamState,
-  ChatSummary,
-} from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it, vi } from 'vitest';
+import type { ChatMessage, ChatStreamState, ChatSummary } from '../contracts/chats';
 import { ChatStream, type ChatStreamDeps, sseFrames } from './chat-stream';
 
 const warn = vi.hoisted(() => vi.fn());
-vi.mock('@main/lib/logger', () => ({ log: { warn } }));
 
 function summary(roomId: string, seq: number | null): ChatSummary {
   return {
@@ -88,6 +83,7 @@ function harness(lists: ChatSummary[][], unauthorized = false) {
     },
     isUnauthorized: (error) => (error as { unauthorized?: boolean }).unauthorized === true,
     backoffMs: (attempt) => 1000 * (attempt + 1),
+    warn,
     setTimer: (fn, ms) => {
       const timer = { fn, ms, cancelled: false };
       timers.push(timer);

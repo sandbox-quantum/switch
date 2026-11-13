@@ -12,6 +12,7 @@
   ],
   "exports": {
     "./contracts/*": "./src/contracts/*.ts",
+    "./client/*": "./src/client/*.ts",
     "./model/*": "./src/model/*.ts",
     "./stores/*": "./src/stores/*.ts",
     "./primitives/*": "./src/primitives/*.tsx",
