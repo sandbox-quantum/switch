@@ -1632,10 +1632,15 @@ class MemberDetail(BaseModel):
     via_organization: bool
     # What the caller may do with this member (`authz.can_change_workspace_member`):
     # an admin of the workspace, their own row included, never on an
-    # organization admin's. That the last admin stays and that someone still
-    # owning agents can't be removed is checked when it is asked.
+    # organization admin's; and not the workspace's last admin, nor making the
+    # registration service account an admin. That someone still owning agents
+    # can't be removed is checked when it is asked.
     can_change_role: bool
+    # Why not, set only when the caller administers the workspace and the
+    # flag beside it is false for one of the reasons above.
+    change_role_blocked_reason: str | None
     can_remove: bool
+    remove_blocked_reason: str | None
     # Whether the caller may hand them something they own: a member of the
     # workspace by their own membership, and not the caller.
     can_receive_transfer: bool

@@ -1481,15 +1481,22 @@ export interface Member {
   email: string;
   role: TenantRole;
   created_at: string;
+  // The account agents added with the shared registration token are owned
+  // by: not a person.
+  service_account: boolean;
   organization_role: OrganizationRole | null;
   // An organization admin with no membership of their own here, listed
   // because the organization makes them an admin of every workspace.
   via_organization: boolean;
   // What you may do with this member, as the server decides it: change their
-  // role or remove them (an admin, never on your own row or an organization
-  // admin's), and hand them something you own.
+  // role or remove them (an admin, your own row included, never an
+  // organization admin's), and hand them something you own. The reasons are
+  // set when you administer the workspace but the flag is still false: the
+  // last admin, or making the service account an admin.
   can_change_role: boolean;
+  change_role_blocked_reason: string | null;
   can_remove: boolean;
+  remove_blocked_reason: string | null;
   can_receive_transfer: boolean;
 }
 

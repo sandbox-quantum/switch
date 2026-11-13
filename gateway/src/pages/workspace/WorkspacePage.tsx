@@ -41,6 +41,7 @@ function UsersSections({
       {canAdmin ? (
         <InvitationsSection
           tenantId={tenant.id}
+          workspaceName={tenant.name}
           inOrganization={tenant.organization_id !== null}
           emailEnabled={session.invite_email_enabled}
         />
@@ -157,24 +158,6 @@ export function WorkspaceGeneralPage() {
         <DataProtectionSections tenant={tenant} />
         <RoomsSections tenant={tenant} />
         <DeleteSection tenant={tenant} />
-      </Stack>
-    </Box>
-  );
-}
-
-/** Workspace settings › Users, with the invite links, in the new layout. */
-export function WorkspaceUsersPage() {
-  const { session, canAdminTenant } = useAuth();
-  const tenant = session?.tenant;
-  if (!tenant) return <CircularProgress />;
-
-  return (
-    <Box>
-      <Typography variant="h5" mb={3}>
-        Users
-      </Typography>
-      <Stack spacing={4}>
-        <UsersSections session={session} tenant={tenant} canAdmin={canAdminTenant} />
       </Stack>
     </Box>
   );

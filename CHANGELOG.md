@@ -292,6 +292,26 @@ version of their own to them without also giving them a release of their own.
   connections an app change touches, and an app saved in Switch says when it
   was first set up (`created_at`). The organization's connector list adds
   each connector's `category` and `description`.
+- **Workspace settings › Users, in the new layout.** One page for the
+  workspace's people and its invite links, behind the `gateway_v2` flag. The
+  users table shows each person's name and email, and their role as Org admin,
+  Workspace admin or Member, with a role filter and search. An admin changes a
+  role or removes someone from the row's menu, steps down or leaves from their
+  own row while another admin remains, and is told why when the server would
+  refuse: the workspace's last admin, or an org admin, whose row is managed in
+  Organization settings and is marked "via organization". Removing someone who
+  still owns agents lists those agents, each linked to its page to transfer or
+  delete it first. Below the table, admins see the active invite links, with
+  the ended ones on request, and revoke them; a new link is created with a
+  role, an expiry, a number of uses and an optional email, and shown once. A
+  member sees the table alone, read-only.
+- **The workspace members list says why a role or membership can't change.**
+  `GET /gateway/tenants/{id}/members` adds `change_role_blocked_reason` and
+  `remove_blocked_reason` to each row, set when the caller administers the
+  workspace and the matching `can_*` flag is false: for the workspace's last
+  admin, and for making the registration service account an admin. The last
+  admin's `can_change_role` and `can_remove` are now false, as the routes
+  already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
 - **A refusal for not being a workspace admin says "Workspace admin access
@@ -817,6 +837,16 @@ version of their own to them without also giving them a release of their own.
   needs a workspace admin too, and an agent cannot run one, since it runs
   templates without its owner's admin reach. Taking a room out of its group
   still only needs write access to the room.
+- **The registration service account can't be made an admin.** Agents added
+  with the shared registration token are owned by it and act with its role, so
+  making it a workspace admin handed every one of them the workspace, and
+  making it an organization admin handed them every workspace in the
+  organization. `PATCH /gateway/tenants/{id}/members/{user_id}` and
+  `PATCH /gateway/organizations/current/members/{user_id}` now refuse it with
+  409, the workspace members list says why and the organization's never offers
+  it, and an organization whose members come from a WorkOS directory keeps it a
+  member however the directory lists it, recording the conflict in its audit
+  log.
 
 #### Added
 - **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,

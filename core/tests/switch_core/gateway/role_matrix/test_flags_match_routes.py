@@ -381,14 +381,15 @@ CHECKS: dict[str, Check] = {
                     {"role": "member"},
                 ),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last admin stays.
+                refused=REFUSED | {409},  # The last admin stays.
             ),
             Check(
                 "can_remove",
                 MEMBERS,
                 _act("DELETE", f"{G}/tenants/{{tenant}}/members/{{self_id}}"),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last admin, or still owning agents.
+                refused=REFUSED | {409},  # The last admin stays.
+                later=frozenset({409}),  # Still owning agents.
             ),
         ],
         "your own organization membership": [
