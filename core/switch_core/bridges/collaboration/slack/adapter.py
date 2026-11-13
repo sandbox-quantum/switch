@@ -3904,11 +3904,13 @@ class SlackAdapter(PlatformAdapter):
                 return
             channel_type = await self.get_channel_type(channel_id)
             channel_name = await self._resolve_channel_name(channel_id)
+            inviter = str(event.get("inviter") or "") or None
             await self._on_app_joined(
                 InboundAppJoin(
                     channel_id=channel_id,
                     channel_type=channel_type,
                     channel_name=channel_name,
+                    added_by_external_user_id=inviter,
                 )
             )
             return

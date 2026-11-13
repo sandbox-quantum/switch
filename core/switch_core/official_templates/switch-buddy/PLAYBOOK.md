@@ -34,7 +34,7 @@ cloud machine (`kind` "ec2" in `list_machines`).
   they stopped the machine themselves: ask them to press **Start** on its card under
   [your agents](switchdash://open/agents), then try again.
 - **No cloud machine is listed:** a workspace that never used one has none yet. Ask them to
-  open [Add a new agent](switchdash://open/agents/new) and choose **Switch cloud** under
+  open [Add a new agent](switchdash://open/agents/new) and choose **Switch Cloud** under
   where it runs, which sets it up. Then ask again, and create the agent once `list_machines`
   shows it.
 - **Only their computer is listed and they're on Switch Cloud:** say the cloud machine is

@@ -99,7 +99,7 @@ export function RunLocationSelect({
 /**
  * The value a `machine` param holds for one of the owner's machines: its id.
  * Listed as the New agent modal lists them: this computer first, as "This
- * computer"; offline machines shown but not pickable; the Switch cloud machine
+ * computer"; offline machines shown but not pickable; the Switch Cloud machine
  * only while it is online.
  */
 export function MachineSelect({

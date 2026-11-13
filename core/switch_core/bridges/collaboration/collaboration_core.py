@@ -1758,6 +1758,60 @@ class CollaborationCore:
             finally:
                 self._pending_message_maps.pop(event_id, None)
 
+    async def _owner_from_platform_account(
+        self, external_user_id: str | None, channel_id: str
+    ) -> str | None:
+        """The Switch user who linked the platform account `external_user_id`,
+        to own a room that account brought Switch into. None when the platform
+        did not say who, nobody has linked the account, or more than one
+        person has, since then nobody can tell which of them it was.
+
+        Only claimants who still belong to the bridge's workspace count: a
+        former member who linked the account doesn't own a room in a
+        workspace they've left.
+
+        A room left without an owner is changed only by admins, so the cases
+        someone may ask about (an unlinked or shared account) are logged with
+        the reason. A platform that never says who added Switch is expected,
+        and only noted at debug level."""
+        if external_user_id is None:
+            logger.debug(
+                "Channel %s gets a room with no owner: the platform did not say "
+                "who added Switch",
+                channel_id,
+            )
+            return None
+        users = UserStore()
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            account = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            claimants: list[str] = []
+            if account is not None:
+                for user_id in await self._external_user_store.claimant_ids(
+                    session, account.id
+                ):
+                    role = await users.effective_tenant_role(
+                        session, self._bridge_tenant_id, user_id
+                    )
+                    if role is not None:
+                        claimants.append(user_id)
+        if len(claimants) == 1:
+            return claimants[0]
+        logger.warning(
+            "Channel %s gets a room with no owner, so only workspace admins can "
+            "change it: %s",
+            channel_id,
+            "the account that added Switch is not linked to a Switch user in "
+            "this workspace"
+            if not claimants
+            else f"{len(claimants)} Switch users have linked the account that "
+            "added Switch, so it is not clear which one did",
+        )
+        return None
+
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
         async with lock:
@@ -1792,6 +1846,7 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            added_by_external_user_id=join.added_by_external_user_id,
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1809,6 +1864,7 @@ class CollaborationCore:
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
+                added_by_external_user_id=join.added_by_external_user_id,
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -1906,6 +1962,7 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        added_by_external_user_id: str | None = None,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -1926,6 +1983,9 @@ class CollaborationCore:
             return existing
 
         agent_ids = await self._resolve_agents_for_channel(channel_id, channel_type)
+        owner_id = await self._owner_from_platform_account(
+            added_by_external_user_id, channel_id
+        )
 
         bridge_name = self._bridge_display_name
         if channel_type == "direct":
@@ -1948,6 +2008,10 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            # Whoever added Switch to the channel owns its room, when the
+            # platform says who and they have linked their account; otherwise
+            # nobody does, and only workspace admins change it.
+            owner_id=owner_id,
             named_after_channel=(
                 channel_name if channel_type != "direct" and channel_name else None
             ),

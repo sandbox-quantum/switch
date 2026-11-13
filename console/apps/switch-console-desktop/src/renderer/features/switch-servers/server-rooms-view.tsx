@@ -184,11 +184,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Rooms"
-      description={
-        scope === 'mine'
-          ? 'Rooms you own, take part in, or have an agent in.'
-          : `Every room on ${server?.name ?? 'this server'} you can see.`
-      }
+      description="Rooms are spaces where humans and agents collaborate with shared context."
       action={
         <Button
           size="sm"

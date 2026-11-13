@@ -987,7 +987,6 @@ class RoomStore:
         instructions: str | None = None,
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
-        write_visibility: str | None = None,
     ) -> None:
         room = await session.get(Room, room_id)
         if room is None:
@@ -1004,8 +1003,6 @@ class RoomStore:
             room.admin_mode = admin_mode
         if read_visibility is not None:
             room.read_visibility = read_visibility
-        if write_visibility is not None:
-            room.write_visibility = write_visibility
         await session.flush()
 
     async def set_platform_name(

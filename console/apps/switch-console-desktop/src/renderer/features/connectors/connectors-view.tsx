@@ -54,8 +54,7 @@ const ConnectorsTitlebar = observer(function ConnectorsTitlebar() {
   return <ServerSectionTitlebar serverId={useServerId()} icon={Plug} label="Connectors" />;
 });
 
-const DESCRIPTION =
-  'Connect the services your agents work with. An agent uses one only once you turn it on for that agent.';
+const DESCRIPTION = 'Connect external services for your agents. Connectors are enabled per agent.';
 
 /**
  * The connector catalog of the workspace in scope on the server. Behind the

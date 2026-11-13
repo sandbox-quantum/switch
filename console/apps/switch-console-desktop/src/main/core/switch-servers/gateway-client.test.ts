@@ -9,6 +9,7 @@ import {
   unknownHostReachability,
 } from '@shared/core/remote-hosts/reachability';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import type { NewRoomChannel, RoomAccess } from '@shared/core/switch-servers/switch-servers';
 
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const refreshSession = vi.hoisted(() => vi.fn());
@@ -804,15 +805,16 @@ describe('room creation', () => {
       agentIds: [],
       channel: { kind: 'new', private: true },
       groupId: 'g1',
-      access: 'read_only',
+      access: 'public',
     });
 
-    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({
+    const body = bodyOf(fetchMock.mock.calls[0]);
+    expect(body).toMatchObject({
       channel_type: 'channel_private',
       group_id: 'g1',
       read_visibility: 'public',
-      write_visibility: 'private',
     });
+    expect(body).not.toHaveProperty('write_visibility');
   });
 
   it('binds an existing channel by id and leaves its type and access to the server', async () => {
@@ -844,6 +846,49 @@ describe('room creation', () => {
     expect(body).not.toHaveProperty('channel_type');
     expect(body).not.toHaveProperty('read_visibility');
     expect(body).not.toHaveProperty('group_id');
+  });
+
+  it("sends a new channel's visibility, and a private room's write visibility, for an older server", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_private',
+        agent_count: 0,
+        bridge_display_name: 'Slack',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+    const create = (channel: NewRoomChannel, access: RoomAccess | null) =>
+      createRoom(SERVER, {
+        name: 'design',
+        description: 'd',
+        bridgeId: 'b1',
+        agentIds: [],
+        channel,
+        groupId: null,
+        access,
+      });
+
+    // Nothing picked: what the dialog shows, rather than the server's default.
+    await create({ kind: 'new', private: true }, null);
+    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({
+      read_visibility: 'private',
+      write_visibility: 'private',
+    });
+
+    await create({ kind: 'new', private: false }, 'private');
+    expect(bodyOf(fetchMock.mock.calls[1])).toMatchObject({
+      read_visibility: 'private',
+      write_visibility: 'private',
+    });
+
+    await create({ kind: 'new', private: true }, 'public');
+    const body = bodyOf(fetchMock.mock.calls[2]);
+    expect(body).toMatchObject({ read_visibility: 'public' });
+    expect(body).not.toHaveProperty('write_visibility');
   });
 
   it('sends blank instructions as null rather than an empty string', async () => {

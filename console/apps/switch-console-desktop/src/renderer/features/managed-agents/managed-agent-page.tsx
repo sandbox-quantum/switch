@@ -411,7 +411,7 @@ function ManagedAgentPageContent({
                 <SettingRow
                   title="Runs in its own process"
                   info={null}
-                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
+                  description="Switch Cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
                   control={null}
                 />
               ) : (

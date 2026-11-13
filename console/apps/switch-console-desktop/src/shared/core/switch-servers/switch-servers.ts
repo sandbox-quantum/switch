@@ -389,6 +389,13 @@ export type RemoteRoomSummary = {
   serverPermissions?: {
     canWrite: boolean;
     canChangeMembers: boolean;
+    /** Bringing agents in: being in the room, or a workspace admin. */
+    canInviteAgents: boolean;
+    /** Adding people and attaching resources: being in the room, or a workspace admin. */
+    canAddPeople: boolean;
+    canAttach: boolean;
+    /** Taking agents out: the room's owner or a workspace admin. */
+    canRemoveMembers: boolean;
     canManage: boolean;
     canUnlink: boolean;
   };
@@ -427,8 +434,9 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   channelOnDelete?: ChannelRetirement | null;
   /** The name of the platform channel the room is linked to, as Switch last saw it; null when it has not. */
   linkedChannelName: string | null;
-  /** Who may read the room and who may write to it (see `roomAccessOf`). */
+  /** Who may see the room (see `roomAccessOf`). */
   readVisibility: RoomVisibility;
+  /** Grants nothing on a server with room permission tiers, which stores it private. */
   writeVisibility: RoomVisibility;
   /** The group the room is filed under, or null for a standalone room. */
   groupId: string | null;
@@ -487,30 +495,21 @@ export type SetRoomAutoRouteParams = {
 export type RoomVisibility = 'public' | 'private';
 
 /**
- * A room's access, as the two visibility settings it is made of combine. The
- * gateway offers the same three: anyone may post, anyone may read but only the
- * owner posts, or the room is the owner's alone. A private room that is
- * publicly writable is refused by the server, so it has no name here.
+ * A room's access: who may see it. Changing a room is its owner's and the
+ * admins' either way, so its write visibility is not read here, and a room
+ * once "read & write" or "read only" is public like the rest.
  */
-export type RoomAccess = 'public' | 'read_only' | 'private';
+export type RoomAccess = 'public' | 'private';
 
-export function roomAccessOf(read: RoomVisibility, write: RoomVisibility): RoomAccess {
-  if (read === 'private') return 'private';
-  return write === 'public' ? 'public' : 'read_only';
+export function roomAccessOf(read: RoomVisibility): RoomAccess {
+  return read === 'private' ? 'private' : 'public';
 }
 
-export function visibilityForAccess(access: RoomAccess): {
-  readVisibility: RoomVisibility;
-  writeVisibility: RoomVisibility;
-} {
-  switch (access) {
-    case 'public':
-      return { readVisibility: 'public', writeVisibility: 'public' };
-    case 'read_only':
-      return { readVisibility: 'public', writeVisibility: 'private' };
-    case 'private':
-      return { readVisibility: 'private', writeVisibility: 'private' };
-  }
+/** What a new channel of this kind makes a room when nobody picks: the server
+ * gives a room its channel's visibility. */
+export function roomAccessForChannel(channel: NewRoomChannel): RoomAccess | null {
+  if (channel.kind === 'existing') return null; // the platform says, through the server
+  return channel.private ? 'private' : 'public';
 }
 
 /** What deleting a room does to its platform channel when asked to retire it
@@ -569,9 +568,8 @@ export type UpdateRoomParams = {
   name?: string;
   description?: string;
   instructions?: string;
-  /** Changing either is for the room's owner or an admin; the server refuses anyone else. */
+  /** Changing it is for the room's owner or an admin; the server refuses anyone else. */
   readVisibility?: RoomVisibility;
-  writeVisibility?: RoomVisibility;
 };
 
 /** A role's own fields, as a room defines it. The name is fixed once made. */
@@ -1478,7 +1476,7 @@ export type CreateRoomParams = {
   channel: NewRoomChannel | null;
   /** The group to file the room under, or null for none. */
   groupId: string | null;
-  /** Who may see and change the room, or null for the server's default. */
+  /** Who may see the room, or null to take it from the channel. */
   access: RoomAccess | null;
 };
 

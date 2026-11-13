@@ -126,7 +126,7 @@ import {
   type RoomResourceKind,
   type NewRoomChannel,
   type RoomAccess,
-  visibilityForAccess,
+  roomAccessForChannel,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -3580,6 +3580,10 @@ type RoomSummaryJson = {
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
   can_change_members?: boolean;
+  can_invite_agents?: boolean;
+  can_add_people?: boolean;
+  can_attach?: boolean;
+  can_remove_members?: boolean;
   can_manage?: boolean;
   can_unlink?: boolean;
   group_id?: string | null;
@@ -3618,6 +3622,12 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
             canWrite: r.can_write,
             // Who is in a room took write access until the server said otherwise.
             canChangeMembers: r.can_change_members ?? r.can_write,
+            // Bringing agents in took the same as any member change until the server said otherwise.
+            canInviteAgents: r.can_invite_agents ?? r.can_change_members ?? r.can_write,
+            // Each of these was one write or members flag on an older server.
+            canAddPeople: r.can_add_people ?? r.can_change_members ?? r.can_write,
+            canAttach: r.can_attach ?? r.can_write,
+            canRemoveMembers: r.can_remove_members ?? r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,
@@ -3746,6 +3756,21 @@ export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): P
 }
 
 /**
+ * A room's visibility as a server takes it. A private room also says its
+ * write visibility is private: a server with room permission tiers ignores
+ * it, and an older one refuses private-read with public-write (the pair a
+ * once "read & write" room would otherwise be left with) and would store a
+ * new private room writable by everyone.
+ */
+function roomVisibilityBody(access: RoomVisibility): {
+  read_visibility: RoomVisibility;
+  write_visibility?: RoomVisibility;
+} {
+  return access === 'private'
+    ? { read_visibility: 'private', write_visibility: 'private' }
+    : { read_visibility: 'public' };
+}
+/**
  * Change a room's own settings (`PATCH /rooms/{id}`). Requires write access to
  * the room; the gateway returns the room as it now stands, so the caller reads
  * back what was actually stored rather than assuming its own input landed.
@@ -3761,17 +3786,15 @@ export async function updateRoom(
     description?: string;
     instructions?: string;
     readVisibility?: RoomVisibility;
-    writeVisibility?: RoomVisibility;
   }
 ): Promise<RemoteRoomDetail> {
-  const { readVisibility, writeVisibility, ...fields } = changes;
+  const { readVisibility, ...fields } = changes;
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
     method: 'PATCH',
     body: {
       ...fields,
-      ...(readVisibility !== undefined ? { read_visibility: readVisibility } : {}),
-      ...(writeVisibility !== undefined ? { write_visibility: writeVisibility } : {}),
+      ...(readVisibility !== undefined ? roomVisibilityBody(readVisibility) : {}),
     },
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
@@ -3921,6 +3944,30 @@ export async function addRoomAgents(
     method: 'POST',
     body: { agent_ids: agentIds },
   });
+}
+
+/**
+ * The ids of the agents the signed-in person may bring in
+ * (`GET /rooms/agent-candidates`): into `roomId`, less those already in it,
+ * or into a new room when it is null. The server's invite rule decides, so a
+ * picker built from it never offers an agent the invite would refuse.
+ *
+ * Null from a server from before the route (it answers 404), where every
+ * agent is offered and the invite itself says no.
+ */
+export async function fetchRoomAgentCandidates(
+  server: SwitchServer,
+  roomId: string | null
+): Promise<string[] | null> {
+  const query = roomId === null ? '' : `?room_id=${encodeURIComponent(roomId)}`;
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, `/rooms/agent-candidates${query}`, { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return ((await res.json()) as { agent_ids: string[] }).agent_ids;
 }
 
 /**
@@ -4119,13 +4166,15 @@ export async function createRoom(
     /** Null for a new public channel. */
     channel: NewRoomChannel | null;
     groupId: string | null;
-    /** The server's default (open to the workspace) when absent. */
-    /** Null for the server's default. */
+    /** Null takes it from the channel, as the server decides. */
     access: RoomAccess | null;
   }
 ): Promise<RemoteRoomSummary> {
   const channel = params.channel ?? { kind: 'new', private: false };
-  const visibility = params.access ? visibilityForAccess(params.access) : null;
+  // What the dialog shows is what is asked for: a new channel's visibility is
+  // sent rather than left to the server, which an older one would not apply.
+  // An existing channel's is the platform's, which only the server can read.
+  const access = params.access ?? roomAccessForChannel(channel);
   const res = await gatewayFetch(server, '/rooms', {
     authenticated: true,
     method: 'POST',
@@ -4140,12 +4189,7 @@ export async function createRoom(
         ? { external_channel_id: channel.externalChannelId }
         : { channel_type: channel.private ? 'channel_private' : 'channel_public' }),
       ...(params.groupId ? { group_id: params.groupId } : {}),
-      ...(visibility
-        ? {
-            read_visibility: visibility.readVisibility,
-            write_visibility: visibility.writeVisibility,
-          }
-        : {}),
+      ...(access ? roomVisibilityBody(access) : {}),
       agent_ids: params.agentIds,
       ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },

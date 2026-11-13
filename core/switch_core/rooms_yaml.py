@@ -460,8 +460,11 @@ class RoomSpec(BaseModel):
     # Collaboration bridge display name; omit for an internal-only room.
     bridge: str | None = None
     channel_type: Literal["channel_public", "channel_private"] = "channel_public"
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Omitted, the room follows its channel (`room_policy.visibility_for_channel`).
+    read_visibility: str | None = None
+    # Accepted from older templates and ignored: a room has no write
+    # visibility of its own.
+    write_visibility: str | None = None
     agents: list[str] = []
     users: list[str] = []
     roles: list[RoleSpec] = []
@@ -1169,7 +1172,6 @@ class RoomYamlService:
             acting_user_id=user_id,
             acting_is_admin=is_admin,
             read_visibility=spec.read_visibility,
-            write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
             package_ids=attached_package_ids or None,
@@ -1691,7 +1693,6 @@ class RoomYamlService:
                 data["bridge"] = bridge_display_name
             data["channel_type"] = room.channel_type
             data["read_visibility"] = room.read_visibility
-            data["write_visibility"] = room.write_visibility
 
             if agents:
                 agent_ids = await self._room_store.get_agent_ids(session, room.id)
