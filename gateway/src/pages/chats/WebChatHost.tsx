@@ -10,16 +10,24 @@ import {
 import { agentInitials, resolveAgentAvatarSrc } from "@switch-console/chat-ui/model/agent-avatar";
 import { configureFailures } from "@switch-console/chat-ui/model/failures";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, createContext, useContext, useEffect, useMemo, useState } from "react";
 import discordIcon from "../../assets/bridges/discord.svg";
 import slackIcon from "../../assets/bridges/slack.svg";
 import telegramIcon from "../../assets/bridges/telegram.svg";
 import { useAuth } from "../../data/AuthContext";
+import { fetchAvatarSettings } from "../../data/api";
 import { GROUP_CHATS } from "../../data/featureFlags";
 import { webChatsClient, webFailures } from "./webChatClient";
-import { createWebChats } from "./webChats";
+import { type WebChats, createWebChats } from "./webChats";
 
 configureFailures(webFailures);
+
+const WebChatsContext = createContext<WebChats | null>(null);
+
+/** The dashboard's chats, for the pages that start direct chats; null outside the host. */
+export function useWebChats(): WebChats | null {
+  return useContext(WebChatsContext);
+}
 
 const BRIDGE_ICONS: Record<string, string> = {
   discord: discordIcon,
@@ -35,13 +43,23 @@ const BRIDGE_LABELS: Record<string, string> = {
   telegram: "Telegram",
 };
 
+/** Whether the server lets the dashboard draw generated avatars; null until it has said. */
+function useThirdPartyAvatars(): boolean | null {
+  const settings = useQuery({
+    queryKey: ["avatar-settings"],
+    queryFn: fetchAvatarSettings,
+    staleTime: Infinity,
+  });
+  return settings.data?.third_party_avatars_enabled ?? null;
+}
+
 /**
- * An agent's picture, or its initials. Only an icon its owner chose on a
- * host of their own is loaded: a generated avatar would send the agent's name
- * to a third party, which the dashboard does not do.
+ * An agent's picture, or its initials. A generated avatar, drawn from the
+ * agent's name by an outside service, is loaded only where the server allows
+ * it, as Console and the messaging apps do; until the server says, initials.
  */
 function AgentAvatar({ name, iconUrl, size }: AgentAvatarProps) {
-  const src = resolveAgentAvatarSrc(iconUrl, name, false);
+  const src = resolveAgentAvatarSrc(iconUrl, name, useThirdPartyAvatars());
   const [failed, setFailed] = useState<string | null>(null);
   const shape = "inline-flex shrink-0 items-center justify-center rounded-full";
   if (src === null || failed === src)
@@ -140,7 +158,7 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
       web && {
         chats: web.chats,
         activities: web.activities,
-        unsavedChat: () => undefined,
+        unsavedChat: (roomId) => web.directChats.unsavedChat(roomId),
         sent: () => {},
         draftOwner: () => ({ userId, workspaceId: tenantId }),
         commands: (_serverId, roomId) => webChatsClient.listChatCommands(roomId),
@@ -164,10 +182,12 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
     [web, userId, tenantId, groupChats],
   );
 
-  if (!host) return <>{children}</>;
+  if (!host || !web) return <>{children}</>;
   return (
     <QueryClientProvider client={queryClient}>
-      <ChatHostProvider host={host}>{children}</ChatHostProvider>
+      <WebChatsContext.Provider value={web}>
+        <ChatHostProvider host={host}>{children}</ChatHostProvider>
+      </WebChatsContext.Provider>
       <Snackbar
         open={toast !== null}
         autoHideDuration={6000}

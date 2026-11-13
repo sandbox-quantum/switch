@@ -1,9 +1,9 @@
 import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
-import { describe, expect, it } from 'vitest';
 import {
   agentConversations,
   byLatestDirectChat,
-} from '@renderer/features/chats/agent-conversations';
+} from '@switch-console/chat-ui/model/agent-conversations';
+import { describe, expect, it } from 'vitest';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 
 const agent = (id: string, name: string, displayName: string | null = null) => ({

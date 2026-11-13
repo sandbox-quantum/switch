@@ -1,312 +1,398 @@
-import AddOutlined from "@mui/icons-material/AddOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
+import { Button, Stack, Typography } from "@mui/material";
 import {
-  Alert,
-  Badge,
-  Box,
-  Button,
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  List,
-  ListItemButton,
-  ListItemText,
-  Stack,
-  Typography,
-} from "@mui/material";
+  AgentProfileHeader,
+  type AgentLine,
+  ConversationNote,
+  ConversationSection,
+} from "@switch-console/chat-ui/components/agent-page";
+import { ArchivedFold } from "@switch-console/chat-ui/components/archived-fold";
 import { ChatPanel } from "@switch-console/chat-ui/components/chat-panel";
-import { type ChatSummary, chatAgentLabel } from "@switch-console/chat-ui/contracts/chats";
-import { useChatHost, useOptionalChatHost } from "@switch-console/chat-ui/host";
+import { ChatRow, RoomRow, UnsavedChatRow } from "@switch-console/chat-ui/components/chat-row";
+import type { ChatSummary } from "@switch-console/chat-ui/contracts/chats";
+import { AgentAvatar, useChatHost, useOptionalChatHost } from "@switch-console/chat-ui/host";
+import {
+  agentConversations,
+  byLatestDirectChat,
+  isConsoleDirectChatSummary,
+} from "@switch-console/chat-ui/model/agent-conversations";
 import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
+import { SidebarMenuRow } from "@switch-console/chat-ui/primitives/sidebar";
+import type { ChatsStore } from "@switch-console/chat-ui/stores/chats-store";
+import { useQuery } from "@tanstack/react-query";
+import { Laptop, Settings, UserRound } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import { useEffect, useState } from "react";
-import { Link as RouterLink, useNavigate, useParams } from "react-router";
-import { type AgentSummary, fetchAgents, fetchRoom } from "../../data/api";
+import { useEffect, useRef } from "react";
+import {
+  Link as RouterLink,
+  Navigate,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router";
+import { type AgentListEntry, fetchAgent, fetchRoom, loadAgents } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { ChatRequestError, webChatsClient, webFailures } from "./webChatClient";
+import { useWebChats } from "./WebChatHost";
 import { WEB_SERVER_ID } from "./webServer";
 
-function chatTitle(chat: ChatSummary): string {
-  if (chat.channelType === "direct" && chat.agents.length === 1) return chatAgentLabel(chat.agents[0]!);
-  return chat.name;
+const serverId = WEB_SERVER_ID;
+
+function agentLabel(agent: Pick<AgentListEntry, "name" | "display_name">): string {
+  return agent.display_name ?? agent.name;
 }
 
-function byActivity(a: ChatSummary, b: ChatSummary): number {
-  return (b.lastMessage?.sentAt ?? "").localeCompare(a.lastMessage?.sentAt ?? "");
+const agentPath = (agentId: string, query = "") =>
+  `/chats/agents/${encodeURIComponent(agentId)}${query}`;
+
+/**
+ * The agents the Chats page lists, as Console's sidebar does: the person's
+ * own and any they have a chat with, by their newest direct chat.
+ */
+function listedAgents(agents: AgentListEntry[], chats: ChatsStore, userId: string | null) {
+  const inChats = new Set(
+    [...chats.chats.values()].flatMap((chat) => chat.agents.map((each) => each.id)),
+  );
+  return byLatestDirectChat(
+    agents
+      .filter((agent) => agent.owner_id === userId || inChats.has(agent.id))
+      .map((agent) => ({ ...agent, agentId: agent.id })),
+    chats.userId === null ? null : chats.chats.values(),
+  );
 }
 
-const ChatList = observer(function ChatList({
+const AgentList = observer(function AgentList({
+  agents,
   selected,
-  onOpen,
 }: {
+  agents: AgentListEntry[];
   selected: string | null;
-  onOpen: (roomId: string) => void;
 }) {
   const { chats } = useChatHost();
-  const listed = [...chats.chats.values()].sort(byActivity);
+  const navigate = useNavigate();
+  const listed = listedAgents(agents, chats, useAuth().user?.id ?? null);
+  const unread = (agentId: string) =>
+    chats.chatsOfAgent(agentId).reduce((sum, chat) => sum + chats.unread(chat.roomId), 0);
   return (
-    <Stack sx={{ minHeight: 0, flex: 1, overflowY: "auto" }}>
-      {chats.listError && (
-        <Alert severity="error" sx={{ m: 1 }}>
-          {chats.listError}
-        </Alert>
+    <div className="flex flex-col gap-[2px]" aria-label="Agents">
+      {listed.length === 0 && (
+        <p className="px-[9px] py-2 text-xs text-foreground-muted">No agents yet.</p>
       )}
-      {chats.streamState === "offline" && chats.streamDetail && (
-        <Alert severity="warning" sx={{ m: 1 }}>
-          Live updates are reconnecting. {chats.streamDetail}
-        </Alert>
-      )}
-      {listed.length === 0 && !chats.listError && (
-        <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
-          No chats yet. Start one with an agent.
-        </Typography>
-      )}
-      <List dense disablePadding>
-        {listed.map((chat) => (
-          <ListItemButton
-            key={chat.roomId}
-            selected={chat.roomId === selected}
-            onClick={() => onOpen(chat.roomId)}
-            sx={{ borderRadius: "10px", mx: 1, my: 0.25 }}
+      {listed.map((agent) => {
+        const count = unread(agent.id);
+        return (
+          <SidebarMenuRow
+            key={agent.id}
+            isActive={agent.id === selected}
+            title={agentLabel(agent)}
+            onClick={() => navigate(agentPath(agent.id))}
+            className="h-[34px] py-0 text-[13.5px]"
           >
-            <ListItemText
-              primary={chatTitle(chat)}
-              secondary={
-                chat.lastMessage
-                  ? `${chat.lastMessage.senderName}: ${chat.lastMessage.preview}`
-                  : "No messages yet"
-              }
-              slotProps={{
-                primary: { noWrap: true, fontWeight: chats.unread(chat.roomId) > 0 ? 600 : 500 },
-                secondary: { noWrap: true },
-              }}
+            <AgentAvatar
+              name={agent.name}
+              iconUrl={agent.icon_url ?? null}
+              serverId={serverId}
+              size={20}
             />
-            <Badge badgeContent={chats.unread(chat.roomId)} color="primary" sx={{ ml: 1.5 }} />
-          </ListItemButton>
-        ))}
-      </List>
+            <span className="min-w-0 flex-1 truncate">{agentLabel(agent)}</span>
+            {count > 0 && (
+              <span
+                aria-label={`${count} unread`}
+                className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary-button-background px-1 text-[10px] leading-none font-medium text-primary-button-foreground tabular-nums"
+              >
+                {count > 99 ? "99+" : count}
+              </span>
+            )}
+          </SidebarMenuRow>
+        );
+      })}
+    </div>
+  );
+});
+
+/** Where an agent runs, or whose it is when it runs on no device Switch knows of. */
+function agentLine(agent: AgentListEntry, userId: string | null): AgentLine {
+  const status = agent.status === "offline" ? "Offline" : null;
+  if (agent.device)
+    return {
+      icon: Laptop,
+      text: agent.device.name,
+      status,
+      title: `Runs on ${agent.device.owner_name}'s ${agent.device.name}`,
+    };
+  const own = agent.owner_id === userId;
+  return {
+    icon: UserRound,
+    text: own ? "Your agent" : (agent.owner_name ?? "Shared agent"),
+    status,
+    title: own ? "You own this agent." : `Owned by ${agent.owner_name ?? "someone else"}`,
+  };
+}
+
+/** The rooms an agent is in, as its page on the server lists them. */
+function useAgentRooms(agentId: string) {
+  return useQuery({
+    queryKey: ["chat-agent-rooms", agentId],
+    queryFn: async () => {
+      const detail = await fetchAgent(agentId);
+      if (detail === null) throw new Error("The agent's rooms could not be read.");
+      return detail.rooms.map((room) => ({
+        roomId: room.room_id,
+        roomName: room.room_name,
+        archived: room.archived,
+      }));
+    },
+  });
+}
+
+/** A room that is not one of the person's chats: named, and pointed at its own page. */
+function NotYourChat({ roomId }: { roomId: string }) {
+  const room = useQuery({ queryKey: ["chat-room", roomId], queryFn: () => fetchRoom(roomId) });
+  return (
+    <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1.5, p: 4 }}>
+      {room.data?.name && <Typography variant="h6">{room.data.name}</Typography>}
+      <Typography sx={{ fontWeight: 600 }}>This room isn't one of your chats</Typography>
+      <Typography color="text.secondary" sx={{ maxWidth: 420, textAlign: "center" }}>
+        Being able to see a room doesn't let you read its conversation. Ask its owner to add you.
+      </Typography>
+      <Button component={RouterLink} to={`/rooms/${encodeURIComponent(roomId)}`}>
+        Open the room's page
+      </Button>
     </Stack>
+  );
+}
+
+/**
+ * An agent's page, as in Console: its profile, its direct chats and the
+ * rooms it is in, with the one open beside the column. The selection is in
+ * the address (`?chat=` or `?room=`); with none it is the newest direct chat,
+ * and an agent with none gets an unsaved one, made when its first message is.
+ */
+const AgentPage = observer(function AgentPage({ agent }: { agent: AgentListEntry }) {
+  const { chats } = useChatHost();
+  const web = useWebChats()!;
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const userId = useAuth().user?.id ?? null;
+  const agentId = agent.id;
+  const agentRooms = useAgentRooms(agentId);
+  const { direct, rooms } = agentConversations(
+    chats.chatsOfAgent(agentId),
+    agentRooms.data ?? [],
+    chats.removed,
+  );
+  const archived = chats.archivedOfAgent(agentId).filter(isConsoleDirectChatSummary);
+  const shownRoom = params.get("room");
+  const chosen = params.get("chat");
+  const unsavedId = web.directChats.waiting(serverId, agentId);
+  const roomId = shownRoom
+    ? null
+    : chosen && (web.directChats.unsavedChat(chosen) || chats.chat(chosen))
+      ? chosen
+      : (direct[0]?.roomId ?? null);
+  const listed = chats.userId !== null;
+  const open = (id: string) => setParams({ chat: id });
+  const newChat = () => open(web.directChats.start(serverId, agentId));
+
+  // A chat made from its unsaved id moves the address onto its room.
+  useEffect(
+    () =>
+      web.onChatMade(({ from, to }) =>
+        setParams((current) => (current.get("chat") === from ? { chat: to } : current), {
+          replace: true,
+        }),
+      ),
+    [web, setParams],
+  );
+  // An unsaved chat in the address after a reload opens again, with its draft.
+  useEffect(() => {
+    if (chosen && chosen === unsavedId && !web.directChats.unsavedChat(chosen))
+      setParams({ chat: web.directChats.start(serverId, agentId) }, { replace: true });
+  }, [chosen, unsavedId, web, agentId, setParams]);
+  // An agent with no direct chat gets one started, once per visit, as in Console.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!listed || direct.length > 0 || chosen || shownRoom || autoStarted.current) return;
+    autoStarted.current = true;
+    setParams({ chat: web.directChats.start(serverId, agentId) }, { replace: true });
+  }, [listed, direct.length, chosen, shownRoom, agentId, web, setParams]);
+
+  const chatRow = (chat: ChatSummary) => (
+    <ChatRow
+      key={chat.roomId}
+      serverId={serverId}
+      chat={chat}
+      isActive={chat.roomId === roomId}
+      onOpen={() => open(chat.roomId)}
+      actions={null}
+    />
+  );
+
+  return (
+    <div className="flex min-w-0 flex-1">
+      <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
+        <AgentProfileHeader
+          name={agentLabel(agent)}
+          iconUrl={agent.icon_url ?? null}
+          serverId={serverId}
+          line={agentLine(agent, userId)}
+          onOpenLine={null}
+        >
+          <div role="toolbar" aria-label="Agent" className="mt-5 flex items-center gap-2">
+            <button
+              type="button"
+              aria-label="Agent settings"
+              title="Agent settings"
+              onClick={() => navigate(`/agents/${encodeURIComponent(agentId)}`)}
+              className="flex size-9 items-center justify-center rounded-lg bg-background-2 text-foreground-muted transition-colors hover:bg-background-3 hover:text-foreground"
+            >
+              <Settings className="size-4" />
+            </button>
+          </div>
+        </AgentProfileHeader>
+        <ConversationSection
+          title="Direct chats"
+          addLabel="New chat"
+          onAdd={newChat}
+          addChoices={null}
+        >
+          {chats.listError && <ConversationNote>{chats.listError}</ConversationNote>}
+          {unsavedId && <UnsavedChatRow isActive={unsavedId === roomId} onOpen={newChat} />}
+          {direct.map(chatRow)}
+          {direct.length === 0 && !unsavedId && !chats.listError && (
+            <ConversationNote>No direct chats yet.</ConversationNote>
+          )}
+          <ArchivedFold count={archived.length} error={chats.archivedError}>
+            {archived.map(chatRow)}
+          </ArchivedFold>
+        </ConversationSection>
+        <ConversationSection
+          title="Rooms"
+          addLabel="New room"
+          onAdd={() => navigate("/rooms/new")}
+          addChoices={null}
+        >
+          {agentRooms.error && <ConversationNote>{agentRooms.error.message}</ConversationNote>}
+          {rooms.map((room) => {
+            const summary = chats.chat(room.roomId);
+            return (
+              <RoomRow
+                key={room.roomId}
+                roomId={room.roomId}
+                room={{
+                  name: summary?.name ?? room.roomName,
+                  bridgeType: summary?.bridgeType ?? null,
+                  bridgeDisplayName: null,
+                }}
+                isActive={room.roomId === shownRoom}
+                onOpen={() => setParams({ room: room.roomId })}
+              />
+            );
+          })}
+          {agentRooms.isPending && <ConversationNote>Loading…</ConversationNote>}
+          {agentRooms.data && rooms.length === 0 && (
+            <ConversationNote>Not in any room yet.</ConversationNote>
+          )}
+        </ConversationSection>
+      </div>
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {shownRoom ? (
+          chats.chat(shownRoom) ? (
+            <ChatPanel key={shownRoom} serverId={serverId} roomId={shownRoom} />
+          ) : listed ? (
+            <NotYourChat roomId={shownRoom} />
+          ) : null
+        ) : roomId ? (
+          <ChatPanel key={roomId} serverId={serverId} roomId={roomId} />
+        ) : listed ? (
+          <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1 }}>
+            <Typography color="text.secondary">No chat open</Typography>
+            <Button variant="contained" onClick={newChat}>
+              Start a chat
+            </Button>
+          </Stack>
+        ) : null}
+      </div>
+    </div>
   );
 });
 
 /**
- * The agents the person may start a chat with, as the server decides it; null
- * on a server without group chats, which does not say, and checks each agent
- * only as the chat is made.
+ * A chat opened by its room (from a room's page, or a link): shown on its
+ * agent's page, or said not to be one of the person's chats.
  */
-async function candidates(): Promise<Set<string> | null> {
-  try {
-    return new Set(await webChatsClient.listAgentCandidates(null));
-  } catch (caught) {
-    if (caught instanceof ChatRequestError && caught.apiCode === "GROUP_CHATS_OFF") return null;
-    throw caught;
-  }
-}
-
-/** Picks an agent to start a direct chat with: one the server lets the viewer chat with. */
-function NewChatDialog({
-  open,
-  onClose,
-  onCreated,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onCreated: (chat: ChatSummary) => void;
-}) {
-  const userId = useAuth().user?.id ?? null;
-  const [agents, setAgents] = useState<AgentSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setAgents(null);
-    setError(null);
-    let cancelled = false;
-    Promise.all([candidates(), fetchAgents()])
-      .then(([ids, all]) => {
-        if (cancelled) return;
-        if (all === null) throw new Error("The agents could not be listed.");
-        const listed = ids === null ? all : all.filter((agent) => ids.has(agent.id));
-        // The person's own agents first: those are the ones they can always chat with.
-        const own = (agent: AgentSummary) => (agent.owner_id === userId ? 0 : 1);
-        setAgents([...listed].sort((a, b) => own(a) - own(b)));
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled) setError(webFailures.describe(caught, "The agents could not be listed.").headline);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, userId]);
-
-  const start = async (agent: AgentSummary) => {
-    setBusy(agent.id);
-    setError(null);
-    try {
-      const chat = await webChatsClient.createChat({
-        agentIds: [agent.id],
-        name: null,
-        requestId: crypto.randomUUID(),
-        greeting: null,
-      });
-      onCreated(chat);
-    } catch (caught) {
-      setError(webFailures.describe(caught, "The chat could not be started.").headline);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle>Chat with an agent</DialogTitle>
-      <DialogContent>
-        {error && (
-          <Alert severity="error" sx={{ mb: 1 }}>
-            {error}
-          </Alert>
-        )}
-        {agents === null && !error && (
-          <Typography variant="body2" color="text.secondary">
-            Loading agents…
-          </Typography>
-        )}
-        {agents?.length === 0 && (
-          <Typography variant="body2" color="text.secondary">
-            There are no agents you can chat with yet.
-          </Typography>
-        )}
-        <List dense>
-          {agents?.map((agent) => (
-            <ListItemButton
-              key={agent.id}
-              disabled={busy !== null}
-              onClick={() => void start(agent)}
-              sx={{ borderRadius: "10px" }}
-            >
-              <ListItemText
-                primary={agent.display_name ?? agent.name}
-                secondary={busy === agent.id ? "Starting…" : agent.description || agent.name}
-                slotProps={{ secondary: { noWrap: true } }}
-              />
-            </ListItemButton>
-          ))}
-        </List>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/** A room's name when it is not one of the person's chats, so its page still says which room it is. */
-function useRoomName(roomId: string, known: boolean): string | null {
-  const [name, setName] = useState<string | null>(null);
-  useEffect(() => {
-    setName(null);
-    if (known) return;
-    let cancelled = false;
-    void fetchRoom(roomId).then((room) => {
-      if (!cancelled) setName(room?.name ?? null);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [roomId, known]);
-  return name;
-}
-
-const ChatPane = observer(function ChatPane({ roomId }: { roomId: string }) {
+const ChatByRoom = observer(function ChatByRoom({ roomId }: { roomId: string }) {
   const { chats } = useChatHost();
   const chat = chats.chat(roomId);
-  const roomName = useRoomName(roomId, chat !== undefined);
-  return (
-    <Stack sx={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-      <Box sx={{ px: 3, py: 1.5, borderBottom: "1px solid var(--sw-border)" }}>
-        <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600 }}>
-          {chat ? chatTitle(chat) : (roomName ?? "Chat")}
+  if (chat) {
+    const agent = chat.agents[0];
+    if (!agent) return <ChatPanel key={roomId} serverId={serverId} roomId={roomId} />;
+    const key = isConsoleDirectChatSummary(chat) ? "chat" : "room";
+    return <Navigate replace to={agentPath(agent.id, `?${key}=${encodeURIComponent(roomId)}`)} />;
+  }
+  if (chats.userId === null && !chats.listError)
+    return (
+      <Typography color="text.secondary" sx={{ m: "auto" }}>
+        Loading the chat…
+      </Typography>
+    );
+  return <NotYourChat roomId={roomId} />;
+});
+
+const Chats = observer(function Chats() {
+  const { agentId, roomId } = useParams<{ agentId?: string; roomId?: string }>();
+  const agents = useQuery({ queryKey: ["chat-agents"], queryFn: loadAgents });
+  const { chats } = useChatHost();
+  const userId = useAuth().user?.id ?? null;
+  const agent = agents.data?.find((each) => each.id === agentId) ?? null;
+
+  let main = null;
+  if (roomId) main = <ChatByRoom roomId={roomId} />;
+  else if (agent) main = <AgentPage key={agent.id} agent={agent} />;
+  else if (agents.error)
+    main = (
+      <Typography color="error" sx={{ m: "auto" }}>
+        The agents could not be listed.
+      </Typography>
+    );
+  else if (agents.data && agentId)
+    main = (
+      <Typography color="text.secondary" sx={{ m: "auto" }}>
+        There's no agent here, or you can't see it.
+      </Typography>
+    );
+  else if (agents.data) {
+    const some = listedAgents(agents.data, chats, userId).length > 0;
+    main = (
+      <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1, p: 4 }}>
+        <ChatBubbleOutlineOutlined sx={{ fontSize: 40, opacity: 0.4 }} />
+        <Typography color="text.secondary">
+          {some ? "Pick an agent to chat with." : "No agents to chat with yet."}
         </Typography>
-        {chat && chat.channelType !== "direct" && (
-          <Typography variant="caption" color="text.secondary" noWrap component="p">
-            {chat.agents.map(chatAgentLabel).join(", ") || "No agents"}
-          </Typography>
+        {!some && (
+          <Button component={RouterLink} to="/agents">
+            Go to Agents
+          </Button>
         )}
-      </Box>
-      {chat ? (
-        <Box className={SHARED_UI_CLASS} sx={{ flex: 1, minHeight: 0 }}>
-          <ChatPanel key={roomId} serverId={WEB_SERVER_ID} roomId={roomId} />
-        </Box>
-      ) : (
-        <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1.5, p: 4 }}>
-          {/* The list is read once the feed is up; until then a chat may still be on it. */}
-          {chats.userId === null && !chats.listError ? (
-            <Typography color="text.secondary">Loading the chat…</Typography>
-          ) : (
-            <>
-              <Typography sx={{ fontWeight: 600 }}>This room isn't one of your chats</Typography>
-              <Typography color="text.secondary" sx={{ maxWidth: 420, textAlign: "center" }}>
-                Being able to see a room doesn't let you read its conversation. Ask its owner to
-                add you.
-              </Typography>
-              <Button component={RouterLink} to={`/rooms/${encodeURIComponent(roomId)}`}>
-                Open the room's page
-              </Button>
-            </>
-          )}
-        </Stack>
-      )}
-    </Stack>
+      </Stack>
+    );
+  }
+
+  return (
+    <div className={`${SHARED_UI_CLASS} -m-8 flex min-h-0 flex-1 bg-background`}>
+      <div className="flex w-[240px] shrink-0 flex-col overflow-y-auto border-r border-border px-2 pt-4">
+        <p className="px-[9px] pb-1.5 text-xs font-medium text-foreground-muted">Agents</p>
+        {agents.data && <AgentList agents={agents.data} selected={agent?.id ?? null} />}
+      </div>
+      {main}
+    </div>
   );
 });
 
-function Chats() {
-  const { roomId } = useParams<{ roomId?: string }>();
-  const navigate = useNavigate();
-  const { chats } = useChatHost();
-  const [picking, setPicking] = useState(false);
-  const open = (id: string) => navigate(`/chats/${encodeURIComponent(id)}`);
-
-  return (
-    <Box sx={{ m: -4, flex: 1, minHeight: 0, display: "flex" }}>
-      <Stack
-        sx={{
-          width: 300,
-          flexShrink: 0,
-          minHeight: 0,
-          borderRight: "1px solid var(--sw-border)",
-        }}
-      >
-        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2 }}>
-          <Typography variant="h6">Chats</Typography>
-          <Button size="small" startIcon={<AddOutlined />} onClick={() => setPicking(true)}>
-            New chat
-          </Button>
-        </Stack>
-        <ChatList selected={roomId ?? null} onOpen={open} />
-      </Stack>
-      {roomId ? (
-        <ChatPane roomId={roomId} />
-      ) : (
-        <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1, p: 4 }}>
-          <ChatBubbleOutlineOutlined sx={{ fontSize: 40, opacity: 0.4 }} />
-          <Typography color="text.secondary">Pick a chat, or start one with an agent.</Typography>
-        </Stack>
-      )}
-      <NewChatDialog
-        open={picking}
-        onClose={() => setPicking(false)}
-        onCreated={(chat) => {
-          chats.add(WEB_SERVER_ID, chat);
-          setPicking(false);
-          open(chat.roomId);
-        }}
-      />
-    </Box>
-  );
-}
-
-/** The person's chats with agents, and the rooms they are in with agents, opened and answered here. */
+/** The person's agents and, for the one picked, its direct chats and rooms, as Console lays them out. */
 export default function ChatsPage() {
-  if (!useOptionalChatHost())
+  const host = useOptionalChatHost();
+  const web = useWebChats();
+  if (!host || !web)
     return (
       <Typography variant="body2" color="text.secondary">
         Loading your chats…

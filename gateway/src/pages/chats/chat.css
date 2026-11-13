@@ -33,7 +33,9 @@
   --color-foreground-muted: var(--sw-muted-foreground);
   --color-foreground-passive: var(--sw-foreground-tertiary);
   --color-foreground-tertiary: var(--sw-foreground-secondary);
-  --color-foreground-tertiary-muted: var(--sw-foreground-tertiary);
+  --color-foreground-tertiary-muted: var(--sw-foreground-secondary);
+  --color-background-tertiary-2: var(--sw-secondary);
+  --color-background-tertiary-3: var(--sw-accent);
   --color-muted: var(--sw-muted);
   --color-muted-foreground: var(--sw-muted-foreground);
   --color-primary: var(--sw-primary);
@@ -65,6 +67,9 @@
 /* The few raw variables the chat reads, beside its colour names. */
 .switch-ui {
   --fill-2: var(--sw-secondary);
+  --sel: color-mix(in oklch, var(--sw-foreground) 9%, transparent);
+  --sel-soft: color-mix(in oklch, var(--sw-foreground) 5%, transparent);
+  --fg-icon: var(--sw-muted-foreground);
 }
 
 /* Tailwind's reset, inside the chat only. */

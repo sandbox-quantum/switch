@@ -88,6 +88,8 @@ export interface AgentSummary {
   // The label people read ("Notes Helper"); null when none was chosen and the
   // name is shown instead.
   display_name: string | null;
+  // The agent's picture; null for none. Absent from servers that predate it.
+  icon_url?: string | null;
   description: string;
   connector_type: string;
   connection_model: string | null;
@@ -823,6 +825,11 @@ export async function fetchAgents(): Promise<AgentSummary[] | null> {
 
 /** The agents the Agents list shows, throwing rather than answering null so
  * a failure can say why. */
+/** Whether the server lets clients draw agents with icons from outside avatar services. */
+export async function fetchAvatarSettings(): Promise<{ third_party_avatars_enabled: boolean }> {
+  return jsonRequest<{ third_party_avatars_enabled: boolean }>("/agents/avatar-settings", "GET");
+}
+
 export async function loadAgents(): Promise<AgentListEntry[]> {
   return jsonRequest<AgentListEntry[]>("/agents", "GET");
 }

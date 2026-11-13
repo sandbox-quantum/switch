@@ -1,6 +1,7 @@
 import { ChatActivityStream } from "@switch-console/chat-ui/client/activity-stream";
 import { ChatStream, defaultBackoffMs } from "@switch-console/chat-ui/client/chat-stream";
 import { dropMedia } from "@switch-console/chat-ui/components/chat-attachments";
+import { directChatsFor } from "@switch-console/chat-ui/components/direct-chats";
 import { ACTIVITY_UNAVAILABLE_TEXT } from "@switch-console/chat-ui/contracts/activity";
 import type {
   ChatMessage,
@@ -10,6 +11,7 @@ import type {
 } from "@switch-console/chat-ui/contracts/chats";
 import { AgentActivities } from "@switch-console/chat-ui/stores/chat-activity-store";
 import { type ChatsEvents, ChatsStore } from "@switch-console/chat-ui/stores/chats-store";
+import type { DirectChatStarter } from "@switch-console/chat-ui/stores/direct-chat-starter";
 import { ChatRequestError, callGateway, warn, webChatsClient } from "./webChatClient";
 import { WEB_SERVER_ID } from "./webServer";
 
@@ -50,6 +52,10 @@ function bytesOf(base64: string): Uint8Array {
 export type WebChats = {
   chats: ChatsStore;
   activities: AgentActivities;
+  /** Direct chats with one agent, each made when its first message is sent. */
+  directChats: DirectChatStarter;
+  /** Called with an unsaved chat's id and its room's, once the room is made. */
+  onChatMade: (listener: (made: { from: string; to: string }) => void) => () => void;
   /** Opens the live feeds and reads the chats; `stop` closes them. */
   start: () => void;
   stop: () => void;
@@ -179,6 +185,16 @@ export function createWebChats(identity: { userId: string; tenantId: string }): 
     },
   });
 
+  const made = new Channel<{ from: string; to: string }>();
+  const directChats = directChatsFor({
+    chats,
+    create: ({ serverId: _server, ...input }) => webChatsClient.createChat(input),
+    scope: () => ({ serverId, userId: identity.userId, workspaceId: identity.tenantId }),
+    storage: localStorage,
+    newId: () => crypto.randomUUID(),
+    moved: (unsaved, chat) => made.emit({ from: unsaved.roomId, to: chat.roomId }),
+  });
+
   removed.on(({ roomId, reason }) => {
     if (reason !== "access") return;
     activities.drop(serverId, roomId);
@@ -188,6 +204,8 @@ export function createWebChats(identity: { userId: string; tenantId: string }): 
   return {
     chats,
     activities,
+    directChats,
+    onChatMade: (listener) => made.on(listener),
     start: () => void chats.connect(serverId),
     stop: () => {
       void chats.connect(null);

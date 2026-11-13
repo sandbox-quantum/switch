@@ -74,6 +74,7 @@ function planned(path: string, open: readonly Persona[]): MatrixPage {
 export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
   current: [
     built("/chats", EVERYONE),
+    built("/chats/agents/:agentId", EVERYONE),
     built("/chats/:roomId", EVERYONE),
     built("/ecosystem", EVERYONE),
     built("/rooms", EVERYONE),
@@ -105,6 +106,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
   v2: [
     built("/overview", EVERYONE),
     built("/chats", EVERYONE),
+    built("/chats/agents/:agentId", EVERYONE),
     built("/chats/:roomId", EVERYONE),
     built("/ecosystem", EVERYONE),
     built("/rooms", EVERYONE),

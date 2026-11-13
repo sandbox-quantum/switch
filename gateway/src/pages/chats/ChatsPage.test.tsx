@@ -1,41 +1,49 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { directChatsFor } from "@switch-console/chat-ui/components/direct-chats";
 import type { ChatSummary } from "@switch-console/chat-ui/contracts/chats";
 import { ChatsStore } from "@switch-console/chat-ui/stores/chats-store";
 import { withChatHost } from "@switch-console/chat-ui/testing";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentSummary } from "../../data/api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentListEntry } from "../../data/api";
 import ChatsPage from "./ChatsPage";
-import { ChatRequestError } from "./webChatClient";
+import type { WebChats } from "./webChats";
 import { WEB_SERVER_ID } from "./webServer";
 
 const api = vi.hoisted(() => ({
-  fetchAgents: vi.fn(),
+  loadAgents: vi.fn(),
+  fetchAgent: vi.fn(),
   fetchRoom: vi.fn(async () => null),
 }));
 vi.mock("../../data/api", () => api);
 vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ user: { id: "me" } }) }));
 
-const client = vi.hoisted(() => ({
-  listAgentCandidates: vi.fn(),
-  createChat: vi.fn(),
-}));
-vi.mock("./webChatClient", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./webChatClient")>()),
-  webChatsClient: client,
-}));
+const web = vi.hoisted(() => ({ current: null as WebChats | null }));
+vi.mock("./WebChatHost", () => ({ useWebChats: () => web.current }));
 
 // The chat itself is Console's, tested there; here it only has to be the one opened.
 vi.mock("@switch-console/chat-ui/components/chat-panel", () => ({
   ChatPanel: ({ roomId }: { roomId: string }) => <div data-testid="chat-panel">{roomId}</div>,
 }));
 
-afterEach(() => {
-  cleanup();
-  vi.clearAllMocks();
-});
+const create = vi.fn();
 
-function chat(roomId: string, overrides: Partial<ChatSummary> = {}): ChatSummary {
+function agent(id: string, name: string, owner: string): AgentListEntry {
+  return {
+    id,
+    name,
+    display_name: null,
+    icon_url: null,
+    description: "",
+    owner_id: owner,
+    owner_name: owner === "me" ? "Ada" : "Bob",
+    status: "online",
+    device: null,
+  } as unknown as AgentListEntry;
+}
+
+function chat(roomId: string, agentId: string, overrides: Partial<ChatSummary> = {}): ChatSummary {
   return {
     roomId,
     name: roomId,
@@ -44,9 +52,9 @@ function chat(roomId: string, overrides: Partial<ChatSummary> = {}): ChatSummary
     channelName: null,
     agents: [
       {
-        id: "a1",
-        name: "notes-helper",
-        displayName: "Notes Helper",
+        id: agentId,
+        name: agentId,
+        displayName: null,
         iconUrl: null,
         provider: null,
         alias: null,
@@ -64,9 +72,16 @@ function chat(roomId: string, overrides: Partial<ChatSummary> = {}): ChatSummary
   };
 }
 
+const sent = (seq: number, day: string) => ({
+  seq,
+  sentAt: `2026-01-${day}T00:00:00Z`,
+  preview: "hi",
+  senderName: "Ada",
+});
+
 function storeWith(chats: ChatSummary[]): ChatsStore {
   const store = new ChatsStore(
-    {} as ConstructorParameters<typeof ChatsStore>[0],
+    { timeline: () => ({}) } as unknown as ConstructorParameters<typeof ChatsStore>[0],
     {
       onMessage: () => () => {},
       onSummary: () => () => {},
@@ -76,105 +91,128 @@ function storeWith(chats: ChatSummary[]): ChatsStore {
     },
   );
   store.serverId = WEB_SERVER_ID;
+  store.userId = "me";
   for (const each of chats) store.add(WEB_SERVER_ID, each);
   return store;
 }
 
 function Where() {
-  return <span data-testid="where">{useLocation().pathname}</span>;
+  const location = useLocation();
+  return <span data-testid="where">{location.pathname + location.search}</span>;
 }
 
 function renderAt(path: string, store: ChatsStore) {
+  const directChats = directChatsFor({
+    chats: store,
+    create,
+    scope: () => ({ serverId: WEB_SERVER_ID, userId: "me", workspaceId: "t1" }),
+    storage: localStorage,
+    newId: () => "new-1",
+    moved: () => {},
+  });
+  web.current = {
+    chats: store,
+    directChats,
+    onChatMade: () => () => {},
+  } as unknown as WebChats;
   return render(
     withChatHost(
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/chats" element={<ChatsPage />} />
-          <Route path="/chats/:roomId" element={<ChatsPage />} />
-        </Routes>
-        <Where />
-      </MemoryRouter>,
-      { chats: store },
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/chats" element={<ChatsPage />} />
+            <Route path="/chats/agents/:agentId" element={<ChatsPage />} />
+            <Route path="/chats/:roomId" element={<ChatsPage />} />
+          </Routes>
+          <Where />
+        </MemoryRouter>
+      </QueryClientProvider>,
+      { chats: store, unsavedChat: (roomId) => directChats.unsavedChat(roomId) },
     ),
   );
 }
 
+beforeEach(() => {
+  localStorage.clear();
+  api.loadAgents.mockResolvedValue([
+    agent("a1", "notes-helper", "me"),
+    agent("a2", "researcher", "me"),
+    agent("a3", "someone-elses", "u2"),
+    agent("a4", "shared-helper", "u2"),
+  ]);
+  api.fetchAgent.mockResolvedValue({
+    rooms: [
+      { room_id: "ops", room_name: "Ops room", archived: false, status: "live", room_role: null },
+    ],
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
 describe("ChatsPage", () => {
-  it("lists the person's chats, newest first, a direct chat under its agent's name", () => {
+  it("lists the person's agents and those they chat with, newest direct chat first", async () => {
     renderAt(
       "/chats",
       storeWith([
-        chat("older", { lastMessage: { seq: 1, sentAt: "2026-01-01T00:00:00Z", preview: "hi", senderName: "Ada" } }),
-        chat("group", {
-          name: "Ship review",
-          channelType: "group",
-          unreadCount: 2,
-          lastMessage: { seq: 3, sentAt: "2026-01-02T00:00:00Z", preview: "done", senderName: "Notes Helper" },
-        }),
+        chat("c-old", "a1", { lastMessage: sent(1, "01") }),
+        chat("c-new", "a4", { lastMessage: sent(2, "02"), unreadCount: 3 }),
       ]),
     );
-    const rows = screen.getAllByRole("button").filter((each) => each.textContent?.includes(":"));
-    expect(rows.map((each) => each.textContent)).toEqual([
-      "Ship reviewNotes Helper: done2",
-      "Notes HelperAda: hi",
+    const list = await screen.findByLabelText("Agents");
+    await waitFor(() => expect(within(list).getAllByTitle(/./)).toHaveLength(3));
+    expect(within(list).getAllByTitle(/./).map((row) => row.getAttribute("title"))).toEqual([
+      "shared-helper",
+      "notes-helper",
+      "researcher",
     ]);
-    expect(screen.getByText("Pick a chat, or start one with an agent.")).toBeTruthy();
+    expect(within(list).getByLabelText("3 unread")).toBeTruthy();
+    expect(screen.getByText("Pick an agent to chat with.")).toBeTruthy();
   });
 
-  it("opens a chat from the list", () => {
-    renderAt("/chats", storeWith([chat("r1")]));
-    fireEvent.click(screen.getByText("Notes Helper"));
-    expect(screen.getByTestId("where").textContent).toBe("/chats/r1");
-    expect(screen.getByTestId("chat-panel").textContent).toBe("r1");
-  });
-
-  it("starts a chat with an agent the person may chat with, and opens it", async () => {
-    const agents = [
-      { id: "a1", name: "notes-helper", display_name: "Notes Helper", description: "Takes notes" },
-      { id: "a2", name: "someone-elses", display_name: null, description: "" },
-    ] as AgentSummary[];
-    api.fetchAgents.mockResolvedValue(agents);
-    client.listAgentCandidates.mockResolvedValue(["a1"]);
-    client.createChat.mockResolvedValue(chat("new-room"));
-    const store = storeWith([]);
-    renderAt("/chats", store);
-
-    fireEvent.click(screen.getByText("New chat"));
-    await waitFor(() => expect(screen.getByText("Takes notes")).toBeTruthy());
-    expect(screen.queryByText("someone-elses")).toBeNull();
-    fireEvent.click(screen.getByText("Takes notes"));
-
-    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/chats/new-room"));
-    expect(client.createChat).toHaveBeenCalledWith(
-      expect.objectContaining({ agentIds: ["a1"], name: null, greeting: null }),
+  it("shows an agent's direct chats and rooms, with its newest chat open", async () => {
+    renderAt(
+      "/chats/agents/a1",
+      storeWith([
+        chat("c1", "a1", { name: "Monday", lastMessage: sent(1, "01") }),
+        chat("c2", "a1", { name: "Tuesday", lastMessage: sent(2, "02") }),
+      ]),
     );
-    expect(store.chat("new-room")).toBeDefined();
+    await waitFor(() => expect(screen.getByText("Ops room")).toBeTruthy());
+    expect(screen.getByRole("heading", { name: "notes-helper" })).toBeTruthy();
+    expect(screen.getByText("Your agent")).toBeTruthy();
+    expect(screen.getByTestId("chat-panel").textContent).toBe("c2");
+
+    fireEvent.click(screen.getByLabelText("Open chat Monday"));
+    expect(screen.getByTestId("where").textContent).toBe("/chats/agents/a1?chat=c1");
+    expect(screen.getByTestId("chat-panel").textContent).toBe("c1");
   });
 
-  it("offers every agent, the person's own first, on a server that cannot say which they may use", async () => {
-    api.fetchAgents.mockResolvedValue([
-      { id: "a2", name: "someone-elses", display_name: null, description: "Theirs", owner_id: "u2" },
-      { id: "a1", name: "notes-helper", display_name: "Notes Helper", description: "Mine", owner_id: "me" },
-    ] as AgentSummary[]);
-    client.listAgentCandidates.mockRejectedValue(
-      new ChatRequestError("http", "Group chats are not turned on here.", 409, "GROUP_CHATS_OFF"),
-    );
-    renderAt("/chats", storeWith([]));
-
-    fireEvent.click(screen.getByText("New chat"));
-    await waitFor(() => expect(screen.getByText("Mine")).toBeTruthy());
-    const offered = screen.getAllByText(/^(Mine|Theirs)$/).map((each) => each.textContent);
-    expect(offered).toEqual(["Mine", "Theirs"]);
-    expect(screen.queryByText("Group chats are not turned on here.")).toBeNull();
-  });
-
-  it("says a room that is not one of the person's chats is not, rather than asking for its messages", async () => {
-    api.fetchRoom.mockResolvedValue({ name: "Ship review" } as never);
-    const store = storeWith([chat("r1")]);
-    store.userId = "me";
-    renderAt("/chats/elsewhere", store);
+  it("says a room the person is not in is not one of their chats", async () => {
+    renderAt("/chats/agents/a1", storeWith([chat("c1", "a1")]));
+    fireEvent.click(await screen.findByText("Ops room"));
     expect(screen.getByText("This room isn't one of your chats")).toBeTruthy();
-    expect(screen.queryByTestId("chat-panel")).toBeNull();
-    await waitFor(() => expect(screen.getByText("Ship review")).toBeTruthy());
+    expect(screen.getByTestId("where").textContent).toBe("/chats/agents/a1?room=ops");
+  });
+
+  it("starts an agent with no direct chat on an unsaved one, made only on its first message", async () => {
+    renderAt("/chats/agents/a2", storeWith([]));
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent).toBe(
+        "/chats/agents/a2?chat=unsaved-chat%3Anew-1",
+      ),
+    );
+    expect(screen.getByText("Draft")).toBeTruthy();
+    expect(screen.getByTestId("chat-panel").textContent).toBe("unsaved-chat:new-1");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("opens a chat linked by its room on its agent's page", async () => {
+    renderAt("/chats/c1", storeWith([chat("c1", "a1")]));
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent).toBe("/chats/agents/a1?chat=c1"),
+    );
   });
 });

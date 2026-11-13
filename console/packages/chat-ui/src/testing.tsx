@@ -10,7 +10,7 @@ import type { ChatsStore } from './stores/chats-store';
 export function stubChatHost(overrides: Partial<ChatHost> = {}): ChatHost {
   return {
     chats: { userId: 'me' } as ChatsStore,
-    activities: {} as AgentActivities,
+    activities: { peek: () => undefined, feedDown: new Map() } as unknown as AgentActivities,
     unsavedChat: () => undefined,
     sent: () => {},
     draftOwner: () => ({ userId: 'me', workspaceId: 'w' }),

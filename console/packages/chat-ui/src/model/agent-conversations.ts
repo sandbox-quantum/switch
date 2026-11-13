@@ -1,6 +1,18 @@
-import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
-import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
-import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
+import type { ChatSummary } from '../contracts/chats';
+
+/** A room an agent is in, as the server lists the agent's rooms. */
+export type AgentRoom = { roomId: string; roomName: string; archived: boolean };
+
+/**
+ * A person's 1-1 chat with an agent, made in Console or the dashboard, on no
+ * messaging app. A shortcut: a summary carries no count of people, so a 1-1
+ * chat that gained a second person still matches.
+ */
+export function isConsoleDirectChatSummary(
+  chat: Pick<ChatSummary, 'channelType' | 'bridgeType' | 'agents'>
+): boolean {
+  return chat.channelType === 'direct' && chat.bridgeType === null && chat.agents.length === 1;
+}
 
 /**
  * An agent's conversations, in two lists that never share a room: its 1-1
@@ -9,9 +21,9 @@ import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers
  */
 export function agentConversations(
   agentChats: readonly ChatSummary[],
-  agentRooms: readonly RemoteAgentRoom[],
+  agentRooms: readonly AgentRoom[],
   removed: ReadonlySet<string>
-): { direct: ChatSummary[]; rooms: Pick<RemoteAgentRoom, 'roomId' | 'roomName'>[] } {
+): { direct: ChatSummary[]; rooms: Pick<AgentRoom, 'roomId' | 'roomName'>[] } {
   const direct = agentChats.filter(isConsoleDirectChatSummary);
   const directIds = new Set(direct.map((chat) => chat.roomId));
   const listed = agentRooms.filter(
