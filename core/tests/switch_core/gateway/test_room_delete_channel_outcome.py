@@ -54,6 +54,7 @@ class _RoomService:
         ("telegram", "left"),
         ("teams", "kept"),
         ("google_chat", "left"),
+        ("sms", "kept"),
         ("rocketchat", "archived"),
         ("webex", "left"),
     ],

@@ -53,6 +53,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+#### Added
+- **Twilio SMS messaging platform adapter.** Senders on a configured allow-list
+  can interact with Switch agents by cellular SMS through an operator's Twilio
+  account. Includes GSM-7 and UCS-2 segment budgeting, allow-list filtering, and
+  webhook signature verification.
 - **Usage telemetry counts Switch Console chat.** Messages people post in a
   Switch Console chat were stored without being counted, so desktop chat was
   invisible to the message events and the period counts. Each post is now a
