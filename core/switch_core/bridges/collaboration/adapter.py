@@ -67,6 +67,7 @@ from switch_core.sessions.contract import (
     SnapshotRequest,
     TurnUpsert,
 )
+from switch_core.ui_spec import UISpec
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -291,6 +292,12 @@ class PrivateNoticeRefused(Exception):
     refuses for someone who never opened a chat with the bot, blocked it, or
     takes no direct messages. Expected on those platforms, so the caller logs
     it without a traceback and posts the notice in the channel instead."""
+
+
+class CardRejectedError(Exception):
+    """The platform refused a card, or it could not be drawn there, before
+    anything was posted: the caller posts the message's text instead. Any other
+    failure leaves it unknown whether the card landed."""
 
 
 class ChannelNotBindable(ValueError):
@@ -535,6 +542,21 @@ class PlatformAdapter(ABC):
     #: them is a notification they already had.
     notifies_only_by_mention: ClassVar[bool] = False
 
+    #: Whether a reply posted in a thread can also be shown in the channel the
+    #: thread hangs under.
+    #:
+    #: True where one message can be in both at once, the way Slack's
+    #: `reply_broadcast` is: the thread keeps the conversation, and the
+    #: channel still sees the question, without a second post to answer.
+    #:
+    #: False everywhere else, and a request card for a turn that was asked at
+    #: the channel root goes to the root itself there. A card filed in a
+    #: thread nobody opened is a question nobody sees, and the answer it waits
+    #: for can only come from that thread — so whoever replies in the channel,
+    #: where they were asked, leaves the agent waiting on a thread they never
+    #: knew about.
+    broadcasts_thread_replies: ClassVar[bool] = False
+
     #: The token that pages every member of a channel, for a room-wide mention.
     #:
     #: None where the platform has none a bot can send. A room-wide mention
@@ -613,6 +635,13 @@ class PlatformAdapter(ABC):
     #: person asking for the room, through the account they linked on this
     #: platform, and refuses before asking the platform when they have none.
     private_channel_needs_owner: ClassVar[bool] = False
+
+    #: Whether Switch puts the person a room is for into a new public channel
+    #: it makes for the room, through their confirmed linked account. False
+    #: where joining a public channel means more than the channel: on Teams a
+    #: standard channel's members are the whole team's, so adding someone
+    #: would add them to the team.
+    adds_creator_to_public_channel: ClassVar[bool] = True
 
     #: Whether this platform renders a link whose scheme is not http(s).
     #:
@@ -1140,6 +1169,49 @@ class PlatformAdapter(ABC):
         (Discord's `allowed_mentions`). Everywhere else the text alone does it.
         """
         ...
+
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """Post an agent's message that carries a card (`ui_spec`), drawn
+        natively where the platform can. `fallback_text` is what
+        `send_message` would have posted; a platform with no card rendering
+        posts just that, which is the default.
+
+        Raise `CardRejectedError` when the card was refused before anything
+        was posted; the caller then posts `fallback_text` alone. Any other
+        exception is handled as a send that may have landed, and is never
+        followed by the text.
+        """
+        return await self.send_message(
+            channel_id,
+            sender_name,
+            fallback_text,
+            thread_root_id=thread_root_id,
+            room_wide_mention=room_wide_mention,
+        )
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Show on the card that its button `label` was pressed and the press
+        delivered, so it is not pressed again. `author`, `spec` and `body` are
+        the card as its room message holds it, to redraw it from. Only a
+        platform that draws card buttons has anything to do."""
+        return None
 
     async def admin_message(
         self,

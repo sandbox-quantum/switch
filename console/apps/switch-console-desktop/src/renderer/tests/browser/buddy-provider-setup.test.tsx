@@ -86,7 +86,6 @@ async function render() {
       <ProviderSetup
         serverId="srv-1"
         workspaceId="ws-1"
-        entryPoint="switch_buddy"
         onCreated={state.onCreated}
         thisComputer={{
           state: { kind: 'ready', machine: { id: 'm-1', providers: state.providers } as never },
@@ -123,7 +122,6 @@ describe('ProviderSetup', () => {
       machineId: 'm-1',
       provider: 'claude',
       person: { name: 'Max Tam', email: null },
-      entryPoint: 'switch_buddy',
     });
     expect(state.onCreated).toHaveBeenCalledWith({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
   });

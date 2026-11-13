@@ -27,6 +27,7 @@ from switch_core.gateway import chats as chats_module
 from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.schemas import RoomUpdateRequest
 from switch_core.room_changes import RoomChanges, people_concerned
+from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.user_changes import ROOM
 from tests.switch_core.gateway.conftest import (
     _chat_service,
@@ -914,6 +915,8 @@ def _second_process(chats: _Harness) -> ChatService:
         listener=_FakeListener(),
         activity=_FakeActivityListener(),
         connections=AgentConnectionRegistry(),
+        message_observer=IgnoreParticipantMessages(),
+        telemetry=None,
     )
     return service
 

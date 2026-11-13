@@ -9,7 +9,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -30,11 +30,13 @@ from mattermostdriver.exceptions import (
 from pydantic import field_validator
 from websockets.asyncio.client import ClientConnection
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivitySnapshot,
     AgentIdentity,
     AgentIdentityConflict,
+    CardRejectedError,
     MessagePartlySent,
     PlatformAdapter,
     RefusalKind,
@@ -53,9 +55,11 @@ from switch_core.bridges.collaboration.ingress import (
 from switch_core.bridges.collaboration.mattermost.callback import (
     MAX_BUTTON_LABEL,
     ActivityPress,
+    CardPress,
     InterruptPress,
     activity_action,
     answer_actions,
+    card_action,
     interrupt_action,
     read_press,
 )
@@ -99,6 +103,23 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
 )
 from switch_core.outbound import guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import (
+    ActionsProps,
+    ButtonProps,
+    CardProps,
+    ChartProps,
+    DividerProps,
+    FieldProps,
+    FieldsProps,
+    ImageProps,
+    LinkButtonProps,
+    PieChart,
+    TableProps,
+    TextProps,
+    UISpec,
+    button_action,
+    to_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +169,26 @@ _PUBLICATION_PROP = "switch_publication"
 # — the callback URL and its context — server-side, never serialising it to a
 # client.
 _ATTACHMENTS_PROP = "attachments"
+
+# Mattermost's `PostPropsMaxUserRunes`: the JSON of a post's props, in runes,
+# less the room the server keeps for its own additions.
+_MAX_PROPS = 760_000
+
+# What Mattermost answers a post it did not create with: each a 4xx, so the
+# post was not made and its text may be sent instead.
+_MATTERMOST_REFUSALS = (
+    InvalidOrMissingParameters,
+    NoAccessTokenProvided,
+    NotEnoughPermissions,
+    ResourceNotFound,
+    MethodNotAllowed,
+    ContentTooLarge,
+)
+
+# How far an attachment has got, in the order Mattermost draws its parts. A
+# part that would draw above one already there goes in a new attachment.
+_TITLE, _TEXT, _FIELDS, _IMAGE, _ACTIONS, _CLOSED = range(6)
+_TABLE_ALIGN = {"left": ":---", "center": ":---:", "right": "---:"}
 
 # How far before the recorded reservation time to start looking for a post that
 # may or may not exist. Covers ordinary clock skew between Switch and the
@@ -329,6 +370,22 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
 _PRESS_NOTICE: ContextVar[list[str] | None] = ContextVar(
     "switch_mattermost_press_notice", default=None
 )
+
+
+def _defuse_at(text: str) -> str:
+    """Card text that mentions nobody: Mattermost resolves `@user` and
+    `@channel` in attachment text, fields and pretext as in a message."""
+    return text.replace("@", "@" + ZERO_WIDTH_SPACE)
+
+
+def _md_url(url: str) -> str:
+    return url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+
+
+def _md_table(rows: list[list[str]], align: Sequence[str] | None) -> str:
+    head, *body = rows
+    rule = [_TABLE_ALIGN[a] for a in align] if align else ["---"] * len(head)
+    return "\n".join("| " + " | ".join(row) + " |" for row in [head, rule, *body])
 
 
 def _ephemeral(text: str) -> dict[str, Any]:
@@ -844,6 +901,8 @@ class MattermostAdapter(PlatformAdapter):
 
         if isinstance(press, InterruptPress):
             action_id, value = INTERRUPT_ACTION, press.turn_id
+        elif isinstance(press, CardPress):
+            action_id, value = press.action_id, press.value
         else:
             action_id, value = position_action(press.position), press.token
 
@@ -855,6 +914,7 @@ class MattermostAdapter(PlatformAdapter):
                     channel_id=press.channel_id,
                     sender_id=press.user_id,
                     sender_name=name,
+                    sender_display_name=name,
                     action_id=action_id,
                     value=value,
                     message_ref=press.post_id,
@@ -1063,6 +1123,202 @@ class MattermostAdapter(PlatformAdapter):
                 return None
             bot_driver = self._admin_driver
         return await self._create_posts(bot_driver, channel_id, content, thread_root_id)
+
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as message attachments under `fallback_text`, which stays
+        the post's message: it is what a Mattermost notification shows. A card
+        the post cannot carry, or that Mattermost refuses, raises
+        `CardRejectedError` before anything is posted, so core sends the text."""
+        attachments = self._card_attachments(channel_id, spec)
+        attachments[0]["fallback"] = self._card_text(to_text(spec))
+        props: dict[str, Any] = {_ATTACHMENTS_PROP: attachments}
+        size = len(json.dumps(props, ensure_ascii=False))
+        if size > _MAX_PROPS:
+            raise CardRejectedError(
+                f"The card is {size} characters of post props, over Mattermost's "
+                f"{_MAX_PROPS}."
+            )
+        driver = self._bot_drivers.get(sender_name) or self._admin_driver
+        if driver is None:
+            raise RuntimeError("Mattermost is not connected.")
+        try:
+            return await self._post_or_raise(
+                driver, channel_id, fallback_text, thread_root_id, props
+            )
+        except _MATTERMOST_REFUSALS as error:
+            raise CardRejectedError(str(error)) from error
+
+    def _card_text(self, text: str) -> str:
+        return self.translate_outbound(_defuse_at(text))
+
+    def _card_cell(self, text: str) -> str:
+        return self._card_text(text.replace("\n", " ")).replace("|", "\\|")
+
+    def _card_attachments(self, channel_id: str, spec: UISpec) -> list[dict[str, Any]]:
+        """The attachments a card draws as. Buttons are drawn only where a
+        press can reach this bridge; elsewhere they are listed as text."""
+        address = self._button_address()
+        text, cell = self._card_text, self._card_cell
+        attachments: list[dict[str, Any]] = []
+        buttons_drawn = 0
+        stage = _CLOSED
+
+        def at(part: int) -> dict[str, Any]:
+            nonlocal stage
+            if stage > part:
+                attachments.append({})
+            stage = part
+            return attachments[-1]
+
+        def add_text(line: str) -> None:
+            attachment = at(_TEXT)
+            attachment["text"] = (
+                f"{attachment['text']}\n\n{line}" if "text" in attachment else line
+            )
+
+        def walk(key: str) -> None:
+            nonlocal stage, buttons_drawn
+            element = spec.elements[key]
+            p = element.props
+            children = [spec.elements[c].props for c in element.children]
+            if isinstance(p, CardProps):
+                if p.title:
+                    at(_TITLE)["title"] = text(p.title)
+                if p.subtitle:
+                    add_text(f"_{text(p.subtitle)}_")
+                if p.imageUrl:
+                    at(_IMAGE)["image_url"] = p.imageUrl
+            elif isinstance(p, TextProps):
+                content = text(p.content)
+                if p.style == "bold":
+                    content = f"**{content}**"
+                elif p.style == "muted":
+                    content = f"_{content}_"
+                add_text(content)
+            elif isinstance(p, FieldsProps):
+                at(_FIELDS).setdefault("fields", []).extend(
+                    {"title": text(f.label), "value": text(f.value), "short": True}
+                    for f in children
+                    if isinstance(f, FieldProps)
+                )
+            elif isinstance(p, TableProps):
+                table = _md_table(
+                    [[cell(c) for c in row] for row in [p.headers, *p.rows]], p.align
+                )
+                add_text(table + (f"\n{text(p.caption)}" if p.caption else ""))
+            elif isinstance(p, ChartProps):
+                chart = p.chart
+                if isinstance(chart, PieChart):
+                    rows = [["", "Value"]] + [
+                        [cell(s.label), f"{s.value:g}"] for s in chart.segments
+                    ]
+                else:
+                    rows = [
+                        [
+                            cell(chart.xLabel or ""),
+                            *(cell(s.name) for s in chart.series),
+                        ]
+                    ]
+                    rows += [
+                        [cell(c), *(f"{s.values[i]:g}" for s in chart.series)]
+                        for i, c in enumerate(chart.categories)
+                    ]
+                axis = (
+                    f" ({text(chart.yLabel)})"
+                    if not isinstance(chart, PieChart) and chart.yLabel
+                    else ""
+                )
+                add_text(f"**{text(p.title)}**{axis}\n{_md_table(rows, None)}")
+            elif isinstance(p, DividerProps):
+                stage = _CLOSED
+            elif isinstance(p, ImageProps):
+                add_text(f"![{cell(p.alt).replace(']', '')}]({_md_url(p.url)})")
+            elif isinstance(p, ActionsProps):
+                links = [
+                    f"[{cell(b.label).replace(']', '')}]({_md_url(b.url)})"
+                    for b in children
+                    if isinstance(b, LinkButtonProps)
+                ]
+                if links:
+                    add_text(" · ".join(links))
+                buttons = [b for b in children if isinstance(b, ButtonProps)]
+                if buttons and address is None:
+                    add_text(" · ".join(f"**{cell(b.label)}**" for b in buttons))
+                elif buttons and address is not None:
+                    url, key = address
+                    # A row of its own, as the card groups its buttons.
+                    if stage == _ACTIONS:
+                        stage = _CLOSED
+                    actions = at(_ACTIONS).setdefault("actions", [])
+                    for b in buttons:
+                        actions.append(
+                            card_action(
+                                key,
+                                url,
+                                channel_id,
+                                f"switchui{buttons_drawn}",
+                                b.label,
+                                b.style,
+                                *button_action(b),
+                            )
+                        )
+                        buttons_drawn += 1
+            for child in element.children:
+                walk(child)
+
+        walk(spec.root)
+        return attachments or [{}]
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Take every button off the card and say under it who chose what: a
+        card takes one answer, and its links are text, not buttons."""
+        driver, loop = self._admin_driver, self._main_loop
+        ref = interaction.message_ref
+        if driver is None or loop is None or ref is None:
+            logger.warning(
+                "Cannot mark the card press in Mattermost channel %s as done: "
+                "not connected or no post, so its buttons stay pressable",
+                interaction.channel_id,
+            )
+            return
+        chosen = _defuse_at(f"✅ {interaction.sender_display_name} chose {label}")
+        try:
+            post = await loop.run_in_executor(None, driver.posts.get_post, ref)
+            props = dict(post.get("props") or {})
+            attachments = [
+                {k: v for k, v in attachment.items() if k != "actions"}
+                for attachment in props.get(_ATTACHMENTS_PROP) or []
+            ]
+            attachments = [a for a in attachments if a] or [{}]
+            attachments[-1]["footer"] = chosen
+            props[_ATTACHMENTS_PROP] = attachments
+            await loop.run_in_executor(
+                None, driver.posts.patch_post, ref, {"props": props}
+            )
+        except Exception:
+            # The press was delivered; only its mark on the card is missing.
+            logger.exception(
+                "Could not mark the card press on Mattermost post %s as done, so "
+                "its buttons stay pressable",
+                ref,
+            )
 
     async def admin_message(
         self,

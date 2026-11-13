@@ -198,6 +198,11 @@ ROUTES: dict[str, Case] = {
         anyone(ok=422),
         why="Your own: refused without the account's e-mail typed to confirm it.",
     ),
+    "POST /gateway/auth/me/reset-test-account": Case(
+        Ask("POST", f"{G}/auth/me/reset-test-account"),
+        anyone(ok=422),
+        why="Your own: refused without the account's e-mail typed to confirm it.",
+    ),
     # ── Workspaces ───────────────────────────────────────────────────────
     "GET /gateway/tenants": get(f"{G}/tenants", SELF),
     "GET /gateway/tenants/counts": get(f"{G}/tenants/counts", SELF),
@@ -314,7 +319,11 @@ ROUTES: dict[str, Case] = {
         anyone(ok=404),
         why="Offered only to the domains it lists, and it lists none.",
     ),
-    "GET /gateway/workspace/services": get(f"{G}/workspace/services", admins()),
+    "GET /gateway/workspace/services": get(
+        f"{G}/workspace/services",
+        anyone(),
+        why="Every member reads what the workspace offers; only admins switch it.",
+    ),
     "PUT /gateway/workspace/services/{service}": put(
         f"{G}/workspace/services/github", admins(), json={"enabled": True}
     ),
@@ -788,6 +797,11 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/templates/{template_id}/content": get(
         f"{G}/templates/{{template}}/content", owner_or_admins(refused=404)
     ),
+    "POST /gateway/templates/{template_id}/runs": post(
+        f"{G}/templates/{{template}}/runs",
+        owner_or_admins(refused=404),
+        why="Only a template the caller could have run is counted.",
+    ),
     "PATCH /gateway/templates/{template_id}": patch(
         f"{G}/templates/{{template}}",
         owner_or_admins(refused=404),
@@ -1039,6 +1053,14 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/service-connections": get(f"{G}/service-connections", SELF),
     "GET /gateway/service-connections/{service}/agents": get(
         f"{G}/service-connections/github/agents", SELF
+    ),
+    "GET /gateway/service-connections/{service}/workspace": get(
+        f"{G}/service-connections/github/workspace", admins()
+    ),
+    "DELETE /gateway/service-connections/{service}/people/{user_id}": delete(
+        f"{G}/service-connections/github/people/{{member_target}}",
+        admins(ok=404),
+        why="An admin ends someone else's connection; this member has none.",
     ),
     "PUT /gateway/service-connections/{service}/key": put(
         f"{G}/service-connections/datadog/key",

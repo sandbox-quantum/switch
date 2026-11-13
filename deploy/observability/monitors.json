@@ -290,8 +290,8 @@
   {
     "name": "[Switch] agent connections are dropping en masse",
     "type": "query alert",
-    "query": "pct_change(avg(last_10m),last_30m):sum:switch.agents.connected{service:switch-core} < -50",
-    "message": "{{#is_alert}}Agent connections fell by more than half in 10 minutes. Agents that lost theirs stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "avg(last_10m):sum:switch.agents.connected{service:switch-core} / week_before(sum:switch.agents.connected{service:switch-core}) < 0.5",
+    "message": "{{#is_alert}}Fewer than half as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch",
@@ -304,7 +304,7 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": -50
+        "critical": 0.5
       }
     },
     "priority": 2
@@ -446,7 +446,7 @@
   {
     "name": "[Switch] requests are failing with unhandled errors",
     "type": "log alert",
-    "query": "logs(\"service:switch-core env:pilot \\\"Exception in ASGI application\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "query": "logs(\"service:switch-core \\\"Exception in ASGI application\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
     "message": "{{#is_alert}}A request to switch-core raised an error nothing handled. Whoever sent it (Console, an agent, a bridge) got a 500 and whatever they were doing did not happen.\n\n**Check:** the log sample below has the stack trace; Error Tracking groups repeats of the same one. A burst right after a deploy points at the release.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: requests are failing with unhandled errors.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
@@ -469,7 +469,7 @@
   {
     "name": "[Switch] a switch-core pod lost its hold on its agents",
     "type": "log alert",
-    "query": "logs(\"service:switch-core env:pilot status:warn \\\"stopped holding their lease\\\"\").index(\"*\").rollup(\"count\").last(\"10m\") > 0",
+    "query": "logs(\"service:switch-core status:warn \\\"stopped holding their lease\\\"\").index(\"*\").rollup(\"count\").last(\"10m\") > 0",
     "message": "{{#is_alert}}A switch-core process stopped renewing its lease without shutting down (a pod shutting down in a deploy does not fire this), so the agents connected through it no longer count as connected. Their people see them go offline until they reconnect to another pod.\n\n**Check:** whether a pod restarted or was killed (OOM, node drain) at that time, and the database pool on the Saturation panels: a process that cannot reach the database cannot renew.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: a switch-core pod lost its hold on its agents.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
@@ -492,7 +492,7 @@
   {
     "name": "[Switch] messages are not reaching a messaging app",
     "type": "log alert",
-    "query": "logs(\"service:switch-core env:pilot \\\"Could not publish\\\"\").index(\"*\").rollup(\"count\").last(\"10m\") > 10",
+    "query": "logs(\"service:switch-core \\\"Could not publish\\\"\").index(\"*\").rollup(\"count\").last(\"10m\") > 10",
     "message": "{{#is_alert}}switch-core kept failing to post messages to Slack, Discord or another messaging app for 10 minutes. People there do not see what agents and others wrote in Switch.\n\n**Check:** the log names the bridge; then its platform's status page, and whether the bridge's token was revoked. One message retrying every 5 s for under a minute stays below this limit.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: messages are not reaching a messaging app.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
@@ -515,7 +515,7 @@
   {
     "name": "[Switch] switch-core is logging a burst of errors",
     "type": "log alert",
-    "query": "logs(\"service:switch-core env:pilot status:error\").index(\"*\").rollup(\"count\").last(\"15m\") > 25",
+    "query": "logs(\"service:switch-core status:error\").index(\"*\").rollup(\"count\").last(\"15m\") > 25",
     "message": "{{#is_alert}}switch-core logged more than 25 errors in 15 minutes, far above its usual handful. Something that is not covered by the other alerts is failing.\n\n**Check:** the pattern list on the signal board's \"Digging into error logs\" section shows which message it is.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: switch-core is logging a burst of errors.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",

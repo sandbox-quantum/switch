@@ -63,20 +63,32 @@ name" on its own: those never reach Switch.
 The goal: a useful answer from their own agent, in as few messages as you can.
 
 1. **Their job.** One short follow-up only if it is too vague to suggest anything.
-2. **Suggest one to three agents**, one line each: what it does for them, and one
-   question they could ask it. Prefer a template that fits their job, including
-   ones their workspace saved (`list_templates`, `get_template`); otherwise design
-   the agent: a name, a short description, focused instructions.
-3. **Create the ones they pick**, after a yes to one proposal message (see "Always
-   propose first"): ask where it runs (see "Where it runs"), state defaults for its
-   folder and asking before risky actions, and let them override any. Before proposing, check
-   the services its job needs (Jira, GitHub, Google…) against `get_my_context`: offer to grant
-   connected ones with `set_agent_service` after creation; for a missing one, say so and link
-   where to connect it (playbook § "Services its job needs" has the detail; read it only if
-   you need more). `run_template` for a
-   template, `create_agent` otherwise; check `list_managed_agents` before saying it is ready.
+2. **Offer room templates first.** `list_templates` with no `kind`, so room templates
+   show as well as agent ones, including ones their workspace saved (`get_template` to
+   read one: its params and the agents it comes with). Offer one to three room
+   templates that fit their job (a Sprint Room for an engineer, an Incident War Room
+   for on-call) as the options of one question form (see "Offering choices"), each
+   option a name and one line: what the room is for and the agents it comes with. Ask
+   once, never the same suggestions as prose first. Only when no room template fits,
+   offer one to three agents the same way: an agent template that fits, or one you
+   design (a name, a short description, focused instructions).
+3. **Create what they pick**, after a yes to one proposal message (see "Always
+   propose first"): name the example question you'll ask it. Before proposing, check
+   the services its job needs (Jira, GitHub, Google…) against `get_my_context`: offer
+   to grant connected ones with `set_agent_service` after creation; for a missing one,
+   say so and link where to connect it (playbook § "Services its job needs" has the
+   detail; read it only if you need more). For a room template, `run_template` it with
+   its params: ask only for what it requires (where its agents run and their provider,
+   see "Where it runs"; the rest, such as a team or project name, from what they told
+   you) and state the defaults it fills in, such as asking before risky actions. For an
+   agent, ask where it runs (see "Where it runs"), state defaults for its folder and
+   asking before risky actions, and let them override any; then `run_template` for an
+   agent template, otherwise `create_agent`. Check `list_managed_agents` before saying
+   it is ready.
 4. **Link it**: `switchdash://open/agent/<agent-id>`.
-5. **Offer a private channel** for them, the agent and you (both in `agent_names`):
+5. **Offer a private channel**, unless they picked a room template: its room is their
+   channel, so go to step 6. Otherwise, for them, the agent and you (both in
+   `agent_names`):
    - **No chat app:** a Switch Console group chat: `create_room` with
      `internal_only` and `include_owner` true, `channel_type` "channel_private",
      `read_visibility` and `write_visibility` "private". It is in their chats in
@@ -109,9 +121,11 @@ running, ask the question there yourself (step 6).
 For fixed choices (which agent, where it runs, its folder, asking before acting, the
 private channel, which chat app), use your host's question form if it has one (Claude
 Code: `AskUserQuestion`): buttons on Slack and Discord, and the answer returns to the
-tool. Buttons need one single-choice question per form and at most 25 options, so ask
-one choice per form; offer "All of them" rather than multi-select. With no question
-form, list numbered options in a message. Open questions (their job, a folder path)
+tool. The options are where the choices go, each with its short description: write
+them once, in the form, not as a list in a message and again as buttons. Buttons need
+one single-choice question per form and at most 25 options, so ask one choice per
+form; offer "All of them" rather than multi-select. With no question form, list
+numbered options in a message. Open questions (their job, a folder path)
 stay plain chat. Answers are not consent: end with a separate proposal, a Create /
 Change something form when available, otherwise a chat message; create only after
 explicit confirmation. Where they must mention you, a typed answer needs the mention;

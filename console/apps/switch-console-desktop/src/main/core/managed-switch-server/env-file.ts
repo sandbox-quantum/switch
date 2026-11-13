@@ -55,7 +55,8 @@ export const STABLE_MANAGED_SERVER_FLAGS: readonly string[] = [
  * The flags a server on the canary pin (`CANARY_SWITCH_VERSION`, which dev
  * builds run too) is started with: the stable ones, plus Switch Console rooms
  * (group chats), where switch-buddy continues when no chat app is connected,
- * and buddy's hand-off to a chat app's private channel.
+ * buddy's hand-off to a chat app's private channel, and the new gateway layout
+ * (gateway v2).
  *
  * switch-core refuses to start when `FEATURE_FLAGS_ENABLED` names a flag it
  * does not know, so a flag moves to the stable list in the change that moves
@@ -66,6 +67,7 @@ export const CANARY_MANAGED_SERVER_FLAGS: readonly string[] = [
   ...STABLE_MANAGED_SERVER_FLAGS,
   'group_chats',
   'buddy_slack_handoff',
+  'gateway_v2',
 ];
 
 /**

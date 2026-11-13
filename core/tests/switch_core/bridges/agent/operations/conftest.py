@@ -187,6 +187,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_group_store=RoomGroupStore(),
         room_role_store=RoomRoleStore(),
         connections={},
+        telemetry=None,
     )
     # Runs are the real service's; only its collaborators are fakes.
     fake_protocol.run_service = partial(AgentCore.run_service, fake_protocol)
@@ -201,7 +202,9 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_role_store=fake_protocol.room_role_store,
         session_factory=fake_protocol.session_factory,
         room_group_store=fake_protocol.room_group_store,
+        console_rooms=None,
         client_lifecycle=fake_protocol.client_lifecycle,
+        telemetry=fake_protocol.telemetry,
     )
 
     async with session_factory() as session:

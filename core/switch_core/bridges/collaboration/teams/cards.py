@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import AgentRendering
@@ -9,6 +10,23 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_LABEL,
     Control,
     position_action,
+)
+from switch_core.ui_spec import (
+    UI_ACTION_PREFIX,
+    ActionsProps,
+    ButtonProps,
+    CardProps,
+    ChartProps,
+    DividerProps,
+    FieldProps,
+    FieldsProps,
+    ImageProps,
+    LinkButtonProps,
+    PieChart,
+    TableProps,
+    TextProps,
+    UISpec,
+    button_action,
 )
 
 ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
@@ -25,6 +43,9 @@ ANSWER_VERB = "switch/answerRequest"
 # have to get right.
 INTERRUPT_VERB = "switch/interruptTurn"
 
+# And what a press on a button of an agent's card (`ui_spec`) calls itself.
+CARD_BUTTON_VERB = "switch/cardButton"
+
 # Where the press carries what it is answering. Nested under one key because
 # Teams merges a card's input values into the same object, and a flat name is a
 # collision waiting for the first card here to grow an input.
@@ -34,6 +55,9 @@ _ANSWER_DATA = "switchAnswer"
 # under a key of its own so neither control can read the other's data even if
 # a client sent the wrong verb with it.
 _INTERRUPT_DATA = "switchInterrupt"
+
+# And where a card button carries its action id and value, nested likewise.
+_CARD_BUTTON_DATA = "switchCard"
 
 # The schema version a card declares once it has something to press.
 # Action.Execute — the only card action that reaches a bot with a reply the
@@ -332,6 +356,27 @@ def read_interrupt_action(value: dict[str, Any]) -> str | None:
     return turn_id
 
 
+def _read_card_button(value: dict[str, Any]) -> tuple[str, str] | None:
+    """The action id and value a card button press carries, or None if not one.
+
+    Only shape is checked here: core matches both against the buttons the
+    card on that message actually drew."""
+    action = value.get("action")
+    if not isinstance(action, dict) or action.get("verb") != CARD_BUTTON_VERB:
+        return None
+    data = action.get("data")
+    carried = data.get(_CARD_BUTTON_DATA) if isinstance(data, dict) else None
+    if not isinstance(carried, dict):
+        return None
+    action_id = carried.get("action")
+    pressed = carried.get("value")
+    if not isinstance(action_id, str) or not action_id.startswith(UI_ACTION_PREFIX):
+        return None
+    if not isinstance(pressed, str) or not pressed:
+        return None
+    return action_id, pressed
+
+
 def read_press(value: dict[str, Any]) -> tuple[str, str] | None:
     """The Switch action a press carries and what it names, or None if not ours.
 
@@ -344,6 +389,9 @@ def read_press(value: dict[str, Any]) -> tuple[str, str] | None:
     turn_id = read_interrupt_action(value)
     if turn_id is not None:
         return INTERRUPT_ACTION, turn_id
+    button = _read_card_button(value)
+    if button is not None:
+        return button
     answer = read_answer_action(value)
     if answer is None:
         return None
@@ -361,6 +409,10 @@ def _schema_version(below: list[dict[str, Any]]) -> str:
     message does.
     """
     for element in below:
+        if element.get("type") == "Table" or element.get("type", "").startswith(
+            "Chart."
+        ):
+            return _ACTION_VERSION
         for action in element.get("actions", ()):
             if action.get("type") == "Action.Execute":
                 return _ACTION_VERSION
@@ -420,10 +472,21 @@ def agent_message_card(
     card's option buttons, or an ended turn's folded-away log, and an empty list
     for everything else. They set the schema version between them, because what
     a card needs to be drawn is decided by what is in it."""
+    return agent_card(agent, body, mentions, [*body_blocks(body), *below])
+
+
+def agent_card(
+    agent: AgentRendering,
+    body: str,
+    mentions: list[dict[str, Any]],
+    content: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The agent's header with `content` under it, and `body` as the text a
+    surface that cannot draw the card shows instead."""
     card: dict[str, Any] = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
-        "version": _schema_version(below),
+        "version": _schema_version(content),
         # Plain-text representation for surfaces that can't render the card
         # inline (mobile, notification toasts, copy-link/search previews); its
         # absence is what makes Teams show the "cards.unsupported" placeholder.
@@ -449,8 +512,7 @@ def agent_message_card(
                     },
                 ],
             },
-            *body_blocks(body),
-            *below,
+            *content,
         ],
     }
     if mentions:
@@ -461,3 +523,224 @@ def agent_message_card(
 def card_attachment(card: dict[str, Any]) -> dict[str, Any]:
     """Wrap an Adaptive Card as a Bot Framework activity attachment."""
     return {"contentType": ADAPTIVE_CARD_CONTENT_TYPE, "content": card}
+
+
+def _table(
+    headers: list[str],
+    rows: list[list[str]],
+    align: Sequence[str] | None,
+    text: Callable[[str], str],
+) -> dict[str, Any]:
+    return {
+        "type": "Table",
+        "columns": [{"width": 1} for _ in headers]
+        if align is None
+        else [{"width": 1, "horizontalCellContentAlignment": a.title()} for a in align],
+        "rows": [
+            {
+                "type": "TableRow",
+                "cells": [
+                    {
+                        "type": "TableCell",
+                        "items": [{"type": "TextBlock", "text": text(c), "wrap": True}],
+                    }
+                    for c in row
+                ],
+            }
+            for row in [headers, *rows]
+        ],
+    }
+
+
+def _chart(props: ChartProps, text: Callable[[str], str]) -> dict[str, Any]:
+    """A chart element, falling back to its data as a table on a client that
+    draws no charts. Teams has no area chart, so an area is drawn as a line."""
+    chart = props.chart
+    if isinstance(chart, PieChart):
+        return {
+            "type": "Chart.Pie",
+            "title": props.title,
+            "data": [{"legend": s.label, "value": s.value} for s in chart.segments],
+            "fallback": _table(
+                ["", props.title],
+                [[s.label, f"{s.value:g}"] for s in chart.segments],
+                None,
+                text,
+            ),
+        }
+    element: dict[str, Any] = {
+        "type": "Chart.VerticalBar.Grouped" if chart.type == "bar" else "Chart.Line",
+        "title": props.title,
+        "data": [
+            {
+                "legend": s.name,
+                "values": [
+                    {"x": c, "y": v}
+                    for c, v in zip(chart.categories, s.values, strict=True)
+                ],
+            }
+            for s in chart.series
+        ],
+        "fallback": _table(
+            [chart.xLabel or "", *(s.name for s in chart.series)],
+            [
+                [c, *(f"{s.values[i]:g}" for s in chart.series)]
+                for i, c in enumerate(chart.categories)
+            ],
+            None,
+            text,
+        ),
+    }
+    if chart.xLabel:
+        element["xAxisTitle"] = chart.xLabel
+    if chart.yLabel:
+        element["yAxisTitle"] = chart.yLabel
+    return element
+
+
+def _card_action(props: ButtonProps | LinkButtonProps) -> dict[str, Any]:
+    if isinstance(props, LinkButtonProps):
+        return {"type": "Action.OpenUrl", "title": props.label, "url": props.url}
+    action_id, value = button_action(props)
+    action: dict[str, Any] = {
+        "type": "Action.Execute",
+        "title": props.label,
+        "verb": CARD_BUTTON_VERB,
+        "data": {_CARD_BUTTON_DATA: {"action": action_id, "value": value}},
+        "fallback": "drop",
+    }
+    if props.style == "primary":
+        action["style"] = "positive"
+    elif props.style == "danger":
+        action["style"] = "destructive"
+    return action
+
+
+def ui_spec_elements(spec: UISpec, text: Callable[[str], str]) -> list[dict[str, Any]]:
+    """A card (`ui_spec`) as Adaptive Card elements, in one flat list so they
+    sit under the agent's header like a message body does.
+
+    `text` renders a string the card's author wrote for a TextBlock or a
+    FactSet, which Teams reads as markdown; it is applied to every such string.
+    Chart labels, image alt text and button titles are not markdown and go as
+    written. A Divider draws as a separator above the element after it."""
+    out: list[dict[str, Any]] = []
+    separate = False
+
+    def add(*elements: dict[str, Any]) -> None:
+        nonlocal separate
+        for element in elements:
+            if separate:
+                element["separator"] = True
+                separate = False
+            out.append(element)
+
+    def walk(key: str) -> None:
+        nonlocal separate
+        element = spec.elements[key]
+        p = element.props
+        if isinstance(p, CardProps):
+            if p.title:
+                add(
+                    {
+                        "type": "TextBlock",
+                        "text": text(p.title),
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "wrap": True,
+                    }
+                )
+            if p.subtitle:
+                add(
+                    {
+                        "type": "TextBlock",
+                        "text": text(p.subtitle),
+                        "isSubtle": True,
+                        "wrap": True,
+                        "spacing": "None",
+                    }
+                )
+            if p.imageUrl:
+                add({"type": "Image", "url": p.imageUrl, "altText": p.title or ""})
+        elif isinstance(p, TextProps):
+            style: dict[str, Any] = (
+                {"isSubtle": True}
+                if p.style == "muted"
+                else {"weight": "Bolder"}
+                if p.style == "bold"
+                else {}
+            )
+            add(*({**b, **style} for b in body_blocks(text(p.content))))
+            return
+        elif isinstance(p, FieldsProps):
+            add(
+                {
+                    "type": "FactSet",
+                    "facts": [
+                        {"title": text(f.label), "value": text(f.value)}
+                        for c in element.children
+                        if isinstance(f := spec.elements[c].props, FieldProps)
+                    ],
+                }
+            )
+            return
+        elif isinstance(p, TableProps):
+            add(_table(p.headers, p.rows, p.align, text))
+            if p.caption:
+                add(
+                    {
+                        "type": "TextBlock",
+                        "text": text(p.caption),
+                        "isSubtle": True,
+                        "wrap": True,
+                        "spacing": "Small",
+                    }
+                )
+            return
+        elif isinstance(p, ChartProps):
+            add(_chart(p, text))
+            return
+        elif isinstance(p, DividerProps):
+            separate = True
+            return
+        elif isinstance(p, ImageProps):
+            add({"type": "Image", "url": p.url, "altText": p.alt})
+            return
+        elif isinstance(p, ActionsProps):
+            add(
+                {
+                    "type": "ActionSet",
+                    "actions": [
+                        _card_action(b)
+                        for c in element.children
+                        if isinstance(
+                            b := spec.elements[c].props, ButtonProps | LinkButtonProps
+                        )
+                    ],
+                }
+            )
+            return
+        for child in element.children:
+            walk(child)
+
+    walk(spec.root)
+    return out
+
+
+def settle_card(card: dict[str, Any], line: str) -> dict[str, Any]:
+    """The card with every button that answers it taken off and `line` under
+    it, so it cannot be answered twice. Link buttons stay."""
+    body: list[dict[str, Any]] = []
+    for element in card["body"]:
+        if element.get("type") == "ActionSet":
+            links = [
+                a
+                for a in element.get("actions") or []
+                if a.get("type") == "Action.OpenUrl"
+            ]
+            if not links:
+                continue
+            element = {**element, "actions": links}
+        body.append(element)
+    body.append({"type": "TextBlock", "text": line, "wrap": True, "isSubtle": True})
+    return {**card, "body": body}
