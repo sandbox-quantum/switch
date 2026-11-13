@@ -261,8 +261,8 @@ services:
       TEAMS_APP_NOTIFICATION_CERTIFICATE: ${TEAMS_APP_NOTIFICATION_CERTIFICATE:-}
       TEAMS_APP_NOTIFICATION_PRIVATE_KEY: ${TEAMS_APP_NOTIFICATION_PRIVATE_KEY:-}
       TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY: ${TEAMS_APP_NOTIFICATION_PREVIOUS_PRIVATE_KEY:-}
-      TEAMS_APP_PRIVACY_URL: ${TEAMS_APP_PRIVACY_URL:-}
-      TEAMS_APP_TERMS_URL: ${TEAMS_APP_TERMS_URL:-}
+      TEAMS_APP_PRIVACY_URL: ${TEAMS_APP_PRIVACY_URL:-https://docs.switchagents.ai/legal/privacy-policy}
+      TEAMS_APP_TERMS_URL: ${TEAMS_APP_TERMS_URL:-https://docs.switchagents.ai/legal/terms}
       TEAMS_APP_NAME: ${TEAMS_APP_NAME:-Agent Switch}
       # True/false flags, so bare keys for the reason given under LOG_FORMAT
       # below: `${VAR:-}` would hand them an empty string, which fails boot.
