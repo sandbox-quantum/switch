@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -160,7 +160,7 @@ describe("Your account", () => {
     const card = within(await screen.findByRole("region", { name: "Sign out" }));
     fireEvent.click(card.getByRole("button", { name: "Sign out of all devices" }));
     expect((await card.findByRole("alert")).textContent).toBe(
-      "Couldn't sign you out of every device: Internal Server Error",
+      "Couldn't sign out of every device: Internal Server Error",
     );
     const again = card.getByRole("button", { name: "Sign out of all devices" }) as HTMLButtonElement;
     expect(again.disabled).toBe(false);
@@ -176,7 +176,7 @@ describe("Your account", () => {
     render(<AccountPage />);
     const card = within(await screen.findByRole("region", { name: "Sign out" }));
     fireEvent.click(card.getByRole("button", { name: "Sign out" }));
-    expect((await card.findByRole("alert")).textContent).toBe("Couldn't sign you out: Network down");
+    expect((await card.findByRole("alert")).textContent).toBe("Couldn't sign out: Network down");
     expect((card.getByRole("button", { name: "Sign out" }) as HTMLButtonElement).disabled).toBe(
       false,
     );
@@ -203,6 +203,26 @@ describe("Deleting your account", () => {
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   });
 
+  it("sends the deletion once however quickly it's confirmed twice", async () => {
+    signedIn();
+    const calls = answer({
+      "GET /auth/me": me(),
+      "GET /auth/me/deletion": { refusal: null },
+      "DELETE /auth/me": { ok: true },
+    });
+    render(<AccountPage />);
+    const dialog = within(await openDelete());
+    const field = await dialog.findByLabelText("Type ada@example.test to confirm");
+    fireEvent.change(field, { target: { value: "ada@example.test" } });
+    // Both in one batch, before React renders the first one's busy state.
+    act(() => {
+      fireEvent.keyDown(field, { key: "Enter" });
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    expect(await dialog.findByText("Your account is deleted")).toBeTruthy();
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
   it("deletes once the email is typed, then signs out on closing", async () => {
     signedIn();
     const calls = answer({
@@ -213,7 +233,9 @@ describe("Deleting your account", () => {
     render(<AccountPage />);
     const dialog = within(await openDelete());
     const field = await dialog.findByLabelText("Type ada@example.test to confirm");
-    expect(dialog.getByText(/A workspace only you are in is deleted too/)).toBeTruthy();
+    expect(
+      dialog.getByText(/A workspace only you are in is deleted too, unless something is still in it/),
+    ).toBeTruthy();
     const confirm = dialog.getByRole("button", { name: "Delete account" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
     fireEvent.change(field, { target: { value: "ada@example" } });

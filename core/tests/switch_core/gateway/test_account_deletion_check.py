@@ -7,9 +7,12 @@ sentence the deletion would refuse with, and change nothing.
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TENANT_ZERO_ID, OrganizationMember, User
+from switch_core.db.models import TENANT_ZERO_ID, CloudMachine, OrganizationMember, User
 from tests.switch_core.accounts.test_account_deletion import ADMIN_EMAIL
 from tests.switch_core.gateway.test_admin_delete_user import _app, _client, _people
 from tests.switch_core.gateway.test_tenant_api_routes import _make_member
@@ -81,6 +84,29 @@ async def test_the_only_org_admin_is_told_while_others_are_in_the_organization(
     assert response.status_code == 200, response.text
     refusal = response.json()["refusal"]
     assert refusal is not None and "only organization admin" in refusal
+
+
+async def test_an_account_with_a_cloud_machine_is_told(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, member = await _people(session_factory)
+    async with session_factory() as session:
+        session.add(
+            CloudMachine(
+                id=uuid.uuid4().hex,
+                owner_id=member,
+                state="ready",
+                active_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+    async with _client(
+        _app(session_factory), member, "leaving@example.invalid"
+    ) as client:
+        response = await client.get("/auth/me/deletion")
+    assert response.status_code == 200, response.text
+    refusal = response.json()["refusal"]
+    assert refusal is not None and "cloud machine" in refusal
 
 
 async def test_the_operators_account_is_refused(

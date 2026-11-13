@@ -21,7 +21,7 @@ export default function CenteredCard({
     try {
       await logout();
     } catch (err) {
-      setSignOutError(`Could not sign out: ${err instanceof Error ? err.message : String(err)}`);
+      setSignOutError(`Couldn't sign out: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
   return (

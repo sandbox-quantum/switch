@@ -322,12 +322,12 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
             Change password
           </MenuItem>
         )}
-        <MenuItem onClick={() => signOut(logout, "Could not sign out")} sx={{ gap: 1 }}>
+        <MenuItem onClick={() => signOut(logout, "Couldn't sign out")} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
         </MenuItem>
         <MenuItem
-          onClick={() => signOut(logoutEverywhere, "Could not sign out of every device")}
+          onClick={() => signOut(logoutEverywhere, "Couldn't sign out of every device")}
           sx={{ gap: 1 }}
         >
           <LogoutOutlined sx={{ fontSize: 16 }} />

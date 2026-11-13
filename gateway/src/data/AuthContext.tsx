@@ -159,17 +159,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  // The next person to sign in on this tab must not inherit an invitation
+  // they never followed. Dropped only once signed out: a sign-out that fails
+  // leaves the person here, invitation and all.
   const logout = useCallback(async () => {
-    // The next person to sign in on this tab must not inherit an invitation
-    // they never followed.
-    clearPendingInvite();
     await apiLogout();
+    clearPendingInvite();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
 
   const logoutEverywhere = useCallback(async () => {
-    clearPendingInvite();
     await signOutEverywhere();
+    clearPendingInvite();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
 

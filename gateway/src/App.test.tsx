@@ -259,8 +259,10 @@ describe("AppRoutes", () => {
     });
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-    expect(await screen.findByText("Could not sign out: Bad Gateway")).toBeTruthy();
+    expect(await screen.findByText("Couldn't sign out: Bad Gateway")).toBeTruthy();
     expect(screen.queryByText("Switch Gateway")).toBeNull();
+    // Still signed in, so still on the way to the invitation.
+    expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
   });
 
   it("says so when the session cannot be read, instead of showing sign-in", async () => {
@@ -420,7 +422,7 @@ describe("today's layout", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
     expect(
-      await screen.findByText("Could not sign out of every device: Internal Server Error"),
+      await screen.findByText("Couldn't sign out of every device: Internal Server Error"),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
   });

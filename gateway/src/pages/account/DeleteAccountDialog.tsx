@@ -51,6 +51,8 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
+  // Read by `confirm` itself, so two presses before a render cannot both send.
+  const sending = useRef(false);
 
   // Asked afresh on every opening: becoming the last admin, or no longer
   // being it, happens elsewhere.
@@ -76,7 +78,8 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
   const canConfirm = (check.state === "clear" || check.state === "unchecked") && matches;
 
   const confirm = async () => {
-    if (!canConfirm || deleting) return;
+    if (!canConfirm || sending.current) return;
+    sending.current = true;
     setDeleting(true);
     setError(null);
     try {
@@ -91,6 +94,7 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
         setError(messageOf(err));
       }
     } finally {
+      sending.current = false;
       setDeleting(false);
     }
   };
@@ -169,8 +173,8 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
               {email} will be removed from every workspace you're in. The agents you own stop and
               are deleted, along with your devices, resources, templates and connector accounts.
               Rooms you created stay, and so do your messages, under the name "Former member". A
-              workspace only you are in is deleted too, unless rooms are left in it. This can't be
-              undone.
+              workspace only you are in is deleted too, unless something is still in it, such as a
+              room. This can't be undone.
             </DialogContentText>
             {check.state === "unchecked" && (
               <Alert severity="warning" sx={{ mt: 2, overflowWrap: "anywhere" }}>

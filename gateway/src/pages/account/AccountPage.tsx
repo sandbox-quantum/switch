@@ -77,8 +77,8 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
     try {
       await (which === "here" ? logout() : logoutEverywhere());
     } catch (err) {
-      const what = which === "here" ? "sign you out" : "sign you out of every device";
-      setSignOutError(`Couldn't ${what}: ${err instanceof Error ? err.message : String(err)}`);
+      const what = which === "here" ? "Couldn't sign out" : "Couldn't sign out of every device";
+      setSignOutError(`${what}: ${err instanceof Error ? err.message : String(err)}`);
       setSigningOut(null);
     }
   };
