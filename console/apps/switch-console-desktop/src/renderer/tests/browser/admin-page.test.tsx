@@ -135,6 +135,8 @@ function service(overrides: Partial<WorkspaceService>): WorkspaceService {
     granted_agents: 0,
     unavailable_code: null,
     unavailable_reason: null,
+    can_change: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -272,8 +274,23 @@ it("says under a tile why the server can't serve the service, and keeps its swit
 
   const [atlassian, figma] = [...tiles(page)!.children];
   expect(atlassian!.textContent).toContain('Atlassian is not set up on this server.');
-  expect(switchFor(page, 'Atlassian')!.hasAttribute('disabled')).toBe(false);
+  expect(switchFor(page, 'Atlassian')!.hasAttribute('data-disabled')).toBe(false);
   expect(figma!.textContent).not.toContain('not set up');
+});
+
+it('holds a switch the organization locked, and says so', async () => {
+  workspaces.getWorkspaceServices.mockResolvedValue([
+    service({ slug: 'atlassian', name: 'Atlassian', can_change: false, organization_locked: true }),
+    service({ slug: 'figma', name: 'Figma' }),
+  ]);
+  const page = await render();
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+
+  const [atlassian, figma] = [...tiles(page)!.children];
+  expect(atlassian!.textContent).toContain('Set by your organization.');
+  expect(switchFor(page, 'Atlassian')!.hasAttribute('data-disabled')).toBe(true);
+  expect(figma!.textContent).not.toContain('Set by your organization.');
+  expect(switchFor(page, 'Figma')!.hasAttribute('data-disabled')).toBe(false);
 });
 
 it('searches the tiles by name', async () => {
