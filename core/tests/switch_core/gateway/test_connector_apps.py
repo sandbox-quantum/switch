@@ -422,7 +422,7 @@ class TestOnlyTheOperator:
             "data.recordComments:write",
         ]
         # A client Core registers itself is nothing for the operator to set up.
-        assert not {"atlassian", "notion", "sentry"} & set(apps)
+        assert not {"atlassian", "linear", "notion", "sentry"} & set(apps)
         assert set(body) == {"public_url", "apps"}
 
     async def test_an_unknown_service_is_not_found(
