@@ -12,7 +12,11 @@ vi.mock("react-router", () => ({
 }));
 
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: () => ({ canAdminTenant: false, session: { user: { id: "u-me" } } }),
+  useAuth: () => ({
+    canAdminTenant: false,
+    capabilities: { administersOrganization: false, isOperator: false },
+    session: { user: { id: "u-me" }, tenant: null, tenants: [] },
+  }),
 }));
 
 vi.mock("../../data/hooks", () => ({
@@ -65,6 +69,7 @@ const room = {
   connected_user_names: [],
   bridge_id: "b1",
   bridge_display_name: "Slack",
+  bridge_type: "slack",
   group_id: null,
   group_name: null,
   owner_id: "owner",
@@ -307,9 +312,8 @@ describe("RoomDetailPage permissions", () => {
   it("offers a reader nothing to change", () => {
     viewAs({ can_write: false, can_manage: false, can_unlink: false });
 
-    screen.getByText(
-      /Only this room's owner, its room admins and workspace admins can change these settings/,
-    );
+    screen.getByText("Only ada, a room admin or a workspace admin can change these settings.");
+    screen.getByText(/^View only\. You can see this room but not change it or add to it\. To take part, join its Slack channel/);
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
     expect(nameField().disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
@@ -322,6 +326,37 @@ describe("RoomDetailPage permissions", () => {
     expect(joinEventsSwitch().disabled).toBe(true);
     expect(screen.getByTestId("resources").dataset.canAttach).toBe("false");
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
+  });
+
+  it("names the room's owner to everyone, and tells its owner they own it", () => {
+    viewAs({ can_write: true, can_manage: true, can_unlink: true, owner_id: "u-me" });
+
+    screen.getByText("Owner:", { exact: false });
+    screen.getByText("ada");
+    screen.getByText(/^Owner\. You own this room/);
+  });
+
+  it("says a room with no owner has none, and who changes it then", () => {
+    viewAs({ can_write: false, can_manage: false, can_unlink: false, owner_id: null, owner_name: null });
+
+    screen.getByText("No owner");
+    screen.getByText(
+      "This room has no owner, so only its room admins and workspace admins can change these settings.",
+    );
+  });
+
+  it("tells someone in the room what they may add, and who changes it", () => {
+    viewAs({
+      can_write: false,
+      can_manage: false,
+      can_unlink: false,
+      viewer_is_member: true,
+      can_attach: true,
+      can_invite_agents: true,
+      can_add_people: true,
+    });
+
+    screen.getByText(/^In the room\. You can add agents, people and resources\./);
   });
 
   it("lists a Switch Console chat's members as its people, to change in Console", () => {

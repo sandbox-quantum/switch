@@ -53,6 +53,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A room's page in the web dashboard says who owns it and where you
+  stand.** Room info names the owner, or says the room has none, and a "Your
+  access" line says whether you own the room, administer the workspace or
+  its organization, are one of its room admins, take part in it, or can only
+  see it, and what that lets you do. Someone who can only see a channel's
+  room is told how to take part: join the channel from a linked chat account,
+  or ask someone in the room to add them. The notice on settings you can't
+  change names the owner, as Switch Console's does.
 - **People connect their own connectors from the dashboard.** Behind
   `gateway_v2`, Connectors is a catalogue of every connector, with Yours and
   All tabs and a search. Each card shows its category, whether you have

@@ -70,6 +70,12 @@ import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 import type { RoomsNotice } from "./RoomsPage";
 import { RoomAccessChip } from "./RoomAccessChip";
 import {
+  ROOM_STANDING_LABELS,
+  type RoomViewer,
+  roomStanding,
+  roomStandingText,
+} from "./roomStanding";
+import {
   ROOM_ACCESS_HELPERS,
   ROOM_ACCESS_LEVELS,
   ROOM_ACCESS_OPTION_LABELS,
@@ -87,7 +93,7 @@ import {
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { canAdminTenant, session } = useAuth();
+  const { canAdminTenant, capabilities, session } = useAuth();
   // Who is looking, to offer taking out their own agent and unlinking their
   // own resources: the server allows those by ownership alone.
   const viewerId = session?.user.id ?? null;
@@ -142,7 +148,17 @@ export default function RoomDetailPage() {
       </Stack>
 
       <Stack spacing={4}>
-        <RoomInfoSection room={room} />
+        <RoomInfoSection
+          room={room}
+          viewer={{
+            id: viewerId,
+            administersOrganization: capabilities.administersOrganization,
+            isOperator: capabilities.isOperator,
+            adminMember:
+              session?.tenants.some((t) => t.id === session.tenant?.id && t.role === "admin") ??
+              false,
+          }}
+        />
         <Divider />
         <RoomGroupSection
           room={room}
@@ -269,7 +285,8 @@ const BRIDGED_ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = Object
   ]),
 );
 
-function RoomInfoSection({ room }: { room: RoomDetail }) {
+function RoomInfoSection({ room, viewer }: { room: RoomDetail; viewer: RoomViewer }) {
+  const standing = roomStanding(room, viewer);
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
@@ -277,6 +294,11 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
         <RoomAccessChip room={room} />
+        <InfoChip
+          label="Owner"
+          value={ownerLabel(room)}
+          mono={room.owner_id !== null && room.owner_name === null}
+        />
         {room.channel_type && (
           <InfoChip
             label="Channel type"
@@ -293,8 +315,18 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
           />
         )}
       </Stack>
+      <Typography variant="body2" color="text.secondary">
+        <strong>Your access:</strong> {ROOM_STANDING_LABELS[standing]}.{" "}
+        {roomStandingText(room, standing)}
+      </Typography>
     </Stack>
   );
+}
+
+/** An owner with no name shows by id, as the rooms list shows them. */
+function ownerLabel(room: RoomDetail): string {
+  if (room.owner_id === null) return "No owner";
+  return room.owner_name ?? room.owner_id;
 }
 
 function InfoChip({
@@ -688,11 +720,7 @@ function EditableFieldsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Settings
       </Typography>
-      {!canWrite && (
-        <Alert severity="info">
-          Only this room's owner, its room admins and workspace admins can change these settings.
-        </Alert>
-      )}
+      {!canWrite && <Alert severity="info">{settingsNotice(room)}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
       <TextField
         label="Name"
@@ -748,6 +776,15 @@ function EditableFieldsSection({
       </Box>
     </Stack>
   );
+}
+
+/** Who may change the settings, naming the owner as Switch Console does. */
+function settingsNotice(room: RoomDetail): string {
+  if (room.owner_id === null) {
+    return "This room has no owner, so only its room admins and workspace admins can change these settings.";
+  }
+  const owner = room.owner_name ?? "this room's owner";
+  return `Only ${owner}, a room admin or a workspace admin can change these settings.`;
 }
 
 // ── Participants ─────────────────────────────────────────────────────────────
