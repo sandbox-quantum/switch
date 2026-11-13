@@ -16,6 +16,8 @@ const room = {
   can_add_people: false,
 };
 
+const me = { id: "u-me", administersOrganization: false };
+
 const inRoom = {
   ...room,
   viewer_is_member: true,
@@ -26,24 +28,27 @@ const inRoom = {
 
 describe("roomStanding", () => {
   it("knows the owner by their id", () => {
-    expect(roomStanding({ ...room, owner_id: "u-me", can_manage: true }, "u-me")).toBe("owner");
+    expect(roomStanding({ ...room, owner_id: "u-me", can_manage: true }, me)).toBe("owner");
   });
 
-  it("takes anyone else the server lets delete the room for an admin", () => {
-    expect(roomStanding({ ...inRoom, can_manage: true }, "u-me")).toBe("admin");
+  it("takes anyone else the server lets delete the room for an admin, of the workspace or its organization", () => {
+    expect(roomStanding({ ...inRoom, can_manage: true }, me)).toBe("workspace_admin");
+    expect(
+      roomStanding({ ...room, can_manage: true }, { ...me, administersOrganization: true }),
+    ).toBe("org_admin");
   });
 
   it("puts a room admin above taking part", () => {
-    expect(roomStanding({ ...inRoom, viewer_is_room_admin: true }, "u-me")).toBe("room_admin");
+    expect(roomStanding({ ...inRoom, viewer_is_room_admin: true }, me)).toBe("room_admin");
   });
 
   it("tells taking part from only seeing the room", () => {
-    expect(roomStanding(inRoom, "u-me")).toBe("in_room");
-    expect(roomStanding(room, "u-me")).toBe("view_only");
+    expect(roomStanding(inRoom, me)).toBe("in_room");
+    expect(roomStanding(room, me)).toBe("view_only");
   });
 
   it("owns nothing for a viewer it doesn't know, in a room with no owner", () => {
-    expect(roomStanding({ ...room, owner_id: null }, null)).toBe("view_only");
+    expect(roomStanding({ ...room, owner_id: null }, { ...me, id: null })).toBe("view_only");
   });
 });
 

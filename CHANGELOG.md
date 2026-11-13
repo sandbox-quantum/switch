@@ -55,12 +55,12 @@ version of their own to them without also giving them a release of their own.
 #### Added
 - **A room's page in the web dashboard says who owns it and where you
   stand.** Room info names the owner, or says the room has none, and a "Your
-  access" line says whether you own the room, administer the workspace, are
-  one of its room admins, take part in it, or can only see it, and what that
-  lets you do. Someone who can only see a channel's room is told how to take
-  part: join the channel from a linked chat account, or ask someone in the
-  room to add them. The notice on settings you can't change names the owner,
-  as Switch Console's does.
+  access" line says whether you own the room, administer the workspace or
+  its organization, are one of its room admins, take part in it, or can only
+  see it, and what that lets you do. Someone who can only see a channel's
+  room is told how to take part: join the channel from a linked chat account,
+  or ask someone in the room to add them. The notice on settings you can't
+  change names the owner, as Switch Console's does.
 - **A link into the web dashboard can name its workspace.** A page opened
   with `?workspace=<id>` switches to that workspace first, then opens the
   same page there, rather than showing whichever workspace the browser had

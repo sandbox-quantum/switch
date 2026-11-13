@@ -4,9 +4,22 @@
 import type { RoomSummary } from "../../data/api";
 import { platformLabel } from "../../theme/format";
 
-/** Owning the room, administering the workspace, being one of its room
- * admins, taking part in it, or only seeing it. */
-export type RoomStanding = "owner" | "admin" | "room_admin" | "in_room" | "view_only";
+/** Owning the room, administering its workspace or organization, being one
+ * of its room admins, taking part in it, or only seeing it. */
+export type RoomStanding =
+  | "owner"
+  | "workspace_admin"
+  | "org_admin"
+  | "room_admin"
+  | "in_room"
+  | "view_only";
+
+/** Who is looking: their id, and whether they are `org_admin` of the
+ * workspace's organization, which the server counts as an admin of it. */
+export interface RoomViewer {
+  id: string | null;
+  administersOrganization: boolean;
+}
 
 type StandingRoom = Pick<
   RoomSummary,
@@ -22,11 +35,11 @@ type StandingRoom = Pick<
   | "can_add_people"
 >;
 
-export function roomStanding(room: StandingRoom, viewerId: string | null): RoomStanding {
-  if (viewerId !== null && room.owner_id === viewerId) return "owner";
+export function roomStanding(room: StandingRoom, viewer: RoomViewer): RoomStanding {
+  if (viewer.id !== null && room.owner_id === viewer.id) return "owner";
   // Deleting a room is its owner's or an admin's, so anyone else the server
   // lets delete it is a workspace or organization admin.
-  if (room.can_manage) return "admin";
+  if (room.can_manage) return viewer.administersOrganization ? "org_admin" : "workspace_admin";
   if (room.viewer_is_room_admin) return "room_admin";
   if (room.viewer_is_member) return "in_room";
   return "view_only";
@@ -34,7 +47,8 @@ export function roomStanding(room: StandingRoom, viewerId: string | null): RoomS
 
 export const ROOM_STANDING_LABELS: Record<RoomStanding, string> = {
   owner: "Owner",
-  admin: "Workspace admin",
+  workspace_admin: "Workspace admin",
+  org_admin: "Org admin",
   room_admin: "Room admin",
   in_room: "In the room",
   view_only: "View only",
@@ -45,8 +59,10 @@ export function roomStandingText(room: StandingRoom, standing: RoomStanding): st
   switch (standing) {
     case "owner":
       return "You own this room: you can change it, choose its room admins or delete it.";
-    case "admin":
+    case "workspace_admin":
       return "As a workspace admin, you can change this room, choose its room admins or delete it.";
+    case "org_admin":
+      return "As an org admin, you can change this room, choose its room admins or delete it.";
     case "room_admin":
       return (
         "You can change this room's settings, roles and members. Deleting it, changing who " +

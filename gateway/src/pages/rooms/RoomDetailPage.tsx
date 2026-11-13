@@ -69,7 +69,12 @@ import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 import type { RoomsNotice } from "./RoomsPage";
 import { RoomAccessChip } from "./RoomAccessChip";
-import { ROOM_STANDING_LABELS, roomStanding, roomStandingText } from "./roomStanding";
+import {
+  ROOM_STANDING_LABELS,
+  type RoomViewer,
+  roomStanding,
+  roomStandingText,
+} from "./roomStanding";
 import {
   ROOM_ACCESS_HELPERS,
   ROOM_ACCESS_LEVELS,
@@ -88,7 +93,7 @@ import {
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { canAdminTenant, session } = useAuth();
+  const { canAdminTenant, capabilities, session } = useAuth();
   // Who is looking, to offer taking out their own agent and unlinking their
   // own resources: the server allows those by ownership alone.
   const viewerId = session?.user.id ?? null;
@@ -143,7 +148,10 @@ export default function RoomDetailPage() {
       </Stack>
 
       <Stack spacing={4}>
-        <RoomInfoSection room={room} viewerId={viewerId} />
+        <RoomInfoSection
+          room={room}
+          viewer={{ id: viewerId, administersOrganization: capabilities.administersOrganization }}
+        />
         <Divider />
         <RoomGroupSection
           room={room}
@@ -270,8 +278,8 @@ const BRIDGED_ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = Object
   ]),
 );
 
-function RoomInfoSection({ room, viewerId }: { room: RoomDetail; viewerId: string | null }) {
-  const standing = roomStanding(room, viewerId);
+function RoomInfoSection({ room, viewer }: { room: RoomDetail; viewer: RoomViewer }) {
+  const standing = roomStanding(room, viewer);
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
