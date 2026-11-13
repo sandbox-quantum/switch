@@ -108,7 +108,7 @@ from switch_core.rooms_yaml import (
     RoomYamlService,
     template_json_schema,
 )
-from switch_core.telemetry import emit_safely
+from switch_core.telemetry import emit_after_commit
 from switch_core.template_installs import record_install, vouched_source
 from switch_core.template_runs import (
     LISTEN_TIMEOUT_SECONDS,
@@ -884,7 +884,7 @@ async def _run_as_person(
                 document, inputs=inputs, builtins=builtins
             )
             await rooms_yaml.check_entity_params(parsed, reader=reader)
-            await rooms_yaml.check_bridges(parsed)
+            await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None
@@ -1112,12 +1112,11 @@ async def create_room_role(
         await protocol.room_role_store.define_role(
             session, room_id, req.name, req.instructions, req.exclusive
         )
-        # After the write succeeds but before the outer commit — the same
-        # convention as room_role_deleted below, chosen so a request that
-        # fails validation (e.g. a duplicate name) never reports an event for
-        # a role that was never defined.
-        emit_safely(
-            current_telemetry(), "room_role_defined", {"exclusive": req.exclusive}
+        emit_after_commit(
+            session,
+            current_telemetry(),
+            "room_role_defined",
+            {"exclusive": req.exclusive},
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1162,7 +1161,7 @@ async def delete_room_role(
     await authorize_room(session, room_store, room_id, principal, "write")
     try:
         await protocol.room_role_store.delete_role(session, room_id, name)
-        emit_safely(current_telemetry(), "room_role_deleted", {})
+        emit_after_commit(session, current_telemetry(), "room_role_deleted", {})
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     await session.commit()

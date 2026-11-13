@@ -859,10 +859,10 @@ HOSTED_MACHINE_EVENTS = _spec(
     "sum",
     "{event}",
     "Cloud machine changes, as committed: `requested`, `ready`, `failed`, "
-    "`woken` and `stopped`, at the same points as the product telemetry "
-    "events of those names. `reason` is that event's fixed word (the claim's "
-    "change, the failure, what woke it, why it stopped, or `new` and "
-    "`restart` for ready).",
+    "`woken` and `stopped`, at the points where product telemetry reports "
+    "the same change. `reason` is a fixed word (the claim's change, the "
+    "failure, what woke it, why it stopped, or `new` and `restart` for "
+    "ready).",
     "event",
     "reason",
     "backend",

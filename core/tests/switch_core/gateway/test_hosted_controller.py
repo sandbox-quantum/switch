@@ -1330,13 +1330,14 @@ async def test_recently_errored_empty_machine_is_left_alone(controller_app):
 async def _claim(factory, owner_id: str) -> CloudMachine:
     async with factory() as session:
         await lock_claims(session)
-        machine, _workspace = await CloudMachineStore().claim(
+        claimed = await CloudMachineStore().claim(
             session,
             factory,
             owner_id=owner_id,
             capacity=2,
             now=datetime.now(UTC),
         )
+        machine = claimed.machine
         await session.commit()
         return machine
 

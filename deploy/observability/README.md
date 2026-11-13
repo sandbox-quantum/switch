@@ -350,8 +350,8 @@ is the kind of machine (`vm` for every machine this server makes today).
   `switch.hosted.boxes_expected`. Machines stopped by their owner or for
   idleness are not expected, so they don't set it off.
 - `switch.hosted.machine_events` counts cloud machine changes once committed,
-  at the same points as the product telemetry events of the same names, so it
-  counts whether or not product telemetry is on.
+  at the points where product telemetry reports the same change, so it counts
+  whether or not product telemetry is on.
   An idle machine with no agents left is released with its disk kept rather
   than stopped, and counts as `event:stopped` with `reason:retained`.
   A machine an operator holds stopped (`switch-cloud-machine stop`) counts as

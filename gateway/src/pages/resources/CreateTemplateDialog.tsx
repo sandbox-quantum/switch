@@ -19,24 +19,50 @@ import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import { MAX_DOCUMENT_BYTES, formatBytes } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
 
+/** A template to start the form from, as Duplicate fills it in. */
+export interface TemplateDraft {
+  name: string;
+  description: string;
+  kind: string;
+  access: AccessLevel;
+  content: string;
+}
+
+const EMPTY: TemplateDraft = {
+  name: "",
+  description: "",
+  kind: "room",
+  // Read-only, the registry's own default: the workspace can use it, the
+  // owner or an admin changes it.
+  access: "read_only",
+  content: "",
+};
+
 interface Props {
   open: boolean;
+  title: string;
+  submitLabel: string;
+  /** What the form starts from, or null for an empty one. Read when the
+   * dialog mounts, and again when it is closed. */
+  initial: TemplateDraft | null;
   onClose: () => void;
   onCreated: (id: string) => void;
 }
 
 export default function CreateTemplateDialog({
   open,
+  title,
+  submitLabel,
+  initial,
   onClose,
   onCreated,
 }: Props) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [kind, setKind] = useState("room");
-      // Read-only, the registry's own default: the workspace can use it, the
-  // owner or an admin changes it.
-  const [access, setAccess] = useState<AccessLevel>("read_only");
-  const [content, setContent] = useState("");
+  const start = initial ?? EMPTY;
+  const [name, setName] = useState(start.name);
+  const [description, setDescription] = useState(start.description);
+  const [kind, setKind] = useState(start.kind);
+  const [access, setAccess] = useState<AccessLevel>(start.access);
+  const [content, setContent] = useState(start.content);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -45,11 +71,11 @@ export default function CreateTemplateDialog({
   });
 
   const reset = () => {
-    setName("");
-    setDescription("");
-    setKind("room");
-    setAccess("read_only");
-    setContent("");
+    setName(start.name);
+    setDescription(start.description);
+    setKind(start.kind);
+    setAccess(start.access);
+    setContent(start.content);
     setError(null);
   };
 
@@ -114,7 +140,7 @@ export default function CreateTemplateDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} fullWidth maxWidth="md">
-      <DialogTitle>Upload template</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <TextField
@@ -190,7 +216,7 @@ export default function CreateTemplateDialog({
           disabled={!canSubmit}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
-          Upload
+          {submitLabel}
         </Button>
       </DialogActions>
     </Dialog>

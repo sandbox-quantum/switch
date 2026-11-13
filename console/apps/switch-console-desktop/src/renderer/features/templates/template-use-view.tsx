@@ -38,6 +38,7 @@ import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identi
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
@@ -60,7 +61,7 @@ import {
 } from '@shared/core/providers/agent-provider-registry';
 import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
-import { NEW } from '@shared/core/switch-servers/room-template-params';
+import { CONSOLE_ROOM, NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { CollapsibleInput } from './use/collapsible-input';
 import {
@@ -315,6 +316,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const params = useViewParams();
   const { serverId, intoRoomId = null } = params;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  // Without the server's group_chats flag there are no Switch Console rooms.
+  const consoleOffered = useFeatureFlags(serverId || null).group_chats;
   const { navigate } = useNavigate();
   const { showModal } = useModalContext();
   const queryClient = useQueryClient();
@@ -513,6 +516,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     const bridgeParam = templateParams.find((p) => p.type === 'bridge');
     const picked = bridgeParam ? String(values[bridgeParam.name] ?? '') : '';
     const named = picked !== '' ? picked : (parsed?.bridge ?? null);
+    // A Switch Console room is on no messaging app.
+    if (named === CONSOLE_ROOM) return null;
     if (named) return bridges.find((b) => b.displayName === named) ?? null;
     return bridges.find((b) => b.isDefault) ?? null;
   }, [bridges, parsed, templateParams, values]);
@@ -549,6 +554,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       rooms: roomsQuery.data ?? [],
       roomsLoading: roomsQuery.isLoading,
       bridges,
+      consoleOffered,
       identities,
       knownUsers: knownUsersQuery.data ?? [],
       bridgeId: templateBridge?.id ?? null,
@@ -560,6 +566,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       roomsQuery.data,
       roomsQuery.isLoading,
       bridges,
+      consoleOffered,
       identities,
       knownUsersQuery.data,
       templateBridge,
@@ -726,7 +733,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       if (!isChain(param) || chainDecided.current.has(param.name)) continue;
       let candidates: string[] | undefined;
       if (param.type === 'bridge') {
-        candidates = bridgesQuery.data && bridgeCandidates(bridgesQuery.data);
+        candidates = bridgesQuery.data && bridgeCandidates(bridgesQuery.data, consoleOffered);
       } else if (param.type === 'agent') {
         candidates = agents.data?.map((a) => a.name).sort();
       } else if (param.type === 'room') {
@@ -778,6 +785,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     setups,
     hasRoomPart,
     bridgesQuery.data,
+    consoleOffered,
     agents.data,
     roomsQuery.data,
     allowedHosts,
@@ -1561,6 +1569,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // A short finished state before the page moves on, skipped for a deployer
   // who asked the system for less motion.
   const finish = (detail: string, go: () => void) => {
+    // Every run that succeeds ends here, however it ran, so this is where a
+    // stored or official template's run is counted. A pasted document is no
+    // template's, and is not.
+    if (templateId && workspaceId !== null)
+      void rpc.workspaces.recordTemplateRun({ workspaceId, templateId });
     setDoneDetail(detail);
     setPhase('done');
     const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

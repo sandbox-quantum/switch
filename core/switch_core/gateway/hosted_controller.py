@@ -213,10 +213,7 @@ async def _sweep(
         else:
             store.stop(machine, "idle", now)
             emit_after_commit(
-                session,
-                current_telemetry(),
-                "cloud_machine_stopped",
-                {"reason": "idle"},
+                session, current_telemetry(), "cloud_machine_idle_stopped", {}
             )
             record_machine_event(session, "stopped", "idle")
 

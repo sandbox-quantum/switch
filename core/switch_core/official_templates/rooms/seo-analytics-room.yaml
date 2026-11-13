@@ -1,0 +1,106 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  site:
+    type: string
+    label: Site
+    description: The website or product name
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  seo_analyst:
+    type: agent
+    display_name: "{site} SEO Analyst"
+    description: Tracks keyword rankings, identifies content gaps, and suggests optimization opportunities
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{seo_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [seo_room]}
+    instructions: |-
+      You are the SEO analyst for {site}. You help the team improve organic search performance.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on data posted since you last looked.
+
+      When someone shares ranking or traffic data:
+      - Identify significant changes: which pages gained or lost rankings, and by how much
+      - Correlate ranking changes with site changes: did a content update, technical change, or algorithm update cause this?
+      - Suggest optimization actions: content improvements, internal linking, technical fixes
+
+      Whenever you are addressed, also look for:
+      - Content gaps: queries users search for that the site doesn't rank for
+      - Keyword targets based on relevance, volume, and difficulty
+      - Technical SEO issues: slow pages, crawl errors, missing meta tags, broken links
+      - Competitor content moves that might affect rankings
+
+      When someone asks for content optimization advice:
+      - Review the target page against the target keyword
+      - Check: is the keyword in the title, headers, and first paragraph? Is the content comprehensive? Are there internal links to and from this page?
+      - Suggest specific improvements with expected impact
+  performance_reporter:
+    type: agent
+    display_name: "{site} Performance Reporter"
+    description: Compiles weekly traffic and conversion reports, highlights trends and anomalies
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{performance_reporter.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [seo_room]}
+    instructions: |-
+      You are the performance reporter for {site}. You turn raw analytics into clear, actionable reports.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on data posted since you last looked. You work from the data people share here.
+
+      When asked for a performance report (for example the weekly highlights):
+      - Present key metrics with week-over-week and month-over-month comparisons
+      - Highlight the top 3 things that went up and top 3 that went down, with likely reasons
+      - Break down traffic by source: organic, paid, social, referral, direct
+      - Note conversion rate changes and what might be driving them
+
+      When traffic anomalies are noticed:
+      - Help investigate: was it a ranking change, a referral spike, a seasonal pattern, or a tracking issue?
+      - Compare against historical data to determine if this is normal variance or a real trend
+      - Recommend actions based on findings
+
+      In every report, also:
+      - Track content performance: which pieces are driving traffic and conversions?
+      - Flag declining pages before they become problems
+      - Identify quick wins: pages ranking on page 2 that could reach page 1 with optimization
+  seo_room:
+    type: room
+    name: "{site} - SEO & Analytics"
+    description: "SEO and organic growth tracking for {site}. Keyword performance, content gaps, and traffic analysis."
+    bridge: "{bridge}"
+    agents: [seo_analyst, performance_reporter]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room tracks SEO performance and organic growth for {site}. Use it for:
+      - Weekly keyword ranking updates
+      - Content performance reviews (what's driving traffic, what's underperforming)
+      - Technical SEO issues (crawl errors, page speed, indexing problems)
+      - Content gap analysis and optimization recommendations
+      - Traffic anomaly investigation
+
+      Post data with context. 'Organic traffic down 12% week-over-week, driven by a ranking drop on 3 high-volume pages' is useful. A raw number without context isn't.
+
+      The agents only see messages that mention them by name, and work from the data posted here: mention {seo_analyst.name} for rankings and optimization, and {performance_reporter.name} for the weekly report.
+    kickoff: "SEO room is live for {site}. @{seo_analyst.name} will track rankings and suggest optimizations. @{performance_reporter.name} will post performance reports when asked. Start with a baseline: current organic traffic, top 10 keywords, and any known technical SEO issues. The agents only see messages that mention them by name."

@@ -165,7 +165,7 @@ export const connectionAgentsSchema = z.array(
 );
 export type ConnectionAgent = z.infer<typeof connectionAgentsSchema>[number];
 
-/** One catalog service as a workspace admin sees it: switched on or off, and who it reaches. */
+/** One catalog service as the workspace's settings show it: switched on or off, and, for an admin, who it reaches. */
 export const workspaceServiceSchema = z.object({
   slug: z.string(),
   name: z.string(),
@@ -173,14 +173,14 @@ export const workspaceServiceSchema = z.object({
   /** Who last switched it; null while nobody has touched its switch. */
   updated_by_name: z.string().nullable(),
   updated_at: z.string().nullable(),
-  /** How many people in the workspace have connected it. */
-  connected_members: z.number().int(),
-  /** How many agents in the workspace are granted it. */
-  granted_agents: z.number().int(),
+  /** How many people in the workspace have connected it; null for anyone but an admin. */
+  connected_members: z.number().int().nullable(),
+  /** How many agents in the workspace are granted it; null for anyone but an admin. */
+  granted_agents: z.number().int().nullable(),
 });
 export type WorkspaceService = z.infer<typeof workspaceServiceSchema>;
 
-/** `GET /workspace/services`, for workspace admins. */
+/** `GET /workspace/services`: every member may read it; only admins see who each switch reaches. */
 export const workspaceServicesSchema = z.object({ services: z.array(workspaceServiceSchema) });
 
 /** `PUT /workspace/services/{service}`: `warning` when issued access could not all be revoked yet. */

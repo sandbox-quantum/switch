@@ -57,6 +57,14 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["sentry"].skill_files
 
 
+def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
+    for slug, entry in CATALOG.items():
+        definition = entry.definition
+        if definition.enabled:
+            assert definition.publisher, slug
+            assert definition.links is not None, slug
+
+
 GOOGLE = "https://www.googleapis.com/auth/"
 
 
@@ -679,6 +687,11 @@ name: Example
 category: Project management
 description: Read and update Example work items.
 enabled: true
+publisher: Example
+links:
+  documentation: https://docs.example.test/mcp
+  support: https://support.example.test
+  privacy: https://example.test/privacy
 adapter: oauth
 auth:
   type: oauth
@@ -1038,6 +1051,8 @@ def test_placeholders_keep_their_short_form():
         assert definition.token is None
         assert definition.mcp is None
         assert definition.cli is None
+        assert definition.publisher is None
+        assert definition.links is None
 
 
 CLI_RELEASE = (

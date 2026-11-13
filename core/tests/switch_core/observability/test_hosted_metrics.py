@@ -341,6 +341,40 @@ class TestMachineEvents:
             session.close()
         assert "switch.hosted.machine_events" not in _points(registry)
 
+    def test_a_savepoint_committing_does_not_count_when_the_transaction_rolls_back(
+        self, registry: MetricsRegistry
+    ) -> None:
+        """As `emit_after_commit`: only the outermost commit counts."""
+        session = Session(create_engine("sqlite://"))
+        wrapper: Any = SimpleNamespace(sync_session=session)
+        try:
+            session.execute(text("SELECT 1"))
+            record_machine_event(wrapper, "stopped", "owner")
+            nested = session.begin_nested()
+            session.execute(text("SELECT 1"))
+            nested.commit()
+            session.rollback()
+        finally:
+            session.close()
+        assert "switch.hosted.machine_events" not in _points(registry)
+
+    def test_a_savepoint_committing_inside_a_committed_transaction_counts_once(
+        self, registry: MetricsRegistry
+    ) -> None:
+        session = Session(create_engine("sqlite://"))
+        wrapper: Any = SimpleNamespace(sync_session=session)
+        try:
+            session.execute(text("SELECT 1"))
+            record_machine_event(wrapper, "stopped", "owner")
+            nested = session.begin_nested()
+            nested.commit()
+            session.commit()
+        finally:
+            session.close()
+        assert _points(registry)["switch.hosted.machine_events"] == [
+            ({"event": "stopped", "reason": "owner", "backend": "vm"}, 1.0)
+        ]
+
 
 class TestReconcilerWatch:
     def test_absent_until_heard_then_the_seconds_since(

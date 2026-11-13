@@ -109,9 +109,9 @@ REFUSAL_REASONS = frozenset(
 )
 # The kinds of route a credential is refused on. Anything else is `other`.
 REFUSAL_ROUTES = frozenset({"agent", "management", "controller", "hosted_controller"})
-# Cloud machine changes, each with its fixed words: the product telemetry
-# catalogue's values for the event of the same name (`cloud_machine_*`), and
-# `new` or `restart` for ready. Anything else is `other`.
+# Cloud machine changes, each with its fixed words: the claim's change, the
+# failure, what woke it, why it stopped, and `new` or `restart` for ready.
+# Anything else is `other`.
 MACHINE_EVENTS: dict[str, frozenset[str]] = {
     "requested": frozenset({"new", "joined_workspace", "unretained", "restarted"}),
     "ready": frozenset({"new", "restart"}),
@@ -373,7 +373,10 @@ def after_commit(session: AsyncSession, record: Callable[[], None]) -> None:
 
     def on_commit(_session: Session) -> None:
         nonlocal committed
-        committed = True
+        # A savepoint's commit fires this too, with the savepoint still
+        # current; only the outermost commit makes the change durable.
+        if not _session.in_nested_transaction():
+            committed = True
 
     def on_end(_session: Session, transaction: SessionTransaction) -> None:
         nonlocal decided

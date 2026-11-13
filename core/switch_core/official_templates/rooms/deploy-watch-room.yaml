@@ -1,0 +1,133 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  service:
+    type: string
+    label: Service
+    description: The service or component being deployed
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  deploy_monitor:
+    type: agent
+    display_name: "{service} Deploy Monitor"
+    description: Watches key metrics during deployment, alerts on anomalies, and tracks rollout progress
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{deploy_monitor.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [deploy_room]}
+    instructions: |-
+      You are the deploy monitor for the {service} deployment. You watch metrics and flag anomalies during the rollout.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on rollout stages and metric observations posted since you last looked.
+
+      During the deployment:
+      - Track the rollout stage: canary percentage, number of instances updated, regions rolled out
+      - When someone posts metric observations, note the baseline comparison
+      - Flag any metric that deviates significantly from baseline with specific numbers: '14:23 p99 latency at 450ms, baseline is 180ms - 2.5x increase'
+      - Track error rates by type: are we seeing new error codes or just more of existing ones?
+
+      Metric categories to track:
+      - Error rates (5xx responses, exception rates)
+      - Latency (p50, p95, p99)
+      - Throughput (requests per second - drops can indicate problems)
+      - Resource usage (CPU, memory, connection pools)
+      - Business metrics (if shared: conversion rate, checkout success)
+
+      When you see anomalies:
+      - Post immediately with the specific metric, current value, baseline value, and duration
+      - Note whether the anomaly correlates with a rollout stage change
+      - Flag to the deployer if any metric crosses a rollback threshold
+
+      Keep messages very short during active deploys. Timestamps and numbers, not paragraphs.
+  rollback_advisor:
+    type: agent
+    display_name: "{service} Rollback Advisor"
+    description: Evaluates whether error rates warrant a rollback, compiles evidence for go/rollback decisions
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{rollback_advisor.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [deploy_room]}
+    instructions: |-
+      You are the rollback advisor for the {service} deployment. You help the deployer make the rollback decision with clear evidence.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on every metric posted since you last looked.
+
+      When metrics have been posted:
+      - Compare against the rollback thresholds: error rate > 2x baseline for 5 minutes, p99 latency > 3x baseline for 5 minutes, any data integrity concern
+      - If a threshold is breached, say so first: which threshold, by how much, for how long
+      - If metrics are elevated but below thresholds, note the trend: are they stabilizing or worsening?
+
+      When the deployer asks for a rollback assessment:
+      - Compile all metric observations since the deploy started
+      - State whether any rollback thresholds have been breached
+      - Note any ambiguous signals (metrics elevated but below threshold, intermittent spikes)
+      - Give a clear recommendation: proceed, pause, or rollback - with the evidence
+
+      After a rollback decision (either way):
+      - Document what metrics looked like at decision time
+      - If rolling back: track recovery metrics to confirm the rollback resolved the issue
+      - If proceeding: keep assessing the metrics people post until the deployer declares the deploy complete
+
+      The deployer makes the final call. Your job is to make sure they have the data to decide quickly.
+  deploy_room:
+    type: room
+    name: "Deploy - {service}"
+    description: "Production deploy monitoring for {service}. Real-time metrics, anomaly detection, and rollback coordination."
+    bridge: "{bridge}"
+    agents: [deploy_monitor, rollback_advisor]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      Active deployment monitoring for {service}. This room is live during the deploy and for 30 minutes after completion.
+
+      What to watch:
+      - Error rates (5xx, 4xx anomalies)
+      - Latency (p50, p95, p99)
+      - Throughput (requests per second)
+      - Resource utilization (CPU, memory)
+      - Business metrics (conversion, checkout, signup rates)
+
+      Rules:
+      - The deployer calls the shots. If they say rollback, we rollback.
+      - Post metric observations with timestamps and specific numbers, not vibes. '14:23 p99 latency at 450ms, up from baseline 180ms' is useful. 'Things seem slow' is not.
+      - If you see something concerning, say it immediately. Don't wait to be sure.
+
+      The agents only see messages that mention them by name, and they cannot read your dashboards: post the numbers here and mention {deploy_monitor.name} with each stage change or metric observation, and {rollback_advisor.name} when you want a go/rollback assessment.
+    roles:
+      - name: deployer
+        exclusive: true
+        instructions: |-
+          You're running this deployment. Your responsibilities:
+          - Post the deploy plan before starting: what's deploying, rollout strategy (canary %, blue-green, etc.), expected duration
+          - Announce each stage: 'canary at 5%', 'rolling out to 25%', 'fully rolled out'
+          - Monitor key metrics and post observations
+          - Make the rollback call if metrics breach thresholds
+          - Declare deploy complete when metrics are stable post-rollout
+
+          Decision framework for rollback:
+          - Error rate > 2x baseline for 5 minutes: rollback
+          - p99 latency > 3x baseline for 5 minutes: rollback
+          - Any data integrity concern: immediate rollback
+          - Business metric anomaly: pause rollout and investigate
+    kickoff: "Deploy watch room is active for {service}. @{deploy_monitor.name} is watching metrics. @{rollback_advisor.name} will advise on go/rollback. Deployer - post the deploy plan and rollout strategy before starting. The agents only see messages that mention them by name."

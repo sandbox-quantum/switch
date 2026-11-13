@@ -157,13 +157,14 @@ async def _claim(
 ) -> CloudMachine:
     async with session_factory() as session:
         await lock_claims(session)
-        machine, _workspace = await CloudMachineStore().claim(
+        claimed = await CloudMachineStore().claim(
             session,
             session_factory,
             owner_id=owner.id,
             capacity=1,
             now=datetime.now(UTC),
         )
+        machine = claimed.machine
         await session.commit()
         return machine
 
@@ -486,6 +487,29 @@ class TestControllerMachines:
                 assert dict(provisioned.attributes) == {"backend": "vm"}
                 assert provisioned.count == 1
                 assert provisioned.total >= 0
+                # Up again at the same revision: ready before, so not new,
+                # and not timed.
+                await _update(
+                    harness.session_factory,
+                    machine.id,
+                    state="provisioning",
+                    running_observed_at=datetime.now(UTC),
+                )
+                await report_status(client, controller, 4)  # type: ignore[arg-type]
+                assert reported.events("cloud_machine_ready")[1] == {
+                    "new_machine": False
+                }
+                # A's metric agrees: the second ready is a restart.
+                restarted = [
+                    (dict(p.attributes), p.value)
+                    for payload in hosted_metrics.collect()
+                    if payload.name == "switch.hosted.machine_events"
+                    for p in payload.numbers
+                ]
+                assert (
+                    {"event": "ready", "reason": "restart", "backend": "vm"},
+                    1.0,
+                ) in restarted
 
                 created = await create_managed_agent(
                     client,
@@ -662,7 +686,8 @@ class TestControllerMachines:
         assert listed.status_code == 200, listed.text
         after = await _machine(harness.session_factory, machine.id)
         assert (after.desired_state, after.stop_reason) == ("stopped", "idle")
-        assert reported.events("cloud_machine_stopped") == [{"reason": "idle"}]
+        assert reported.events("cloud_machine_idle_stopped") == [{}]
+        assert reported.events("cloud_machine_stopped") == []
         assert ({"event": "stopped", "reason": "idle", "backend": "vm"}, 1.0) in (
             _metric_points(hosted_metrics, "switch.hosted.machine_events")
         )
@@ -726,9 +751,7 @@ class TestControllerMachines:
             await session.commit()
         held = await _machine(harness.session_factory, machine.id)
         assert (held.desired_state, held.stop_reason) == ("stopped", "admin")
-        assert reported.events("cloud_machine_woken") == [
-            {"trigger": "message", "stopped_by": "idle"}
-        ]
+        assert reported.events("cloud_machine_woken") == [{"trigger": "message"}]
 
     async def test_a_woken_machine_counts_as_expected_only_once_it_reports(
         self, harness: Harness
@@ -978,9 +1001,7 @@ class TestControllerMachines:
         assert created.status_code == 201, created.text
         after = await _machine(harness.session_factory, machine.id)
         assert (after.desired_state, after.stop_reason) == ("running", None)
-        assert reported.events("cloud_machine_woken") == [
-            {"trigger": "agent_placed", "stopped_by": "idle"}
-        ]
+        assert reported.events("cloud_machine_woken") == [{"trigger": "agent_placed"}]
 
 
 async def test_a_controller_machine_needs_agent_management(

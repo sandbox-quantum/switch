@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapterError
+from switch_core.connections.broker import ServiceBroker
 from switch_core.db.audit import AuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -175,19 +176,19 @@ async def _issuances(
 
 class TestWhoMayCall:
     @pytest.mark.parametrize(
-        ("member_role", "user_role", "expected"),
+        ("member_role", "user_role", "may_switch"),
         [
-            ("member", "user", 403),
-            ("admin", "user", 200),
-            ("member", "admin", 200),
+            ("member", "user", False),
+            ("admin", "user", True),
+            ("member", "admin", True),
             # The operator may enter any workspace, on `platform_access`,
             # which the workspace's audit log records.
-            (None, "admin", 200),
+            (None, "admin", True),
         ],
         ids=["member", "admin", "operator-as-member", "operator-not-a-member"],
     )
-    async def test_only_admins_and_the_operator(
-        self, harness: Harness, member_role, user_role, expected
+    async def test_everyone_in_it_may_read_and_only_admins_may_switch(
+        self, harness: Harness, member_role, user_role, may_switch
     ) -> None:
         user = await _person(
             harness.session_factory,
@@ -197,7 +198,9 @@ class TestWhoMayCall:
         )
         listed = await _get(harness, user)
         switched = await _put(harness, user, "datadog", {"enabled": False})
-        assert (listed.status_code, switched.status_code) == (expected, expected)
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["can_change"] is may_switch
+        assert switched.status_code == (200 if may_switch else 403)
 
     async def test_signed_out_is_unauthorized(self, harness: Harness) -> None:
         assert (await _get(harness, None)).status_code == 401
@@ -238,7 +241,8 @@ class TestResults:
         if on_by_default:
             await services_on_by_default(harness.session_factory)
         admin = await _person(harness.session_factory, "admin", member_role="admin")
-        services = _by_slug(await _get(harness, admin))
+        listed = await _get(harness, admin)
+        services = _by_slug(listed)
         assert set(services) == {
             "airtable",
             "atlassian",
@@ -252,14 +256,32 @@ class TestResults:
         assert services["datadog"] == {
             "slug": "datadog",
             "name": "Datadog",
+            "category": "Observability",
+            "description": (
+                "Query Datadog metrics, logs, traces, monitors and incidents, "
+                "with your keys."
+            ),
+            "auth_type": "api_key",
             "enabled": on_by_default,
+            "decided_by": "workspace_default",
             "organization_locked": False,
+            "organization_default": None,
+            "can_change": True,
             "updated_by_name": None,
             "workspace_set": False,
             "updated_at": None,
+            "app_source": "server",
+            # The harness's Datadog key has no expiry, so it is never handed
+            # out: why, whatever the switch says.
+            "unavailable_reason": (
+                "Datadog keys do not expire and only Datadog can revoke them, "
+                "so Switch does not hand them to agents."
+            ),
+            "unavailable_code": "key_never_expires",
             "connected_members": 0,
             "granted_agents": 0,
         }
+        assert listed.json()["on_by_default"] is on_by_default
 
     async def test_a_switch_round_trips_naming_the_admin_with_one_audit_row_each(
         self, harness: Harness
@@ -319,6 +341,56 @@ class TestResults:
             services["atlassian"]["connected_members"],
             services["atlassian"]["granted_agents"],
         ) == (0, 0)
+
+    async def test_a_member_reads_the_state_but_not_who_it_reaches(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        await connect(harness.session_factory, ada.id, account_id="1001")
+        agent_id, _ = await agent_with_key(harness.session_factory, ada, "builder")
+        await grant_directly(harness.session_factory, agent_id, ada.id)
+
+        listed = await _get(harness, ada)
+        github = _by_slug(listed)["github"]
+
+        assert listed.json()["can_change"] is False
+        assert github["can_change"] is False
+        assert (github["connected_members"], github["granted_agents"]) == (None, None)
+        assert github["decided_by"] == "workspace_default"
+
+    async def test_a_member_reads_why_a_service_cant_be_used_as_on_their_own_list(
+        self, harness: Harness
+    ) -> None:
+        """Every member already reads each service's reason, server setup
+        and the organization's app included, for their own connections:
+        this list tells them nothing that one doesn't."""
+        ada = await add_member(harness.session_factory, "ada")
+        broker: ServiceBroker = harness.gateway_app.state.service_broker
+        broker._disabled["github"] = "GitHub is switched off on this server."
+        listed = _by_slug(await _get(harness, ada))
+        async with harness.client() as client:
+            own = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+        assert own.status_code == 200, own.text
+        theirs = {
+            entry["slug"]: (entry["unavailable_reason"], entry["unavailable_code"])
+            for entry in own.json()["connections"]
+        }
+        assert {
+            slug: (service["unavailable_reason"], service["unavailable_code"])
+            for slug, service in listed.items()
+        } == {slug: theirs[slug] for slug in listed}
+        assert listed["github"]["unavailable_code"] == "switched_off"
+
+    async def test_names_no_organization_where_it_has_no_say(
+        self, harness: Harness
+    ) -> None:
+        """This harness runs without `organization_connector_apps`, so the
+        workspace's organization never decides a connector here."""
+        admin = await _person(harness.session_factory, "admin", member_role="admin")
+        listed = await _get(harness, admin)
+        assert listed.json()["organization_name"] is None
 
 
 class TestSwitchingOff:

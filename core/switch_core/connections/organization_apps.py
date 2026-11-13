@@ -68,7 +68,7 @@ def unusable(name: str, error: str) -> str:
     cannot be used, for a reason its organization admins can fix."""
     return (
         f"Your organization's {name} app can't be used: {error} An organization "
-        "admin can fix it under Organization, Connectors."
+        "admin can fix it in your organization's connector settings."
     )
 
 
