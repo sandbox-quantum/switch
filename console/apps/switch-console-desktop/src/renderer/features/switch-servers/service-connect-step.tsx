@@ -129,8 +129,7 @@ export function ServiceConnectStep({
   };
   const progress = signInProgress(flow, connection.name);
   const hint = flowId && slowFlowId === flowId ? signInHint(flow, connection.name) : null;
-  const needsReconnect =
-    connection.status === 'needs_reauthorization' || connection.status === 'error';
+  const needsReconnect = connection.status === 'needs_reauthorization';
   return (
     <>
       <DialogHeader showCloseButton={closable}>

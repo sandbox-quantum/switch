@@ -1095,6 +1095,16 @@ ROUTES: dict[str, Case] = {
         json={"completion_secret": "{flow_secret}", "code": "matrix"},
         why="Its owner's; refused then, this server having no Atlassian app.",
     ),
+    "POST /gateway/service-connections/{service}/flows/{flow_id}/fail": post(
+        f"{G}/service-connections/atlassian/flows/{{service_flow}}/fail",
+        owner(ok=400, refused=410),
+        json={
+            "completion_secret": "m" * 43,
+            "error": "access_denied",
+            "error_description": None,
+        },
+        why="Its owner's; refused then, the secret not being the one it was started with.",
+    ),
     "GET /gateway/provider-connections/github": get(
         f"{G}/provider-connections/github", SELF
     ),

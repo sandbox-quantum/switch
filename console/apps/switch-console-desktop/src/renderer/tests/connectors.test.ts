@@ -34,6 +34,7 @@ import {
 } from '@renderer/features/connectors/github-access';
 import {
   emptyGitHubGrant,
+  githubAccessOptions,
   githubChoiceSummary,
   githubGrantResources,
   withEveryRepository,
@@ -46,6 +47,7 @@ import {
   addableAgents,
   agentsSummary,
   agentsUnlistedText,
+  noAddableAgentsText,
   noAgentsText,
   offersAddAgent,
   staleGrantsText,
@@ -72,6 +74,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     agent_access_note: null,
@@ -106,10 +109,6 @@ describe('the state a connector card shows', () => {
       label: 'Reconnect needed',
       detail: 'Switch can no longer use your Example connection. Connect again.',
       tone: 'problem',
-    });
-    expect(connectorCardState(entry({ status: 'error' }), MEMBER)).toMatchObject({
-      kind: 'reconnect',
-      label: 'Connection failed',
     });
     expect(connectorCardState(entry({ status: 'connected' }), MEMBER).kind).toBe('connected');
     expect(connectorCardState(entry(), MEMBER).kind).toBe('connect');
@@ -209,7 +208,8 @@ describe('what each person is told about a connector that cannot be used', () =>
       expect(connectorCardState(github, viewer)).toMatchObject({
         kind: 'unavailable',
         label: 'Unavailable',
-        detail: "GitHub needs a server with an https address, so it can't work on this one.",
+        detail:
+          "GitHub needs a server with an https address, or one on this computer, so it can't work on this one.",
         fix: null,
       });
   });
@@ -217,11 +217,11 @@ describe('what each person is told about a connector that cannot be used', () =>
   it("points at this computer's own GitHub sign-in where the server runs on it", () => {
     const here = { ...MEMBER, onThisComputer: true };
     expect(connectorCardState(github, here).detail).toBe(
-      "GitHub needs a server with an https address, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
+      "GitHub needs this server's address to be https, or http at localhost or 127.0.0.1, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
     );
     // Only GitHub has a sign-in of its own on the computer to fall back on.
     expect(connectorCardState({ ...github, slug: 'example', name: 'Example' }, here).detail).toBe(
-      "Example needs a server with an https address, so it can't work on this one."
+      "Example needs a server with an https address, or one on this computer, so it can't work on this one."
     );
   });
 
@@ -304,7 +304,7 @@ describe('what each person is told about a connector that cannot be used', () =>
   it('takes Connect off the profile where nothing could be connected', () => {
     expect(profileConnectAction(notSetUp)).toBeNull();
     expect(profileConnectAction(github)).toBeNull();
-    expect(profileConnectAction({ ...github, status: 'error' })).toBeNull();
+    expect(profileConnectAction({ ...github, status: 'needs_reauthorization' })).toBeNull();
     // Connectable where it cannot be granted: still offered.
     expect(
       profileConnectAction(
@@ -334,7 +334,12 @@ describe('the Yours and Discover tabs', () => {
       description: 'Monitors, logs and incidents.',
       status: 'connected',
     }),
-    entry({ slug: 'github', name: 'GitHub', category: 'Source control', status: 'error' }),
+    entry({
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      status: 'needs_reauthorization',
+    }),
     entry({
       slug: 'jira-ish',
       name: 'Linear',
@@ -400,7 +405,6 @@ describe("a card's own control", () => {
     expect(quick({ workspace_enabled: false })).toBeNull();
     expect(quick({ status: 'coming_soon' })).toBeNull();
     expect(quick({ status: 'needs_reauthorization' })).toBeNull();
-    expect(quick({ status: 'error' })).toBeNull();
   });
 });
 
@@ -459,7 +463,6 @@ describe('the profile', () => {
   it('offers connecting, signing in again, or replacing a key', () => {
     expect(profileConnectAction(entry())).toBe('connect');
     expect(profileConnectAction(entry({ status: 'needs_reauthorization' }))).toBe('reconnect');
-    expect(profileConnectAction(entry({ status: 'error' }))).toBe('reconnect');
     // A connected sign-in can be made again, to switch account or consent again.
     expect(profileConnectAction(entry({ status: 'connected' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ slug: 'github', status: 'connected' }))).toBeNull();
@@ -586,6 +589,22 @@ describe('the agents on a connector page', () => {
     });
   });
 
+  it('offers pushing only where the server lets agents write', () => {
+    expect(githubAccessOptions(null)).toEqual([
+      { value: 'read', label: 'Read', disabled: false },
+      { value: 'write', label: 'Read and push', disabled: false },
+    ]);
+    expect(
+      githubAccessOptions("This server's GitHub App lets agents read only.").map((option) => [
+        option.value,
+        option.disabled,
+      ])
+    ).toEqual([
+      ['read', false],
+      ['write', true],
+    ]);
+  });
+
   it('says a GitHub choice in a sentence, naming the account only among several', () => {
     const one = {
       status: 'connected' as const,
@@ -680,6 +699,14 @@ describe('the agents on a connector page', () => {
     expect(noAgentsText('Example')).toBe(
       "You have no agents in this workspace yet. Once you add one, turn Example on for it from the agent's Connectors."
     );
+  });
+
+  it('says why the search offers no agent, and nothing more when there are none', () => {
+    expect(noAddableAgentsText(agents, 'Example', '')).toBe(
+      'Every one of your agents already uses Example.'
+    );
+    expect(noAddableAgentsText(agents, 'Example', 'M3')).toBe('No agent here matches “M3”.');
+    expect(noAddableAgentsText([], 'Example', '')).toBeNull();
   });
 });
 
@@ -897,9 +924,12 @@ describe('with the service_connections flag off', () => {
 
   it('has no page to show, rather than an empty one', () => {
     expect(connectorsPageAccess(flags(false))).toBe('absent');
+    // Flags that could never be read are said to be, not taken as off.
     expect(connectorsPageAccess({ ...flags(false), fetchedAt: null, error: 'down' })).toBe(
-      'absent'
+      'unreadable'
     );
+    // Once read, the last values read stand while a later read fails.
+    expect(connectorsPageAccess({ ...flags(true), error: 'down' })).toBe('shown');
     expect(connectorsPageAccess(null)).toBe('loading');
     expect(
       connectorsPageAccess({ ...flags(false), fetchedAt: null, error: FLAGS_NOT_READ_YET })

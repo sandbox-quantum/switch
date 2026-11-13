@@ -6,6 +6,7 @@ import {
   grantedRepositoryIds,
   grantedRepositoryNames,
   onOffGrantBlock,
+  onOffGrantNote,
 } from './service-grants';
 
 const GITHUB = {
@@ -107,5 +108,21 @@ describe('turning an on/off grant on', () => {
       reason: 'To turn Example on, first connect it from Connectors.',
       blocksOn: true,
     });
+  });
+});
+
+describe('the note on an on/off grant', () => {
+  it('says a longer-lived token may keep working, and promises nothing of disconnecting', () => {
+    const note = onOffGrantNote('helper', { name: 'Example', token_lifetime: 8 * 3600, key: null });
+    expect(note).toContain(
+      'A token already handed out may keep working at Example until it expires, up to 8 hours after it was handed out.'
+    );
+    expect(note).not.toContain('disconnect');
+  });
+
+  it('says nothing of a token that lives an hour at most', () => {
+    expect(
+      onOffGrantNote('helper', { name: 'Example', token_lifetime: 3600, key: null })
+    ).not.toContain('A token');
   });
 });

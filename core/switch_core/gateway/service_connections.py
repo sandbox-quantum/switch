@@ -148,6 +148,10 @@ async def list_service_connections(
                 # Whose app it signs in through here: "organization" where the
                 # workspace's organization saved its own, else "server".
                 "app_source": standing.source,
+                # Why it can be granted for reading only here, for a form to
+                # say beside the write choice it disables; null where writing
+                # can be granted too.
+                "read_only_reason": broker.read_only(standing, definition.slug),
                 # Whether a workspace admin left it on for this workspace.
                 "workspace_enabled": switches is None
                 or switches[definition.slug].enabled,

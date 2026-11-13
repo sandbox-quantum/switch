@@ -56,7 +56,12 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
-from tests.switch_core.connections.standing import availability, connectable, standing
+from tests.switch_core.connections.standing import (
+    availability,
+    connectable,
+    read_only,
+    standing,
+)
 from tests.switch_core.connections.test_loader import (
     CLI_ENTRY,
     OAUTH_ENTRY,
@@ -472,7 +477,7 @@ class TestChecks:
             "internal",
             False,
         )
-        assert "not available here" in refused.message
+        assert refused.message == await availability(broker, "github")
         assert await connectable(broker, "github") is False
 
     async def test_an_owner_no_longer_in_the_workspace_is_forbidden(
@@ -818,6 +823,103 @@ class TestConnectOnly:
             )
         assert token == "gho_access_1"
         assert vendor.refreshes == 1 and vendor.issued == []
+
+
+READ_ONLY = (
+    "This server's GitHub App lets agents read only, so GitHub can't be granted "
+    "for writing. Whoever runs your Switch server can change that in Switch "
+    "Console, under Admin → Connector apps."
+)
+
+
+class TestReadOnlyApp:
+    """A GitHub App short of the write level's permissions lets agents read
+    only: a write grant on it is refused before GitHub is asked, and so is a
+    token for one made before. Read grants are untouched."""
+
+    async def test_a_write_grant_is_refused_saying_who_can_change_that(
+        self, broker, session_factory, vendor
+    ) -> None:
+        vendor.read_only = True
+        world = await _world(session_factory, access="read")
+        assert await read_only(broker, "github") == READ_ONLY
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            with pytest.raises(ServiceError) as caught:
+                await broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=world.owner.id,
+                    service="github",
+                    access="write",
+                    tool_mode=None,
+                    tools=None,
+                    resources=RESOURCES,
+                )
+        assert (
+            caught.value.status_code,
+            caught.value.code,
+            caught.value.message,
+            caught.value.retryable,
+        ) == (403, "forbidden", READ_ONLY, False)
+        async with session_factory() as session:
+            with pytest.raises(ServiceError) as checked:
+                await broker.check_grant_terms(
+                    session,
+                    owner_id=world.owner.id,
+                    service="github",
+                    access="write",
+                    repositories=["example-org/app"],
+                )
+        assert checked.value.message == READ_ONLY
+        # Refused before GitHub, or the owner's sign-in, was asked anything.
+        assert vendor.checked == [] and vendor.resolved == []
+        assert vendor.refreshes == 0
+        async with session_factory() as session:
+            grant = await session.get(ServiceGrant, (TENANT_ZERO_ID, world.grant.id))
+            assert grant is not None and grant.access == "read"
+
+    async def test_a_read_grant_is_made_as_ever(
+        self, broker, session_factory, vendor
+    ) -> None:
+        vendor.read_only = True
+        world = await _world(session_factory, access="read")
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            grant, _ = await broker.set_grant(
+                session,
+                agent=agent,
+                actor_id=world.owner.id,
+                service="github",
+                access="read",
+                tool_mode=None,
+                tools=None,
+                resources=RESOURCES,
+            )
+        assert grant.access == "read"
+        token = await _issue(broker, session_factory, world.agent.id)
+        assert vendor.issued == [("gho_access_0", token.token)]
+
+    async def test_a_write_grant_made_before_gets_no_token(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory, access="write")
+        vendor.read_only = True
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (
+            refused.status_code,
+            refused.code,
+            refused.message,
+            refused.retryable,
+        ) == (403, "forbidden", READ_ONLY, False)
+        assert vendor.issued == [] and await _issuances(session_factory) == []
+        # The grant is kept: once the App can write again, so can the agent.
+        vendor.read_only = False
+        assert await read_only(broker, "github") is None
+        token = await _issue(broker, session_factory, world.agent.id)
+        assert vendor.issued == [("gho_access_0", token.token)]
 
 
 class TestAccessEndsInFlight:
@@ -1981,6 +2083,61 @@ class TestWorkspaceSwitch:
         assert len(g.github.connections_revoked) == 1
 
 
+class TestSessionGrants:
+    """A session is given a grant only where a token for it would be issued,
+    so it never holds tools whose every call is refused."""
+
+    async def _listed(self, g: Gated, session_factory) -> list[str]:
+        async with session_factory() as session:
+            agent = await session.get(Agent, g.world.agent.id)
+            assert agent is not None
+            grants = await g.broker.grants_for(session, agent, Principal.agent_key())
+        return sorted(grant["service"] for grant in grants)
+
+    async def test_a_service_switched_off_on_the_server_is_left_out(
+        self, session_factory, tmp_path
+    ) -> None:
+        g = await _gated(
+            session_factory,
+            tmp_path / "c",
+            gate=False,
+            disabled={"example": "Maintenance"},
+        )
+
+        assert await self._listed(g, session_factory) == ["github"]
+        refused = await _refused(
+            g.broker, session_factory, g.world.agent.id, service="example"
+        )
+        assert refused.message == "Maintenance"
+
+    async def test_a_service_whose_app_is_removed_is_left_out_until_it_is_back(
+        self, session_factory, tmp_path
+    ) -> None:
+        g = await _gated(session_factory, tmp_path / "c", gate=False)
+        g.broker.replace_adapter("example", None)
+
+        assert await self._listed(g, session_factory) == ["github"]
+        refused = await _refused(
+            g.broker, session_factory, g.world.agent.id, service="example"
+        )
+        assert (refused.status_code, refused.code) == (503, "internal")
+        assert refused.message == await availability(g.broker, "example")
+
+        g.broker.replace_adapter("example", g.example)
+        assert await self._listed(g, session_factory) == ["example", "github"]
+
+    async def test_github_whose_app_cannot_issue_is_left_out(
+        self, session_factory, tmp_path
+    ) -> None:
+        g = await _gated(session_factory, tmp_path / "c", gate=False)
+        g.github.can_issue = False
+
+        assert await self._listed(g, session_factory) == ["example"]
+        refused = await _refused(g.broker, session_factory, g.world.agent.id)
+        assert refused.message == await availability(g.broker, "github")
+        assert g.github.issued == []
+
+
 async def _all_connections(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> list[tuple[str, str, str]]:
@@ -2011,11 +2168,25 @@ class TestReplacedClient:
         world = await _world(session_factory, expires_in=60)
         await self._recorded(session_factory, world, "old-client")
         vendor.client_id = "new-client"
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        # Read as needing reconnecting before anything asks for a token.
+        assert connection.status == "active"
+        assert (
+            broker.connection_status(
+                await standing(broker, connection.service), connection
+            )
+            == "needs_reauthorization"
+        )
 
         refused = await _refused(broker, session_factory, world.agent.id)
 
         assert refused.code == CONNECTOR_REVOKED
-        assert "an app Switch no longer uses" in refused.message
+        assert refused.message == (
+            "GitHub was connected through an app Switch no longer uses. "
+            "The agent's owner must reconnect GitHub from Connectors in Switch "
+            "Console."
+        )
         assert vendor.refreshes == 0 and vendor.issued == []
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
@@ -2023,6 +2194,52 @@ class TestReplacedClient:
             "needs_reauthorization",
             CLIENT_REPLACED,
         )
+
+    async def test_the_owner_is_told_to_reconnect_it_themselves(
+        self, broker, session_factory, vendor
+    ) -> None:
+        """The owner reading their own connection, as GitHub's repository
+        picker does: once as the replaced client is found, and again once it
+        is recorded."""
+        world = await _world(session_factory, expires_in=60)
+        await self._recorded(session_factory, world, "old-client")
+        vendor.client_id = "new-client"
+
+        for _ in range(2):
+            with pytest.raises(ServiceError) as caught:
+                async with session_factory() as session:
+                    await broker.connection_access_token(
+                        session, world.owner.id, "github"
+                    )
+            assert (caught.value.status_code, caught.value.code) == (
+                409,
+                CONNECTOR_REVOKED,
+            )
+            assert caught.value.message == (
+                "GitHub was connected through an app Switch no longer "
+                "uses. Reconnect GitHub from Connectors in Switch Console."
+            )
+        assert vendor.refreshes == 0
+
+    async def test_a_refused_sign_in_tells_the_owner_to_reconnect(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory, expires_in=60)
+        vendor.refresh_error = ReauthorizationRequiredError(
+            "GitHub refused the sign-in."
+        )
+
+        with pytest.raises(ServiceError) as caught:
+            async with session_factory() as session:
+                await broker.connection_access_token(session, world.owner.id, "github")
+
+        assert caught.value.message == (
+            "GitHub refused the sign-in. Reconnect GitHub from Connectors in "
+            "Switch Console."
+        )
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert connection.error_code == "refresh_refused"
 
     async def test_the_same_client_issues_as_before(
         self, broker, session_factory, vendor
