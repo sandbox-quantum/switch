@@ -1712,6 +1712,8 @@ describe('GitHub connection transport', () => {
         updated_at: '2026-01-02T03:04:05+00:00',
         connected_members: 3,
         granted_agents: 5,
+        unavailable_code: 'app_not_set_up',
+        unavailable_reason: 'Example is not set up on this server.',
       },
       {
         slug: 'other',
@@ -1724,7 +1726,11 @@ describe('GitHub connection transport', () => {
       },
     ];
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ services })));
-    expect(await fetchWorkspaceServices(SERVER)).toEqual(services);
+    expect(await fetchWorkspaceServices(SERVER)).toEqual([
+      services[0],
+      // A server that predates them says nothing of why a service can't be used.
+      { ...services[1], unavailable_code: null, unavailable_reason: null },
+    ]);
     expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
       'https://switch.example.com/gateway/workspace/services'
     );
@@ -1742,6 +1748,8 @@ describe('GitHub connection transport', () => {
       updated_at: null,
       connected_members: null,
       granted_agents: null,
+      unavailable_code: null,
+      unavailable_reason: null,
     };
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ can_change: false, services: [service] }))

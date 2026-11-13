@@ -15,6 +15,8 @@ function service(overrides: Partial<WorkspaceService> = {}): WorkspaceService {
     updated_at: null,
     connected_members: 0,
     granted_agents: 0,
+    unavailable_code: null,
+    unavailable_reason: null,
     ...overrides,
   };
 }

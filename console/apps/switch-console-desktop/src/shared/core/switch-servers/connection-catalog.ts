@@ -177,6 +177,12 @@ export const workspaceServiceSchema = z.object({
   connected_members: z.number().int().nullable(),
   /** How many agents in the workspace are granted it; null for anyone but an admin. */
   granted_agents: z.number().int().nullable(),
+  /**
+   * Why nobody in the workspace can use it, whatever its switch says; null
+   * when they can, and from a server that predates them.
+   */
+  unavailable_code: z.string().nullable().default(null),
+  unavailable_reason: z.string().nullable().default(null),
 });
 export type WorkspaceService = z.infer<typeof workspaceServiceSchema>;
 
