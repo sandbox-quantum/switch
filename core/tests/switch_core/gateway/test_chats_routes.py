@@ -1688,14 +1688,20 @@ async def test_owner_membership_is_granted_once(chats: _Harness) -> None:
             .select_from(ClientRoom)
             .where(ClientRoom.client_id == client.id)
         )
-        arrivals = await session.scalar(
-            select(func.count())
-            .select_from(Message)
-            .where(
-                Message.room_id == room_id,
-                Message.sender_client_id == client.id,
-                Message.event_type == "m.room.member",
+        membership_rows = (
+            await session.scalars(
+                select(Message.content).where(
+                    Message.room_id == room_id,
+                    Message.sender_client_id == client.id,
+                    Message.event_type == "m.room.member",
+                )
             )
+        ).all()
+        # Departures are membership rows too; only arrivals are counted here.
+        arrivals = sum(
+            1
+            for content in membership_rows
+            if (content or {}).get("membership") != "leave"
         )
     # One arrival from starting the chat, one from the owner rejoin.
     assert (memberships, arrivals, await _grants(chats)) == (1, 2, 1)

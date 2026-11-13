@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core import room_policy
 from switch_core.authz import Action, Principal, can
 from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_service import MessagingInstallService
@@ -323,8 +324,8 @@ def _disconnect_refusal(
 
     An OAuth install, or a chat whose platform's installer is gone, is the
     tenant's: an admin's. One chat of a claim-based platform is a room, and
-    whoever may write to that room may disconnect it, the same as moving the
-    room onto another bridge; once the room is gone, it is the tenant's again.
+    its owner or an admin may disconnect it; once the room is gone, it is the
+    tenant's again.
     """
     if not _installs_by_claim_or_gone(service, platform):
         return None if principal.is_admin else "Tenant admin access required"
@@ -334,7 +335,7 @@ def _disconnect_refusal(
             if principal.is_admin
             else "Only an admin can disconnect a chat whose room is gone."
         )
-    if not can(principal, "write", room):
+    if not room_policy.is_room_owner(principal, room):
         return (
             "Only someone who can change this chat's room in Switch, its owner or "
             "an admin, can disconnect it."

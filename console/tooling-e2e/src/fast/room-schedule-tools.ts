@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { SwitchHttpError } from '../clients/switch-client.ts';
+import { OWNER_ONLY, SwitchHttpError } from '../clients/switch-client.ts';
 import { WRITABLE, type FastScenario } from './scenario.ts';
 
 interface AgentSchedule {
@@ -33,8 +33,11 @@ export const roomScheduleTools: FastScenario = {
     requires: [],
   },
   async run({ fixtures, switchClient, log }) {
-    // The room is the signed-in admin's, so the admin's agent may manage it.
+    // The room is the signed-in admin's, so the admin's agent may manage it,
+    // as long as it takes requests from its owner alone: an agent anyone may
+    // address gets no more than "in the room" rights (`room_policy`).
     const minder = await fixtures.agent('minder', { ownedByAdmin: true });
+    await switchClient.setAddressingPolicy(minder.id, OWNER_ONLY);
     const stranger = await fixtures.agent('stranger');
     const room = await fixtures.internalRoom('room', [minder, stranger]);
     const call = <T>(agent: typeof minder, operation: string, args: Record<string, unknown>) =>

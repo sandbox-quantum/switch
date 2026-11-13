@@ -277,6 +277,8 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # The platform account that added the agent, where the platform says.
+    added_by_external_user_id: str | None = None
 
 
 class InboundUserJoin(BaseModel):
@@ -285,6 +287,38 @@ class InboundUserJoin(BaseModel):
     external_user_id: str
     external_username: str
     channel_name: str | None = None
+    # Written to the room's history without waking any agent: someone who
+    # came to see the channel without being added to it (joining a Discord
+    # server makes its public channels visible), not someone added to it.
+    quiet: bool = False
+
+
+class InboundUserLeave(BaseModel):
+    """A person left a bridged channel, or was taken out of it.
+
+    `removed_by_name` is what the platform calls whoever removed them, where
+    the platform says and it was not the person themselves; None when they
+    left on their own or the platform did not say.
+    """
+
+    channel_id: str
+    external_user_id: str
+    external_username: str | None = None
+    removed_by_name: str | None = None
+
+
+class ChannelMembers(BaseModel):
+    """Who a platform says is in a channel, for lining a room up with it.
+
+    `complete` is False when the listing stopped short (a page failed, a
+    limit was hit): then it is good for adding people and never for removing
+    them, since someone missing from it may simply not have been reached.
+    `members` maps each person's platform id to their name; bots, the app
+    itself and Switch's agents are left out by the adapter.
+    """
+
+    members: dict[str, str]
+    complete: bool
 
 
 class InboundAppJoin(BaseModel):
@@ -295,6 +329,10 @@ class InboundAppJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     channel_name: str | None = None
+    # The platform account that added the app, where the platform says (Slack's
+    # inviter, the Teams user who added it). Its linked Switch user owns the
+    # room the channel becomes.
+    added_by_external_user_id: str | None = None
 
 
 class BridgeInstallLink(BaseModel):

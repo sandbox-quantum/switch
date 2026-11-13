@@ -107,18 +107,31 @@ class RoomSummary(BaseModel):
     # a chat with no members from a server too old to count them.
     people_are_members: bool = False
     # What the caller may do with it, so a client offers a change only where
-    # the server would allow it. `can_write` covers its settings, roles,
-    # links and attaching resources; `can_change_members` covers adding and
-    # removing its agents and people, which is `can_write` unless it is a
-    # direct or group conversation, whose platform fixes who is in it;
-    # `can_manage` (owner or tenant admin) covers its access, deleting it and
-    # taking the platform channel's name; `can_unlink` (taking part in it, or
-    # tenant admin) covers unlinking a reference, document or package from it;
-    # `can_transfer` is `can_manage` for anything but a chat, which stays with
-    # its people.
+    # the server would allow it. Each flag is the room policy's answer
+    # (`room_policy`), asked the same way its route asks it.
+    # `can_write` (owner or tenant admin) covers its settings, instructions,
+    # roles, group and linked rooms; `can_manage` (the same tier) covers its
+    # access, archiving and deleting it and taking the platform channel's
+    # name. `can_attach` (anyone in the room) covers attaching a reference,
+    # document or package; `can_invite_agents` and `can_add_people`
+    # (anyone in the room) cover adding agents and people, though each agent's
+    # own addressing policy can still refuse a particular one
+    # (`room_invites`); `can_remove_members` (owner or tenant admin)
+    # covers taking them out. No membership flag is ever set on a direct
+    # or group conversation, whose platform fixes who is in it. `can_unlink`
+    # (owner or tenant admin) covers unlinking any resource; a resource's own
+    # owner may also unlink theirs, which its listing reports. `can_transfer`
+    # is `can_manage` for anything but a chat, which stays with its people.
+    # `can_change_members` is `can_remove_members`, for Switch Console
+    # releases that read one flag for adding and removing members: they offer
+    # both only where both are allowed.
     can_write: bool
-    can_change_members: bool
     can_manage: bool
+    can_attach: bool
+    can_invite_agents: bool
+    can_add_people: bool
+    can_remove_members: bool
+    can_change_members: bool
     can_unlink: bool
     can_transfer: bool
 
@@ -160,7 +173,7 @@ class RoomDetail(RoomSummary):
     agent_ids: list[str]
     agent_statuses: dict[str, str]
     roles: list[RoomRoleDetail] = []
-    # Agent ids configured to receive `room_join` events in this room.
+    # Agent ids configured to receive `room_join` and `room_leave` events in this room.
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
@@ -184,7 +197,7 @@ class RoomCreateRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
     bridge_id: str | None = None
@@ -193,8 +206,12 @@ class RoomCreateRequest(BaseModel):
     internal_only: bool = False
     external_channel_id: str | None = None
     group_id: str | None = None
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Left out, the room takes it from its channel: a private channel, group
+    # or DM makes a private room, anything else a public one.
+    read_visibility: str | None = None
+    # Accepted from older clients and ignored: a room has no write visibility
+    # of its own any more (see `room_policy`).
+    write_visibility: str | None = None
     roles: list[RoomRoleSpec] | None = None
 
 
@@ -204,6 +221,7 @@ class RoomUpdateRequest(BaseModel):
     instructions: str | None = None
     admin_mode: bool | None = None
     read_visibility: str | None = None
+    # Accepted from older clients and ignored, as on create.
     write_visibility: str | None = None
 
 
@@ -217,17 +235,28 @@ class RoomAgentsRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
 
 
 class RoomAgentUpdateRequest(BaseModel):
-    # Whether this agent receives `room_join` events in the room.
+    # Whether this agent receives `room_join` and `room_leave` events in the room.
     receives_join_events: bool
 
 
 class RoomUsersRequest(BaseModel):
     user_names: list[str]
+
+
+class RoomUsersRemoved(BaseModel):
+    """The room after people were taken out of it, and who did not go:
+    `not_in_room`, names nobody in the room goes by; `platform_refused`,
+    people the platform would not remove from its channel, who stay in the
+    room until someone removes them there."""
+
+    room: RoomDetail
+    not_in_room: list[str] = []
+    platform_refused: list[str] = []
 
 
 class RoomProtectionRequest(BaseModel):
@@ -455,7 +484,7 @@ class AgentDevice(BaseModel):
     id: str
     name: str
     # Whose device it is: two people's devices can share a name, as every
-    # Switch cloud device does.
+    # Switch Cloud device does.
     owner_name: str
     # Removed from Switch. The agent stays placed on it, and runs nowhere,
     # until its owner moves it.

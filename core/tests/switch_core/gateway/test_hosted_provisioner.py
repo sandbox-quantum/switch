@@ -415,6 +415,45 @@ async def test_a_failed_provision_names_its_step(provisioner_app) -> None:
     assert len(await _entries(app.factory)) == 3  # request, claim, result
 
 
+async def test_a_box_that_could_not_be_made_counts_as_a_launch_refused(
+    provisioner_app,
+) -> None:
+    """A failed provision counts once on the hosted metric as `failed` /
+    `launch_refused` for a box, so "launches failing" pages on boxes that
+    can't be made, with fixed words only."""
+    from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+
+    registry = MetricsRegistry()
+    install(registry)
+    try:
+        app = provisioner_app
+        action = await _ask(app.factory, app.machine_id)
+        user = KEY.keyed_id(KeyedIdKind.USER, app.owner.id)
+        token = (await _claim(app))["claim_token"]
+        response = await app.client.post(
+            f"/hosted-provisioner/actions/{action}/result",
+            headers=_bearer(PROVISIONER),
+            json={
+                "result": "failed",
+                "namespace": namespace_for(user),
+                "failed_at": "ceiling_reached",
+                "claim_token": token,
+            },
+        )
+        assert response.status_code == 204
+        failed = [
+            dict(point.attributes)
+            for payload in registry.collect()
+            if payload.name == "switch.hosted.machine_events"
+            for point in payload.numbers
+        ]
+        assert failed == [
+            {"event": "failed", "reason": "launch_refused", "backend": "box"}
+        ]
+    finally:
+        uninstall()
+
+
 async def test_an_expired_request_is_closed_and_asked_again(provisioner_app) -> None:
     app = provisioner_app
     then = datetime.now(UTC) - TTL - timedelta(minutes=1)

@@ -149,7 +149,7 @@ describe("RoomAutoRouteSection", () => {
     });
     expect(select.getAttribute("aria-disabled")).toBe("true");
     screen.getByText("Only the room's owner or a workspace admin can change this.");
-    expect(screen.queryByText(/needs write access/)).toBeNull();
+    expect(screen.queryByText(/can turn auto-route on or off/)).toBeNull();
     expect(toggle().disabled).toBe(false);
 
     fireEvent.click(toggle());
@@ -165,7 +165,7 @@ describe("RoomAutoRouteSection", () => {
     );
 
     expect(toggle().disabled).toBe(true);
-    screen.getByText("Turning auto-route on or off needs write access to this room.");
+    screen.getByText("Only the room's owner or a workspace admin can turn auto-route on or off.");
     screen.getByText("Only the room's owner or a workspace admin can change this.");
   });
 

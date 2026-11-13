@@ -112,7 +112,7 @@ export function RoomAutoRouteSection({
 
       {!canWrite && (
         <p className="text-xs text-foreground-muted" role="note">
-          Turning auto-route on or off needs write access to this room.
+          Only the room's owner or a workspace admin can turn auto-route on or off.
         </p>
       )}
 

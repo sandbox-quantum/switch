@@ -1,26 +1,32 @@
 import { randomBytes } from 'node:crypto';
 import { log } from '@main/lib/logger';
-import { SERVICE_CALLBACK_PATH } from '@shared/core/switch-servers/service-connection';
+import {
+  SERVICE_CALLBACK_PATH,
+  type ServiceFlow,
+} from '@shared/core/switch-servers/service-connection';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelServiceConnection,
   completeServiceConnection,
+  failServiceConnection,
   getConnectionCatalog,
   getServiceFlow,
   startServiceConnection,
 } from './gateway-client';
-import { listenForSignIn } from './sign-in-listener';
+import { failedCompletion, listenForSignIn } from './sign-in-listener';
 
 /**
  * Signing in to a service through Switch's generic OAuth flow, from this
  * Console: GitHub's browser flow (`github-browser-flow.ts`) for any service,
  * keyed by its slug. The listener takes the code back and hands it to Core
  * with the completion secret only this Console holds; Core connects the
- * service in that step, and the renderer reads the outcome from the flow.
+ * service in that step, and the renderer reads the outcome from the flow. A
+ * refusal the vendor sends the listener instead is handed to Core the same
+ * way, and fails the flow with the vendor's reason.
  */
 /** Some vendors issue codes as signed tokens: Atlassian's run past 2,000 characters. */
 const MAX_CODE_LENGTH = 8192;
-const active = new Map<string, { secret: string; close: () => void }>();
+const active = new Map<string, { secret: string; close: () => void; refused: string | null }>();
 const key = (server: SwitchServer, service: string, id: string) =>
   JSON.stringify([server.id, service, id]);
 
@@ -34,14 +40,32 @@ export async function startServiceBrowserFlow(
   const catalogEntry = (await getConnectionCatalog(server)).find(
     (candidate) => candidate.slug === service
   );
+  const name = catalogEntry?.name ?? service;
   const listener = await listenForSignIn({
-    name: catalogEntry?.name ?? service,
+    name,
     path: SERVICE_CALLBACK_PATH,
     state,
     maxCodeLength: MAX_CODE_LENGTH,
     ports: catalogEntry?.loopback_ports ?? null,
+    // A code Core never received leaves its flow pending, so the failure here
+    // is the outcome. A flow Core did finish still reads connected.
     complete: async (code) => {
-      await completeServiceConnection(server, service, state, code, secret);
+      try {
+        await completeServiceConnection(server, service, state, code, secret);
+      } catch (error) {
+        const entry = active.get(key(server, service, state));
+        if (entry) entry.refused = failedCompletion(name, error);
+        throw error;
+      }
+    },
+    refuse: async ({ error, description, message }) => {
+      const entry = active.get(key(server, service, state));
+      if (entry) entry.refused = message;
+      try {
+        await failServiceConnection(server, service, state, error, description, secret);
+      } catch (cause) {
+        log.warn('Could not tell the server a service sign-in was refused', cause);
+      }
     },
   });
   const timeout = setTimeout(() => {
@@ -51,6 +75,7 @@ export async function startServiceBrowserFlow(
   timeout.unref();
   const entry = {
     secret,
+    refused: null,
     close: () => {
       clearTimeout(timeout);
       listener.close();
@@ -96,7 +121,11 @@ function activeFlow(server: SwitchServer, service: string, id: string) {
  * listener and secret go, and the server is told it can drop the flow. A
  * failed flow stays until the person cancels it, so the reason stays readable.
  */
-export async function getServiceBrowserFlow(server: SwitchServer, service: string, id: string) {
+export async function getServiceBrowserFlow(
+  server: SwitchServer,
+  service: string,
+  id: string
+): Promise<ServiceFlow> {
   const entry = activeFlow(server, service, id);
   const flow = await getServiceFlow(server, service, id);
   if (flow.status === 'connected') {
@@ -106,6 +135,10 @@ export async function getServiceBrowserFlow(server: SwitchServer, service: strin
       log.warn('Could not drop a finished service sign-in', cause)
     );
   }
+  // A server that could not be told of the vendor's refusal, or that predates
+  // being told, still reads pending: the refusal is the outcome.
+  if (flow.status === 'pending' && entry.refused !== null)
+    return { ...flow, status: 'failed', error: entry.refused };
   return flow;
 }
 

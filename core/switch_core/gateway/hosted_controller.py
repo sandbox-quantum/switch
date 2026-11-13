@@ -295,7 +295,7 @@ async def _sweep(
 
 # The finer words the hosted metric and log line use beside product
 # telemetry's reasons.
-MachineFailure = Literal["wake_failed", "stop_failed"]
+MachineFailure = Literal["wake_failed", "stop_failed", "launch_refused"]
 
 FailureReason = Literal[
     "not_scheduled",
@@ -321,6 +321,21 @@ def _stop_failure(machine: CloudMachine) -> MachineFailure | None:
     """`stop_failed` for an error observed while the machine is wanted
     stopped, retained (stopped, disk kept) or deleted."""
     return "stop_failed" if machine.desired_state in STOPPING_STATES else None
+
+
+def _observed_finer(
+    machine: CloudMachine, reason: FailureReason
+) -> MachineFailure | None:
+    """The hosted metric's finer word for an error a machine reported:
+    `stop_failed` while it's wanted down; `launch_refused` for a machine that
+    needs attention and has never been ready, so a launch that was refused or
+    never came up (a bad image, a box that never got ready) counts as a launch
+    failing; otherwise none."""
+    if (stop := _stop_failure(machine)) is not None:
+        return stop
+    if reason == "needs_attention" and machine.first_ready_at is None:
+        return "launch_refused"
+    return None
 
 
 def _report_failure(
@@ -763,11 +778,9 @@ async def observe(
             body.state == "error" or body.error is not None
         ) and machine.state not in STALE_ERROR_IGNORED_STATES:
             if machine.state != "error":
+                reason = _observed_failure(body.error_code)
                 _report_failure(
-                    session,
-                    machine,
-                    _observed_failure(body.error_code),
-                    finer=_stop_failure(machine),
+                    session, machine, reason, finer=_observed_finer(machine, reason)
                 )
             machine.state = "error"
             machine.error = body.error or OBSERVED_ERROR
@@ -796,11 +809,9 @@ async def observe(
             machine.state = "provisioning"
     elif body.state == "error":
         if machine.state != "error":
+            reason = _observed_failure(body.error_code)
             _report_failure(
-                session,
-                machine,
-                _observed_failure(body.error_code),
-                finer=_stop_failure(machine),
+                session, machine, reason, finer=_observed_finer(machine, reason)
             )
         machine.state = "error"
         machine.error = body.error or OBSERVED_ERROR

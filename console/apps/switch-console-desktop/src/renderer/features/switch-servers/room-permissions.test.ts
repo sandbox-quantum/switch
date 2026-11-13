@@ -8,6 +8,10 @@ describe('roomPermissionsFor', () => {
     expect(roomPermissionsFor({ ownerId: 'u-1', writeVisibility: 'private' }, ME)).toEqual({
       canWrite: true,
       canChangeMembers: true,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: true,
       canUnlink: true,
     });
@@ -19,13 +23,26 @@ describe('roomPermissionsFor', () => {
         { ownerId: 'u-2', writeVisibility: 'private' },
         { userId: 'u-1', isAdmin: true }
       )
-    ).toEqual({ canWrite: true, canChangeMembers: true, canManage: true, canUnlink: true });
+    ).toEqual({
+      canWrite: true,
+      canChangeMembers: true,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
+      canManage: true,
+      canUnlink: true,
+    });
   });
 
   it('lets anyone write to a publicly writable room, but not manage it', () => {
     expect(roomPermissionsFor({ ownerId: 'u-2', writeVisibility: 'public' }, ME)).toEqual({
       canWrite: true,
       canChangeMembers: true,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: false,
       canUnlink: true,
     });
@@ -35,6 +52,10 @@ describe('roomPermissionsFor', () => {
     expect(roomPermissionsFor({ ownerId: 'u-2', writeVisibility: 'private' }, ME)).toEqual({
       canWrite: false,
       canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: false,
     });
@@ -50,6 +71,10 @@ describe('roomPermissionsFor', () => {
     expect(roomPermissionsFor({ ownerId: 'u-2' }, ME)).toEqual({
       canWrite: false,
       canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
       canManage: false,
       canUnlink: false,
     });
@@ -58,7 +83,16 @@ describe('roomPermissionsFor', () => {
 
   it('takes the server’s answer over its own working when the server gives one', () => {
     // A direct conversation: written to, but who is in it is its platform's.
-    const answer = { canWrite: true, canChangeMembers: false, canManage: false, canUnlink: false };
+    const answer = {
+      canWrite: true,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
+      canManage: false,
+      canUnlink: false,
+    };
     expect(
       roomPermissionsFor(
         { ownerId: 'u-1', writeVisibility: 'public', serverPermissions: answer },
@@ -67,12 +101,41 @@ describe('roomPermissionsFor', () => {
     ).toEqual(answer);
   });
 
+  it('offers inviting agents where the server says, even without write access', () => {
+    // Someone in a room they can't change the settings of still brings agents in.
+    const answer = {
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: false,
+      canManage: false,
+      canUnlink: true,
+    };
+    expect(
+      roomPermissionsFor(
+        { ownerId: 'u-2', writeVisibility: 'private', serverPermissions: answer },
+        ME
+      ).canInviteAgents
+    ).toBe(true);
+  });
+
   it('gives an unknown viewer nothing', () => {
     expect(
       roomPermissionsFor(
         { ownerId: 'u-1', writeVisibility: 'public' },
         { userId: null, isAdmin: true }
       )
-    ).toEqual({ canWrite: false, canChangeMembers: false, canManage: false, canUnlink: false });
+    ).toEqual({
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
+      canManage: false,
+      canUnlink: false,
+    });
   });
 });

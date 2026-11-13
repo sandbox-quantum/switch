@@ -33,6 +33,20 @@ RUN npm install --global --prefix /opt/switch/providers \
  && /opt/switch/providers/bin/claude --version \
  && /opt/switch/providers/bin/codex --version
 
+# No setuid or setgid file anywhere in the image: agents run as uid 2000 with privilege escalation off, so nothing
+# needs one, and this keeps that true if a pod setting ever changes. The list is printed before the bits are removed.
+# `find` runs with its errors visible and its exit code checked, so an unreadable tree fails the build rather than
+# passing as empty, and /bin/su (setuid in Debian's base) is checked directly, so the step proves it really looked.
+RUN set -e; \
+    find / -xdev -perm /6000 -type f > /tmp/setid.txt; \
+    echo "setuid/setgid files before stripping:"; cat /tmp/setid.txt; \
+    xargs -r chmod u-s,g-s < /tmp/setid.txt; \
+    find / -xdev -perm /6000 -type f > /tmp/setid-left.txt; \
+    if [ -s /tmp/setid-left.txt ]; then echo "setuid/setgid files left:" >&2; cat /tmp/setid-left.txt >&2; exit 1; fi; \
+    if [ -e /bin/su ] && { [ -u /bin/su ] || [ -g /bin/su ]; }; then echo "/bin/su still setuid or setgid" >&2; exit 1; fi; \
+    rm -f /tmp/setid.txt /tmp/setid-left.txt; \
+    echo "no setuid/setgid files in the image"
+
 # One unprivileged user for the controller and its agents. Per-agent
 # users inside the pod would be a later step (they need CAP_SETUID for the
 # controller only). Fixed ids so the volume's files keep their owner.

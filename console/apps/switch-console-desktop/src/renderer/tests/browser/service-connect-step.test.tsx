@@ -42,6 +42,7 @@ const EXAMPLE: ConnectionCatalogEntry = {
   status: 'not_connected',
   unavailable_reason: null,
   unavailable_code: null,
+  read_only_reason: null,
   pass_through: false,
   token_lifetime: null,
   agent_access_note: null,
@@ -50,6 +51,7 @@ const EXAMPLE: ConnectionCatalogEntry = {
   external_identity: null,
   consent: null,
   workspace_enabled: null,
+  organization_locked: false,
 };
 
 let container: HTMLDivElement | null = null;
@@ -110,6 +112,7 @@ function connectStep(onConnected: (warning: string | null) => void = () => {}) {
     <ServiceConnectStep
       calls={serverServiceCalls('server')}
       connection={EXAMPLE}
+      reconnecting={false}
       onBack={() => {}}
       onConnected={onConnected}
     />
@@ -132,6 +135,7 @@ it('says what limits agent access before the sign-in starts', async () => {
         ...EXAMPLE,
         agent_access_note: 'Agents have Example for the hour after each sign-in.',
       }}
+      reconnecting={false}
       onBack={() => {}}
       onConnected={() => {}}
     />
@@ -158,6 +162,7 @@ it('still says what limits agent access once the service is connected', async ()
         status: 'connected',
         agent_access_note: 'Agents have Example for up to an hour after each sign-in.',
       }}
+      reconnecting={false}
       onBack={() => {}}
       onConnected={() => {}}
     />
@@ -202,6 +207,76 @@ it('waits on the browser, and cannot be closed meanwhile', async () => {
   expect(button(/^cancel$/i, dialog())).toBeDefined();
 });
 
+it('suggests what to check once the browser has been away a minute', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    switchServers.getServiceFlow.mockResolvedValue({
+      status: 'pending',
+      account: null,
+      error: null,
+      warning: null,
+    });
+    await render(connectStep());
+    await signIn();
+
+    await act(async () => vi.advanceTimersByTimeAsync(59_000));
+    expect(dialog().textContent).toMatch(/Finish signing in in your browser/);
+    expect(dialog().textContent).not.toContain('showed an error');
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(dialog().textContent).toContain(
+      'If Example showed an error, cancel, and ask the person who set up Example for Switch to check its redirect URI and scopes.'
+    );
+    expect(button(/^cancel$/i, dialog())).toBeDefined();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('waits a new minute for a sign-in started again after Cancel', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    switchServers.getServiceFlow.mockResolvedValue({
+      status: 'pending',
+      account: null,
+      error: null,
+      warning: null,
+    });
+    await render(connectStep());
+    await signIn();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(dialog().textContent).toContain('showed an error');
+
+    await act(async () => button(/^cancel$/i, dialog())!.click());
+    switchServers.startServiceConnection.mockResolvedValue('flow-2');
+    await act(async () => button(/^connect example/i, dialog())!.click());
+    await act(async () => vi.advanceTimersByTimeAsync(59_000));
+    expect(dialog().textContent).toMatch(/Finish signing in in your browser/);
+    expect(dialog().textContent).not.toContain('showed an error');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('suggests nothing for a sign-in that came back before the minute', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    switchServers.getServiceFlow.mockResolvedValue({
+      status: 'checking',
+      account: null,
+      error: null,
+      warning: null,
+    });
+    await render(connectStep());
+    await signIn();
+
+    await act(async () => vi.advanceTimersByTimeAsync(61_000));
+    expect(dialog().textContent).toMatch(/Connecting Example/);
+    expect(dialog().textContent).not.toContain('showed an error');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("shows the server's reason when it refuses the account, and lets the dialog close", async () => {
   switchServers.getServiceFlow.mockResolvedValue({
     status: 'failed',
@@ -222,6 +297,44 @@ it("shows the server's reason when it refuses the account, and lets the dialog c
   expect(onConnected).not.toHaveBeenCalled();
   expect(closable()).toBe(true);
   expect(button(/^cancel$/i, dialog())).toBeDefined();
+  // The browser has nothing left to finish.
+  expect(dialog().textContent).not.toMatch(/Finish signing in/);
+});
+
+it('offers a new sign-in on a connected service when it is opened to reconnect', async () => {
+  await render(
+    <ServiceConnectStep
+      calls={serverServiceCalls('server')}
+      connection={{ ...EXAMPLE, status: 'connected' }}
+      reconnecting
+      onBack={() => {}}
+    />
+  );
+
+  expect(button(/^connect example/i, dialog())).toBeDefined();
+  expect(dialog().textContent).toContain(
+    'Signing in to another Example account replaces this one. Each agent then needs Example turned on again.'
+  );
+});
+
+it('stops waiting on the browser once the vendor refused the sign-in', async () => {
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'failed',
+    account: null,
+    error: 'Example refused the sign-in: Your identity provider refused this app.',
+    warning: null,
+  });
+  await render(connectStep());
+  await signIn();
+
+  await vi.waitFor(() =>
+    expect(dialog().querySelector('[role="alert"]')?.textContent).toBe(
+      'Example refused the sign-in: Your identity provider refused this app.'
+    )
+  );
+  expect(dialog().textContent).not.toMatch(/Finish signing in in your browser/);
+  expect(switchServers.getServiceFlow).toHaveBeenCalledOnce();
+  expect(closable()).toBe(true);
 });
 
 it('counts a cancel of a sign-in the server already dropped as cancelled', async () => {

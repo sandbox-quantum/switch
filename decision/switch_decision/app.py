@@ -35,7 +35,7 @@ from switch_decision.logging_setup import (
 )
 from switch_decision.models import DecideRequest, DecideResponse
 from switch_decision.otlp_logs import load_otlp_settings, start_log_shipping
-from switch_decision.prompt import NONE
+from switch_decision.prompt import NONE, conversation_state
 
 logger = logging.getLogger("switch_decision")
 
@@ -238,7 +238,7 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
     picked, rule, lead = pick(answer, threshold, min_lead)
     logger.info(
         "decide backend=%s model=%s candidates=%d choice=%s confidence=%.2f threshold=%.2f picked=%s latency_ms=%d "
-        "rule=%s lead=%s",
+        "rule=%s lead=%s context=%s",
         used.backend,
         used.model,
         candidates,
@@ -249,6 +249,7 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
         latency_ms,
         rule,
         "-" if lead is None else f"{lead:.2f}",
+        "exchange" if conversation_state(req, used.history_limit) else "none",
     )
     return DecideResponse(
         agent=picked,

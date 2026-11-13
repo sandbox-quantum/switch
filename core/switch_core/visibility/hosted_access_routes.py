@@ -75,7 +75,9 @@ def get_hosted_access(request: HTTPConnection) -> HostedAccess:
     """One per app, so the background parts of each action are kept. The
     controller revocation comes through the process wiring (`main` sets
     `controller_revoker` when agent management is on), so Core never imports
-    agent management (`test_import_boundary`)."""
+    agent management (`test_import_boundary`). Without a keyed-id key it
+    answers 503, whatever was built before."""
+    key = get_keyed_id_key(request)
     access = getattr(request.app.state, "hosted_access", None)
     if not isinstance(access, HostedAccess):
         revoker = getattr(request.app.state, "controller_revoker", None)
@@ -87,7 +89,7 @@ def get_hosted_access(request: HTTPConnection) -> HostedAccess:
         access = HostedAccess(
             session_factory=session_factory,
             revoker=revoker,
-            key=get_keyed_id_key(request),
+            key=key,
             keyring=get_config().keyring,
             # A8 and A9: a pause or turn-off still failed after 2 minutes.
             alert=action_alert(session_factory),

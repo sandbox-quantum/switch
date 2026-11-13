@@ -504,6 +504,11 @@ jobs:
         # only switch-core; an endpoint elsewhere is wired without it.
         run: python3 scripts/check_chart_decision.py
 
+      - name: Hosted agents v2 renders only with what it needs
+        # Off sets no v2; on, with the example values, runs v2 with the
+        # keyed-id key; on without a value v2 needs, the chart refuses.
+        run: python3 scripts/check_chart_hosted_v2.py
+
   gateway:
     name: Gateway UI
     needs: changes

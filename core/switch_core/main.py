@@ -2721,11 +2721,20 @@ async def _sweep_hosted_actions(
     from switch_core.visibility.alerts import action_alert
     from switch_core.visibility.hosted_access import HostedAccess
 
+    key = gateway_app.state.keyed_id_key
+    if key is None:
+        # Pauses and operator actions need keyed ids: without a key their
+        # routes answer 503, and these sweeps wait until a key is set.
+        logger.warning(
+            "Skipping the hosted action sweeps: no keyed-id key is set, so "
+            "pauses and operator actions are unavailable"
+        )
+        return
     try:
         access = HostedAccess(
             session_factory=session_factory,
             revoker=management.service,
-            key=gateway_app.state.keyed_id_key,
+            key=key,
             keyring=keyring,
             alert=action_alert(session_factory),
         )
@@ -2738,9 +2747,7 @@ async def _sweep_hosted_actions(
         # Operator actions (restarts) past their expiry are recorded as such.
         from switch_core.visibility.operator_actions import OperatorActions
 
-        actions = OperatorActions(
-            session_factory=session_factory, key=gateway_app.state.keyed_id_key
-        )
+        actions = OperatorActions(session_factory=session_factory, key=key)
         gateway_app.state.operator_actions = actions
         await actions.expire_due()
     except Exception:

@@ -457,6 +457,7 @@ ROUTES: dict[str, Case] = {
     # ── Rooms ────────────────────────────────────────────────────────────
     "GET /gateway/rooms": get(f"{G}/rooms", anyone()),
     "GET /gateway/rooms/template-schema": get(f"{G}/rooms/template-schema", anyone()),
+    "GET /gateway/rooms/agent-candidates": get(f"{G}/rooms/agent-candidates", anyone()),
     "POST /gateway/rooms": post(
         f"{G}/rooms",
         SELF,
@@ -531,7 +532,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room}}/auto-route",
         owner_or_admins(),
         json={"on": False},
-        why="Write access to the room; this room's write access is private.",
+        why="A room setting: the room's owner and admins (`room_policy`).",
     ),
     "GET /gateway/rooms/{room_id}/schedules": get(
         f"{G}/rooms/{{room}}/schedules", owner_or_admins()
@@ -592,6 +593,12 @@ ROUTES: dict[str, Case] = {
         owner_or_admins(ok=400),
         json={"user_names": []},
         why="Let through, then refused: people join through the room's platform channel, and it has none.",
+    ),
+    "POST /gateway/rooms/{room_id}/users/remove": post(
+        f"{G}/rooms/{{room}}/users/remove",
+        owner_or_admins(ok=400),
+        json={"user_names": ["nobody"]},
+        why="Removing a person is the owner's or an admin's; let through, then refused, as the room has no platform channel to take them out of.",
     ),
     "PUT /gateway/rooms/{room_id}/group": put(
         f"{G}/rooms/{{room}}/group",
@@ -1094,6 +1101,16 @@ ROUTES: dict[str, Case] = {
         owner(ok=503, refused=410),
         json={"completion_secret": "{flow_secret}", "code": "matrix"},
         why="Its owner's; refused then, this server having no Atlassian app.",
+    ),
+    "POST /gateway/service-connections/{service}/flows/{flow_id}/fail": post(
+        f"{G}/service-connections/atlassian/flows/{{service_flow}}/fail",
+        owner(ok=400, refused=410),
+        json={
+            "completion_secret": "m" * 43,
+            "error": "access_denied",
+            "error_description": None,
+        },
+        why="Its owner's; refused then, the secret not being the one it was started with.",
     ),
     "GET /gateway/provider-connections/github": get(
         f"{G}/provider-connections/github", SELF

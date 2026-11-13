@@ -1,4 +1,4 @@
-"""`switch-cloud-machine`: an operator's hold on a person's Switch cloud machine.
+"""`switch-cloud-machine`: an operator's hold on a person's Switch Cloud machine.
 
 `stop` holds the machine stopped so that neither its owner nor Switch can
 start it again: Start and Retry in Switch Console are refused, a message to
@@ -164,7 +164,7 @@ def _machine_id(value: str) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="switch-cloud-machine",
-        description="Hold a person's Switch cloud machine stopped, or release it.",
+        description="Hold a person's Switch Cloud machine stopped, or release it.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     find = commands.add_parser("find", help="list a person's cloud machines")

@@ -536,7 +536,7 @@ class ProviderConnection(TenantScoped, Base):
 
 
 class CloudMachine(Base):
-    """One user's Switch cloud VM, whichever workspaces it serves.
+    """One user's Switch Cloud VM, whichever workspaces it serves.
 
     Global, as the person who owns it is: one VM and one disk per user, with
     one lifecycle. What it runs in each workspace is that workspace's
@@ -1327,8 +1327,11 @@ class Room(TenantScoped, Base):
     read_visibility: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="public"
     )
+    # Grants nothing on a room (changing one is its owner's, `room_policy`);
+    # kept so a room answers the same `Owned` shape as the other resources,
+    # and always "private".
     write_visibility: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="public"
+        Text, nullable=False, server_default="private"
     )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
@@ -4780,7 +4783,7 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
         DateTime(timezone=True), nullable=True
     )
     controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Set for a code minted for a Switch cloud machine: what enrolls with it
+    # Set for a code minted for a Switch Cloud machine: what enrolls with it
     # is that machine's controller.
     machine_workspace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -5250,6 +5253,21 @@ class WorkspaceServiceSetting(TenantScoped, Base):
     )
 
 
+#: Above every revision a grant took before the sequence, which counted up
+#: from 1 per grant.
+SERVICE_GRANT_REVISION_FLOOR = 2**30
+
+service_grant_revision_sequence = Sequence(
+    "service_grant_revision",
+    metadata=Base.metadata,
+    data_type=Integer,
+    start=SERVICE_GRANT_REVISION_FLOOR,
+    minvalue=SERVICE_GRANT_REVISION_FLOOR,
+    maxvalue=2**31 - 1,
+    cycle=False,
+)
+
+
 class ServiceGrant(TenantScoped, Base):
     """An agent may use its owner's connection to a service.
 
@@ -5260,6 +5278,9 @@ class ServiceGrant(TenantScoped, Base):
     `tool_mode` `allow` means only `tools`; `deny` means every tool of the
     access level except `tools`. `revision` moves on every change to the grant,
     so a token being issued as it moves is taken back rather than recorded.
+    It comes from `service_grant_revision`, so a grant removed and made again
+    never takes a revision the removed one had: an agent host keeps a token
+    while the revision it reads is the one the token was issued under.
     """
 
     __tablename__ = "service_grants"
@@ -5302,7 +5323,9 @@ class ServiceGrant(TenantScoped, Base):
     resources: Mapped[dict] = mapped_column(JSONB, nullable=False)
     account_id: Mapped[str] = mapped_column(Text, nullable=False)
     revision: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("1")
+        Integer,
+        nullable=False,
+        server_default=service_grant_revision_sequence.next_value(),
     )
     created_by: Mapped[str] = mapped_column(
         Text, ForeignKey("users.id"), nullable=False

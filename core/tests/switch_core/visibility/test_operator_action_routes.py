@@ -15,6 +15,7 @@ from switch_core.gateway.hosted_operator_bearer import require_operator_bearer
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.visibility.guards import require_operator
 from switch_core.visibility.operator_action_routes import router
+from switch_core.visibility.operator_actions import OperatorActions
 from tests.switch_core.gateway.test_app_route_mounting import _app
 from tests.switch_core.visibility.test_hosted_access import KEY
 from tests.switch_core.visibility.test_route_guards import _calls, _hosted
@@ -113,6 +114,39 @@ async def test_the_operators_bearer_lists_actions(client) -> None:
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     assert bad.status_code == 422
+
+
+async def test_without_a_keyed_id_key_the_operator_api_answers_503(
+    session_factory,
+) -> None:
+    """No key configured: 503, as every keyed-id route answers, even with the
+    actions boot built (with no key) already on the app, never a 500."""
+    app = FastAPI()
+    app.include_router(router)
+    app.state.hosted_controller_settings = HostedControllerSettings(
+        allowed_tenant_ids=[],
+        token=CONTROLLER_TOKEN,
+        operator_token=TOKEN,
+        agent_api_endpoint="https://switch.example.com/api/agent",
+    )
+    app.state.keyed_id_key = None
+    app.state.operator_actions = OperatorActions(
+        session_factory=session_factory,
+        key=None,  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
+    ) as c:
+        listed = await c.get("/hosted-controller/actions?kind=restart", headers=headers)
+        stepped = await c.post(
+            "/hosted-controller/actions/00000000-0000-0000-0000-000000000000/steps",
+            json={"step": "claimed", "state": "running"},
+            headers=headers,
+        )
+    assert listed.status_code == 503, listed.text
+    assert stepped.status_code == 503, stepped.text
 
 
 async def test_the_controller_bearer_is_refused_on_the_operator_api(client) -> None:

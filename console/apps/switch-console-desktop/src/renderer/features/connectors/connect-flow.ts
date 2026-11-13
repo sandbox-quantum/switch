@@ -81,6 +81,28 @@ export function canCloseConnectFlow(state: ConnectFlowState): boolean {
   return !state.busy && (state.flowId === null || state.error !== null);
 }
 
+/**
+ * What the dialog says while a sign-in is under way; null once it failed,
+ * when the error is what the person reads.
+ */
+export function signInProgress(flow: ServiceFlow | null, name: string): string | null {
+  if (flow?.status === 'failed') return null;
+  if (flow?.status === 'checking') return `Connecting ${name}…`;
+  return 'Finish signing in in your browser, then return here.';
+}
+
+/** How long the browser may be away before the dialog suggests what to check. */
+export const SIGN_IN_HINT_AFTER_MS = 60_000;
+
+/**
+ * What to check when the browser has not come back: a vendor that refuses the
+ * sign-in shows its own error page and never sends the browser back.
+ */
+export function signInHint(flow: ServiceFlow | null, name: string): string | null {
+  if (flow !== null && flow.status !== 'pending') return null;
+  return `If ${name} showed an error, cancel, and ask the person who set up ${name} for Switch to check its redirect URI and scopes.`;
+}
+
 function isGone(cause: unknown): boolean {
   return cause instanceof RpcError && cause.numberField('status') === 410;
 }

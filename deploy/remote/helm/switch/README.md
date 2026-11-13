@@ -468,9 +468,11 @@ switchCore:
 ```
 
 - **Required with it on:** `hostedControllerSecret`, `hostedLaunchCapacity`
-  above 0, and the `hosted_agents` and `agent_management` feature flags (with
-  `secrets.controllerTokenSecret`, as above). The chart refuses to render
-  without them, because no box would ever be made.
+  above 0, `visibilityKeyedIdKeySecret`, and the `hosted_agents` and
+  `agent_management` feature flags (with `secrets.controllerTokenSecret`, as
+  above). The chart refuses to render without them: without the others no
+  box would ever be made, and without the keyed-id key the Hosted area and
+  the box operator's restart and drain actions can't work.
 - **The Hosted area** (for Switch operators) needs the keyed-id key and the
   operator list. Each Secret is mounted as a single file with mode 0400
   (`subPath`), because switch-core refuses either one if it's a link or anyone

@@ -42,6 +42,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
@@ -206,6 +207,7 @@ _InboundEventT = TypeVar(
     InboundCommand,
     InboundAgentJoin,
     InboundUserJoin,
+    InboundUserLeave,
     InboundAppJoin,
 )
 
@@ -455,6 +457,13 @@ class CollaborationCore:
         self._identities_stale = False
         self._identities_owed: set[str] = set()
         self._channel_type_refresh_task: asyncio.Task[None] | None = None
+        # Lining rooms up with their channels' member lists: one pass over
+        # every room at start, and one per channel the app is added to.
+        self._member_sync_tasks: set[asyncio.Task[None]] = set()
+        # Removals Switch asked the platform for, by (channel, person): who
+        # asked, and when. The platform's own leave event for one names that
+        # person as the remover, as Switch's call would have.
+        self._expected_removals: dict[tuple[str, str], tuple[str | None, float]] = {}
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
         self._connections = connections
@@ -655,6 +664,13 @@ class CollaborationCore:
             self._adapter.set_activity_resolver(
                 self._activity_publisher.activity_shown_at
             )
+        self._adapter.set_user_left_handler(
+            self._traced("user_left", self._handle_user_left_channel)
+        )
+        self._adapter.set_member_sync_hooks(
+            bridged_channels=lambda: self._channel_to_room.keys(),
+            request_sync=self._resync_members_requested,
+        )
         await self._adapter.start(
             on_message=self._traced("message", self._handle_inbound_message),
             on_command=self._traced("command", self._handle_inbound_command),
@@ -688,6 +704,9 @@ class CollaborationCore:
             self._channel_type_refresh_task = asyncio.create_task(
                 self._run_channel_type_refresh()
             )
+            # People who joined or left while the bridge was down, or before
+            # Switch was in the channel at all, are only found by asking.
+            self._sync_members_soon(None)
 
     @property
     def active(self) -> bool:
@@ -732,6 +751,9 @@ class CollaborationCore:
             ):
                 self._channel_type_refresh_task.cancel()
             self._channel_type_refresh_task = None
+            for task in list(self._member_sync_tasks):
+                task.cancel()
+            self._member_sync_tasks.clear()
             await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
@@ -1043,6 +1065,188 @@ class CollaborationCore:
         )
         if channel_ids:
             await self._adapter.refresh_channel_types(channel_ids)
+
+    #: The most people one pass adds to one room. A channel bigger than this
+    #: (a large workspace's #general) is lined up in part, and the rest count
+    #: as in the room once they speak, as before.
+    MEMBER_SYNC_MAX_ADDS = 500
+    #: Seconds between channels in one pass, so a start over many rooms does
+    #: not crowd out the bot's other calls to its platform.
+    MEMBER_SYNC_PAUSE = 2.0
+
+    def _resync_members_requested(self, channel_ids: list[str]) -> None:
+        """The adapter saw something change who is in these channels (a
+        permission change on Discord): line their rooms up again, where this
+        process holds the bridge."""
+        if self._active:
+            self._sync_members_soon(channel_ids)
+
+    def _sync_members_soon(self, channel_ids: list[str] | None) -> None:
+        """Line rooms up with their channels' members in the background: the
+        channels given, or every live room's when None. Nothing waits on it;
+        `stop` cancels it."""
+        task = asyncio.create_task(self._run_member_sync(channel_ids))
+        self._member_sync_tasks.add(task)
+        task.add_done_callback(self._member_sync_tasks.discard)
+
+    async def _run_member_sync(self, channel_ids: list[str] | None) -> None:
+        """Wrapper for the background member sync; see `_run_agent_identities`
+        for why it exists and unbinds the tenant. One channel failing does not
+        stop the rest."""
+        with no_tenant():
+            try:
+                if channel_ids is None:
+                    async with tenant_session(
+                        self._session_factory, self._bridge_tenant_id
+                    ) as session:
+                        rooms = await self._room_store.get_by_bridge(
+                            session, self._bridge_id
+                        )
+                    channel_ids = sorted(
+                        {
+                            room.external_channel_id
+                            for room in rooms
+                            if room.external_channel_id and room.archived_at is None
+                        }
+                    )
+                for index, channel_id in enumerate(channel_ids):
+                    if index:
+                        # Spread over time: each channel is platform calls the
+                        # bot's replies are waiting behind.
+                        await asyncio.sleep(self.MEMBER_SYNC_PAUSE)
+                    try:
+                        await self.sync_channel_members(channel_id)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "Could not line up %s channel %s's members with its room",
+                            self._bridge_type,
+                            channel_id,
+                        )
+            except asyncio.CancelledError:
+                logger.info(
+                    "%s member sync cancelled before finishing", self._bridge_type
+                )
+                raise
+
+    async def sync_channel_members(self, channel_id: str) -> None:
+        """Make a channel's room hold the people its platform says are in it.
+
+        Anyone in the channel and not in the room is added, as they would be
+        on speaking. Anyone in the room and no longer in the channel is taken
+        out, but only on a listing the adapter says is complete and that names
+        someone: a page that failed, or an empty answer from a bot that lost
+        sight of the channel, would otherwise empty the room. A platform that
+        cannot list members (Telegram) is left to its leave events.
+
+        Agents are never touched: they are not people, and the adapter leaves
+        them out of the listing.
+        """
+        room_ids = self._channel_to_room.get(channel_id)
+        if room_ids is None:
+            return
+        room_id, transport_room_id = room_ids
+        tenant_id = await self._room_tenant(room_id)
+        # Who the room holds is read before the platform is asked: someone who
+        # joins while the listing runs (Slack pages slowly) is added to the
+        # room by their join, and is missing from the listing. Read after it,
+        # they would be taken for gone and removed while still in the channel.
+        with tenant_scope(tenant_id):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                present = {
+                    person.external_user_id
+                    for person in await self._external_user_store.get_by_room(
+                        session, room_id
+                    )
+                    if person.bridge_id == self._bridge_id
+                }
+        listing = await self._adapter.list_channel_members(
+            channel_id, known_people=self._human_actors.keys()
+        )
+        if listing is None:
+            await self._sync_by_asking(channel_id, room_id, tenant_id)
+            return
+        with tenant_scope(tenant_id):
+            joining = [
+                (external_user_id, name)
+                for external_user_id, name in listing.members.items()
+                if external_user_id not in present
+            ]
+            if len(joining) > self.MEMBER_SYNC_MAX_ADDS:
+                logger.warning(
+                    "%s channel %s has %d people not yet in room %s; adding the "
+                    "first %d",
+                    self._bridge_type,
+                    channel_id,
+                    len(joining),
+                    room_id,
+                    self.MEMBER_SYNC_MAX_ADDS,
+                )
+                joining = joining[: self.MEMBER_SYNC_MAX_ADDS]
+            added = 0
+            for external_user_id, name in joining:
+                # An empty name is someone the adapter knew as a person from
+                # `known_people`; their identity exists, so no name is needed.
+                if not name and external_user_id not in self._human_actors:
+                    continue
+                if name and await self._is_registered_agent(name):
+                    continue
+                # Found already in the channel, not arriving now: history
+                # says they are here, and no agent is woken for each one.
+                if await self._ensure_human_in_room(
+                    external_user_id=external_user_id,
+                    external_username=name,
+                    room_id=room_id,
+                    transport_room_id=transport_room_id,
+                    quiet=True,
+                ):
+                    added += 1
+            gone: list[str] = []
+            if listing.complete and listing.members:
+                gone = sorted(present - set(listing.members))
+                if gone:
+                    await self._room_service.remove_people_from_room(room_id, gone)
+        if added or gone:
+            logger.info(
+                "Lined up room %s with %s channel %s: %d added, %d removed",
+                room_id,
+                self._bridge_type,
+                channel_id,
+                added,
+                len(gone),
+            )
+
+    async def _sync_by_asking(
+        self, channel_id: str, room_id: str, tenant_id: str
+    ) -> None:
+        """For a platform that cannot list a channel's members: ask about each
+        person in the room, and take out those the platform says are gone
+        (Telegram). Nobody is added, as the platform cannot say who else is
+        there."""
+        with tenant_scope(tenant_id):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                present = sorted(
+                    {
+                        person.external_user_id
+                        for person in await self._external_user_store.get_by_room(
+                            session, room_id
+                        )
+                        if person.bridge_id == self._bridge_id
+                    }
+                )
+            if not present:
+                return
+            gone = await self._adapter.members_gone(channel_id, present)
+            if gone:
+                await self._room_service.remove_people_from_room(room_id, sorted(gone))
+                logger.info(
+                    "Took %d people who left %s channel %s out of room %s",
+                    len(gone),
+                    self._bridge_type,
+                    channel_id,
+                    room_id,
+                )
 
     async def _record_channel_type(
         self, channel_id: str, channel_type: ChannelType
@@ -1834,6 +2038,60 @@ class CollaborationCore:
             finally:
                 self._pending_message_maps.pop(event_id, None)
 
+    async def _owner_from_platform_account(
+        self, external_user_id: str | None, channel_id: str
+    ) -> str | None:
+        """The Switch user who linked the platform account `external_user_id`,
+        to own a room that account brought Switch into. None when the platform
+        did not say who, nobody has linked the account, or more than one
+        person has, since then nobody can tell which of them it was.
+
+        Only claimants who still belong to the bridge's workspace count: a
+        former member who linked the account doesn't own a room in a
+        workspace they've left.
+
+        A room left without an owner is changed only by admins, so the cases
+        someone may ask about (an unlinked or shared account) are logged with
+        the reason. A platform that never says who added Switch is expected,
+        and only noted at debug level."""
+        if external_user_id is None:
+            logger.debug(
+                "Channel %s gets a room with no owner: the platform did not say "
+                "who added Switch",
+                channel_id,
+            )
+            return None
+        users = UserStore()
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            account = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            claimants: list[str] = []
+            if account is not None:
+                for user_id in await self._external_user_store.claimant_ids(
+                    session, account.id
+                ):
+                    role = await users.effective_tenant_role(
+                        session, self._bridge_tenant_id, user_id
+                    )
+                    if role is not None:
+                        claimants.append(user_id)
+        if len(claimants) == 1:
+            return claimants[0]
+        logger.warning(
+            "Channel %s gets a room with no owner, so only workspace admins can "
+            "change it: %s",
+            channel_id,
+            "the account that added Switch is not linked to a Switch user in "
+            "this workspace"
+            if not claimants
+            else f"{len(claimants)} Switch users have linked the account that "
+            "added Switch, so it is not clear which one did",
+        )
+        return None
+
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
         async with lock:
@@ -1868,6 +2126,7 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            added_by_external_user_id=join.added_by_external_user_id,
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1880,11 +2139,15 @@ class CollaborationCore:
                 logger.debug(
                     "App joined channel %s but room already exists", join.channel_id
                 )
+                # Added back to a channel it had left: whoever came and went
+                # meanwhile was not seen.
+                self._sync_members_soon([join.channel_id])
                 return
             await self._create_room_for_channel(
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
+                added_by_external_user_id=join.added_by_external_user_id,
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -1982,6 +2245,7 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        added_by_external_user_id: str | None = None,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -2002,6 +2266,9 @@ class CollaborationCore:
             return existing
 
         agent_ids = await self._resolve_agents_for_channel(channel_id, channel_type)
+        owner_id = await self._owner_from_platform_account(
+            added_by_external_user_id, channel_id
+        )
 
         bridge_name = self._bridge_display_name
         if channel_type == "direct":
@@ -2024,6 +2291,10 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            # Whoever added Switch to the channel owns its room, when the
+            # platform says who and they have linked their account; otherwise
+            # nobody does, and only workspace admins change it.
+            owner_id=owner_id,
             named_after_channel=(
                 channel_name if channel_type != "direct" and channel_name else None
             ),
@@ -2078,6 +2349,9 @@ class CollaborationCore:
                 message_type=AdminMessageType.NO_AGENTS,
             )
 
+        # Whoever is already in the channel is in the room from the start,
+        # not only once they speak.
+        self._sync_members_soon([channel_id])
         return (room.id, room.transport_room_id)
 
     async def _resolve_agents_for_channel(
@@ -2209,10 +2483,12 @@ class CollaborationCore:
         external_username: str,
         room_id: str,
         transport_room_id: str,
+        quiet: bool = False,
     ) -> Actor[ClientConfig] | None:
         """Get-or-create the human actor for this external user and ensure it has
         actually joined the room. Returns the running human actor, or None if it
-        couldn't be brought up or didn't join in time. Idempotent."""
+        couldn't be brought up or didn't join in time. Idempotent. `quiet`
+        writes the arrival to history without waking any agent for it."""
         client_id = self._human_actors.get(external_user_id)
         if client_id is None:
             client_id = await self._create_human_actor(
@@ -2228,7 +2504,12 @@ class CollaborationCore:
             return None
         await human_actor.wait_ready()
         try:
-            await self._room_service.ensure_client_in_room(room_id, client_id)
+            if quiet:
+                await self._room_service.ensure_client_in_room(
+                    room_id, client_id, quiet=True
+                )
+            else:
+                await self._room_service.ensure_client_in_room(room_id, client_id)
         except Exception:
             logger.exception(
                 "Failed to add human actor %s to room %s", client_id, room_id
@@ -2669,6 +2950,68 @@ class CollaborationCore:
             external_username=join.external_username,
             room_id=room_id,
             transport_room_id=transport_room_id,
+            quiet=join.quiet,
+        )
+
+    #: How long a removal Switch asked for waits for the platform's report of
+    #: it before the report is taken as someone leaving on their own.
+    EXPECTED_REMOVAL_SECONDS = 120.0
+
+    def expect_removals(
+        self,
+        channel_id: str,
+        external_user_ids: Collection[str],
+        removed_by: str | None,
+    ) -> None:
+        """Note that Switch is about to remove these people from the channel
+        at `removed_by`'s request, so the leave the platform reports names
+        them rather than reading as the person leaving."""
+        now = time.monotonic()
+        for external_user_id in external_user_ids:
+            self._expected_removals[(channel_id, external_user_id)] = (removed_by, now)
+
+    def forget_expected_removals(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> None:
+        """Drop expectations for removals the platform refused."""
+        for external_user_id in external_user_ids:
+            self._expected_removals.pop((channel_id, external_user_id), None)
+
+    def _expected_remover(
+        self, channel_id: str, external_user_id: str
+    ) -> tuple[bool, str | None]:
+        """Whether Switch asked for this removal recently, and who asked."""
+        cutoff = time.monotonic() - self.EXPECTED_REMOVAL_SECONDS
+        for key, (_, at) in list(self._expected_removals.items()):
+            if at < cutoff:
+                del self._expected_removals[key]
+        found = self._expected_removals.pop((channel_id, external_user_id), None)
+        return (found is not None, found[0] if found else None)
+
+    async def _handle_user_left_channel(self, leave: InboundUserLeave) -> None:
+        """Called by the adapter when a person leaves a bridged channel or is
+        taken out of it on the platform. They are taken out of the channel's
+        room, which stops their delivery and ends what being in the room let
+        them do.
+
+        Someone Switch never put in the room, or a channel with no room, is
+        nothing to undo. Nor is the platform asked to remove them: it just
+        said they are gone.
+        """
+        room_ids = self._channel_to_room.get(leave.channel_id)
+        if room_ids is None:
+            return
+        room_id, _ = room_ids
+        if leave.external_user_id not in self._human_actors:
+            return
+        asked, remover = self._expected_remover(
+            leave.channel_id, leave.external_user_id
+        )
+        await self._room_service.remove_people_from_room(
+            room_id,
+            [leave.external_user_id],
+            removed_by=remover if asked else leave.removed_by_name,
+            removed_by_kind="user" if asked else "platform",
         )
 
     # ── Human actor lifecycle ─────────────────────────────────────────────────────

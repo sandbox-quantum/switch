@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
-from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.broker import CheckedKey, ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.db.models import ServiceConnection, ServiceTokenIssuance
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
@@ -192,6 +194,39 @@ class TestConnect:
         assert response.status_code == 200, response.text
         assert "cannot revoke it" in response.json()["warning"]
         assert await _connections(harness) == []
+
+    async def test_a_key_for_an_account_linked_to_someone_else_is_refused(
+        self, service, monkeypatch
+    ) -> None:
+        harness, broker = service
+        ada = await add_member(harness.session_factory, "ada")
+        grace = await add_member(harness.session_factory, "grace")
+        agent_id, _ = await agent_with_key(harness.session_factory, ada, "sre")
+        await _connected_before(harness.session_factory, ada.id, agent_id)
+        # Datadog keys are refused before this check; the stand-in accepts one.
+        monkeypatch.setattr(
+            broker,
+            "check_key",
+            AsyncMock(
+                return_value=CheckedKey(
+                    account_id="dd-key",
+                    label="Datadog key · datadoghq.eu",
+                    secret=ConnectionSecret({"access_token": "unused"}),
+                )
+            ),
+        )
+
+        response = await _connect(harness, grace, KEYS)
+
+        assert response.status_code == 409, response.text
+        assert response.json() == {
+            "detail": (
+                "This Datadog key's account is already linked to another Switch "
+                "user in this Switch workspace. Remove that link first."
+            ),
+            "code": "account_linked_elsewhere",
+            "retryable": False,
+        }
 
 
 class TestUse:
