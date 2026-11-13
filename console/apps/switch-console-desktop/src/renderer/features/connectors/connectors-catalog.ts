@@ -71,18 +71,20 @@ export function connectorsPageAccess(
 /**
  * What the profile says and offers when the workspace has the service off: a
  * member is told who can switch it on; an admin is offered to switch it on,
- * unless the server can't serve it or the organization locked it. Null when
- * it is on, or the server has no workspace switch.
+ * unless the server can't serve it. Where the organization locked it, no one
+ * in the workspace can switch it on, and everyone is told so. Null when it is
+ * on, or the server has no workspace switch.
  */
 export function workspaceOffNotice(
   entry: ConnectionCatalogEntry,
   administers: boolean
 ): { text: string; canEnable: boolean } | null {
   if (entry.workspace_enabled !== false) return null;
+  if (entry.organization_locked) return { text: 'Set by your organization.', canEnable: false };
   return administers
     ? {
         text: `${entry.name} is switched off for this workspace.`,
-        canEnable: entry.unavailable_reason === null && !entry.organization_locked,
+        canEnable: entry.unavailable_reason === null,
       }
     : { text: 'Not enabled in this workspace. Ask a workspace admin.', canEnable: false };
 }

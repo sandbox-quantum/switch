@@ -261,6 +261,20 @@ describe('what each person is told about a connector that cannot be used', () =>
     });
   });
 
+  it('offers no one Turn on for a service the organization locked off', () => {
+    const locked = entry({ workspace_enabled: false, organization_locked: true });
+    for (const viewer of [OPERATOR, ADMIN, MEMBER]) {
+      expect(connectorCardState(locked, viewer)).toEqual({
+        kind: 'workspace_off',
+        label: 'Off in this workspace',
+        detail: 'Set by your organization.',
+        tone: 'muted',
+        fix: null,
+      });
+      expect(cardQuickAction(locked, connectorCardState(locked, viewer))).toBeNull();
+    }
+  });
+
   it('puts the fix on the card in place of Connect, and nothing where there is none', () => {
     const quick = (item: ConnectionCatalogEntry, viewer: ConnectorViewer) =>
       cardQuickAction(item, connectorCardState(item, viewer));
@@ -469,7 +483,6 @@ describe('the profile', () => {
   });
 
   it("offers an admin no switch the server can't serve, or the organization locked", () => {
-    const text = 'Example is switched off for this workspace.';
     expect(
       workspaceOffNotice(
         entry({
@@ -479,10 +492,13 @@ describe('the profile', () => {
         }),
         true
       )
-    ).toEqual({ text, canEnable: false });
-    expect(
-      workspaceOffNotice(entry({ workspace_enabled: false, organization_locked: true }), true)
-    ).toEqual({ text, canEnable: false });
+    ).toEqual({ text: 'Example is switched off for this workspace.', canEnable: false });
+    const locked = entry({ workspace_enabled: false, organization_locked: true });
+    for (const administers of [true, false])
+      expect(workspaceOffNotice(locked, administers)).toEqual({
+        text: 'Set by your organization.',
+        canEnable: false,
+      });
   });
 });
 
