@@ -64,6 +64,7 @@ import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import UsagePage from "../pages/usage/UsagePage";
 import UsersPage from "../pages/users/UsersPage";
+import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage";
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspacePage, {
   WorkspaceGeneralPage,
@@ -210,6 +211,12 @@ export const ROUTES: readonly AppRoute[] = [
   page("/registration-keys", CURRENT, everyone, <RegistrationKeysPage />),
   redirect("/registration-keys", V2, "/settings/api-keys"),
   page("/workspace", CURRENT, everyone, <WorkspacePage />),
+  page(
+    "/workspace/private-channel-rooms",
+    BOTH,
+    workspaceAdmins,
+    <PrivateChannelRoomsPage />,
+  ),
   redirect("/workspace", V2, "/settings/users"),
   page("/organization", CURRENT, inOrganization, <OrganizationPage />),
   redirect("/organization", V2, "/settings/org"),

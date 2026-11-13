@@ -1014,6 +1014,16 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/{tenant_id}/private-channel-rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/private-channel-rooms/count",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/tenants/{tenant_id}/retention",
       "auth": "session",
       "flags": []
@@ -1597,6 +1607,16 @@
     },
     {
       "route": "POST /gateway/tenants/{tenant_id}/join-domains",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private",
       "auth": "session",
       "flags": []
     },

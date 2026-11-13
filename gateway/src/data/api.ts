@@ -1839,6 +1839,91 @@ export async function clearRetentionPolicy(tenantId: string): Promise<RetentionP
   );
 }
 
+// ── Public rooms on private channels ──────────────────────────────────────
+
+/** Why a listed room starts unticked. */
+export type PrivateChannelRoomCaution =
+  | "members_not_listed"
+  | "channel_type_not_recorded"
+  | "channel_type_unknown"
+  | "many_people"
+  | "bridge_not_connected";
+
+export interface PrivateChannelRoom {
+  room_id: string;
+  name: string;
+  bridge_id: string;
+  bridge_name: string | null;
+  bridge_type: string | null;
+  // The recorded type; null when none was recorded.
+  channel_type: string | null;
+  people: number;
+  // Null when the room's messaging app is not running.
+  members_listed: boolean | null;
+  cautions: PrivateChannelRoomCaution[];
+  recommended: boolean;
+}
+
+export interface MakeRoomsPrivateResult {
+  changed: string[];
+  skipped: { room_id: string; reason: string }[];
+}
+
+export interface AskPlatformResult {
+  answered: { room_id: string; channel_type: string }[];
+  unanswered: { room_id: string; reason: "bridge_not_connected" | "could_not_tell" }[];
+  // Set when the batch stopped early.
+  stopped: "rate_limited" | "timed_out" | null;
+  // Listed rooms still to ask about: no recorded type, not already found
+  // unplaceable.
+  remaining: number;
+}
+
+/** The most rooms one apply changes. */
+export const MAKE_PRIVATE_MAX = 200;
+
+/** How many rooms the review page would list. One query; no platform. */
+export async function countPrivateChannelRooms(tenantId: string): Promise<number> {
+  const result = await jsonRequest<{ count: number }>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/count`,
+    "GET",
+  );
+  return result.count;
+}
+
+/** Ask the messaging apps about a batch of rooms of unrecorded type; the
+ * answers are saved on the rooms. */
+export async function askPlatformAboutRooms(tenantId: string): Promise<AskPlatformResult> {
+  return jsonRequest<AskPlatformResult>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/ask-platform`,
+    "POST",
+    {},
+  );
+}
+
+/** The Public rooms bound to a private channel, a group, a DM or a channel
+ * of unrecorded type. A dry run: changes nothing, calls no platform. */
+export async function previewPrivateChannelRooms(
+  tenantId: string,
+): Promise<PrivateChannelRoom[]> {
+  const result = await jsonRequest<{ rooms: PrivateChannelRoom[] }>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms`,
+    "GET",
+  );
+  return result.rooms;
+}
+
+export async function makeRoomsPrivate(
+  tenantId: string,
+  roomIds: string[],
+): Promise<MakeRoomsPrivateResult> {
+  return jsonRequest<MakeRoomsPrivateResult>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+    "POST",
+    { room_ids: roomIds },
+  );
+}
+
 // ── Erasing a person ───────────────────────────────────────────────────────
 
 export interface PersonClaimant {

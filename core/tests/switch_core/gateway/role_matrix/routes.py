@@ -228,6 +228,20 @@ ROUTES: dict[str, Case] = {
         why="Deleting messages can't be undone: its admins by their own membership.",
     ),
     "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
+        f"{W}/private-channel-rooms", admins()
+    ),
+    "GET /gateway/tenants/{tenant_id}/private-channel-rooms/count": get(
+        f"{W}/private-channel-rooms/count", admins()
+    ),
+    "POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform": post(
+        f"{W}/private-channel-rooms/ask-platform", admins(), json={}
+    ),
+    "POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private": post(
+        f"{W}/private-channel-rooms/make-private",
+        admins(),
+        json={"room_ids": ["no-such-room"]},
+    ),
     "GET /gateway/tenants/{tenant_id}/people": get(
         f"{W}/people",
         admin_by_membership(),
