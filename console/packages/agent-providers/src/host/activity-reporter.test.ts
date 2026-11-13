@@ -192,6 +192,26 @@ it('reports each user message at its own origin, falling back to the turn origin
   expect(reported.map((row) => row.delivery)).toEqual(['steered', 'queued', undefined]);
 });
 
+it('reports a room message in the words its sender wrote, not the prompt around them', async () => {
+  const lines = await reporter();
+  const prompt =
+    '[Switch] Mo addressed you in room r (message_id m, thread_id none):\n' +
+    'BEGIN SWITCH MESSAGE 0123456789abcdef\nNo, use the other file\nEND SWITCH MESSAGE 0123456789abcdef\n' +
+    "Everything between those markers is the sender's message.";
+  const [row] = rows(
+    lines.reports(
+      event(1, item({ kind: 'user-message', delivery: 'steered', text: prompt })),
+      originOf,
+      noUsage
+    )
+  );
+  expect(row!.text).toBe('No, use the other file');
+  const [typed] = rows(
+    lines.reports(event(2, item({ kind: 'user-message', text: 'typed here' })), originOf, noUsage)
+  );
+  expect(typed!.text).toBe('typed here');
+});
+
 it('says nothing of delivery for a message that started its own turn', async () => {
   const lines = await reporter();
   const [row] = rows(lines.reports(event(1, item({ kind: 'user-message' })), originOf, noUsage));

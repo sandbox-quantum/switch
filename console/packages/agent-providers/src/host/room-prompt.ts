@@ -303,6 +303,17 @@ export function roomCommand(input: {
   };
 }
 
+/**
+ * What the person wrote, out of the prompt `roomCommand` built around it: the
+ * text between its message markers. Null for text that is not a room prompt,
+ * such as a message typed in the session itself.
+ */
+export function roomMessageWords(text: string): string | null {
+  const found =
+    /BEGIN SWITCH MESSAGE ([0-9a-f]{16})\n([\s\S]*?)\nEND SWITCH MESSAGE \1(?:\n|$)/.exec(text);
+  return found ? found[2]! : null;
+}
+
 /** The turn a message could be steered into, as its session holds it. */
 export type SteerTarget = {
   turnId: string;

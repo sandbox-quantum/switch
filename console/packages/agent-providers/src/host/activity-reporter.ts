@@ -3,6 +3,7 @@ import type { Origin, ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { TokenUsage } from '../events';
 import { Journal } from './journal';
+import { roomMessageWords } from './room-prompt';
 
 /**
  * What Switch shows of a session on messaging platforms, derived from the
@@ -171,7 +172,14 @@ export class ActivityReporter {
               revision: item.revision,
               status: item.status,
               title: truncate(item.title, MAX_TITLE),
-              text: truncate(item.text, MAX_TEXT),
+              // A person's message is shown in their own words, not in the
+              // prompt the host wrapped around it for the agent.
+              text: truncate(
+                item.kind === 'user-message'
+                  ? (roomMessageWords(item.text) ?? item.text)
+                  : item.text,
+                MAX_TEXT
+              ),
               command_id: null,
               ...place(item.turnId, item.kind === 'user-message' ? item.origin : null),
               occurred_at: event.occurredAt,
