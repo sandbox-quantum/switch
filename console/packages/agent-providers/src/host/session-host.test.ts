@@ -157,32 +157,29 @@ it.each([
   'qwen',
   'junie',
   'kimi',
-] as const)(
-  'serializes and deduplicates %s commands across recovery',
-  async (provider) => {
-    const { root, host, adapter } = await start(provider);
-    const command = message('first');
-    expect((await host.command(command)).status).toBe('applied');
-    await host.command(structuredClone(command));
-    await host.command(message('second'));
-    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
-    await expect(
-      host.command({ ...command, body: { ...command.body, text: 'Changed' } } as Command)
-    ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
-    await host.shutdown();
-    const recovered = setup(provider);
-    const next = await startHost(root, recovered.config, recovered.adapter);
-    hosts.push(next);
-    expect(recovered.adapter.startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ resume: { nativeSessionId: 'native' } })
-    );
-    expect(next.snapshot().items.filter((item) => item.kind === 'user-message')).toHaveLength(2);
-    expect(next.snapshot().turns.every((turn) => turn.status === 'interrupted')).toBe(true);
-    expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
-    expect((await next.command(command)).status).toBe('applied');
-    await expect(next.command(message('third'))).rejects.toThrow('STALE_EPOCH');
-  }
-);
+] as const)('serializes and deduplicates %s commands across recovery', async (provider) => {
+  const { root, host, adapter } = await start(provider);
+  const command = message('first');
+  expect((await host.command(command)).status).toBe('applied');
+  await host.command(structuredClone(command));
+  await host.command(message('second'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+  await expect(
+    host.command({ ...command, body: { ...command.body, text: 'Changed' } } as Command)
+  ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+  await host.shutdown();
+  const recovered = setup(provider);
+  const next = await startHost(root, recovered.config, recovered.adapter);
+  hosts.push(next);
+  expect(recovered.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'native' } })
+  );
+  expect(next.snapshot().items.filter((item) => item.kind === 'user-message')).toHaveLength(2);
+  expect(next.snapshot().turns.every((turn) => turn.status === 'interrupted')).toBe(true);
+  expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+  expect((await next.command(command)).status).toBe('applied');
+  await expect(next.command(message('third'))).rejects.toThrow('STALE_EPOCH');
+});
 it('keeps an explicitly stopped session stopped across restart', async () => {
   const { root, host } = await start('claude');
   await host.command({ ...message('stop'), body: { type: 'session.stop' } });
@@ -1323,27 +1320,24 @@ it.each([
   'qwen',
   'junie',
   'kimi',
-] as const)(
-  'starts %s without waiting for model discovery',
-  async (provider) => {
-    const root = await mkdtemp(join(tmpdir(), 'startup-models-'));
-    roots.push(root);
-    const fixture = setup(provider);
-    let resolveModels!: (models: []) => void;
-    fixture.adapter.listModels = vi.fn(
-      () =>
-        new Promise<[]>((resolve) => {
-          resolveModels = resolve;
-        })
-    );
-    const host = await startHost(root, fixture.config, fixture.adapter);
-    hosts.push(host);
-    expect(host.snapshot().session.status).toBe('ready');
-    expect(fixture.adapter.listModels).toHaveBeenCalledOnce();
-    expect((await host.command(message('before-models'))).status).toBe('applied');
-    resolveModels([]);
-  }
-);
+] as const)('starts %s without waiting for model discovery', async (provider) => {
+  const root = await mkdtemp(join(tmpdir(), 'startup-models-'));
+  roots.push(root);
+  const fixture = setup(provider);
+  let resolveModels!: (models: []) => void;
+  fixture.adapter.listModels = vi.fn(
+    () =>
+      new Promise<[]>((resolve) => {
+        resolveModels = resolve;
+      })
+  );
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  expect(host.snapshot().session.status).toBe('ready');
+  expect(fixture.adapter.listModels).toHaveBeenCalledOnce();
+  expect((await host.command(message('before-models'))).status).toBe('applied');
+  resolveModels([]);
+});
 
 it('overlaps authentication with startup but waits for authentication before returning', async () => {
   const root = await mkdtemp(join(tmpdir(), 'startup-auth-'));

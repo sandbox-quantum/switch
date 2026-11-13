@@ -176,7 +176,6 @@ describe('propagateServerApiUrl', () => {
     expect(row?.apiEndpoint).toBe('https://new-api.example.com');
   });
 
-  it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'junie'] as const)(
   it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'kimi'] as const)(
     'updates named %s credentials without changing another agent',
     async (providerId) => {
