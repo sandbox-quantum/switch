@@ -709,7 +709,7 @@ async def test_a_controller_machine_needs_agent_management(
             f"/hosted-controller/machines/{machine.id}/prepare", headers=HEADERS
         )
     assert response.status_code == 409, response.text
-    assert "agent_management feature flag" in response.json()["detail"]
+    assert "need agent management" in response.json()["detail"]
 
 
 def test_a_waking_machine_is_judged_by_its_last_report() -> None:

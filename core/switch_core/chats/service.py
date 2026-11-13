@@ -5,8 +5,8 @@ Membership is the only read authority. A person sees a room when their
 the tenant; a room's visibility and any claimed platform account do not count.
 Membership is granted by creating a chat, by a room manager (the room's owner
 or a tenant admin) adding a tenant member, or by a manager adding themselves.
-With the `agent_chats` feature flag on, it is also granted to a person in each
-chat they started that holds an agent they own, for as long as it does:
+It is also granted to a person in each chat they started that holds an agent
+they own, for as long as it does:
 `sync_owned_rooms` puts them in and takes back what was held only for that.
 Other people's chats and rooms set up elsewhere never gain an agent's owner.
 
@@ -196,8 +196,6 @@ class ChatService:
         usage_store: UsageStore,
         id_server_name: str,
         media_max_bytes: int,
-        agent_chats_enabled: bool,
-        group_chats_enabled: bool,
         buddy_slack_handoff_enabled: bool,
         connections: AgentConnectionRegistry,
         trust_client: TrustClient,
@@ -212,8 +210,6 @@ class ChatService:
         self._message_observer = message_observer
         self._telemetry = telemetry
         self._connections = connections
-        self.agent_chats_enabled = agent_chats_enabled
-        self.group_chats_enabled = group_chats_enabled
         self.buddy_slack_handoff_enabled = buddy_slack_handoff_enabled
         self.listener = listener
         self.activity_listener = activity_listener
@@ -303,14 +299,6 @@ class ChatService:
         self.wake_membership_watchers(tenant_id, user_ids, room_ids)
         if self._signals is not None:
             self._signals.memberships_changed(tenant_id, user_ids, room_ids)
-
-    def _require_group_chats(self) -> None:
-        """Refuse a group-only request while `group_chats` is off, so a fleet
-        that turned it off (or never on) says so rather than half-serving it."""
-        if not self.group_chats_enabled:
-            raise ChatError(
-                409, "GROUP_CHATS_OFF", "Group chats are not turned on here."
-            )
 
     def _lock(self, *key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -464,8 +452,6 @@ class ChatService:
         self, session: AsyncSession, user_id: str, room_id: str
     ) -> bool:
         """True when `sync_owned_rooms` keeps the user in this room."""
-        if not self.agent_chats_enabled:
-            return False
         return bool(
             await session.scalar(
                 select(exists().where(Room.id == room_id, _owner_joins(user_id)))
@@ -475,15 +461,14 @@ class ChatService:
     async def sync_owned_rooms(self, tenant_id: str, user_id: str) -> None:
         """Put the user in every live chat they started that holds an agent
         they own, and take back each membership held only for that once it no
-        longer satisfies that rule. With `agent_chats` off nothing satisfies
-        it: no one joins, and every such membership is taken back.
+        longer satisfies that rule.
 
         Such a membership is marked by a `ChatOwnerGrant`; being invited,
         creating the chat or joining as a manager removes the mark, and the
         membership then stays when the agent goes. Cheap when nothing changed:
         two queries.
         """
-        kept = _owner_joins(user_id) if self.agent_chats_enabled else false()
+        kept = _owner_joins(user_id)
         async with self._lock("owned", tenant_id, user_id):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 if not await self.has_tenant_role(session, tenant_id, user_id):
@@ -585,10 +570,7 @@ class ChatService:
         """`sync_owned_rooms` for everyone a change to this room's agents may
         concern: the owners of its agents and the holders of owner grants.
         The room's other members are told too, as gaining or losing its
-        agents can move it into or out of their list. Does nothing with
-        `agent_chats` off."""
-        if not self.agent_chats_enabled:
-            return
+        agents can move it into or out of their list."""
         async with tenant_session(self.session_factory, tenant_id) as session:
             owners = set(
                 (
@@ -674,8 +656,8 @@ class ChatService:
 
     async def agent_changed(self, tenant_id: str, agent_id: str) -> None:
         """Tell everyone who sees a room with this agent that it changed, and
-        with `agent_chats` on, wake the streams of everyone in a chat with it
-        so they re-send its summaries."""
+        wake the streams of everyone in a chat with it so they re-send its
+        summaries."""
         async with tenant_session(self.session_factory, tenant_id) as session:
             room_ids = list(
                 (
@@ -691,8 +673,6 @@ class ChatService:
                 listener(tenant_id, room_ids)
             except Exception:
                 logger.exception("Agent room listener failed for agent %s", agent_id)
-        if not self.agent_chats_enabled:
-            return
         async with tenant_session(self.session_factory, tenant_id) as session:
             members = (
                 await session.execute(
@@ -738,8 +718,8 @@ class ChatService:
         return list(result.scalars().all())
 
     async def stream_rooms(self, session: AsyncSession, user_id: str) -> list[Room]:
-        """The caller's member rooms that are chats: unarchived, and either
-        holding an agent or started in Switch Console (which may have none)."""
+        """The caller's member rooms that are chats: unarchived, and holding an
+        agent, started in Switch Console, or on no messaging app."""
         return [
             room
             for room, listed in await self.readable_and_listed(session, user_id)
@@ -769,13 +749,15 @@ class ChatService:
         self, session: AsyncSession, user_id: str
     ) -> list[tuple[Room, bool]]:
         """Every room the caller's member client is in, each with whether it
-        is a chat: holding an agent or started in Switch Console."""
+        is a chat: holding an agent, started in Switch Console, or on no
+        messaging app."""
         client = await self.member_client(session, user_id)
         if client is None:
             return []
         is_chat = or_(
             exists().where(room_agents.c.room_id == Room.id),
             Room.metadata_.has_key("chat_operation_id"),
+            Room.bridge_id.is_(None),
         )
         result = await session.execute(
             select(Room, is_chat)
@@ -1064,9 +1046,15 @@ class ChatService:
             target = await self._require_tenant_member(
                 session, tenant_id, target_user_id
             )
+        return await self.join_member(tenant_id, room.id, target)
+
+    async def join_member(self, tenant_id: str, room_id: str, target: User) -> Room:
+        """Put a tenant member's member client in the room, with no check on
+        who asks: the caller has already authorised the join."""
+        target_user_id = target.id
         client = await self.member_actor(tenant_id, target)
         async with tenant_session(self.session_factory, tenant_id) as session:
-            room = await self._locked_room(session, room.id)
+            room = await self._locked_room(session, room_id)
             # The creator is the direct chat's own person; anyone else makes a group.
             if target_user_id not in (room.created_by, room.owner_id):
                 await self._make_group(session, room)
@@ -1085,6 +1073,50 @@ class ChatService:
             member_ids = [member.id for member, _ in await self.members(session, room)]
         self._memberships_changed(tenant_id, member_ids, [room.id])
         return room
+
+    async def join_people(
+        self,
+        tenant_id: str,
+        room_id: str,
+        *,
+        user_names: list[str],
+        user_ids: list[str],
+    ) -> list[str]:
+        """Put people in a room that has no messaging app, for a caller already
+        authorised to say who is in it. Returns the names that did not make it.
+
+        A name is a tenant member's Switch name or email, exactly; one that
+        matches nobody, or more than one person, is returned rather than
+        guessed. `user_ids` are people the room is for without being named —
+        its creator — and are skipped when they are not a person in the tenant.
+        """
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            members = [
+                user
+                for user in (
+                    await session.execute(
+                        select(User)
+                        .join(TenantMember, TenantMember.user_id == User.id)
+                        .where(TenantMember.tenant_id == tenant_id)
+                    )
+                ).scalars()
+                if not is_bootstrap_owner(user)
+            ]
+        targets = {user.id: user for user in members if user.id in user_ids}
+        unresolved: list[str] = []
+        for name in user_names:
+            matches = [
+                user
+                for user in members
+                if user.name == name or user.email.lower() == name.lower()
+            ]
+            if len(matches) == 1:
+                targets[matches[0].id] = matches[0]
+            else:
+                unresolved.append(name)
+        for user in targets.values():
+            await self.join_member(tenant_id, room_id, user)
+        return unresolved
 
     async def remove_member(
         self, tenant_id: str, actor: User, room_id: str, target_user_id: str
@@ -1131,7 +1163,6 @@ class ChatService:
     ) -> Room:
         """Manager only, and only an agent the manager may use in this room.
         Already in is success. A second agent makes a direct chat a group."""
-        self._require_group_chats()
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, actor, room)
@@ -1179,7 +1210,6 @@ class ChatService:
     ) -> None:
         """Manager only, with no check on using the agent, so an unwanted
         agent can always be taken out. Already gone is success."""
-        self._require_group_chats()
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, actor, room)
@@ -1377,7 +1407,6 @@ class ChatService:
         `room_id` is None, filed in `new_group_id` if given, else to that
         room, which they must manage, less the agents already in it. The rule
         `_require_may_use_agent` applies."""
-        self._require_group_chats()
         target_room_id, present = "", set[str]()
         group_id = new_group_id if room_id is None else None
         if room_id is not None:
@@ -1476,8 +1505,6 @@ class ChatService:
                 "BRIDGED_CHAT_NEEDS_ONE_AGENT",
                 "A chat on a bridge is a direct chat with one agent and nobody else.",
             )
-        if member_user_ids or kind == "group" or not agent_ids:
-            self._require_group_chats()
         if greeting is not None:
             if len(agent_ids) != 1 or kind == "group":
                 raise ChatError(
@@ -1859,8 +1886,6 @@ class ChatService:
         """
         mentions = sorted(set(mention_agent_ids))
         people = sorted(set(mention_user_ids))
-        if people or mention_spans:
-            self._require_group_chats()
         typed = _span_texts(body, mention_spans)
         request: dict[str, object] = {
             "roomId": room_id,

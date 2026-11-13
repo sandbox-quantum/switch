@@ -1,4 +1,4 @@
-"""Agent management and cloud machine config: the flags and what they need."""
+"""Agent management and cloud machine config: what they need."""
 
 from __future__ import annotations
 
@@ -31,31 +31,27 @@ def _config(**overrides: object) -> SwitchConfig:
     )
 
 
-def test_off_by_default_and_needs_no_secret() -> None:
-    config = _config()
-    assert config.agent_management_enabled is False
-    assert config.controller_token_secret is None
+def test_always_on_with_a_secret() -> None:
+    config = _config(controller_token_secret=_LONG_ENOUGH)
+    assert config.feature_flags["agent_management"] is True
+    assert config.controller_token_secret == _LONG_ENOUGH
     assert config.controller_status_interval_seconds == 60
 
 
-def test_on_with_a_secret_is_accepted() -> None:
-    config = _config(
-        feature_flags_enabled="agent_management", controller_token_secret=_LONG_ENOUGH
-    )
-    assert config.agent_management_enabled is True
-    assert config.controller_token_secret == _LONG_ENOUGH
-
-
-def test_on_without_a_secret_raises() -> None:
+def test_a_missing_secret_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CONTROLLER_TOKEN_SECRET")
     with pytest.raises(ValueError, match="CONTROLLER_TOKEN_SECRET is required"):
-        _config(feature_flags_enabled="agent_management")
+        _config()
 
 
-def test_on_with_a_short_secret_raises() -> None:
+def test_a_short_secret_fails_startup() -> None:
     with pytest.raises(ValueError, match="at least 32 characters"):
-        _config(
-            feature_flags_enabled="agent_management", controller_token_secret="x" * 31
-        )
+        _config(controller_token_secret="x" * 31)
+
+
+def test_the_flag_listed_by_an_old_config_still_starts() -> None:
+    config = _config(feature_flags_enabled="agent_management")
+    assert config.feature_flags["agent_management"] is True
 
 
 def test_the_status_interval_must_be_positive() -> None:
@@ -65,11 +61,11 @@ def test_the_status_interval_must_be_positive() -> None:
 
 def test_the_old_setting_turned_on_is_refused() -> None:
     with pytest.raises(ValueError, match="AGENT_MANAGEMENT_ENABLED has been replaced"):
-        _config(agent_management_enabled=True, controller_token_secret=_LONG_ENOUGH)
+        _config(agent_management_enabled=True)
 
 
 def test_the_old_setting_left_off_is_accepted() -> None:
-    assert _config(agent_management_enabled=False).agent_management_enabled is False
+    assert _config(agent_management_enabled=False).feature_flags["agent_management"]
 
 
 def test_the_old_setting_is_refused_from_the_environment(
@@ -92,18 +88,8 @@ def test_the_flag_offers_cloud_machines_on_a_server_that_cannot_run_them() -> No
     assert config.hosted_launch_capacity == 0
 
 
-def test_capacity_needs_agent_management() -> None:
-    with pytest.raises(ValueError, match="HOSTED_LAUNCH_CAPACITY needs"):
-        _config(hosted_launch_capacity=1)
-
-
-def test_capacity_with_agent_management_is_accepted() -> None:
-    config = _config(
-        feature_flags_enabled="agent_management",
-        controller_token_secret=_LONG_ENOUGH,
-        hosted_launch_capacity=2,
-    )
-    assert config.hosted_launch_capacity == 2
+def test_capacity_is_accepted() -> None:
+    assert _config(hosted_launch_capacity=2).hosted_launch_capacity == 2
 
 
 _RELEASE = dict(

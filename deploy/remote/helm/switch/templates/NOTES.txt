@@ -11,10 +11,6 @@ To access services via port-forward:
   # Switch Core (API{{ if not .Values.gateway.enabled }} and dashboard{{ end }})
   kubectl port-forward svc/{{ include "switch.fullname" . }}-switch-core 8000:8000 -n {{ .Release.Namespace }}
 
-  # Mattermost
-  kubectl port-forward svc/{{ include "switch.fullname" . }}-mattermost 8065:8065 -n {{ .Release.Namespace }}
-
-
 Or use `just pf-all` to forward all services at once.
 {{ if eq .Values.ingress.mode "managed" }}
 This release renders a managed Ingress ({{ include "switch.fullname" . }}-web){{ if .Values.ingress.host }} for host {{ .Values.ingress.host }}{{ end }}.
@@ -109,12 +105,7 @@ ServiceSettings.AllowedUntrustedInternalConnections: a whitespace-separated list
 matched against the URL before DNS resolution. Mattermost will not call a private
 address it has not been given, and says so only in its own log.
 
-{{ if .Values.mattermost.enabled -}}
-This release has already put the Service name there for the Mattermost it
-deploys. Any other server needs the entry adding by hand.
-{{- else -}}
 This release deploys no Mattermost, so that entry is yours to add.
-{{- end }}
 
 Leave callback_base_url unset and the bridge draws no buttons at all: its
 requests are answered by typing, which is a reduced service and logs itself.
@@ -123,10 +114,17 @@ still drawn, and every press fails.
 {{- end }}
 
 ⚠  BACK UP YOUR DATA — this chart ships no backup jobs.
-Postgres holds everything: every room, every message, every account, and the
-Mattermost database. Back it up. See BACKUP.md and
-samples/volumesnapshot.example.yaml for the recommended approaches
+Postgres holds everything: every room, every message, every account. Back it
+up. See BACKUP.md and samples/volumesnapshot.example.yaml for the recommended approaches
 (CSI VolumeSnapshots, pg_dump / managed-DB backups, Velero).
+{{- if lookup "v1" "PersistentVolumeClaim" .Release.Namespace (printf "%s-mattermost-data" (include "switch.fullname" .)) }}
+
+── Mattermost data left in place ───────────────────────────────────────────────
+This chart no longer deploys Mattermost. Its volume
+({{ include "switch.fullname" . }}-mattermost-data) and the `mattermost` Postgres
+database were kept, not deleted. See the chart README ("Upgrading from a release
+that deployed Mattermost") for how to remove them once backed up.
+{{- end }}
 {{- if and (eq .Values.postgresql.mode "managed") (not (include "switch.runtimePasswordSeparate" .)) }}
 
 ── WARNING: database runtime role ──────────────────────────────────────────────

@@ -6,10 +6,6 @@ metadata:
   labels:
     {{- include "switch.labels" . | nindent 4 }}
 data:
-  02-create-mattermost-db.sh: |
-    #!/bin/bash
-    psql -U {{ include "switch.postgresSuperUser" . }} -tc "SELECT 1 FROM pg_database WHERE datname='mattermost'" | grep -q 1 || \
-      psql -U {{ include "switch.postgresSuperUser" . }} -c "CREATE DATABASE mattermost;"
   # /docker-entrypoint-initdb.d only runs once, against a brand-new PGDATA —
   # Postgres never reruns it on a volume that already holds a cluster. So this
   # is the fresh-install half of creating the runtime role switch-core

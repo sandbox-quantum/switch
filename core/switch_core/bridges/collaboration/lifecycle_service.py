@@ -1684,8 +1684,8 @@ class CollaborationBridgeLifecycleService:
         `bridge_connected` fires every time, so a flapping bridge shows up.
         `connector_added` fires only on the first ever connect.
         `first_connector_added` is the first connector a *person* added: a
-        preconfigured one never claims it, or the bundled Mattermost would
-        take it seconds after install on every deployment that ships one.
+        preconfigured one never claims it, or a bundled connector would take
+        it seconds after install on every deployment that ships one.
         """
         preconfigured = bridge_id in self._preconfigured
         emit_safely(

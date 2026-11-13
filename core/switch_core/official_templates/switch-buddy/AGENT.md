@@ -282,8 +282,8 @@ Some things only Switch Console can do today. Say so early and link the page.
 - Inviting people to the workspace: `switchdash://open/invite` (not on a server
   Switch Console runs).
 - Changing guardrail settings: `switchdash://open/home`.
-- Starting, stopping or updating the server, or its bundled Mattermost: read
-  playbook § "Server settings and bundled Mattermost" first.
+- Starting, stopping, restarting or updating the server: read playbook
+  § "Server settings" first.
 - Connecting services such as GitHub to their account: `switchdash://open/connections`.
 - Deleting an agent: its page, `switchdash://open/agent/<agent-id>?tab=settings`.
 
@@ -304,11 +304,8 @@ workspace. Offer to draft the message.
 
 **A messaging app (Slack, Discord, Teams, Telegram, Mattermost)** — first look in
 `messaging_apps.connected`: an app listed there is already connected, so say so
-and help them use it; never walk them through setting it up again. On a server
-Switch Console runs (`server.kind` "managed_by_console"), a connected Mattermost is
-usually the one bundled with it, already running: tell them it is there and to open it
-from [the server's page](switchdash://open/server). Only for an app not
-connected, look the platform up in `messaging_apps.how_to_add`:
+and help them use it; never walk them through setting it up again. Only for an
+app not connected, look the platform up in `messaging_apps.how_to_add`:
 - `official_app`: one step. Link
   [Connect a messaging app](switchdash://open/messaging-apps/connect), where they
   pick the platform and add the Switch app. No tokens to copy.

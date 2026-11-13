@@ -575,18 +575,16 @@ _SpecDumper.add_representer(str, _str_representer)
 # that puts the room in Switch Console rather than on a messaging app: an
 # internal room with the person who runs the template as a member, so it is
 # one of their Switch Console chats. An agent running a template puts its
-# owner there. It needs the server's `group_chats` flag.
+# owner there.
 CONSOLE_ROOM = "Switch Console"
 
 
 @dataclass(frozen=True)
 class ConsoleRooms:
-    """What a template needs to put a room in Switch Console: whether the
-    server offers them, and the chat service's way to add a person to a room
-    (``add_member``) and to say beforehand why it would refuse them
-    (``require_can_join``)."""
+    """What a template needs to put a room in Switch Console: the chat
+    service's way to add a person to a room (``add_member``) and to say
+    beforehand why it would refuse them (``require_can_join``)."""
 
-    enabled: bool
     add_member: Callable[[str, User, str, str], Awaitable[Room]]
     require_can_join: Callable[[str, str], Awaitable[None]]
 
@@ -1343,13 +1341,13 @@ class RoomYamlService:
                 )
 
     def _console_offered(self) -> bool:
-        return self._console_rooms is not None and self._console_rooms.enabled
+        return self._console_rooms is not None
 
     def _require_console_rooms(self) -> ConsoleRooms:
-        if self._console_rooms is None or not self._console_rooms.enabled:
+        if self._console_rooms is None:
             raise ValueError(
-                "this server does not offer Switch Console rooms (its group_chats "
-                "feature flag is off): choose a messaging app"
+                "this server does not offer Switch Console rooms: choose a "
+                "messaging app"
             )
         return self._console_rooms
 

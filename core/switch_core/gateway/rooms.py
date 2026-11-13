@@ -45,7 +45,7 @@ from switch_core.decision.room import (
     set_auto_route_on,
 )
 from switch_core.decision.settings import DecisionAvailability
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.auth import (
     authorize_room,
     get_current_user,
@@ -783,7 +783,6 @@ async def run_template_document(
     source = vouched_source(
         body.template,
         loaded,
-        agent_management=config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=config.feature_flags[SWITCH_BUDDY],
     )
     inputs = body.inputs or {}

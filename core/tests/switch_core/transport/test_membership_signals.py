@@ -395,7 +395,9 @@ class TestAcrossProcesses:
         )
         # The copy in the process that served the change joined itself.
         assert second_id in here.transport._watching
-        await _eventually(lambda: second_id in there.transport._watching)
+        # `_watching` is claimed before the room is subscribed; a message
+        # announced in between would wake nothing.
+        await _eventually(lambda: bool(there.listener.wakers.get(second_id)))
         async with session_factory() as session:
             membership = await session.get(
                 ClientRoom, {"client_id": client_id, "room_id": second_id}

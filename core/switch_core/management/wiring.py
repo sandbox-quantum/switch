@@ -1,8 +1,6 @@
 """Building the management module and attaching it to the two apps.
 
-`create_management` returns None when the `agent_management` feature flag is off, and
-with None nothing is mounted and the bearer middleware has no controller
-branch. When it is on, the authenticator goes to the middleware as the agent
+`create_management` builds it: the authenticator goes to the middleware as the agent
 bridge app is built, `install` adds the routes once both apps exist, and
 `load_bindings` tells Core which controller runs each agent before the bridge
 serves. `install` also hands Core the agent-facing side
@@ -11,7 +9,7 @@ machines and managed agents exist.
 
 Each process writes its controllers' connection transitions
 (`connection_ledger.py`), read against the lease the server holds for the
-process whether or not management is on (`switch_core/process_lease.py`): `run` writes
+process (`switch_core/process_lease.py`): `run` writes
 transitions until cancelled, and `flush` writes what is left as the process
 drains, before the server marks its lease stopped. `load_connections` reads
 which controllers the other processes hold, before the bridge serves.
@@ -233,13 +231,10 @@ def create_management(
     signal_bus: SignalBus,
     lease: ProcessLease,
     user_changes: UserChangePublisher,
-) -> Management | None:
-    if not config.agent_management_enabled:
-        return None
+) -> Management:
     if config.controller_token_secret is None:
         raise RuntimeError(
-            "The agent_management feature flag is on without CONTROLLER_TOKEN_SECRET; the "
-            "config validator should have refused this"
+            "CONTROLLER_TOKEN_SECRET is not set; the config validator should have refused this"
         )
     return build_management(
         token_secret=config.controller_token_secret,

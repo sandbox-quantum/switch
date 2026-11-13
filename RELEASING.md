@@ -1,7 +1,7 @@
 # Releasing Switch
 
 This describes how to cut a release of the **Switch core stack** — the
-`switch-core`, `gateway`, `setup`, `switch-decision`,
+`switch-core`, `gateway`, `switch-decision`,
 `switch-decision-strands` and `switch-hosted-controller` container images, the Helm charts, and the standalone Docker Compose file. The Switch Console desktop app releases separately
 (see `.github/workflows/switch-console-release.yml` and `console/docs/INSTALL.md`).
 
@@ -22,7 +22,7 @@ Never derive one from the other.
 
 ### What is, and is not, separately versioned
 
-The **operator dashboard** (`gateway/`), the **setup image**, the
+The **operator dashboard** (`gateway/`), the
 **switch-hosted-controller image**, the **Helm charts**, and the **standalone
 compose artifact** have no version of their own. They ship
 inside the switch-core release and are stamped with its version at package time,
@@ -83,7 +83,7 @@ peer still on it, and it can never be raised past what is running in the field.
 5. The **`switch-release`** workflow (`.github/workflows/switch-release.yml`)
    then, on that tag:
    - builds multi-arch (`linux/amd64`, `linux/arm64`) images for `switch-core`,
-     `gateway`, `setup` and `switch-decision` (and the hosted controller), and
+     `gateway` and `switch-decision` (and the hosted controller), and
      an amd64-only `switch-decision-strands` (the Strands Decider model server,
      CUDA and PyTorch, several GB; built without the Actions layer cache), and
      pushes them to the container registry tagged
@@ -136,7 +136,7 @@ environment runs main from published, digest-pinned artifacts instead of
 building from source at deploy time.
 
 - **Separate packages.** Dev builds go to `ghcr.io/<owner>/dev/` (`dev/switch-core`,
-  `dev/gateway`, `dev/setup`, `dev/switch-decision`, `dev/switch-decision-strands`, `dev/switch-hosted-controller`, `dev/charts/switch`,
+  `dev/gateway`, `dev/switch-decision`, `dev/switch-decision-strands`, `dev/switch-hosted-controller`, `dev/charts/switch`,
   `dev/charts/switch-hosted-controller`), so the release packages' tag lists
   hold releases and RCs only. Nothing is ever tagged `latest`.
 - **The dev charts carry a moving `main` tag.** Once both charts are pushed,
@@ -180,7 +180,7 @@ switchCore:
   imagePullPolicy: IfNotPresent
 ```
 
-and the same for `gateway`, `setup` and `decision` (the `switch-decision`
+and the same for `gateway` and `decision` (the `switch-decision`
 image, rendered only with `decision.enabled`; the CI render with the optional
 workloads on checks its pin), and for `decision.modelServer.strands.image`
 (`switch-decision-strands`, rendered with `decision.enabled` and the default
@@ -446,9 +446,8 @@ to that interface as you would any public API change.
   `standalone-docker-compose.build.yml` on top — that is what `just
   standalone-up` runs.
 - **Profiles.** Core services (`postgres`, `switch`) always start.
-  Optional services are opt-in behind profiles: `collab` (`init-db`,
-  `mattermost`, `setup`) and `gateway` (`gateway`). Enable with
-  `--profile collab --profile gateway` or `COMPOSE_PROFILES`.
+  The optional `gateway` service is opt-in behind the `gateway` profile.
+  Enable it with `--profile gateway` or `COMPOSE_PROFILES`.
 
 ## PyPI
 
