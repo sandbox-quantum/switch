@@ -1133,6 +1133,7 @@ describe("a link naming a workspace", () => {
       role: "admin",
       organization_role: "org_admin",
       organization_id: "o1",
+      archived_at: null,
     };
     mockFetch({
       ...signedInAs("org_admin", { tenants: [covered] }),
