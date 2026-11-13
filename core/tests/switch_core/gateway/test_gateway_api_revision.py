@@ -35,9 +35,19 @@ from switch_core.artifacts import contract_range
 RECORD = Path(__file__).with_name("gateway_api_strict_bodies.json")
 UPDATE_ENV = "UPDATE_GATEWAY_API_BODIES"
 
-# Served to the hosted controller, which is not a first-party UI client and is
-# not a party to `gateway-api`.
-NOT_GATEWAY_API = frozenset({"switch_core.gateway.hosted_controller"})
+# Served to the hosted controller, the box provisioner and agent controllers,
+# none of which is a first-party UI client or a party to `gateway-api`. The
+# agent controllers' routes are versioned by the controller protocol instead.
+NOT_GATEWAY_API = frozenset(
+    {
+        "switch_core.gateway.hosted_controller",
+        "switch_core.gateway.hosted_provisioner",
+        "switch_core.management.controller_routes",
+    }
+)
+# Bodies in a shared module that only an agent controller sends: part of its
+# status report, so versioned by the controller protocol too.
+NOT_GATEWAY_API_BODIES = frozenset({"switch_core.management.schemas.AgentLetGo"})
 
 
 def strict_bodies() -> dict[str, list[str]]:
@@ -53,6 +63,8 @@ def strict_bodies() -> dict[str, list[str]]:
                     and cls.__module__ == info.name
                     and cls.model_config.get("extra") == "forbid"
                     and cls.model_fields
+                    and f"{cls.__module__}.{cls.__qualname__}"
+                    not in NOT_GATEWAY_API_BODIES
                 ):
                     bodies[f"{cls.__module__}.{cls.__qualname__}"] = sorted(
                         cls.model_fields

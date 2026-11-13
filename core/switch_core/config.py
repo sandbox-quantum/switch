@@ -22,6 +22,8 @@ from switch_core.feature_flags import (
     FOLLOW_THE_CONVERSATION,
     GROUP_CHATS,
     HOSTED_AGENTS,
+    HOSTED_AWAKE_BUDGETS,
+    HOSTED_CLOUD_FILES,
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
@@ -370,11 +372,46 @@ class SwitchConfig(BaseSettings):
     # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
+    # How long a message may wait for room on a full box before it's let go and the agent shows
+    # `waiting_too_long`. Sent to each box controller in Core's answer to its status report.
+    # Separate from the box's 3-minute start timeout.
+    hosted_wait_limit_minutes: int = Field(default=10, ge=1, le=60)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
+    # Core asks the provisioner for a new user's box. Off until the
+    # provisioner runs in the cluster; with it off, boxes are made by hand as
+    # before. The caps bound how fast and how many: a burst or a
+    # slow trickle can't fill the cluster.
+    hosted_box_provisioning: bool = False
+    hosted_provisions_per_minute: int = Field(default=5, ge=1, le=60)
+    hosted_box_ceiling: int = Field(default=50, ge=1, le=10_000)
     # How long a record of each service token Core issued is kept: which agent,
     # on whose connection, through which controller, with what reach.
     service_token_retention_days: int = Field(default=30, ge=1)
     hosted_controller_config_path: str | None = None
+    # Visibility. The keyed-id key: a file only Core's user can
+    # read (0400), never an environment variable. Its version prefixes every
+    # keyed id, so ids from an old key show up as not matching.
+    visibility_keyed_id_key_path: str | None = None
+    visibility_keyed_id_key_version: str = Field(default="k1", pattern=r"^k[0-9]{1,3}$")
+    # The Switch operator list: `{"operators": [user ids]}`, owner-only like
+    # the key, re-read when it changes. Unset, nobody is an operator. Separate
+    # from `users.role == "admin"` on purpose: that bit carries
+    # full workspace access, content included.
+    visibility_operators_path: str | None = None
+    # Operator rate limits: actions are
+    # pause, resume, restart and drain together, one drain counting as one.
+    # Raising one is allowed but warned about at start (`operator_limits`).
+    visibility_operator_actions_per_hour: int = Field(default=10, ge=1, le=1000)
+    visibility_operator_actions_server_per_hour: int = Field(
+        default=30, ge=1, le=10_000
+    )
+    visibility_operator_reveals_per_hour: int = Field(default=30, ge=1, le=1000)
+    # A11: this many actions by one operator within the window raise the alert.
+    visibility_operator_bulk_actions: int = Field(default=3, ge=1, le=1000)
+    visibility_operator_bulk_window_minutes: int = Field(default=10, ge=1, le=1440)
+    # At most this many drains in 24 hours across every operator
+    # Raising it is allowed, to 20, but warned about.
+    visibility_operator_drains_per_day: int = Field(default=3, ge=1, le=20)
     hosted_github_config_path: str | None = None
     # The GitHub App this deployment connects people's GitHub accounts through
     # and issues repository tokens from: its JSON settings
@@ -680,6 +717,15 @@ class SwitchConfig(BaseSettings):
     # error. With it set, links to the dashboard default to GATEWAY_PUBLIC_URL
     # when FRONTEND_BASE_URL is unset (`dashboard_base_url`).
     gateway_ui_dir: Path | None = None
+
+    @field_validator("hosted_box_provisioning", mode="before")
+    @classmethod
+    def _parse_box_provisioning(cls, value: object) -> bool:
+        # The v1/v2 switch fails closed: anything but a clear yes is off,
+        # never a refusal to start (`hosted_v2.parse_box_provisioning`).
+        from switch_core.hosted_v2 import parse_box_provisioning
+
+        return parse_box_provisioning(value)
 
     @field_validator("gateway_ui_dir", mode="before")
     @classmethod
@@ -1471,6 +1517,14 @@ class SwitchConfig(BaseSettings):
     @property
     def hosted_agents_enabled(self) -> bool:
         return self.feature_flags[HOSTED_AGENTS]
+
+    @property
+    def hosted_awake_budgets_enabled(self) -> bool:
+        return self.feature_flags[HOSTED_AWAKE_BUDGETS]
+
+    @property
+    def hosted_cloud_files_enabled(self) -> bool:
+        return self.feature_flags[HOSTED_CLOUD_FILES]
 
     @property
     def service_connections_enabled(self) -> bool:

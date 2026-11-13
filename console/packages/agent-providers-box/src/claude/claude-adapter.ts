@@ -1,0 +1,1455 @@
+import { randomUUID } from 'node:crypto';
+import { accessSync, constants, existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { delimiter, join } from 'node:path';
+import { getSessionMessages, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  CanUseTool,
+  EffortLevel,
+  McpServerConfig,
+  Options,
+  PermissionResult,
+  PermissionUpdate,
+  Query,
+  SDKMessage,
+  SDKResultMessage,
+  SDKUserMessage,
+  SpawnedProcess,
+  SpawnOptions,
+} from '@anthropic-ai/claude-agent-sdk';
+import type { ModelChoice } from '@switch-console/shared/session-v1';
+import {
+  getWindowsEnvValue,
+  resolveWindowsCommandPath,
+} from '@switch-console/shared/windows-spawn';
+import type {
+  AgentLaunchDefinition,
+  ConversationHistoryTurn,
+  ModelSelection,
+  ProviderAdapter,
+  ProviderCapabilities,
+  ProviderSendTurnInput,
+  ProviderSession,
+  ProviderSessionStartInput,
+  ProviderTurnStartResult,
+} from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  ProviderSessionError,
+  ProviderUnavailableError,
+} from '../adapter';
+import type {
+  ApprovalDecision,
+  ApprovalOption,
+  ItemStatus,
+  ProviderItem,
+  ProviderRuntimeEvent,
+  TokenUsage,
+  TurnOutcome,
+  UsageLimit,
+  UserInputAnswers,
+  UserInputQuestion,
+} from '../events';
+import { ownerMarkerSettingsEnv } from '../host/owner-marker-env';
+import { spawnProvider, stopProvider } from '../provider-process';
+import { CumulativeUsage, mergeUsage } from '../usage';
+import { historyFromClaudeMessages } from './claude-history';
+import {
+  approvalContent,
+  isRecord,
+  itemTypeForTool,
+  outcomeForResult,
+  parseAskUserQuestionInput,
+  PERMISSION_MODE_BY_RUNTIME_MODE,
+  rateLimitErrorText,
+  rejectedLimit,
+  requestTypeForTool,
+  resultHitUsageLimit,
+  resultMessageText,
+  textFromToolResultContent,
+  toMcpServerConfig,
+  toolNameForItem,
+  toolTitle,
+  truncate,
+  usageLimitNotice,
+} from './claude-mapping';
+import { claudeConfigDir, configDirSessionStore, savedConversationPath } from './cli-conversations';
+
+const PROVIDER = 'claude';
+const ASK_USER_QUESTION = 'AskUserQuestion';
+
+const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * The warning the SDK emits when `canUseTool` is registered alongside a
+ * permission mode that auto-approves — `bypassPermissions` here.
+ *
+ * The callback is registered in every mode on purpose: measured against Claude
+ * Code 2.1.260, the CLI offers `AskUserQuestion` to a session *exactly when*
+ * one is registered, in `default` and `bypassPermissions` alike, so dropping it
+ * to quiet this warning is what makes the tool disappear. The warning is
+ * accurate about ordinary tools and irrelevant to the one reason it is there,
+ * so it is filtered out rather than obeyed.
+ */
+const SHADOWED_WARNING_CODE = 'CLAUDE_SDK_CAN_USE_TOOL_SHADOWED';
+
+let shadowedWarningFiltered = false;
+
+/**
+ * Drop `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` from this process's warnings.
+ *
+ * Node's own printer is an ordinary `warning` listener installed at bootstrap,
+ * and adding a listener does not replace it — so the listeners are taken over
+ * and every warning but this one is handed back to them unchanged. Returns the
+ * undo, which puts them back.
+ */
+export function installShadowedWarningFilter(): () => void {
+  const inherited = process.listeners('warning');
+  process.removeAllListeners('warning');
+  const filter = (warning: Error & { code?: string }) => {
+    if (warning.code === SHADOWED_WARNING_CODE) return;
+    for (const listener of inherited) listener(warning);
+  };
+  process.on('warning', filter);
+  return () => {
+    process.removeListener('warning', filter);
+    for (const listener of inherited) process.on('warning', listener);
+  };
+}
+
+function filterShadowedWarningOnce(): void {
+  if (shadowedWarningFiltered) return;
+  shadowedWarningFiltered = true;
+  installShadowedWarningFilter();
+}
+
+const APPROVAL_OPTIONS: ApprovalOption[] = [
+  { decision: 'accept', label: 'Allow once' },
+  { decision: 'acceptForSession', label: 'Allow for this session' },
+  { decision: 'decline', label: 'Decline' },
+];
+
+export interface ClaudeAdapterLogger {
+  warn(message: string, context?: Record<string, unknown>): void;
+  error(message: string, context?: Record<string, unknown>): void;
+  debug(message: string, context?: Record<string, unknown>): void;
+}
+
+export interface ClaudeAdapterOptions {
+  /**
+   * Claude Code binary to drive. Defaults to the one on the session's own
+   * `PATH` (so the user's login and CLI version are used) and falls back to
+   * the executable the SDK bundles when there is none.
+   */
+  claudeExecutablePath?: string;
+  logger?: ClaudeAdapterLogger;
+  /** Test seam: a scripted stand-in for the SDK's `query()`. */
+  query?: typeof sdkQuery;
+  /** Test seam: whether Claude Code has a saved conversation with this id. */
+  savedConversationExists?: (
+    nativeSessionId: string,
+    env: Record<string, string>
+  ) => Promise<boolean>;
+  /** Test seam: the SDK's reader of a saved conversation. */
+  sessionMessages?: typeof getSessionMessages;
+}
+
+/**
+ * Whether Claude Code saved a conversation with this id. Claude writes a
+ * conversation only once a turn has run in it, under its config directory's
+ * `projects/<directory>/<id>.jsonl`; an id that was handed out but never used
+ * has no file, and resuming it fails with "No conversation found".
+ */
+async function claudeConversationSaved(
+  nativeSessionId: string,
+  env: Record<string, string>
+): Promise<boolean> {
+  return (await savedConversationPath(claudeConfigDir(env), nativeSessionId)) !== null;
+}
+
+type EventBody<T extends ProviderRuntimeEvent = ProviderRuntimeEvent> =
+  T extends ProviderRuntimeEvent
+    ? Omit<T, 'eventId' | 'provider' | 'sessionId' | 'createdAt'>
+    : never;
+
+interface PendingApproval {
+  turnId: string;
+  settle: (decision: ApprovalDecision) => void;
+}
+
+interface PendingUserInput {
+  turnId: string;
+  settle: (answers: UserInputAnswers) => void;
+}
+
+interface ActiveTurn {
+  turnId: string;
+  /** Message uuids this turn is still waiting on a `result` for. */
+  outstanding: Set<string>;
+  /** The CLI's notice, in its usage-limit wording, when it stopped this turn at the limit. */
+  usageLimitNotice: string | null;
+  /** The text of a message the CLI flagged `rate_limit` in this turn. */
+  rateLimitText: string | null;
+  /** The limit the CLI last reported as rejected in this turn. */
+  rejectedLimit: UsageLimit | null;
+}
+
+interface TextBlockState {
+  itemId: string;
+  text: string;
+}
+
+interface SessionState {
+  sessionId: string;
+  nativeSessionId: string;
+  query: Query;
+  drained: Promise<void>;
+  compaction?: { resolve: () => void; reject: (error: Error) => void; boundary: boolean };
+  runtimeMode: ProviderSessionStartInput['runtimeMode'];
+  /**
+   * `mcp__<server>__` prefixes for the registered servers whose tools are
+   * allowed without asking: all but the connectors, whose tools follow
+   * `runtimeMode`.
+   */
+  autoApprovedMcpPrefixes: string[];
+  /** The connectors' prefixes, by server name, to say which one a request is for. */
+  connectorMcpPrefixes: Map<string, string>;
+  input: PromptQueue;
+  turn: ActiveTurn | null;
+  pendingApprovals: Map<string, PendingApproval>;
+  pendingUserInputs: Map<string, PendingUserInput>;
+  toolItems: Map<string, ProviderItem>;
+  streamedMessageIds: Set<string>;
+  textBlocks: Map<number, TextBlockState>;
+  streamMessageId: string | null;
+  stopping: boolean;
+  exited: boolean;
+  /**
+   * The SDK's per-model totals run for the whole query, so a turn's spend is
+   * the difference from the last result. Anything spent between turns
+   * (compaction) lands on the next turn to end rather than being dropped.
+   */
+  usage: CumulativeUsage;
+  unreportedUsage: TokenUsage[];
+  /**
+   * Subagent tasks the CLI is running, by task id, and whether each runs in
+   * the background. A background one outlives the turn that started it, so
+   * the session is still at work after the turn ends.
+   */
+  subagentTasks: Map<string, { backgrounded: boolean }>;
+  childActivity: Map<string, { turnId: string; item: ProviderItem; resultSeen: boolean }>;
+}
+
+/** Task types that are agents doing work, rather than shells or tool calls. */
+const SUBAGENT_TASK_TYPES = new Set(['local_agent', 'remote_agent', 'local_workflow']);
+
+function isSubagentTask(task: {
+  task_type?: string;
+  subagent_type?: string;
+  ambient?: boolean;
+  skip_transcript?: boolean;
+}): boolean {
+  if (task.ambient || task.skip_transcript) return false;
+  return task.task_type !== undefined
+    ? SUBAGENT_TASK_TYPES.has(task.task_type)
+    : task.subagent_type !== undefined;
+}
+
+/** An async iterable the adapter pushes into for the life of the session. */
+class PromptQueue implements AsyncIterable<SDKUserMessage> {
+  private readonly queued: SDKUserMessage[] = [];
+  private wake: (() => void) | null = null;
+  private closed = false;
+
+  push(message: SDKUserMessage): void {
+    if (this.closed) return;
+    this.queued.push(message);
+    this.wake?.();
+    this.wake = null;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.wake?.();
+    this.wake = null;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    for (;;) {
+      const next = this.queued.shift();
+      if (next !== undefined) {
+        yield next;
+        continue;
+      }
+      if (this.closed) return;
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
+    }
+  }
+}
+
+/**
+ * The Claude Code the session should drive. The installed CLI is preferred over
+ * the one the SDK bundles so the session runs the version the user logged in
+ * with; `undefined` means "let the SDK use its own".
+ */
+export function resolveClaudeExecutable(
+  configured: string | undefined,
+  env: Record<string, string>
+): string | undefined {
+  if (configured !== undefined) return configured;
+  if (process.platform === 'win32') {
+    const onPath = resolveWindowsCommandPath({ command: 'claude', env, fileExists: existsSync });
+    if (onPath) return onPath;
+    // Where Claude Code's own installer puts it on Windows.
+    const profile = getWindowsEnvValue(env, 'USERPROFILE');
+    const installed = profile ? join(profile, '.local', 'bin', 'claude.exe') : null;
+    return installed && existsSync(installed) ? installed : undefined;
+  }
+  const candidates: string[] = [];
+  for (const dir of (env.PATH ?? '').split(delimiter)) {
+    if (dir.length > 0) candidates.push(join(dir, 'claude'));
+  }
+  if (env.HOME !== undefined) candidates.push(join(env.HOME, '.local', 'bin', 'claude'));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Starts Claude Code for the SDK on Windows through `spawnProvider`, which can
+ * start the `claude.cmd` an npm install leaves. The SDK aborts `signal` once
+ * its own graceful close (stdin closed, then a grace period) has run; the
+ * CLI's whole tree goes then, `cmd.exe` and all.
+ */
+function spawnClaudeOnWindows(
+  options: SpawnOptions,
+  onStderr: (data: string) => void
+): SpawnedProcess {
+  const child = spawnProvider(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stderr?.on('data', (chunk: Buffer) => onStderr(chunk.toString('utf8')));
+  options.signal.addEventListener('abort', () => stopProvider(child, 'SIGTERM'), { once: true });
+  return child as SpawnedProcess;
+}
+
+function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined {
+  const raw = model?.options?.effort;
+  return EFFORT_LEVELS.find((level) => level === raw);
+}
+
+/**
+ * An agent definition's denies, split by where Claude Code honours them.
+ *
+ * The definition's own `disallowedTools` takes only tool names: Claude Code
+ * reads `Bash(curl:*)` there as `Bash` and removes the whole tool. A rule with
+ * content is a permission rule, so it goes to the session's `disallowedTools`
+ * (the CLI's `--disallowedTools`), where it denies only the calls it matches.
+ */
+export function splitAgentDenies(definition: AgentLaunchDefinition): {
+  definition: AgentLaunchDefinition;
+  denyRules: string[];
+} {
+  const denies = definition.disallowedTools;
+  if (!denies) return { definition, denyRules: [] };
+  const denyRules = denies.filter(isPermissionRule);
+  if (denyRules.length === 0) return { definition, denyRules };
+  const { disallowedTools: _denies, ...rest } = definition;
+  const toolNames = denies.filter((entry) => !isPermissionRule(entry));
+  return {
+    definition: toolNames.length > 0 ? { ...rest, disallowedTools: toolNames } : rest,
+    denyRules,
+  };
+}
+
+/** `Tool(content)`: a rule that matches some of a tool's calls, not the tool. */
+function isPermissionRule(entry: string): boolean {
+  return /^[^()\s]+\(.*\)$/s.test(entry.trim());
+}
+
+/**
+ * The tool-name prefixes covering the tools of the MCP servers the caller
+ * registered. Claude Code names an MCP tool `mcp__<server>__<tool>`, folding
+ * anything outside `[A-Za-z0-9_-]` in the server name to `_`.
+ *
+ * Only explicitly registered servers receive this permission. User-configured
+ * MCP servers retain the provider's normal permission checks.
+ */
+export function mcpToolPrefixes(names: string[]): string[] {
+  return names.map((name) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`);
+}
+
+/** `{ connector }` when `toolName` is one of the session's connectors' tools. */
+function connectorOf(session: SessionState, toolName: string): { connector?: string } {
+  for (const [name, prefix] of session.connectorMcpPrefixes)
+    if (toolName.startsWith(prefix)) return { connector: name };
+  return {};
+}
+
+/** Rescoped so "allow for this session" never writes a rule to the user's settings. */
+function sessionScoped(suggestions: readonly PermissionUpdate[] | undefined): PermissionUpdate[] {
+  return (suggestions ?? []).map((suggestion) => ({ ...suggestion, destination: 'session' }));
+}
+
+function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): string | undefined {
+  if (outcome === 'completed') return undefined;
+  return resultMessageText(result) ?? `Claude turn ended: ${result.subtype}`;
+}
+
+/**
+ * The settings a session adds to the person's own Claude Code settings.
+ *
+ * The tools of the servers the host registers, other than connectors, are
+ * allowed outright. `canUseTool` allows them too, but Claude Code's auto mode,
+ * when it is the person's default, asks its classifier before `canUseTool` is
+ * ever reached, and the classifier refuses a Switch tool that hands out access
+ * as a permission grant, whatever Switch itself allows. An allow rule is
+ * settled before the classifier.
+ *
+ * Connectors get no rule here: an allow rule would settle their calls before
+ * the classifier and `canUseTool`, so they would skip the approval the runtime
+ * mode asks for. Their tools follow the runtime mode instead (see
+ * `PERMISSION_MODE_BY_RUNTIME_MODE`): full access runs them, auto lets the
+ * classifier decide, and the other modes ask the person.
+ *
+ * The connector plugin Switch used to ship would add a second Switch server with
+ * its own connection; it is kept off for installs that still have it.
+ */
+function sessionSettings(
+  mcpServers: Record<string, McpServerConfig>,
+  connectorMcpServers: readonly string[],
+  env: Record<string, string> = {}
+): { settings: Record<string, unknown> } | Record<string, never> {
+  const connectorSet = new Set(connectorMcpServers);
+  const names = Object.keys(mcpServers).filter((name) => !connectorSet.has(name));
+  const hasSwitch = Boolean(mcpServers.switch);
+  const marker = ownerMarkerSettingsEnv(env);
+  if (names.length === 0 && !hasSwitch && Object.keys(marker).length === 0) return {};
+  return {
+    settings: {
+      ...(Object.keys(marker).length > 0 ? { env: marker } : {}),
+      ...(hasSwitch ? { enabledPlugins: { 'switch-connector@switch-plugins': false } } : {}),
+      ...(names.length > 0 ? { permissions: { allow: names.map((name) => `mcp__${name}`) } } : {}),
+    },
+  };
+}
+
+export class ClaudeAdapter implements ProviderAdapter {
+  readonly provider = PROVIDER;
+
+  /**
+   * `userInput` is real on every mode: `AskUserQuestion` reaches `canUseTool`,
+   * which this adapter registers whatever the permission mode — and which is
+   * what makes Claude Code offer the tool at all (see
+   * {@link SHADOWED_WARNING_CODE}).
+   */
+  readonly capabilities: ProviderCapabilities = {
+    modelSwitchInSession: true,
+    steering: true,
+    resume: true,
+    approvals: true,
+    userInput: true,
+  };
+
+  private readonly sessions = new Map<string, SessionState>();
+  private readonly listeners = new Set<(event: ProviderRuntimeEvent) => void>();
+  private readonly executablePath: string | undefined;
+  private readonly logger: ClaudeAdapterLogger | undefined;
+  private readonly queryFn: typeof sdkQuery;
+  private readonly savedConversationExists: NonNullable<
+    ClaudeAdapterOptions['savedConversationExists']
+  >;
+  private readonly sessionMessages: typeof getSessionMessages;
+
+  constructor(options: ClaudeAdapterOptions = {}) {
+    this.executablePath = options.claudeExecutablePath;
+    this.logger = options.logger;
+    this.queryFn = options.query ?? sdkQuery;
+    this.savedConversationExists = options.savedConversationExists ?? claudeConversationSaved;
+    this.sessionMessages = options.sessionMessages ?? getSessionMessages;
+  }
+
+  subscribe(listener: (event: ProviderRuntimeEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
+  /** Whether subagents started in the background are still running. */
+  hasBackgroundWork(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    for (const task of session.subagentTasks.values()) if (task.backgrounded) return true;
+    return false;
+  }
+
+  /**
+   * Start a Claude Code session.
+   *
+   * User and project settings supply plugins, skills and agent definitions.
+   */
+  async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
+    if (this.sessions.has(input.sessionId)) {
+      throw new ProviderSessionError(PROVIDER, input.sessionId, 'Session already started.');
+    }
+
+    const prompt = new PromptQueue();
+    const mcpServers: Record<string, McpServerConfig> = {};
+    for (const [name, spec] of Object.entries(input.mcpServers)) {
+      mcpServers[name] = toMcpServerConfig(spec, input.env);
+    }
+    const permissionMode = PERMISSION_MODE_BY_RUNTIME_MODE[input.runtimeMode];
+    const effort = effortFrom(input.model);
+    const executable = resolveClaudeExecutable(this.executablePath, input.env);
+
+    const nativeSessionId = input.resume?.nativeSessionId ?? randomUUID();
+    if (input.resume && !(await this.savedConversationExists(nativeSessionId, input.env)))
+      throw new ProviderConversationUnavailableError(
+        PROVIDER,
+        input.sessionId,
+        `Claude Code has no saved conversation ${nativeSessionId} to resume.`
+      );
+
+    filterShadowedWarningOnce();
+
+    const agent =
+      input.agentName && input.agentDefinition ? splitAgentDenies(input.agentDefinition) : null;
+
+    const options: Options = {
+      cwd: input.cwd,
+      env: input.env,
+      permissionMode,
+      strictMcpConfig: false,
+      ...sessionSettings(mcpServers, input.connectorMcpServers, input.env),
+      canUseTool: this.makeCanUseTool(input.sessionId),
+      ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
+      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+      // An npm install is `claude.cmd` on Windows, which the SDK cannot start itself.
+      ...(process.platform === 'win32'
+        ? {
+            spawnClaudeCodeProcess: (spawnOptions: SpawnOptions) =>
+              spawnClaudeOnWindows(spawnOptions, (data) =>
+                this.logger?.debug('claude stderr', { sessionId: input.sessionId, data })
+              ),
+          }
+        : {}),
+      ...(input.agentName ? { agent: input.agentName } : {}),
+      ...(input.agentName && agent ? { agents: { [input.agentName]: agent.definition } } : {}),
+      ...(agent && agent.denyRules.length > 0 ? { disallowedTools: agent.denyRules } : {}),
+      ...(input.model ? { model: input.model.id } : {}),
+      ...(effort ? { effort } : {}),
+      ...(input.resume ? { resume: nativeSessionId } : { sessionId: nativeSessionId }),
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      // Never recorded: the agent's instructions can change between launches
+      // of the same conversation, and a recorded prompt is replayed as-is on
+      // every resume (recent Claude Code CLIs record one even with an append),
+      // so an edited agent would go on answering under its old instructions.
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        snapshot: false,
+        ...(input.systemContext ? { append: input.systemContext } : {}),
+      },
+      includePartialMessages: true,
+      stderr: (data) => this.logger?.debug('claude stderr', { sessionId: input.sessionId, data }),
+    };
+
+    let running: Query;
+    try {
+      running = this.queryFn({ prompt, options });
+    } catch (cause) {
+      throw new ProviderUnavailableError(PROVIDER, 'Failed to start Claude Code.', { cause });
+    }
+
+    const session: SessionState = {
+      sessionId: input.sessionId,
+      nativeSessionId,
+      query: running,
+      drained: Promise.resolve(),
+      runtimeMode: input.runtimeMode,
+      autoApprovedMcpPrefixes: mcpToolPrefixes(
+        Object.keys(mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
+      ),
+      connectorMcpPrefixes: new Map(
+        input.connectorMcpServers.map((name) => [name, mcpToolPrefixes([name])[0]!])
+      ),
+      input: prompt,
+      turn: null,
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+      toolItems: new Map(),
+      streamedMessageIds: new Set(),
+      textBlocks: new Map(),
+      streamMessageId: null,
+      stopping: false,
+      exited: false,
+      usage: new CumulativeUsage(),
+      unreportedUsage: [],
+      subagentTasks: new Map(),
+      childActivity: new Map(),
+    };
+    this.sessions.set(input.sessionId, session);
+    this.emit(session, { type: 'session.state.changed', status: 'starting' });
+    this.emit(session, { type: 'session.started', nativeSessionId });
+    if (executable === undefined) {
+      // Disclosed rather than silent: the bundled CLI is a different build from
+      // the one the user logged in with, so a session that falls back here can
+      // report itself unauthenticated for no visible reason.
+      this.emit(session, {
+        type: 'runtime.warning',
+        message:
+          'No `claude` executable on this session’s PATH — running the CLI bundled with the Agent SDK, which does not share the installed one’s login.',
+      });
+    }
+    this.pump(session);
+    return { sessionId: input.sessionId, nativeSessionId, provider: PROVIDER };
+  }
+
+  /**
+   * A send while a turn is running is pushed into the same live query. Measured
+   * against Claude Code 2.1.260: the CLI does not abort the running turn — it
+   * finishes it, emits its own `result`, then runs the queued message and emits
+   * a second `result`. (Between tool rounds it instead folds the message into
+   * the running turn and emits one `result` naming both sends.) Either way
+   * every `result` names the sends it consumed in `user_message_uuids`, so the
+   * turn stays open until the last pushed message has been answered, and the
+   * caller sees one `turn.started` / `turn.completed` pair reported through
+   * `steeredInto`.
+   */
+  async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
+    const session = this.requireSession(input.sessionId);
+    if (input.model) await this.applyModel(session, input.model);
+
+    const uuid = randomUUID();
+    const text = await this.composeText(input);
+    const message: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      session_id: session.nativeSessionId,
+      uuid,
+    };
+
+    const steeredInto = session.turn?.turnId;
+    if (session.turn) {
+      session.turn.outstanding.add(uuid);
+    } else {
+      session.turn = {
+        turnId: input.turnId,
+        outstanding: new Set([uuid]),
+        usageLimitNotice: null,
+        rateLimitText: null,
+        rejectedLimit: null,
+      };
+      this.emit(session, { type: 'session.state.changed', status: 'running' });
+      this.emit(session, { type: 'turn.started', turnId: input.turnId });
+    }
+
+    session.input.push(message);
+    return { turnId: input.turnId, ...(steeredInto ? { steeredInto } : {}) };
+  }
+
+  /**
+   * Read from Claude Code's saved transcript, the way its own `/resume` reads
+   * it, in the config directory `env` gives Claude Code: through a store over
+   * that directory, so this process's own environment, which the host's other
+   * work shares, is left alone. A conversation with nothing in it is an error
+   * rather than an empty history: it is either not there or not one a person
+   * had.
+   */
+  async conversationHistory(
+    nativeSessionId: string,
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<ConversationHistoryTurn[]> {
+    const messages = await this.sessionMessages(nativeSessionId, {
+      dir: cwd,
+      sessionStore: configDirSessionStore(claudeConfigDir(env)),
+    });
+    if (messages.length === 0)
+      throw new Error(`Claude Code has no saved conversation ${nativeSessionId} to show.`);
+    return historyFromClaudeMessages(messages);
+  }
+
+  async interruptTurn(sessionId: string): Promise<void> {
+    const session = this.requireSession(sessionId);
+    try {
+      await session.query.interrupt();
+    } catch (cause) {
+      throw new ProviderSessionError(PROVIDER, sessionId, 'Failed to interrupt the turn.', {
+        cause,
+      });
+    }
+  }
+
+  async respondToRequest(
+    sessionId: string,
+    requestId: string,
+    decision: ApprovalDecision
+  ): Promise<void> {
+    const session = this.requireSession(sessionId);
+    const pending = session.pendingApprovals.get(requestId);
+    if (!pending) {
+      throw new ProviderSessionError(PROVIDER, sessionId, `Unknown request ${requestId}.`);
+    }
+    session.pendingApprovals.delete(requestId);
+    pending.settle(decision);
+  }
+
+  async respondToUserInput(
+    sessionId: string,
+    requestId: string,
+    answers: UserInputAnswers
+  ): Promise<void> {
+    const session = this.requireSession(sessionId);
+    const pending = session.pendingUserInputs.get(requestId);
+    if (!pending) {
+      throw new ProviderSessionError(PROVIDER, sessionId, `Unknown user input ${requestId}.`);
+    }
+    session.pendingUserInputs.delete(requestId);
+    pending.settle(answers);
+  }
+
+  async canCompact(sessionId: string): Promise<boolean> {
+    return (await this.requireSession(sessionId).query.supportedCommands()).some(
+      (command) => command.name === 'compact'
+    );
+  }
+
+  async compactSession(sessionId: string): Promise<void> {
+    const session = this.requireSession(sessionId);
+    if (session.turn || session.compaction) throw new Error('SESSION_BUSY');
+    if (!(await this.canCompact(sessionId))) throw new Error('Native compaction is unavailable.');
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    void promise.catch(() => {});
+    const pending = { promise, resolve, reject };
+    session.compaction = { resolve: pending.resolve, reject: pending.reject, boundary: false };
+    session.input.push({
+      type: 'user',
+      message: { role: 'user', content: '/compact' },
+      parent_tool_use_id: null,
+      session_id: session.nativeSessionId,
+      uuid: randomUUID(),
+    });
+    try {
+      await pending.promise;
+    } finally {
+      session.compaction = undefined;
+    }
+  }
+
+  async listModels(sessionId: string): Promise<ModelChoice[]> {
+    const rows = await this.requireSession(sessionId).query.supportedModels();
+    return rows.map((model) => {
+      const options: Record<string, string[]> = {};
+      if (model.supportedEffortLevels?.length) options.effort = model.supportedEffortLevels;
+      return { id: model.value, label: model.displayName, options };
+    });
+  }
+
+  async contextUsage(sessionId: string): Promise<{ usedTokens: number; windowTokens: number }> {
+    const usage = await this.requireSession(sessionId).query.getContextUsage({ detail: 'summary' });
+    return { usedTokens: usage.totalTokens, windowTokens: usage.maxTokens };
+  }
+
+  async setModel(sessionId: string, model: ModelSelection): Promise<void> {
+    const session = this.requireSession(sessionId);
+    await this.applyModel(session, model);
+  }
+
+  async stopSession(sessionId: string): Promise<void> {
+    const session = this.requireSession(sessionId);
+    this.shutdown(session, 'Session stopped.');
+    await session.drained;
+  }
+
+  async stopAll(): Promise<void> {
+    for (const session of [...this.sessions.values()]) {
+      this.shutdown(session, 'Adapter stopped.');
+    }
+  }
+
+  private requireSession(sessionId: string): SessionState {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new ProviderSessionError(PROVIDER, sessionId, 'Unknown session.');
+    return session;
+  }
+
+  private async composeText(
+    input: ProviderSendTurnInput
+  ): Promise<SDKUserMessage['message']['content']> {
+    if (!input.attachments?.length) return input.text;
+    const content: Exclude<SDKUserMessage['message']['content'], string> = [
+      { type: 'text', text: input.text },
+    ];
+    for (const attachment of input.attachments) {
+      if (
+        attachment.mimeType === 'image/png' ||
+        attachment.mimeType === 'image/jpeg' ||
+        attachment.mimeType === 'image/webp'
+      )
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: attachment.mimeType,
+            data: (await readFile(attachment.path)).toString('base64'),
+          },
+        });
+      else
+        content.push({
+          type: 'text',
+          text: `Attached file (${attachment.mimeType}): ${attachment.path}`,
+        });
+    }
+    return content;
+  }
+
+  private async applyModel(session: SessionState, model: ModelSelection): Promise<void> {
+    try {
+      await session.query.setModel(model.id);
+      const effort = effortFrom(model);
+      await session.query.applyFlagSettings({ effortLevel: effort ?? null });
+    } catch (cause) {
+      throw new ProviderSessionError(PROVIDER, session.sessionId, 'Failed to set the model.', {
+        cause,
+      });
+    }
+  }
+
+  private emit(session: SessionState, body: EventBody): void {
+    const event = {
+      eventId: randomUUID(),
+      provider: PROVIDER,
+      sessionId: session.sessionId,
+      createdAt: new Date().toISOString(),
+      ...body,
+    } as ProviderRuntimeEvent;
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(event);
+      } catch (cause) {
+        this.logger?.error('Provider event listener threw.', { cause });
+      }
+    }
+  }
+
+  private pump(session: SessionState): void {
+    const run = async () => {
+      await session.query.initializationResult();
+      if (session.stopping) return;
+      this.emit(session, {
+        type: 'session.state.changed',
+        status: session.turn ? 'running' : 'ready',
+      });
+      for await (const message of session.query) this.handleMessage(session, message);
+    };
+
+    session.drained = run().then(
+      () => this.shutdown(session, 'Claude Code stream ended.'),
+      (cause) => {
+        if (!session.stopping) {
+          this.emit(session, {
+            type: 'runtime.error',
+            message: cause instanceof Error ? cause.message : String(cause),
+          });
+        }
+        this.shutdown(session, 'Claude Code stream failed.');
+      }
+    );
+  }
+
+  private handleMessage(session: SessionState, message: SDKMessage): void {
+    if (message.type === 'result') this.recordUsage(session, message);
+    this.trackSubagentTasks(session, message);
+    if (session.compaction) {
+      if (message.type === 'system' && message.subtype === 'compact_boundary')
+        session.compaction.boundary = true;
+      if (message.type === 'result') {
+        if (message.subtype === 'success' && session.compaction.boundary)
+          session.compaction.resolve();
+        else
+          session.compaction.reject(
+            new Error(
+              'Native compaction did not report a completed boundary. It may have insufficient history.'
+            )
+          );
+      }
+      return;
+    }
+    switch (message.type) {
+      case 'system':
+        if (message.subtype === 'init') {
+          if (message.session_id !== session.nativeSessionId) {
+            session.nativeSessionId = message.session_id;
+            this.emit(session, {
+              type: 'runtime.warning',
+              message: `Claude Code chose session id ${message.session_id} instead of the requested one.`,
+            });
+          }
+          this.emit(session, {
+            type: 'session.state.changed',
+            status: session.turn ? 'running' : 'ready',
+          });
+        }
+        return;
+      case 'stream_event':
+        this.handleStreamEvent(session, message.event, message.parent_tool_use_id);
+        return;
+      case 'assistant': {
+        const turn = session.turn;
+        if (turn && message.parent_tool_use_id === null) {
+          turn.usageLimitNotice = usageLimitNotice(message) ?? turn.usageLimitNotice;
+          turn.rateLimitText = rateLimitErrorText(message) ?? turn.rateLimitText;
+        }
+        this.handleAssistantMessage(session, message.message, message.parent_tool_use_id);
+        return;
+      }
+      case 'rate_limit_event': {
+        const limit = rejectedLimit(message.rate_limit_info);
+        if (limit !== null && session.turn) session.turn.rejectedLimit = limit;
+        return;
+      }
+      case 'user':
+        this.handleToolResults(session, message.message.content);
+        return;
+      case 'result':
+        this.handleResult(session, message);
+        return;
+      default:
+        return;
+    }
+  }
+
+  /**
+   * Follows the CLI's subagent tasks, which compaction does not pause. The
+   * `background_tasks_changed` level replaces what the edges built up, so a
+   * missed notification cannot leave a task counted forever.
+   */
+  private trackSubagentTasks(session: SessionState, message: SDKMessage): void {
+    const tasks = session.subagentTasks;
+    this.reportChildTask(session, message);
+    if (message.type === 'result') {
+      // A foreground task blocks the turn it runs in, so none outlives it.
+      for (const [taskId, task] of tasks) if (!task.backgrounded) tasks.delete(taskId);
+      return;
+    }
+    if (message.type !== 'system') return;
+    switch (message.subtype) {
+      case 'task_started':
+        if (isSubagentTask(message))
+          tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+        return;
+      case 'task_updated': {
+        const task = tasks.get(message.task_id);
+        if (!task) return;
+        const status = message.patch.status;
+        if (status === 'completed' || status === 'failed' || status === 'killed')
+          tasks.delete(message.task_id);
+        else if (message.patch.is_backgrounded !== undefined)
+          task.backgrounded = message.patch.is_backgrounded;
+        return;
+      }
+      case 'task_notification':
+        tasks.delete(message.task_id);
+        return;
+      case 'background_tasks_changed': {
+        const foreground = [...tasks].filter(([, task]) => !task.backgrounded);
+        tasks.clear();
+        for (const [taskId, task] of foreground) tasks.set(taskId, task);
+        for (const task of message.tasks)
+          if (isSubagentTask(task)) tasks.set(task.task_id, { backgrounded: true });
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  private reportChildTask(session: SessionState, message: SDKMessage): void {
+    if (message.type !== 'system') return;
+    if (message.subtype === 'task_started') {
+      if (!isSubagentTask(message) || !session.turn) return;
+      const prior = message.tool_use_id ? session.toolItems.get(message.tool_use_id) : undefined;
+      const child = {
+        turnId: session.turn.turnId,
+        item: {
+          ...prior,
+          id: message.tool_use_id ?? message.task_id,
+          type: 'subagent' as const,
+          status: 'in_progress' as const,
+          title: truncate(message.description),
+          toolName: message.subagent_type ?? prior?.toolName,
+        },
+        resultSeen: message.tool_use_id === undefined,
+      };
+      session.childActivity.set(message.task_id, child);
+      this.emit(session, { type: 'item.updated', turnId: child.turnId, item: child.item });
+      return;
+    }
+    if (message.subtype !== 'task_updated' && message.subtype !== 'task_notification') return;
+    const child = session.childActivity.get(message.task_id);
+    if (!child) return;
+    const status = message.subtype === 'task_updated' ? message.patch.status : message.status;
+    if (message.subtype === 'task_updated' && message.patch.description)
+      child.item = { ...child.item, title: truncate(message.patch.description) };
+    const ended =
+      status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped';
+    // A subagent stopped or killed ended on purpose: declined, not failed.
+    if (ended)
+      child.item = {
+        ...child.item,
+        status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'declined',
+      };
+    this.emit(session, {
+      type: ended ? 'item.completed' : 'item.updated',
+      turnId: child.turnId,
+      item: child.item,
+    });
+    if (ended && child.resultSeen) session.childActivity.delete(message.task_id);
+  }
+
+  private handleStreamEvent(
+    session: SessionState,
+    event: unknown,
+    parentToolUseId: string | null
+  ): void {
+    if (parentToolUseId !== null || !isRecord(event)) return;
+    const turnId = session.turn?.turnId;
+    if (turnId === undefined) return;
+
+    if (event.type === 'message_start' && isRecord(event.message)) {
+      const id = event.message.id;
+      session.streamMessageId = typeof id === 'string' ? id : null;
+      session.textBlocks.clear();
+      return;
+    }
+    const index = typeof event.index === 'number' ? event.index : null;
+    if (index === null || session.streamMessageId === null) return;
+
+    if (event.type === 'content_block_start' && isRecord(event.content_block)) {
+      if (event.content_block.type !== 'text') return;
+      session.textBlocks.set(index, {
+        itemId: `${session.streamMessageId}#${index}`,
+        text: '',
+      });
+      this.emit(session, {
+        type: 'item.started',
+        turnId,
+        item: {
+          id: `${session.streamMessageId}#${index}`,
+          type: 'assistant_message',
+          status: 'in_progress',
+          title: '',
+          text: '',
+        },
+      });
+      session.streamedMessageIds.add(session.streamMessageId);
+      return;
+    }
+
+    if (event.type === 'content_block_delta' && isRecord(event.delta)) {
+      const block = session.textBlocks.get(index);
+      const delta = event.delta.text;
+      if (!block || event.delta.type !== 'text_delta' || typeof delta !== 'string') return;
+      block.text += delta;
+      this.emit(session, { type: 'content.delta', turnId, itemId: block.itemId, delta });
+      return;
+    }
+
+    if (event.type === 'content_block_stop') {
+      const block = session.textBlocks.get(index);
+      if (!block) return;
+      session.textBlocks.delete(index);
+      this.emit(session, {
+        type: 'item.completed',
+        turnId,
+        item: {
+          id: block.itemId,
+          type: 'assistant_message',
+          status: 'completed',
+          title: truncate(block.text, 80),
+          text: block.text,
+        },
+      });
+    }
+  }
+
+  private handleAssistantMessage(
+    session: SessionState,
+    message: { id: string; content: unknown },
+    parentToolUseId: string | null
+  ): void {
+    const turnId = session.turn?.turnId;
+    if (turnId === undefined || !Array.isArray(message.content)) return;
+    const streamed = session.streamedMessageIds.has(message.id);
+
+    message.content.forEach((block, index) => {
+      if (!isRecord(block)) return;
+      if (block.type === 'text' && !streamed && parentToolUseId === null) {
+        const text = typeof block.text === 'string' ? block.text : '';
+        this.emit(session, {
+          type: 'item.completed',
+          turnId,
+          item: {
+            id: `${message.id}#a${index}`,
+            type: 'assistant_message',
+            status: 'completed',
+            title: truncate(text, 80),
+            text,
+          },
+        });
+        return;
+      }
+      if (block.type === 'thinking' && parentToolUseId === null) {
+        const text = typeof block.thinking === 'string' ? block.thinking : '';
+        this.emit(session, {
+          type: 'item.completed',
+          turnId,
+          item: {
+            id: `${message.id}#t${index}`,
+            type: 'reasoning',
+            status: 'completed',
+            title: truncate(text, 80),
+            text,
+          },
+        });
+        return;
+      }
+      // A subagent's own steps stay with the subagent: only its card shows.
+      if (block.type !== 'tool_use' || parentToolUseId !== null) return;
+      const id = block.id;
+      const name = block.name;
+      if (typeof id !== 'string' || typeof name !== 'string') return;
+      const toolInput = isRecord(block.input) ? block.input : {};
+      const item: ProviderItem = {
+        id,
+        type: itemTypeForTool(name),
+        status: 'in_progress',
+        title: toolTitle(name, toolInput),
+        toolName: toolNameForItem(name, toolInput),
+        payload: toolInput,
+      };
+      session.toolItems.set(id, item);
+      this.emit(session, {
+        type: 'item.started',
+        turnId,
+        item,
+        raw: { source: 'claude', payload: block },
+      });
+    });
+  }
+
+  private handleToolResults(session: SessionState, content: unknown): void {
+    const turnId = session.turn?.turnId;
+    if (turnId === undefined || !Array.isArray(content)) return;
+
+    for (const block of content) {
+      if (!isRecord(block) || block.type !== 'tool_result') continue;
+      const toolUseId = block.tool_use_id;
+      if (typeof toolUseId !== 'string') continue;
+      const started = session.toolItems.get(toolUseId);
+      if (!started) continue;
+      session.toolItems.delete(toolUseId);
+      const child = [...session.childActivity.values()].find(
+        (child) => child.item.id === toolUseId
+      );
+      if (child) {
+        child.resultSeen = true;
+        if (child.item.status !== 'in_progress') {
+          for (const [taskId, entry] of session.childActivity)
+            if (entry === child) session.childActivity.delete(taskId);
+        }
+        // A background tool result acknowledges the launch, not child completion.
+        continue;
+      }
+      const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
+      const text = textFromToolResultContent(block.content);
+      this.emit(session, {
+        type: 'item.completed',
+        turnId,
+        item: { ...started, status, ...(text !== undefined ? { text } : {}) },
+        raw: { source: 'claude', payload: block },
+      });
+    }
+  }
+
+  private recordUsage(session: SessionState, result: SDKResultMessage): void {
+    const totals = new Map(
+      Object.entries(result.modelUsage ?? {}).map(([model, counts]) => [
+        model,
+        {
+          inputTokens: counts.inputTokens,
+          outputTokens: counts.outputTokens,
+          cacheReadTokens: counts.cacheReadInputTokens,
+          cacheWriteTokens: counts.cacheCreationInputTokens,
+        },
+      ])
+    );
+    session.unreportedUsage = mergeUsage(session.unreportedUsage, session.usage.advance(totals));
+  }
+
+  private takeUsage(session: SessionState): TokenUsage[] {
+    const usage = session.unreportedUsage;
+    session.unreportedUsage = [];
+    return usage;
+  }
+
+  private handleResult(session: SessionState, result: SDKResultMessage): void {
+    const turn = session.turn;
+    if (!turn) return;
+
+    const consumed = [...(result.user_message_uuids ?? [])];
+    const single = result.user_message_uuid;
+    if (consumed.length === 0 && single !== undefined) consumed.push(single);
+
+    const resultOutcome = outcomeForResult(result);
+    const rejected = turn.rejectedLimit !== null;
+    const notice =
+      turn.usageLimitNotice ??
+      (rejected && turn.rateLimitText !== null
+        ? turn.rateLimitText || 'The provider usage limit was reached.'
+        : null);
+    const limited =
+      resultOutcome !== 'interrupted' && (notice !== null || resultHitUsageLimit(result, rejected));
+    const outcome: TurnOutcome = limited ? 'error' : resultOutcome;
+    if (consumed.length === 0) {
+      turn.outstanding.clear();
+    } else {
+      let matched = false;
+      for (const uuid of consumed) {
+        if (turn.outstanding.delete(uuid)) matched = true;
+      }
+      if (!matched) return;
+    }
+    if (outcome === 'completed' && turn.outstanding.size > 0) return;
+
+    session.turn = null;
+    session.textBlocks.clear();
+    session.streamedMessageIds.clear();
+    session.streamMessageId = null;
+    const usageLimit: UsageLimit | null = limited
+      ? { resetsAt: turn.rejectedLimit?.resetsAt ?? null }
+      : null;
+    const message = (limited ? notice : null) ?? turnStatusMessage(result, outcome);
+    if (outcome === 'error') {
+      this.emit(session, { type: 'runtime.error', message: message ?? 'Claude turn failed.' });
+    }
+    this.emit(session, {
+      type: 'turn.completed',
+      turnId: turn.turnId,
+      outcome,
+      ...(message ? { message } : {}),
+      ...(usageLimit ? { usageLimit } : {}),
+      usage: this.takeUsage(session),
+      raw: { source: 'claude', payload: result },
+    });
+    this.emit(session, { type: 'session.state.changed', status: 'ready' });
+  }
+
+  /**
+   * The permission callback, registered in every mode.
+   *
+   * It is the only route `AskUserQuestion` has — the CLI hands the tool to the
+   * callback and takes the answers back as `updatedInput` — and registering it
+   * is also what makes the CLI offer the tool in the first place. Under
+   * `bypassPermissions` nothing else should reach it, so anything that does is
+   * allowed rather than turned into a card no mode asked for.
+   */
+  private makeCanUseTool(sessionId: string): CanUseTool {
+    return async (toolName, toolInput, options) => {
+      const session = this.sessions.get(sessionId);
+      if (!session) return { behavior: 'deny', message: 'The session is gone.' };
+      if (toolName === ASK_USER_QUESTION) {
+        return this.answerUserQuestion(session, toolInput, options.toolUseID, options.signal);
+      }
+      if (session.runtimeMode === 'full-access') {
+        this.logger?.debug('Allowing a tool that bypassPermissions did not settle.', {
+          sessionId,
+          toolName,
+        });
+        return { behavior: 'allow' };
+      }
+      if (session.autoApprovedMcpPrefixes.some((prefix) => toolName.startsWith(prefix))) {
+        return { behavior: 'allow' };
+      }
+      return this.requestApproval(session, toolName, toolInput, options);
+    };
+  }
+
+  private async answerUserQuestion(
+    session: SessionState,
+    toolInput: Record<string, unknown>,
+    toolUseId: string,
+    signal: AbortSignal
+  ): Promise<PermissionResult> {
+    const answers = await this.awaitUserAnswers(session, toolInput, toolUseId, signal);
+    if (answers === null) {
+      return { behavior: 'deny', message: 'The question could not be put to a user.' };
+    }
+    return {
+      behavior: 'allow',
+      updatedInput: { questions: toolInput.questions, answers },
+    };
+  }
+
+  private awaitUserAnswers(
+    session: SessionState,
+    toolInput: Record<string, unknown>,
+    requestId: string,
+    signal: AbortSignal
+  ): Promise<Record<string, string> | null> {
+    const { questions, questionTextById } = parseAskUserQuestionInput(toolInput);
+    const turnId = session.turn?.turnId;
+    if (questions.length === 0 || turnId === undefined) return Promise.resolve(null);
+
+    return new Promise<Record<string, string> | null>((resolve) => {
+      const settle = (answers: UserInputAnswers | null) => {
+        session.pendingUserInputs.delete(requestId);
+        signal.removeEventListener('abort', onAbort);
+        this.emit(session, { type: 'user-input.resolved', requestId });
+        if (answers === null) {
+          resolve(null);
+          return;
+        }
+        resolve(buildAnswers(questions, questionTextById, answers));
+      };
+      const onAbort = () => settle(null);
+      signal.addEventListener('abort', onAbort, { once: true });
+      session.pendingUserInputs.set(requestId, { turnId, settle });
+      this.emit(session, { type: 'user-input.requested', turnId, requestId, questions });
+    });
+  }
+
+  private requestApproval(
+    session: SessionState,
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    options: { toolUseID: string; signal: AbortSignal; suggestions?: PermissionUpdate[] } & {
+      title?: string;
+      description?: string;
+    }
+  ): Promise<PermissionResult> {
+    const turnId = session.turn?.turnId;
+    if (turnId === undefined) {
+      return Promise.resolve({ behavior: 'deny', message: 'No turn is running.' });
+    }
+    const requestId = options.toolUseID;
+
+    return new Promise<PermissionResult>((resolve) => {
+      const settle = (decision: ApprovalDecision) => {
+        session.pendingApprovals.delete(requestId);
+        options.signal.removeEventListener('abort', onAbort);
+        this.emit(session, { type: 'request.resolved', requestId, decision });
+        if (decision === 'accept') {
+          resolve({ behavior: 'allow' });
+          return;
+        }
+        if (decision === 'acceptForSession') {
+          const updatedPermissions = sessionScoped(options.suggestions);
+          resolve({
+            behavior: 'allow',
+            ...(updatedPermissions.length > 0 ? { updatedPermissions } : {}),
+          });
+          return;
+        }
+        resolve({
+          behavior: 'deny',
+          message:
+            decision === 'cancel'
+              ? 'The user cancelled this request.'
+              : 'The user declined this request. Do not retry it another way.',
+          ...(decision === 'cancel' ? { interrupt: true } : {}),
+        });
+      };
+      const onAbort = () => settle('cancel');
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      session.pendingApprovals.set(requestId, { turnId, settle });
+      this.emit(session, {
+        type: 'request.opened',
+        turnId,
+        requestId,
+        requestType: requestTypeForTool(toolName),
+        ...approvalContent(toolName, toolInput, options.title, options.description),
+        options: APPROVAL_OPTIONS,
+        ...connectorOf(session, toolName),
+        raw: { source: 'claude', payload: { toolName, toolInput } },
+      });
+    });
+  }
+
+  private shutdown(session: SessionState, reason: string): void {
+    session.compaction?.reject(new Error(reason));
+    if (session.exited) return;
+    session.exited = true;
+    session.stopping = true;
+    this.sessions.delete(session.sessionId);
+
+    for (const [requestId, pending] of [...session.pendingApprovals]) {
+      session.pendingApprovals.delete(requestId);
+      pending.settle('cancel');
+    }
+    for (const [requestId, pending] of [...session.pendingUserInputs]) {
+      session.pendingUserInputs.delete(requestId);
+      pending.settle({});
+    }
+
+    const turn = session.turn;
+    if (turn) {
+      session.turn = null;
+      this.emit(session, {
+        type: 'turn.completed',
+        turnId: turn.turnId,
+        outcome: 'interrupted',
+        message: reason,
+        usage: this.takeUsage(session),
+      });
+    }
+
+    session.input.close();
+    session.query.close();
+
+    this.emit(session, { type: 'session.state.changed', status: 'stopped' });
+    this.emit(session, { type: 'session.exited', reason });
+  }
+}
+
+function buildAnswers(
+  questions: UserInputQuestion[],
+  questionTextById: Map<string, string>,
+  answers: UserInputAnswers
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const question of questions) {
+    const text = questionTextById.get(question.id);
+    if (text === undefined) continue;
+    const answer = answers[question.id];
+    if (answer === undefined) continue;
+    result[text] = Array.isArray(answer) ? answer.join(', ') : answer;
+  }
+  return result;
+}
+
+export function createClaudeAdapter(options: ClaudeAdapterOptions = {}): ClaudeAdapter {
+  return new ClaudeAdapter(options);
+}

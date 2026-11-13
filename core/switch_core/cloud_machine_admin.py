@@ -105,7 +105,7 @@ async def stop_machine(
             except CloudMachineConflict as error:
                 raise CloudMachineAdminError(str(error)) from None
             # Counted once committed, beside the idle and owner stops.
-            record_machine_event(session, "stopped", "admin")
+            record_machine_event(session, "stopped", "admin", machine.backend)
             await record_server_audit_event(
                 session,
                 actor_user_id=None,

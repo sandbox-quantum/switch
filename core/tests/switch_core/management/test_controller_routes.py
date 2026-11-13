@@ -15,8 +15,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.types import SentMessage
 from switch_core.config import ControllerRelease
-from switch_core.db.models import AgentControllerEnrollmentCode, ApiKey
+from switch_core.db.models import AgentControllerEnrollmentCode, ApiKey, AuditEvent
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.bindings import load_bindings
 from switch_core.management.controller_routes import ASSIGNMENT_FORMAT
@@ -460,6 +461,7 @@ class TestStatus:
         assert response.json() == {
             "assignment_revision": 0,
             "report_within_s": 60,
+            # No `wait_limit_seconds`: a v2 box's only (sweep row 6).
             "controller_release": None,
         }
         assert online.json()[0]["release"] is None
@@ -999,6 +1001,444 @@ class TestPlacementBindsTheAgentInCore:
         binding = restarted.binding(agent_id)
         assert binding is not None and binding.controller_name == "workstation"
         assert restarted.is_revoked(controller.controller_id)
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+class TestTheRestartNotice:
+    """The box's controller tells a room, as its agent, that a
+    restart cut a turn off. Core posts its own text under `restart:<turn>`, so
+    a retry can't post twice (the keyed send itself is tested against Postgres
+    in tests/switch_core/transport/test_keyed_send.py)."""
+
+    @staticmethod
+    def _recording(harness: Harness, monkeypatch: pytest.MonkeyPatch, raises=None):
+        sent: list[dict] = []
+
+        async def send_message(agent_id, room_id, content, thread_id=None, **kwargs):
+            if raises is not None:
+                raise raises
+            sent.append(
+                {
+                    "agent_id": agent_id,
+                    "room_id": room_id,
+                    "content": content,
+                    "thread_id": thread_id,
+                    **kwargs,
+                }
+            )
+            return SentMessage(event_id="$notice", trust=None)
+
+        monkeypatch.setattr(harness.protocol, "send_message", send_message)
+        return sent
+
+    async def test_it_posts_cores_text_as_the_agent_under_the_turns_key(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = self._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/restart-notice",
+                json={
+                    "room_id": "room-1",
+                    "thread_id": "$thread",
+                    "turn_id": "cut-off",
+                },
+                headers=controller.headers,
+            )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"event_id": "$notice"}
+        async with harness.session_factory() as db:
+            audited = (
+                (
+                    await db.execute(
+                        select(AuditEvent).where(AuditEvent.target_id == agent_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [(e.action, e.actor_user_id) for e in audited] == [
+            ("agent.restart_notice_posted", None)
+        ]
+        assert audited[0].details == {
+            "by": "controller",
+            "controller_id": controller.controller_id,
+            "room_id": "room-1",
+            "thread_id": "$thread",
+            "turn_id": "cut-off",
+            "event_id": "$notice",
+        }
+        assert sent == [
+            {
+                "agent_id": agent_id,
+                "room_id": "room-1",
+                "content": (
+                    "I was restarted while working on this and lost my reply. "
+                    "Please send it again."
+                ),
+                "thread_id": "$thread",
+                "client_txn_id": "restart:cut-off",
+            }
+        ]
+
+    async def test_a_retry_keeps_its_audit_row_marked_deduplicated(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            for _ in range(2):
+                response = await client.post(
+                    f"/v1/management/controllers/{controller.controller_id}"
+                    f"/agents/{agent_id}/restart-notice",
+                    json={"room_id": "room-1", "turn_id": "cut-off"},
+                    headers=controller.headers,
+                )
+                assert response.status_code == 200, response.text
+        async with harness.session_factory() as db:
+            audited = (
+                (
+                    await db.execute(
+                        select(AuditEvent)
+                        .where(
+                            AuditEvent.target_id == agent_id,
+                            AuditEvent.action == "agent.restart_notice_posted",
+                        )
+                        .order_by(AuditEvent.occurred_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [event.details.get("deduplicated") for event in audited] == [None, True]
+
+    async def test_it_refuses_an_agent_another_controller_runs(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = self._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            theirs = await enroll_console(harness, client, owner, name="other")
+            agent_id = await _placed_agent(harness, client, theirs)
+            mine = await enroll_daemon(harness, client, owner)
+            response = await client.post(
+                f"/v1/management/controllers/{mine.controller_id}"
+                f"/agents/{agent_id}/restart-notice",
+                json={"room_id": "room-1", "turn_id": "cut-off"},
+                headers=mine.headers,
+            )
+            as_the_other = await client.post(
+                f"/v1/management/controllers/{theirs.controller_id}"
+                f"/agents/{agent_id}/restart-notice",
+                json={"room_id": "room-1", "turn_id": "cut-off"},
+                headers=mine.headers,
+            )
+        assert response.status_code == 404, response.text
+        assert as_the_other.status_code in (401, 403), as_the_other.text
+        assert sent == []
+
+    async def test_it_takes_no_text_from_the_controller(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = self._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/restart-notice",
+                json={"room_id": "room-1", "turn_id": "cut-off", "body": "anything"},
+                headers=controller.headers,
+            )
+        assert response.status_code in (400, 422), response.text
+        assert sent == []
+
+    async def test_a_room_the_agent_may_not_post_in_is_refused(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._recording(
+            harness,
+            monkeypatch,
+            raises=PermissionError("Agent is not a member of this room"),
+        )
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/restart-notice",
+                json={"room_id": "room-1", "turn_id": "cut-off"},
+                headers=controller.headers,
+            )
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["code"] == "forbidden"
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+class TestNoticeKeysArePlain:
+    """What goes into a sender's key and the audit record is
+    plain characters only, for the restart notice's `turn_id` and the reset
+    line's `command_id` as for the rest notice's key."""
+
+    @pytest.mark.parametrize(
+        "route,field", [("restart-notice", "turn_id"), ("reset-refused", "command_id")]
+    )
+    @pytest.mark.parametrize(
+        "value", ["has space", "a/b", "turn\u00e9", "a\nb", "abc\n", "x" * 201]
+    )
+    async def test_a_key_that_is_not_plain_is_refused(
+        self,
+        harness: Harness,
+        monkeypatch: pytest.MonkeyPatch,
+        route: str,
+        field: str,
+        value: str,
+    ) -> None:
+        sent = TestTheRestartNotice._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/agents/{agent_id}/{route}",
+                json={"room_id": "room-1", field: value},
+                headers=controller.headers,
+            )
+        assert response.status_code in (400, 422), response.text
+        assert sent == []
+
+    async def test_a_uuid_turn_id_is_still_taken(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = TestTheRestartNotice._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/agents/{agent_id}/restart-notice",
+                json={
+                    "room_id": "room-1",
+                    "turn_id": "7f1c0000-0000-4000-8000-000000000001",
+                },
+                headers=controller.headers,
+            )
+        assert response.status_code == 200, response.text
+        assert [item["client_txn_id"] for item in sent] == [
+            "restart:7f1c0000-0000-4000-8000-000000000001"
+        ]
+
+    async def test_a_uuid_command_id_is_still_taken_by_reset_refused(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The room controls' command ids are uuid5 strings (`room_control_frame`).
+        sent = TestTheRestartNotice._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/agents/{agent_id}/reset-refused",
+                json={
+                    "room_id": "room-1",
+                    "command_id": "5b8c0000-0000-5000-8000-000000000002",
+                },
+                headers=controller.headers,
+            )
+        assert response.status_code == 200, response.text
+        assert [item["client_txn_id"] for item in sent] == [
+            "reset-refused:5b8c0000-0000-5000-8000-000000000002"
+        ]
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+class TestRestNotice:
+    """The controller has Switch tell a room that background processes the
+    agent left running were stopped when it went to rest.
+    Core posts its own text, with the count only, under `rest:<key>`."""
+
+    _recording = staticmethod(TestTheRestartNotice._recording)
+
+    async def test_it_posts_cores_text_with_the_count_under_the_wakes_key(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = self._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/rest-notice",
+                json={
+                    "room_id": "room-1",
+                    "thread_id": "$thread",
+                    "key": "wake-1",
+                    "stopped": 3,
+                },
+                headers=controller.headers,
+            )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"event_id": "$notice"}
+        async with harness.session_factory() as db:
+            audited = (
+                (
+                    await db.execute(
+                        select(AuditEvent).where(AuditEvent.target_id == agent_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [(e.action, e.actor_user_id) for e in audited] == [
+            ("agent.rest_notice_posted", None)
+        ]
+        assert sent == [
+            {
+                "agent_id": agent_id,
+                "room_id": "room-1",
+                "content": (
+                    "When I went to rest, I stopped 3 background processes I'd left "
+                    "running. Start them again if you still need them."
+                ),
+                "thread_id": "$thread",
+                "client_txn_id": "rest:wake-1",
+            }
+        ]
+
+    async def test_it_takes_no_text_and_no_count_out_of_bounds(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = self._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            path = (
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/rest-notice"
+            )
+            answers = [
+                await client.post(
+                    path,
+                    json={"room_id": "room-1", "key": "k", "stopped": 1, **extra},
+                    headers=controller.headers,
+                )
+                for extra in (
+                    {"body": "anything"},
+                    {"stopped": 0},
+                    {"stopped": 1001},
+                    {"stopped": "2"},
+                    {"key": "wake 1"},
+                    {"key": "wake/../1"},
+                    {"key": "k" * 201},
+                )
+            ]
+        assert [answer.status_code in (400, 422) for answer in answers] == [True] * 7
+        assert sent == []
+
+    async def test_a_retry_is_one_message_and_two_audit_rows_the_second_marked(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The keyed send returns the first notice's id for a retry.
+        sent = self._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            for _ in range(2):
+                response = await client.post(
+                    f"/v1/management/controllers/{controller.controller_id}"
+                    f"/agents/{agent_id}/rest-notice",
+                    json={"room_id": "room-1", "key": "wake-1", "stopped": 1},
+                    headers=controller.headers,
+                )
+                assert response.status_code == 200, response.text
+        async with harness.session_factory() as db:
+            audited = (
+                (
+                    await db.execute(
+                        select(AuditEvent)
+                        .where(
+                            AuditEvent.target_id == agent_id,
+                            AuditEvent.action == "agent.rest_notice_posted",
+                        )
+                        .order_by(AuditEvent.occurred_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [event.details.get("deduplicated") for event in audited] == [None, True]
+        assert {item["client_txn_id"] for item in sent} == {"rest:wake-1"}
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+class TestTheResetRefusedLine:
+    """A `!reset` Switch relayed to a controller without announcing it,
+    which the box had no session to take, is answered with Core's own
+    "couldn't reset" line, keyed by the command."""
+
+    async def test_it_posts_cores_text_as_the_agent_under_the_commands_key(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = TestTheRestartNotice._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/reset-refused",
+                json={"room_id": "room-1", "thread_id": "$t", "command_id": "c-1"},
+                headers=controller.headers,
+            )
+            with_text = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}"
+                f"/agents/{agent_id}/reset-refused",
+                json={"room_id": "room-1", "command_id": "c-1", "body": "anything"},
+                headers=controller.headers,
+            )
+        assert response.status_code == 200, response.text
+        assert with_text.status_code in (400, 422), with_text.text
+        assert sent == [
+            {
+                "agent_id": agent_id,
+                "room_id": "room-1",
+                "content": (
+                    "I couldn't reset my session. Send the command again in a "
+                    "minute, or ask my owner to restart me from Switch Console."
+                ),
+                "thread_id": "$t",
+                "client_txn_id": "reset-refused:c-1",
+            }
+        ]
+
+    async def test_it_refuses_an_agent_another_controller_runs(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = TestTheRestartNotice._recording(harness, monkeypatch)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            theirs = await enroll_console(harness, client, owner, name="other")
+            agent_id = await _placed_agent(harness, client, theirs)
+            mine = await enroll_daemon(harness, client, owner)
+            response = await client.post(
+                f"/v1/management/controllers/{mine.controller_id}"
+                f"/agents/{agent_id}/reset-refused",
+                json={"room_id": "room-1", "command_id": "c-1"},
+                headers=mine.headers,
+            )
+        assert response.status_code == 404, response.text
+        assert sent == []
 
 
 class TestTheControllersOwnInfo:

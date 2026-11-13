@@ -1,0 +1,372 @@
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { openSwitchStream, runAgentHost } from './agent-host';
+import { AttachmentTransfers } from './attachment-transfers';
+import {
+  answerCliConversationRequest,
+  CLI_CONVERSATION_MODES,
+  type CliConversationMode,
+} from './cli-conversations';
+import { type ControlContext, ensureSessions, serveControl } from './control';
+import { dirMode } from './host-permissions';
+import { materializeHostedProvider } from './hosted-provider';
+import { openHubStream } from './hub-stream';
+import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { longRunning, stampConsole } from './log-stamp';
+import { replaceOwner } from './ownership-lock';
+import { ownProcessGroup } from './process-fence';
+import { checkProviderReadiness } from './provider-readiness';
+import { readPushKey } from './push-key';
+import { adapterFor } from './server';
+import { grantedSkills } from './service-access';
+import { runGitCredentialHelper, runGitHubCli } from './service-github';
+import { HOST_EXIT_GRACE_MS, SessionLinks } from './session-channel';
+import {
+  recordedServicesShape,
+  recordSessionServices,
+  servicesChangeSince,
+} from './session-services';
+import {
+  readProviderLogin,
+  readSharedCredentials,
+  sessionServiceGrants,
+  sharedConfigSchema,
+} from './shared-config';
+import { hostSessionProcess } from './shared-host';
+import { NotSignedInError, recordedKindOf } from './start-failure';
+import { onStopRequest } from './stop-request';
+import { superviseSharedHost } from './supervisor';
+import { bundleIdentity, recordWatcherHealth } from './watcher-health-file';
+import { WatcherControl } from './watcher-tools';
+
+const [root, configPath, mode] = process.argv.slice(2);
+// The supervisors and hosts that write supervisor.log and worker.log put the
+// time on every line; a helper whose output its caller parses never does.
+if (longRunning(root, configPath, mode)) stampConsole();
+async function main(): Promise<void> {
+  if (!root || !configPath)
+    throw new Error('Shared SDK host requires a state directory and configuration file.');
+  if (root === '--models') {
+    const provider = sharedConfigSchema.shape.start.shape.provider.parse(configPath);
+    const adapter = adapterFor(provider, process.argv[5], '', []);
+    const sessionId = randomUUID();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const models = await Promise.race([
+        (async () => {
+          await adapter.startSession({
+            sessionId,
+            cwd: mode,
+            runtimeMode: 'approval-required',
+            mcpServers: {},
+            connectorMcpServers: [],
+            env: Object.fromEntries(
+              Object.entries(process.env).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined
+              )
+            ),
+          });
+          return (await adapter.listModels?.(sessionId)) ?? [];
+        })(),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('Model discovery timed out.')), 60000);
+        }),
+      ]);
+      console.log(
+        JSON.stringify({
+          status: 'unknown',
+          message: models.length
+            ? 'Models loaded.'
+            : 'The provider returned no models. Enter a model ID or leave blank for the provider default.',
+          models: models.map((model) => ({ id: model.id, name: model.label })),
+        })
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      await adapter.stopAll();
+    }
+    return;
+  }
+  if (isCliConversationMode(root)) {
+    // Answered on stdout either way, so Console can say why one failed.
+    try {
+      console.log(JSON.stringify(await answerCliConversationRequest(root, configPath)));
+    } catch (error) {
+      console.log(
+        JSON.stringify({ error: error instanceof Error ? error.message : String(error) })
+      );
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (root === '--probe') {
+    console.log(
+      JSON.stringify(
+        await checkProviderReadiness({
+          provider: configPath,
+          cwd: mode,
+          binaryPath: process.argv[5],
+          env: Object.fromEntries(
+            Object.entries(process.env).filter(
+              (entry): entry is [string, string] => entry[1] !== undefined
+            )
+          ),
+        })
+      )
+    );
+    return;
+  }
+  const config = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
+  if (mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart') {
+    console.log(
+      JSON.stringify(
+        await ensureSharedProcess({
+          root,
+          config,
+          resuming: process.argv[5] === 'true',
+          watcher: mode === '--ensure-watch',
+          restart: mode === '--restart',
+          supervision: detachedSupervision(process.argv[1]!),
+          startSource: null,
+        })
+      )
+    );
+  } else if (mode === '--supervise' || mode === '--watch-supervise') {
+    // The launcher's push key, read before anything else, on its pipe.
+    const pushKey = process.env.SWITCH_HUB_TICKETS === '1' ? readPushKey() : undefined;
+    if (pushKey === null) {
+      console.error('No push key from the launcher: not starting.');
+      process.exit(1);
+    }
+    const stop = new AbortController();
+    onStopRequest(() => stop.abort(), resolve(root));
+    await superviseSharedHost({
+      root: resolve(root),
+      executable: process.execPath,
+      args: [
+        process.argv[1],
+        root,
+        configPath,
+        ...(mode === '--watch-supervise' ? ['--watch-worker'] : []),
+      ],
+      env: process.env,
+      signal: stop.signal,
+      build: process.argv[1]!,
+      links: null,
+      // On launcher boxes only the controller starts a host again, with a fresh ticket.
+      selfRestart: process.env.SWITCH_HUB_TICKETS !== '1',
+      ...(pushKey ? { pushKey } : {}),
+    });
+  } else if (mode === '--watch-worker') {
+    // The push key first of all, from the supervisor's pipe.
+    const pushKey = process.env.SWITCH_HUB_TICKETS === '1' ? readPushKey() : undefined;
+    if (pushKey === null) {
+      console.error('No push key from the supervisor: not starting.');
+      process.exit(1);
+    }
+    // Read before anything else, while the file is the one this process loaded.
+    const bundle = await bundleIdentity(process.argv[1]!);
+    const stop = new AbortController();
+    onStopRequest(() => stop.abort(), resolve(root));
+    // The sidecar is the parent of the sessions it runs: it talks to each over
+    // IPC, and Console reaches them through its control port.
+    const links = new SessionLinks();
+    const supervision = inProcessSupervision(process.argv[1]!, links);
+    const ensure = ensureSessions(supervision);
+    // Console's "Reconnect to room" reaches the watcher through the control port.
+    const control = new WatcherControl();
+    if (pushKey) control.setPushKey(pushKey);
+    const transfers = new AttachmentTransfers(resolve(root));
+    await transfers.clear();
+    const context: ControlContext = {
+      agentId: config.session.agentId,
+      links,
+      ensure,
+      watcher: control,
+      transfers,
+    };
+    // A login Switch gave the machine for this agent's provider: its files
+    // are written here, as this agent's own; its environment is already in
+    // the configuration the controller wrote.
+    const login = await readProviderLogin(config);
+    if (login?.status === 'connected')
+      await materializeHostedProvider(
+        resolve(root),
+        {},
+        login,
+        config.execution?.binaryPath ?? config.start.provider
+      );
+    // An agent controller running this agent host in a process of its own
+    // names its hub: the agent's events come from there, not from Switch.
+    const hub = config.execution
+      ? (await readSharedCredentials(config)).SWITCH_AGENT_HUB
+      : undefined;
+    // Console reads the watcher's connection state from this file, with the
+    // rest of the host's watcher state, rather than from the control port.
+    const stopRecording = recordWatcherHealth(resolve(root), control, bundle);
+    // A watcher that stops (disabled, stood down after a takeover, or
+    // signalled) takes the process with it: the control port and every
+    // session host go too, so the supervisor sees a clean exit and does not
+    // start it again.
+    try {
+      await Promise.all([
+        runAgentHost(
+          root,
+          config,
+          stop.signal,
+          supervision,
+          control,
+          hub
+            ? openHubStream(
+                hub,
+                // On a box where the launcher starts hosts, each hello
+                // carries the one-time ticket it hands this host.
+                process.env.SWITCH_HUB_TICKETS === '1'
+                  ? { ticket: () => control.takeHubTicket(30_000) }
+                  : {}
+              )
+            : openSwitchStream
+        ).finally(() => stop.abort()),
+        serveControl(resolve(root), context, stop.signal),
+      ]);
+    } finally {
+      stopRecording();
+      await supervision.close();
+    }
+  } else if (process.platform !== 'win32' && (await ownProcessGroup()) === null) {
+    const child = spawn(process.execPath, process.argv.slice(1), {
+      detached: true,
+      windowsHide: true,
+      stdio: 'inherit',
+      env: process.env,
+    });
+    for (const signal of ['SIGTERM', 'SIGINT'] as const)
+      process.on(signal, () => child.kill(signal));
+    child.on('error', (error) => {
+      throw error;
+    });
+    child.on('exit', (code) => {
+      process.exitCode = code ?? 1;
+    });
+  } else {
+    if (!process.send)
+      throw new Error(
+        'A session host is started by Console or the agent sidecar, which answer its Switch tools; run on its own it has nothing to answer them.'
+      );
+    const stop = new AbortController();
+    onStopRequest(() => stop.abort(), resolve(root));
+    // Started by a parent that talks to it: it goes when the parent goes.
+    process.on('disconnect', () => stop.abort());
+    try {
+      const services = await sessionServiceGrants(config);
+      // Read before this host's own record replaces it: a host restarted
+      // because a service was taken away or granted says which.
+      const servicesChange = servicesChangeSince(
+        await recordedServicesShape(resolve(root)).catch((error: unknown) => {
+          console.warn(
+            `Could not read which services this session's previous host started with, so a change to them is not announced: ${error instanceof Error ? error.message : String(error)}`
+          );
+          return undefined;
+        }),
+        services
+      );
+      // What the watcher compares the agent's grants against, to restart this
+      // host when a service is granted or taken away (`servicesChanged`).
+      await recordSessionServices(resolve(root), services);
+      await hostSessionProcess({
+        root,
+        config,
+        adapter: adapterFor(
+          config.start.provider,
+          config.execution?.binaryPath,
+          config.execution?.skill ?? '',
+          grantedSkills(services.grants)
+        ),
+        services,
+        servicesChange,
+        entrypoint: process.argv[1]!,
+        port: process,
+        authenticate:
+          config.start.provider === 'claude'
+            ? async (input) => {
+                const readiness = await checkProviderReadiness({
+                  provider: config.start.provider,
+                  binaryPath: config.execution?.binaryPath ?? 'claude',
+                  cwd: input.cwd,
+                  env: input.env,
+                });
+                if (readiness.status === 'unauthenticated')
+                  throw new NotSignedInError(readiness.message);
+                if (readiness.status === 'unknown') console.warn(readiness.message);
+              }
+            : null,
+        signal: stop.signal,
+      });
+    } catch (error) {
+      if (!stop.signal.aborted) throw error;
+    } finally {
+      // The channel would otherwise keep this process alive after the host is done.
+      process.disconnect();
+      // Something the host started can outlive it too, and keep this process
+      // alive holding the session's lock with no pipe to its parent. Exit
+      // regardless: the supervisor then clears what is left of the group.
+      setTimeout(() => {
+        console.warn(
+          `The session host finished but was still running ${HOST_EXIT_GRACE_MS / 1000} s later; exiting so its supervisor can stop what it left behind.`
+        );
+        process.exit();
+      }, HOST_EXIT_GRACE_MS).unref();
+    }
+  }
+}
+
+/**
+ * Git's credential helper and the `gh` wrapper a session with a GitHub grant
+ * runs (`service-github.ts`): short-lived, run by the CLI, and never a host,
+ * so a failure is told on stderr and recorded nowhere.
+ */
+async function helper(): Promise<void> {
+  try {
+    if (root === '--git-credential')
+      await runGitCredentialHelper(configPath, {
+        stdin: process.stdin,
+        stdout: process.stdout,
+        env: process.env,
+      });
+    else
+      process.exitCode = await runGitHubCli(configPath ?? '', process.argv.slice(4), process.env);
+  } catch (error) {
+    process.stderr.write(`switch: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+}
+
+function isCliConversationMode(value: string): value is CliConversationMode {
+  return (CLI_CONVERSATION_MODES as readonly string[]).includes(value);
+}
+
+if (root === '--git-credential' || root === '--github-cli') await helper();
+else
+  try {
+    await main();
+  } catch (error) {
+    if (
+      root !== undefined &&
+      root !== '--probe' &&
+      root !== '--models' &&
+      !isCliConversationMode(root) &&
+      mode !== '--supervise' &&
+      mode !== '--watch-supervise'
+    ) {
+      await mkdir(join(root, 'supervisor'), { recursive: true, mode: dirMode(0o700) });
+      await replaceOwner(join(root, 'supervisor', 'failure.json'), {
+        message: error instanceof Error ? error.message : String(error),
+        // What the room is told: no login, or another setup failure.
+        kind: recordedKindOf(error),
+      });
+    }
+    console.error(error);
+    process.exitCode = 1;
+  }

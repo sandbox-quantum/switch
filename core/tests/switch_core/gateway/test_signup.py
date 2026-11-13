@@ -36,6 +36,7 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.keys import Keyring
+from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.telemetry_records import recording_telemetry
 
@@ -46,14 +47,22 @@ pytestmark = pytest.mark.no_ambient_tenant
 PASSWORD = "correct horse battery"
 
 
+def _hosted_settings(tenants: list[str] | None) -> HostedControllerSettings:
+    """The real settings model, not a stand-in, so a field added to it (the
+    account list, say) is there with its default rather than missing."""
+    return HostedControllerSettings(
+        allowed_tenant_ids=tenants,
+        token="t" * 32,
+        agent_api_endpoint="https://switch.example.com/api/agent",
+    )
+
+
 @pytest.fixture
 async def signup_app(session_factory):
     app = FastAPI()
     app.include_router(auth_router)
     app.include_router(machine_router)
-    app.state.hosted_controller_settings = SimpleNamespace(
-        allowed_tenant_ids=[TENANT_ZERO_ID]
-    )
+    app.state.hosted_controller_settings = _hosted_settings([TENANT_ZERO_ID])
     config = SimpleNamespace(
         gateway_signup_open=True,
         gateway_signup_mode="default_tenant",
@@ -296,9 +305,7 @@ async def test_signup_succeeds_without_cloud_machines(signup_app, caplog):
 
 async def test_signup_warms_no_machine_outside_the_allowed_workspaces(signup_app):
     app = signup_app
-    app.app.state.hosted_controller_settings = SimpleNamespace(
-        allowed_tenant_ids=["another-tenant"]
-    )
+    app.app.state.hosted_controller_settings = _hosted_settings(["another-tenant"])
     response = await _signup(app)
     assert response.status_code == 201, response.text
     assert response.json()["machine"] == {

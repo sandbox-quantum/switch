@@ -462,6 +462,46 @@ async def test_the_hosted_sampler_starts_with_hosted_agents(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("on", [False, True])
+async def test_the_hosted_sampler_starts_with_hosted_agents_v2_on_or_off(
+    monkeypatch, on: bool
+):
+    """The sampler covers v1 machines and v2 boxes alike, so it starts with
+    hosted agents on and OTLP configured, whether hosted agents v2 is on or
+    off."""
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(hosted_v2, "_process_on", on)
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+            FEATURE_FLAGS_ENABLED="hosted_agents",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(),
+        optional_checks=[],
+        db_server_engine=lambda: create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        ),
+    )
+    try:
+        names = {task.get_name() for task in observability._tasks}
+        assert "db-server-sampler" in names
+        assert "hosted-sampler" in names
+        # The reconciler watch counts from boot.
+        from switch_core.observability.hosted import reconciler_watch
+
+        assert list(reconciler_watch().readings())
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
 async def test_without_hosted_agents_no_hosted_sampler_starts(monkeypatch):
     observability = start_observability(
         config=_config(

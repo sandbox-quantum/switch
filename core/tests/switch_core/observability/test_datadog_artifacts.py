@@ -177,8 +177,8 @@ def test_the_refusals_alerts_split_guessing_from_retries() -> None:
         for m in _load("monitors.json")  # type: ignore[union-attr]
         if "switch.controller.credential_refusals" in m["query"]
     }
-    assert len(refusal_monitors) == 2
-    (paging,) = [m for m in refusal_monitors.values() if "route IN" in m["query"]]
+    assert len(refusal_monitors) == 3
+    (paging,) = [m for m in refusal_monitors.values() if "reason IN" in m["query"]]
     (routes,) = re.findall(r"route IN \(([^)]*)\)", paging["query"])
     assert set(routes.split(",")) == {"agent", "controller", "hosted_controller"}
     (reasons,) = re.findall(r"reason IN \(([^)]*)\)", paging["query"])
@@ -188,9 +188,33 @@ def test_the_refusals_alerts_split_guessing_from_retries() -> None:
         "wrong",
         "missing",
     }
-    (exchange,) = [m for m in refusal_monitors.values() if m is not paging]
-    assert "route:management" in exchange["query"]
+    (exchange,) = [
+        m
+        for m in refusal_monitors.values()
+        if m is not paging and "lockout_started" not in m["query"]
+    ]
+    # Token exchange, enrolment and the in-cluster workers' own credentials:
+    # retries after a revoke or a rotation look like guesses, so low urgency.
+    (low,) = re.findall(r"route IN \(([^)]*)\)", exchange["query"])
+    assert set(low.split(",")) == {
+        "management",
+        "hosted_provisioner",
+        "hosted_operator",
+    }
     assert exchange["priority"] > paging["priority"]
+
+
+def test_a_lockout_starting_has_a_low_urgency_alert() -> None:
+    """v2's per-address lockout: several starting is worth a look, not a page."""
+    (lockouts,) = [
+        m
+        for m in _load("monitors.json")  # type: ignore[union-attr]
+        if "reason:lockout_started" in m["query"]
+    ]
+    assert "switch.controller.credential_refusals" in lockouts["query"]
+    assert "service:REPLACE-WITH-SERVICE" in lockouts["query"]
+    assert "env:" not in lockouts["query"]
+    assert lockouts["priority"] >= 4
 
 
 def test_no_monitor_names_one_deployment() -> None:
@@ -213,6 +237,13 @@ _READ_WITH_MAX = (
     "switch.hosted.agents",
     "switch.hosted.sessions",
     "switch.hosted.provider_login_problems",
+    # Hosted agents v2 boxes' gauges, reported the same way.
+    "switch.hosted.agent_restarts_10m",
+    "switch.hosted.agent_oom_kills",
+    "switch.hosted.waiting_for_room",
+    "switch.hosted.boxes_valve_memory",
+    "switch.hosted.gateway",
+    "switch.hosted.alerts_open",
 )
 
 
@@ -287,13 +318,14 @@ def test_the_signal_board_stays_readable_at_a_glance() -> None:
 
 # The hosted agents board, in the order whoever is on call reads it: is
 # anything firing, can people get working agents, why is it failing, capacity,
-# and whether the charts can be trusted.
+# and whether the charts can be trusted; then, under their own note, what only
+# a hosted agents v2 box reports.
 _HOSTED_BOARD_ORDER = [
     "Hosted alerts: status",
     "Cloud machines reporting vs expected, by kind (silent = reporting below expected)",
     "Seconds since the hosted controller service last called Core (min over pods; rising = reconciler silent)",
-    "Cloud machine changes, by event and reason",
-    "New cloud machines: seconds from request to first report, p95 / max",
+    "Cloud machine changes, by event, reason and kind",
+    "New cloud machines: seconds from request to first report, p95 / max, by kind",
     "Agents on cloud machines, by process state and kind (a v1 machine's session is always none)",
     "Sessions on cloud machines: running vs max",
     "Cloud calls that failed for hosted machines, by call and kind",
@@ -305,6 +337,13 @@ _HOSTED_BOARD_ORDER = [
     "Cloud machine memory used (%), p95 / max. Needs distribution mapping, see README",
     "Cloud machine disk used (%), p95 / max. Needs distribution mapping, see README",
     "Metrics samples that failed, by sampler",
+    "**Hosted agents v2 (boxes).**",
+    "Operator alerts open, by condition (the box, machine or service is on the operator's Alerts tab)",
+    "Hosted boxes: sessions waiting for room to start",
+    "Hosted agent restarts (last 10 min), OOM kills, and box evictions",
+    "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
+    "Provider gateway on hosted boxes, by kind; boxes with a valve memory problem, by state",
+    "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
 ]
 
 
@@ -314,13 +353,21 @@ def _hosted_board() -> dict:
     return board
 
 
+def _label(definition: dict) -> str:
+    """A chart's title, or a note's bold lead-in."""
+    if definition["type"] == "note":
+        return str(definition["content"].split("**", 2)[1].join(["**", "**"]))
+    return str(definition["title"])
+
+
 def test_the_hosted_board_reads_in_on_call_order() -> None:
     """The hosted note first, then the alerts, then each chart in order."""
     widgets = _hosted_board()["widgets"]
     first = widgets[0]["definition"]
     assert first["type"] == "note"
     assert first["content"].startswith("**Hosted agents (cloud machines).**")
-    assert [w["definition"].get("title") for w in widgets[1:]] == _HOSTED_BOARD_ORDER
+    labels = [_label(w["definition"]) for w in widgets[1:]]
+    assert labels == _HOSTED_BOARD_ORDER
 
 
 def test_the_hosted_board_is_the_main_dashboards_charts_unchanged() -> None:
@@ -357,7 +404,7 @@ def test_the_hosted_alerts_panel_lists_every_alert_on_its_charts() -> None:
     query = alerts["query"]
     assert query.startswith('tag:"service:REPLACE-WITH-SERVICE" (')
     assert set(re.findall(r'"([^"]+)"', query.split(" ", 1)[1])) == expected
-    assert len(expected) == 13
+    assert len(expected) == 16
 
 
 def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:

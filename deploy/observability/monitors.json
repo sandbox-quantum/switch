@@ -654,8 +654,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] Controller token exchanges and enrolments refused",
     "type": "query alert",
-    "query": "sum(last_10m):default_zero(sum:switch.controller.credential_refusals{service:REPLACE-WITH-SERVICE,route:management}.as_count()) > 30",
-    "message": "{{#is_alert}}{{value}} controller token exchanges or enrolments were refused in 10 minutes. A revoked or replaced controller stops after one refused exchange, so a few are normal (one per controller revoked); this many means either a large revoke, such as a migration batch, or someone trying credentials or enrolment codes.\n\n**Check:** the refusals by reason on the dashboard, and whether many controllers were revoked just now.{{/is_alert}}{{#is_recovery}}Recovered: controller token exchanges and enrolments are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "sum(last_10m):default_zero(sum:switch.controller.credential_refusals{service:REPLACE-WITH-SERVICE,route IN (management,hosted_provisioner,hosted_operator)}.as_count()) > 30",
+    "message": "{{#is_alert}}{{value}} controller token exchanges, enrolments or in-cluster worker credentials were refused in 10 minutes. A revoked or replaced controller stops after one refused exchange, so a few are normal (one per controller revoked); this many means a large revoke (such as a migration batch), an in-cluster worker with an old credential after a rotation, or someone trying credentials or enrolment codes.\n\n**Check:** the refusals by reason and route on the dashboard, whether many controllers were revoked just now, and whether the provisioner's and operator's credentials were just rotated.{{/is_alert}}{{#is_recovery}}Recovered: controller token exchanges and enrolments are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -788,6 +788,52 @@
       }
     },
     "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted boxes: memory guard stopping agents",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.hosted.guard_stops{service:REPLACE-WITH-SERVICE}.as_count()) >= 3",
+    "message": "{{#is_alert}}The memory guard stopped {{value}} agents on hosted boxes in 30 minutes: boxes are running out of memory.\n\n**Check:** the boxes' memory and the out-of-memory panels on the dashboard, and the operator's Alerts tab for which boxes.{{/is_alert}}{{#is_recovery}}Recovered: the memory guard has stopped stopping agents.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 3
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted boxes pushed off their nodes",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.hosted.box_evictions{service:REPLACE-WITH-SERVICE}.as_count()) >= 3",
+    "message": "{{#is_alert}}{{value}} hosted boxes were evicted from their nodes in 30 minutes, so their agents restarted.\n\n**Check:** the cluster's node pressure and the operator's Alerts tab for which boxes.{{/is_alert}}{{#is_recovery}}Recovered: box evictions are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 3
+      }
+    },
+    "priority": 3
   },
   {
     "name": "[Switch REPLACE-WITH-ENV] AI provider logins missing or expired on cloud machines",
@@ -923,6 +969,29 @@
       "include_tags": true,
       "thresholds": {
         "critical": 10
+      }
+    },
+    "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Controller credential lockouts starting",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.controller.credential_refusals{service:REPLACE-WITH-SERVICE,reason:lockout_started}.as_count()) >= 3",
+    "message": "{{#is_alert}}{{value}} addresses were locked out for refused controller credentials in 30 minutes. One address that keeps sending a wrong credential is locked out for a while; several starting means repeated guessing or a widely shared old credential.\n\n**Check:** the refusals by reason and route on the dashboard, and Core's refusal log lines.{{/is_alert}}{{#is_recovery}}Recovered: no new controller credential lockouts.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 3
       }
     },
     "priority": 4

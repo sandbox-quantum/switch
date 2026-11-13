@@ -1,0 +1,163 @@
+import { PROVIDER_RUNTIMES } from '../providers/registry';
+
+export const AGENT_ENV_VARS = [
+  'ALL_PROXY',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_VERTEX_BASE_URL',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_DEFAULT_REGION',
+  'AWS_PROFILE',
+  'AWS_REGION',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AZURE_OPENAI_API_ENDPOINT',
+  'AZURE_OPENAI_API_KEY',
+  'AZURE_OPENAI_KEY',
+  'BAILIAN_CODING_PLAN_API_KEY',
+  'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',
+  'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CONFIG_DIR',
+  'CLOUDSDK_CONFIG',
+  'CLOUD_ML_REGION',
+  'CODEX_HOME',
+  'CURSOR_API_KEY',
+  'DASHSCOPE_API_KEY',
+  'GEMINI_API_KEY',
+  'GEMINI_MODEL',
+  'GOOGLE_API_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_CLOUD_LOCATION',
+  'GOOGLE_CLOUD_PROJECT',
+  'GOOGLE_GEMINI_BASE_URL',
+  'GOOGLE_GENAI_API_VERSION',
+  'GOOGLE_VERTEX_BASE_URL',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'KIMI_API_KEY',
+  'MISTRAL_API_KEY',
+  'MOONSHOT_API_KEY',
+  'NO_PROXY',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'OPENAI_ORGANIZATION',
+  'OPENAI_PROJECT',
+  'OPENCODE_MODEL',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_BASE_URL',
+  'XAI_API_KEY',
+] as const;
+
+/**
+ * What Windows itself, Node and the provider CLIs need there to find the
+ * user's profile, the system and a temporary directory. None is set on macOS
+ * or Linux.
+ */
+const WINDOWS_ENV = [
+  'APPDATA',
+  'COMSPEC',
+  'COMMONPROGRAMFILES',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'LOCALAPPDATA',
+  'NUMBER_OF_PROCESSORS',
+  'OS',
+  'PATHEXT',
+  'PROCESSOR_ARCHITECTURE',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'SYSTEMDRIVE',
+  'SYSTEMROOT',
+  'TEMP',
+  'TMP',
+  'USERDOMAIN',
+  'USERNAME',
+  'USERPROFILE',
+  'WINDIR',
+];
+
+/** The provider variables above and those each registered provider's runtime asks for. */
+export const PROVIDER_ENV_VARS: readonly string[] = [
+  ...new Set([...AGENT_ENV_VARS, ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv)]),
+];
+
+/**
+ * What a session host's `execution.inheritEnv` names: the provider variables
+ * and the basics a CLI needs to find itself, its home and its terminal.
+ * Matched without regard to case on Windows, where `Path` and `PATH` are one
+ * variable. Console and the headless agent controller both launch hosts with it.
+ */
+export const EXECUTION_INHERIT_ENV: readonly string[] = [
+  ...PROVIDER_ENV_VARS,
+  'PATH',
+  'HOME',
+  'USER',
+  'SHELL',
+  'TMPDIR',
+  'LANG',
+  'TERM',
+  'SSH_AUTH_SOCK',
+  ...WINDOWS_ENV,
+];
+
+/** The basics a CLI needs to find itself and its home. */
+const CODEX_KEYRING_READER_ENV = [
+  'PATH',
+  'HOME',
+  'USER',
+  'SHELL',
+  'TMPDIR',
+  'LANG',
+  ...WINDOWS_ENV,
+];
+
+/**
+ * How Codex on Linux reaches the Secret Service that holds a keyring login,
+ * taken from the session host's own environment. Only the Codex that reads
+ * the login is given these; sessions are not, so no provider starts using a
+ * keyring it could not reach before. Untested on Linux so far.
+ */
+const KEYRING_BUS_ENV = ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'];
+
+/**
+ * The environment of the Codex that reads a keyring login for a session
+ * (`codex/keyring-login.ts`): what it needs from the session's, and the
+ * keyring bus from the host's when the session's names none. None of the
+ * credentials the session is given reach it. Matched without regard to case
+ * on Windows.
+ */
+export function codexKeyringReaderEnvironment(
+  sessionEnv: Record<string, string>,
+  hostEnv: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
+): Record<string, string> {
+  const pick = (env: Record<string, string | undefined>, names: readonly string[]) => {
+    const wanted = new Set(platform === 'win32' ? names.map((name) => name.toUpperCase()) : names);
+    const picked: Record<string, string> = {};
+    for (const [name, value] of Object.entries(env))
+      if (value && wanted.has(platform === 'win32' ? name.toUpperCase() : name))
+        picked[name] = value;
+    return picked;
+  };
+  return {
+    ...pick(hostEnv, KEYRING_BUS_ENV),
+    ...pick(sessionEnv, [...CODEX_KEYRING_READER_ENV, ...KEYRING_BUS_ENV]),
+  };
+}

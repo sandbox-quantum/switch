@@ -1,0 +1,105 @@
+import { join } from 'node:path';
+import {
+  CONTROL_FILE,
+  type ProviderReadiness,
+  type SharedHostConfig,
+} from '@switch-console/agent-providers-box';
+import { stopForMemoryOverControlPort, warmOverControlPort } from './control-port';
+import type {
+  AgentObservation,
+  AgentRunner,
+  AgentRuntime,
+  InProcessRuntime,
+  LaunchOptions,
+  RelayCredentials,
+} from './runtime';
+import type { Provider } from './schemas';
+import type { GivenLogin } from './sealed-logins';
+
+/**
+ * Runs each agent the way its definition asks: its host in this controller's
+ * process (`shared`), or in a process of its own (`isolated`). The agent's
+ * state root is the same either way, so moving it from one to the other is a
+ * restart: whichever runs it now is stopped before the other starts it.
+ */
+export class AgentRuntimes implements AgentRuntime {
+  constructor(
+    private readonly shared: InProcessRuntime,
+    private readonly isolated: AgentRunner
+  ) {}
+
+  async observe(agentId: string): Promise<AgentObservation> {
+    const inProcess = await this.shared.observe(agentId);
+    if (inProcess.alive) return inProcess;
+    const ownProcess = await this.isolated.observe(agentId);
+    return ownProcess.alive
+      ? ownProcess
+      : { ...inProcess, health: inProcess.health ?? ownProcess.health };
+  }
+
+  async launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void> {
+    const [chosen, other] =
+      options.isolation === 'isolated'
+        ? [this.isolated, this.shared]
+        : [this.shared, this.isolated];
+    if ((await other.observe(agentId)).alive) await other.stop(agentId, { wait: true });
+    await chosen.launch(agentId, template, options);
+  }
+
+  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
+    await this.shared.stop(agentId, options);
+    await this.isolated.stop(agentId, options);
+  }
+
+  async close(): Promise<void> {
+    await this.shared.close();
+    await this.isolated.close();
+  }
+
+  credentialsPath(agentId: string): string {
+    return this.shared.credentialsPath(agentId);
+  }
+
+  readCredentials(agentId: string): Promise<RelayCredentials | null> {
+    return this.shared.readCredentials(agentId);
+  }
+
+  writeCredentials(agentId: string, credentials: RelayCredentials): Promise<void> {
+    return this.shared.writeCredentials(agentId, credentials);
+  }
+
+  deleteCredentials(agentId: string): Promise<void> {
+    return this.shared.deleteCredentials(agentId);
+  }
+
+  workingDirectory(agentId: string, name: string, directory: string | null): Promise<string> {
+    return this.shared.workingDirectory(agentId, name, directory);
+  }
+
+  probe(
+    provider: Provider,
+    binaryPath: string,
+    cwd: string,
+    login: GivenLogin | null
+  ): Promise<ProviderReadiness> {
+    return this.shared.probe(provider, binaryPath, cwd, login);
+  }
+
+  /** In this process when it runs here; otherwise on the control port its own process opens. */
+  async warm(agentId: string, roomId: string): Promise<void> {
+    if (await this.shared.warmHere(agentId, roomId)) return;
+    await warmOverControlPort(join(this.agentStateRoot(agentId), CONTROL_FILE), roomId);
+  }
+
+  /** The memory guard is stopping the agent: its host, wherever it runs, tells its rooms. */
+  async stopForMemory(agentId: string): Promise<number> {
+    const here = await this.shared.stopForMemoryHere(agentId);
+    if (here !== null) return here;
+    return stopForMemoryOverControlPort(join(this.agentStateRoot(agentId), CONTROL_FILE));
+  }
+
+  /** The same for both: moving an agent between them keeps its root. */
+  agentStateRoot(agentId: string): string {
+    return this.shared.agentStateRoot(agentId);
+  }
+}

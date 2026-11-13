@@ -64,6 +64,7 @@ from switch_core.decision.room import (
 )
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.hosted_v2 import process_hosted_v2, v2_box
 from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
@@ -627,15 +628,32 @@ async def _decide_control_command(
             target_message_id=target,
         )
 
+        # A controller's agent host says how a reset went once it knows: an
+        # awake session, a resting one cleared, or one that couldn't be.
+        # Said here as well, the room would read a reset that never happened.
+        # The v1/v2 switch: only a v2 box's agent host tells; a v1 machine or
+        # a person's own computer keeps upstream's acknowledgement, and with
+        # v2 off nothing is read (sweep row 1).
+        box_tells = (
+            controller_backed
+            and command == "reset"
+            and await _on_v2_box(client, agent.id)
+        )
+        if box_tells:
+            frame["roomTold"] = False
+
         async def relay() -> None:
             if client._connections.relay_session_command(agent.id, frame):
-                await _reply(client, room, event, texts.ack)
+                if not box_tells:
+                    await _reply(client, room, event, texts.ack)
                 return
             await _reply(
                 client,
                 room,
                 event,
-                f"Could not send {command}: the agent's controller is not connected to Switch.",
+                RESET_NOT_SENT
+                if box_tells
+                else f"Could not send {command}: the agent's controller is not connected to Switch.",
             )
 
         return ControlDecision(queued=None, answer=relay)
@@ -727,6 +745,20 @@ async def _dispatch_control_command(
         message_key=event.message_id,
     )
 
+
+async def _on_v2_box(client: AgentRecipient, agent_id: str) -> bool:
+    binding = client._connections.controllers.binding(agent_id)
+    if binding is None or not process_hosted_v2():
+        return False
+    async with tenant_session(client.session_factory, client.tenant_id) as session:
+        return await v2_box(session, client.tenant_id, binding.controller_id)
+
+
+# The agreed line for a reset that couldn't be done.
+RESET_NOT_SENT = (
+    "I couldn't reset my session. Send the command again in a minute, or ask "
+    "my owner to restart me from Switch Console."
+)
 
 _RESET = ControlTexts(
     ack="Resetting my session — clearing context, then reconnecting to this room.",

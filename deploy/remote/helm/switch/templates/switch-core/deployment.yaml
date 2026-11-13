@@ -111,6 +111,39 @@ spec:
             - name: HOSTED_IDLE_STOP_MINUTES
               value: {{ .Values.switchCore.hostedIdleStopMinutes | quote }}
             {{- end }}
+            {{- if eq (toString .Values.switchCore.hostedBoxProvisioning) "true" }}
+            {{- if not .Values.switchCore.hostedControllerSecret }}
+            {{- fail "switchCore.hostedBoxProvisioning needs switchCore.hostedControllerSecret: hosted agents v2 runs boxes through the hosted controller config." }}
+            {{- end }}
+            {{- if le (int .Values.switchCore.hostedLaunchCapacity) 0 }}
+            {{- fail "switchCore.hostedBoxProvisioning needs switchCore.hostedLaunchCapacity above 0: with 0 no box is ever made." }}
+            {{- end }}
+            {{- if not (and (has "hosted_agents" .Values.switchCore.featureFlags.enabled) (has "agent_management" .Values.switchCore.featureFlags.enabled)) }}
+            {{- fail "switchCore.hostedBoxProvisioning needs \"hosted_agents\" and \"agent_management\" in switchCore.featureFlags.enabled: without them no box is ever made." }}
+            {{- end }}
+            - name: HOSTED_BOX_PROVISIONING
+              value: "true"
+            {{- end }}
+            {{- with .Values.switchCore.hostedProvisionsPerMinute }}
+            - name: HOSTED_PROVISIONS_PER_MINUTE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.switchCore.hostedBoxCeiling }}
+            - name: HOSTED_BOX_CEILING
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.switchCore.visibilityKeyedIdKeySecret }}
+            - name: VISIBILITY_KEYED_ID_KEY_PATH
+              value: /etc/switch-visibility/keyed-id.key
+            {{- with .Values.switchCore.visibilityKeyedIdKeyVersion }}
+            - name: VISIBILITY_KEYED_ID_KEY_VERSION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.switchCore.visibilityOperatorsSecret }}
+            - name: VISIBILITY_OPERATORS_PATH
+              value: /etc/switch-visibility/operators.json
+            {{- end }}
             {{- if and .Values.switchCore.githubConnectionsSecret .Values.switchCore.githubAppPrivateKeyPath }}
             - name: GITHUB_APP_CONFIG_PATH
               value: /etc/switch-github/github.json
@@ -129,6 +162,14 @@ spec:
               value: /etc/switch-google-workspace/client.json
             {{- end }}
             {{- include "switch.coreEnv" (merge (dict "omitOwnerCredentials" true) .) | nindent 12 }}
+            {{- range .Values.switchCore.extraEnv }}
+            {{- if has (toString .name) (list "HOSTED_BOX_PROVISIONING" "HOSTED_PROVISIONS_PER_MINUTE" "HOSTED_BOX_CEILING" "VISIBILITY_KEYED_ID_KEY_PATH" "VISIBILITY_KEYED_ID_KEY_VERSION" "VISIBILITY_OPERATORS_PATH") }}
+            {{- fail (printf "Set %s with its switchCore value, not switchCore.extraEnv: the chart sets it and checks it." (toString .name)) }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.switchCore.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           # Readiness checks the database; liveness deliberately does not.
           # With one replica a failing readiness probe empties the Service
           # rather than shifting traffic, which is right while the database is
@@ -167,11 +208,23 @@ spec:
             failureThreshold: 60
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
+          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.hostedControllerSecret .Values.switchCore.visibilityKeyedIdKeySecret .Values.switchCore.visibilityOperatorsSecret (include "switch.teamsAppFederated" .) }}
           volumeMounts:
             {{- if .Values.switchCore.hostedControllerSecret }}
             - name: hosted-controller
               mountPath: /etc/switch-hosted
+              readOnly: true
+            {{- end }}
+            {{- if .Values.switchCore.visibilityKeyedIdKeySecret }}
+            - name: visibility-keyed-id-key
+              mountPath: /etc/switch-visibility/keyed-id.key
+              subPath: keyed-id.key
+              readOnly: true
+            {{- end }}
+            {{- if .Values.switchCore.visibilityOperatorsSecret }}
+            - name: visibility-operators
+              mountPath: /etc/switch-visibility/operators.json
+              subPath: operators.json
               readOnly: true
             {{- end }}
             {{- if .Values.switchCore.githubConnectionsSecret }}
@@ -198,12 +251,24 @@ spec:
               readOnly: true
             {{- end }}
           {{- end }}
-      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
+      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.hostedControllerSecret .Values.switchCore.visibilityKeyedIdKeySecret .Values.switchCore.visibilityOperatorsSecret (include "switch.teamsAppFederated" .) }}
       volumes:
         {{- if .Values.switchCore.hostedControllerSecret }}
         - name: hosted-controller
           secret:
             secretName: {{ .Values.switchCore.hostedControllerSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.switchCore.visibilityKeyedIdKeySecret }}
+        - name: visibility-keyed-id-key
+          secret:
+            secretName: {{ .Values.switchCore.visibilityKeyedIdKeySecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.switchCore.visibilityOperatorsSecret }}
+        - name: visibility-operators
+          secret:
+            secretName: {{ .Values.switchCore.visibilityOperatorsSecret | quote }}
             defaultMode: 0400
         {{- end }}
         {{- if .Values.switchCore.githubConnectionsSecret }}

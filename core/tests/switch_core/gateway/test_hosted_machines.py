@@ -9,8 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
-from switch_core.db.models import TENANT_ZERO_ID, CloudMachine
+from switch_core.db.models import TENANT_ZERO_ID, AgentController, CloudMachine
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_STOPPED_BY_ADMIN,
     MACHINES_FULL,
@@ -18,6 +19,8 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.hosted_machines import WORKSPACE_CONNECT_TIMEOUT
+from switch_core.hosted_v2 import process_hosted_v2
+from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     ControllerApp,
@@ -51,6 +54,14 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     app = controller_app
     controller_id, agent_ids = await enrolled(app, agents=1)
     expected = json.loads((FIXTURES / "machine_summary_sleeping.json").read_text())
+    # The fixture is the v2-off shape, which Switch Console's own test parses
+    # too. With v2 on, the summary also names the backend and carries the
+    # cloud figures; with it off, it is exactly the fixture and none of them.
+    v2_only = ("room", "awake", "ai_calls_today")
+    assert not set(v2_only) & set(expected)
+    if process_hosted_v2():
+        expected["backend"] = "vm"
+        expected.update(dict.fromkeys(v2_only))
     await update_machine(
         app.factory,
         app.machine_id,
@@ -66,6 +77,8 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     assert listed.status_code == 200, listed.text
     (summary,) = listed.json()["machines"]
     assert set(summary) == set(expected)
+    if not process_hosted_v2():
+        assert not set(v2_only) & set(summary)
     assert set(summary["disk"]) == set(expected["disk"])
     assert set(summary["memory"]) == set(expected["memory"])
     varying = ("machine_id", "heartbeat_at", "agents", "controller_id")
@@ -95,6 +108,16 @@ async def test_a_machine_that_never_enrolled_reports_no_usage_or_agents(
         summary["controller_id"],
         summary["sleeping"],
     ) == (None, None, None, [], None, False)
+    # Nothing for Your cloud without a controller report. With
+    # hosted agents v2 off, the summary is as before v2, without those keys.
+    if process_hosted_v2():
+        assert (summary["room"], summary["awake"], summary["ai_calls_today"]) == (
+            None,
+            None,
+            None,
+        )
+    else:
+        assert not {"room", "awake", "ai_calls_today"} & set(summary)
 
 
 async def test_the_summary_lists_the_agents_placed_on_its_controller(
@@ -117,6 +140,112 @@ async def test_the_summary_lists_the_agents_placed_on_its_controller(
     assert summary["disk"] == {"total_bytes": 100, "available_bytes": 10}
     assert summary["memory"] == {"total_bytes": 50, "available_bytes": 5}
     assert summary["heartbeat_at"] is not None
+
+
+async def test_the_disk_says_it_is_the_workspace_only_when_the_box_says_so(
+    controller_app,  # noqa: F811
+):
+    """The apps show a disk only when it is the agents' own volume: a box on
+    the old image reports its controller's small volume, unmarked."""
+    app = controller_app
+    controller_id, _ = await enrolled(app, agents=1)
+    figures = dict(
+        disk_free_bytes=12, disk_total_bytes=15, mem_free_bytes=5, mem_total_bytes=50
+    )
+
+    await report_status(app, controller_id, sessions_running=0, **figures)
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+
+    await report_status(
+        app, controller_id, sessions_running=0, disk_scope="workspace", **figures
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
+    if process_hosted_v2():
+        assert summary["disk"] == {
+            "total_bytes": 15,
+            "available_bytes": 12,
+            "scope": "workspace",
+        }
+    else:
+        assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+    # Memory is never marked.
+    assert summary["memory"] == {"total_bytes": 50, "available_bytes": 5}
+
+    # Unknown (0 of 0) is no disk at all, marked or not.
+    await report_status(
+        app,
+        controller_id,
+        sessions_running=0,
+        disk_scope="workspace",
+        **{**figures, "disk_free_bytes": 0, "disk_total_bytes": 0},
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    assert summary["disk"] is None
+
+    # "unknown" is passed on as it is, so the apps know not to show it.
+    await report_status(
+        app, controller_id, sessions_running=0, disk_scope="unknown", **figures
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    if process_hosted_v2():
+        assert summary["disk"] == {
+            "total_bytes": 15,
+            "available_bytes": 12,
+            "scope": "unknown",
+        }
+    else:
+        assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+
+    # A mark from outside the fixed set is stored and served as "unknown".
+    await report_status(
+        app, controller_id, sessions_running=0, disk_scope="system", **figures
+    )
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    stored = (await machine_of(app.factory, app.machine_id)).heartbeat
+    assert stored is not None
+    if process_hosted_v2():
+        unknown = {"total_bytes": 15, "available_bytes": 12, "scope": "unknown"}
+        assert summary["disk"] == unknown
+        assert stored["disk"] == unknown
+    else:
+        assert summary["disk"] == {"total_bytes": 15, "available_bytes": 12}
+        assert stored["disk"] == {"total_bytes": 15, "available_bytes": 12}
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_your_cloud_figures_come_from_this_workspace_s_controller(
+    controller_app,  # noqa: F811
+):
+    """Room to work, sessions awake and AI calls today,
+    from the last report of the controller the machine enrolled as here."""
+    app = controller_app
+    controller_id, _ = await enrolled(app, agents=1)
+    async with app.factory() as session:
+        controller = await session.get(AgentController, controller_id)
+        assert controller is not None
+        controller.status = {
+            "machine": {
+                "mem_total_bytes": 8 * 1024**3,
+                "mem_free_bytes": 2 * 1024**3,
+                "sessions_running": 3,
+                "sessions_max": 15,
+                "gateway_calls_today": 40,
+                "gateway_capped": False,
+                "gateway_daily_cap": 200,
+            },
+            "agents": [],
+        }
+        await session.commit()
+    summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
+    assert summary["room"] == {"used_bytes": 6 * 1024**3, "total_bytes": 8 * 1024**3}
+    assert summary["awake"] == {"running": 3, "max": 15}
+    calls = summary["ai_calls_today"]
+    assert (calls["used"], calls["cap"], calls["capped"]) == (40, 200, False)
+    resets = datetime.fromisoformat(calls["resets_at"])
+    assert (resets.hour, resets.minute, resets.utcoffset()) == (0, 0, timedelta(0))
+    assert resets > datetime.now(UTC)
 
 
 async def test_other_owners_machines_read_as_missing(controller_app):  # noqa: F811
@@ -471,6 +600,102 @@ async def test_a_workspace_off_the_list_is_refused_and_not_joined(
         TENANT_ZERO_ID
     ]
     assert (await _ensure(app)).status_code == 200
+
+
+def _allow_users(app: ControllerApp, user_ids: list[str] | None) -> None:
+    fastapi_app = app.client._transport.app
+    fastapi_app.state.hosted_controller_settings = app.settings.model_copy(
+        update={"allowed_user_ids": user_ids}
+    )
+
+
+async def _machine_count(app: ControllerApp) -> int:
+    async with app.factory() as session:
+        return len((await session.execute(select(CloudMachine.id))).all())
+
+
+async def test_a_listed_account_in_a_listed_workspace_can_claim(
+    controller_app,  # noqa: F811
+):
+    app = controller_app
+    _allow_users(app, [app.owner_id, "someone-else"])
+    await update_machine(
+        app.factory, app.machine_id, state="deleted", desired_state="deleted"
+    )
+    claimed = await _ensure(app)
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["machine_id"] != app.machine_id  # a new one, claimed
+    assert (await app.client.get("/hosted-machines")).json()["available"] is True
+
+
+@pytest.mark.parametrize("listed", [["someone-else"], []])
+async def test_an_account_off_the_list_in_a_listed_workspace_is_refused_alike(
+    controller_app,  # noqa: F811
+    listed,
+):
+    app = controller_app
+    _allow_users(app, listed)
+    # It already has a machine: still refused, and nothing about it changes.
+    refused = await _ensure(app)
+    assert refused.status_code == 503
+    # Word for word the answer a workspace off its list gets: no hint which list.
+    assert refused.json() == {"detail": "This server does not support cloud agents."}
+    assert (await app.client.get("/hosted-machines")).json()["available"] is False
+    assert (await machine_of(app.factory, app.machine_id)).revision == 1
+    # With no live machine, it can't claim one either.
+    await update_machine(
+        app.factory, app.machine_id, state="deleted", desired_state="deleted"
+    )
+    before = await _machine_count(app)
+    assert (await _ensure(app)).status_code == 503
+    assert await _machine_count(app) == before
+
+
+async def test_no_account_list_changes_nothing(
+    controller_app,  # noqa: F811
+):
+    app = controller_app
+    assert (
+        app.settings.allowed_user_ids is None
+    )  # the fixture leaves it out, as configs do today
+    _allow_users(app, None)
+    assert (await _ensure(app)).status_code == 200
+    assert (await app.client.get("/hosted-machines")).json()["available"] is True
+
+
+async def test_the_account_list_never_widens_the_workspace_list(
+    controller_app,  # noqa: F811
+):
+    app = controller_app
+    fastapi_app = app.client._transport.app
+    fastapi_app.state.hosted_controller_settings = app.settings.model_copy(
+        update={
+            "allowed_tenant_ids": ["another-tenant"],
+            "allowed_user_ids": [app.owner_id],
+        }
+    )
+    assert (await _ensure(app)).status_code == 503
+    assert (await app.client.get("/hosted-machines")).json()["available"] is False
+
+
+def test_the_account_list_is_optional_in_the_config_file():
+    base = {
+        "allowed_tenant_ids": ["t1"],
+        "token": "x" * 32,
+        "agent_api_endpoint": "https://switch.example.com/api/agent",
+    }
+    assert (
+        HostedControllerSettings.model_validate_json(json.dumps(base)).allowed_user_ids
+        is None
+    )
+    listed = HostedControllerSettings.model_validate_json(
+        json.dumps({**base, "allowed_user_ids": ["u1"]})
+    )
+    assert listed.allowed_user_ids == ["u1"]
+    with pytest.raises(ValueError):
+        HostedControllerSettings.model_validate_json(
+            json.dumps({**base, "allowed_user_ids": [""]})
+        )
 
 
 async def test_ensure_from_another_workspace_joins_the_owner_s_machine(

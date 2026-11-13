@@ -31,6 +31,7 @@ from switch_core.bridges.agent.operations.agent_management import (
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
     caller_session,
+    client_txn_id,
     connected_room,
     counting_reader,
     get_agent_id,
@@ -836,7 +837,12 @@ async def post_message(
     spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
     sent = await protocol.send_message(
-        agent_id, room_id, body, thread_id=thread_id, ui=spec
+        agent_id,
+        room_id,
+        body,
+        thread_id=thread_id,
+        client_txn_id=client_txn_id(),
+        ui=spec,
     )
     return _with_trust({"event_id": sent.event_id}, sent.trust)
 
@@ -923,6 +929,7 @@ async def send_targeted_message(
         body,
         thread_id=thread_id,
         target_roles=target_roles or [],
+        client_txn_id=client_txn_id(),
         ui=spec,
     )
     return _with_trust(

@@ -17,7 +17,27 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.models import GATEWAY_ENFORCED_METRICS, UsageMetric
 from switch_core.db.stores.budget_store import BudgetStanding
+
+# Whether awake-time budgets are enforced: the `hosted_awake_budgets` flag,
+# fixed for the life of the process (flags can't change while it runs), and
+# set once at start (`enforce_awake_budgets`). Off by default, so a guard built
+# before start-up, or in a test, never enforces one.
+_awake_budgets = {"enforced": False}
+
+
+def enforce_awake_budgets(enabled: bool) -> None:
+    """Set from the `hosted_awake_budgets` flag when the server starts."""
+    _awake_budgets["enforced"] = enabled
+
+
+def _enforced_here(metric: str) -> bool:
+    if metric in GATEWAY_ENFORCED_METRICS:
+        return False
+    if metric == UsageMetric.AWAKE_MINUTES:
+        return _awake_budgets["enforced"]
+    return True
 
 
 class BudgetStandings(Protocol):
@@ -68,7 +88,14 @@ class BudgetGuard:
         standings = await self._store.standings(
             session, tenant_id=tenant_id, agent_id=agent_id
         )
-        exhausted = [standing for standing in standings if standing.exhausted]
+        exhausted = [
+            standing
+            for standing in standings
+            # The hosted daily cap is the gateway's to enforce, never Core's
+            # from a count the box reports; awake time only once every box is
+            # split.
+            if standing.exhausted and _enforced_here(standing.metric)
+        ]
         if exhausted:
             raise BudgetExceeded(max(exhausted, key=lambda s: s.resets_at))
         return bool(standings)

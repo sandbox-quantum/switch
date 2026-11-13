@@ -1,0 +1,20 @@
+# Stage 2 of the box image: the base image (stage 1, Dockerfile) with only the controller package and the entrypoint
+# replaced, so nothing else (base packages, provider CLIs) can drift between a box image and its controller update.
+# BASE_IMAGE and CONTROLLER_TGZ are required, with no defaults (build.sh passes them).
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG CONTROLLER_TGZ
+USER 0:0
+RUN test -n "${CONTROLLER_TGZ}" || { echo "CONTROLLER_TGZ is required" >&2; exit 1; }
+COPY ${CONTROLLER_TGZ} /tmp/controller.tgz
+RUN npm install --global --prefix /opt/switch/controller /tmp/controller.tgz \
+ && rm -f /tmp/controller.tgz \
+ && npm cache clean --force && rm -rf /data \
+ && /opt/switch/controller/bin/switch-agent-controller --version \
+ && cli=$(readlink -f /opt/switch/controller/bin/switch-agent-controller) && test -f "$cli" \
+ && node --optimize-for-size "$cli" --version && echo "controller starts with --optimize-for-size" \
+ && ps -o etime= -p 1 >/dev/null && echo "ps check ok"   # the saved-pid code needs ps
+# The controller runs under node --optimize-for-size, on its own command line only (not NODE_OPTIONS).
+# Root-owned, 0755: the box user cannot change it.
+COPY --chown=0:0 --chmod=0755 entrypoint.sh /usr/local/bin/switch-box
+USER 2000:2000

@@ -646,3 +646,17 @@ def test_an_enrolled_controller_gets_its_controller_and_no_code(tmp_path):
     bundle = make_gateway(cfg, store).bundle(prepared, machine)
     assert bundle["controllers"] == [{"key": SEAT, "id": CONTROLLER_ID, "enrollmentCode": None}]
     store.close()
+
+
+def test_the_ec2_reconciler_runs_only_vm_machines():
+    """A provisioned box (`backend: box`) is never synced or observed by the EC2 reconciler. A machine from an
+    older Core, with no `backend`, is an EC2 machine; an unknown value is left alone."""
+    from switch_hosted_controller.gateway import ec2_machines
+
+    vm = {"machine_id": "a", "backend": "vm"}
+    older = {"machine_id": "b"}
+    box = {"machine_id": "c", "backend": "box"}
+    unknown = {"machine_id": "d", "backend": "something-new"}
+    assert ec2_machines([vm, older, box, unknown]) == [vm, older]
+    # Fails closed: anything that isn't an object is dropped, never passed on.
+    assert ec2_machines([vm, "box", None, 7, ["vm"]]) == [vm]

@@ -11,6 +11,12 @@ from switch_core.trust.client import (
     TrustFinding,
 )
 
+
+async def _not_handed_in(_msg: object) -> bool:
+    """No post is in its room yet: these tests are not about second copies."""
+    return False
+
+
 # Switch Trust guardrails, enforced in CollaborationCore._handle_inbound_message
 # before a human-authored message becomes a room row (docs/design/switch-trust-guardrails-v1.md).
 
@@ -110,6 +116,7 @@ def _bridge(
         _bridge_id="bridge-1",
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
+        _already_handed_in=_not_handed_in,
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _adapter=adapter,

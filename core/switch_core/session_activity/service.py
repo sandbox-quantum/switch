@@ -44,6 +44,7 @@ from switch_core.db.stores.session_activity_store import (
 )
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.process_lease import LEASE_TTL
 from switch_core.sessions.contract import (
     ORPHANED_SUBAGENT_TEXT,
@@ -254,6 +255,18 @@ class AgentSessionActivityService:
                 if kind == "turn"
                 else None
             )
+            if (
+                kind == "turn"
+                and prior_status in TURN_ENDED
+                and status not in TURN_ENDED
+                and process_hosted_v2()
+            ):
+                # An ended turn stays ended: Core may have closed it for a box
+                # that went away (session_activity/restart_sweep.py), and that
+                # box's late report of the turn still running must not reopen
+                # its card. That sweep is hosted agents v2's, so with v2 off a
+                # turn's report is taken as before v2.
+                return False
             try:
                 moved = await self._activity.upsert(
                     db,

@@ -1,0 +1,12 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "NodeGateReadOnly",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeInstances", "ec2:DescribeSubnets"],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "__REGION__"}}
+    }
+  ]
+}

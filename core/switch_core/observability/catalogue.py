@@ -796,8 +796,9 @@ HEALTH_CHECK = _spec(
 # every value is a word from a fixed set mapped in `observability/hosted.py`,
 # never a report's text. The gauges are reported by one process only, the one
 # holding the hosted metrics advisory lock, so several Core processes don't
-# each report every machine. `backend` is the kind of cloud machine: `vm` for
-# every machine this server makes today.
+# each report every machine. `backend` is the kind of cloud machine, from the
+# machine row: `vm` for a v1 machine and `box` for a hosted agents v2 box. The
+# series with no `backend` are reported by boxes only.
 HOSTED_AGENTS = _spec(
     "switch.hosted.agents",
     "gauge",
@@ -814,9 +815,24 @@ HOSTED_AGENTS_STOPPED = _spec(
     "gauge",
     "{agent}",
     "Agents on cloud machines that are crashed or failed, by reason: "
-    "`out_of_memory`, `crash_loop`, and any other reason `other`.",
+    "`out_of_memory`, `crash_loop`, and any other reason `other`. On a box, "
+    "an agent the memory guard holds counts as `out_of_memory`.",
     "reason",
     "backend",
+)
+HOSTED_AGENT_RESTARTS_10M = _spec(
+    "switch.hosted.agent_restarts_10m",
+    "gauge",
+    "{restart}",
+    "Agent restarts on hosted boxes in the last 10 minutes, summed over every "
+    "agent's reported count.",
+)
+HOSTED_AGENT_OOM_KILLS = _spec(
+    "switch.hosted.agent_oom_kills",
+    "gauge",
+    "{kill}",
+    "Out-of-memory kills of agents on hosted boxes, summed over every agent's "
+    "reported count.",
 )
 HOSTED_SESSIONS = _spec(
     "switch.hosted.sessions",
@@ -827,6 +843,21 @@ HOSTED_SESSIONS = _spec(
     "kind",
     "backend",
 )
+HOSTED_WAITING_FOR_ROOM = _spec(
+    "switch.hosted.waiting_for_room",
+    "gauge",
+    "{session}",
+    "Sessions on hosted boxes waiting for room to start, summed over every "
+    "agent's reported count.",
+)
+HOSTED_BOXES_VALVE_MEMORY = _spec(
+    "switch.hosted.boxes_valve_memory",
+    "gauge",
+    "{box}",
+    "Hosted boxes whose valve reports a memory problem: `unprotected` (it has "
+    "never read the box's memory) or `failing` (its readings fail).",
+    "state",
+)
 HOSTED_BOX_MEMORY_USED = _spec(
     "switch.hosted.box_memory_used",
     "histogram",
@@ -836,6 +867,43 @@ HOSTED_BOX_MEMORY_USED = _spec(
     "workspaces counts once). The max and p95 show the fullest machines.",
     "backend",
     bounds=(25.0, 50.0, 60.0, 70.0, 75.0, 80.0, 85.0, 90.0, 92.0, 95.0, 98.0),
+)
+HOSTED_BOX_ANON_MEMORY = _spec(
+    "switch.hosted.box_anon_memory",
+    "histogram",
+    "By",
+    "A hosted box's anonymous memory (`AnonPages`), per status report, where "
+    "the box sends it.",
+    bounds=tuple(float(2**n) for n in range(27, 36)),
+)
+HOSTED_GATEWAY = _spec(
+    "switch.hosted.gateway",
+    "gauge",
+    "{count}",
+    "The provider gateway on hosted boxes: `agents` whose login it fronts, "
+    "calls it `refused` since each controller started, and `capped_boxes` "
+    "that reached their daily call cap.",
+    "kind",
+)
+HOSTED_BOX_EVICTIONS = _spec(
+    "switch.hosted.box_evictions",
+    "sum",
+    "{eviction}",
+    "Hosted boxes pushed off their machine, as the operator reports them.",
+)
+HOSTED_GUARD_STOPS = _spec(
+    "switch.hosted.guard_stops",
+    "sum",
+    "{stop}",
+    "Agents the memory guard stopped on hosted boxes: the rise in each box's "
+    "since-start count, so a controller restart reads as a reset, not a drop.",
+)
+HOSTED_VALVE_PARKS = _spec(
+    "switch.hosted.valve_parks",
+    "sum",
+    "{session}",
+    "Sessions the box valve parked on hosted boxes: the rise in each box's "
+    "since-start count, so a controller restart reads as a reset, not a drop.",
 )
 HOSTED_BOXES_REPORTING = _spec(
     "switch.hosted.boxes_reporting",
@@ -875,6 +943,14 @@ HOSTED_RECONCILER_SILENCE = _spec(
     "service (its machine list poll or an observation), counted from the "
     "process's start until it first hears. Each process reports its own: the "
     "minimum over pods is how long the reconciler has been silent.",
+)
+HOSTED_ALERTS_OPEN = _spec(
+    "switch.hosted.alerts_open",
+    "gauge",
+    "{alert}",
+    "Operator alerts open now, by condition. No target: the "
+    "box, machine or service is on the operator's Alerts tab, never here.",
+    "condition",
 )
 HOSTED_PROVIDER_LOGIN_PROBLEMS = _spec(
     "switch.hosted.provider_login_problems",
@@ -955,8 +1031,12 @@ CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "sum",
     "{refusal}",
     "Controller credentials refused with a 401, by reason code and kind of "
-    "route (`agent`, `management`, `controller`, `hosted_controller` or "
-    "`other`), never the path or any part of the credential.",
+    "route (`agent`, `management`, `controller`, `hosted_controller`, "
+    "`hosted_provisioner`, `hosted_operator` or `other`), never the path or "
+    "any part of the credential. With hosted agents v2 on, also `locked_out` "
+    "for a request refused while its address is locked out, and "
+    "`lockout_started` each time an address is locked out for repeated "
+    "refusals.",
     "reason",
     "route",
 )
@@ -1048,12 +1128,22 @@ CATALOGUE: dict[str, MetricSpec] = {
         HEALTH_CHECK,
         HOSTED_AGENTS,
         HOSTED_AGENTS_STOPPED,
+        HOSTED_AGENT_RESTARTS_10M,
+        HOSTED_AGENT_OOM_KILLS,
         HOSTED_SESSIONS,
+        HOSTED_WAITING_FOR_ROOM,
+        HOSTED_BOXES_VALVE_MEMORY,
         HOSTED_BOX_MEMORY_USED,
+        HOSTED_BOX_ANON_MEMORY,
+        HOSTED_GATEWAY,
+        HOSTED_BOX_EVICTIONS,
+        HOSTED_GUARD_STOPS,
+        HOSTED_VALVE_PARKS,
         HOSTED_BOXES_REPORTING,
         HOSTED_BOXES_EXPECTED,
         HOSTED_MACHINE_EVENTS,
         HOSTED_RECONCILER_SILENCE,
+        HOSTED_ALERTS_OPEN,
         HOSTED_PROVIDER_LOGIN_PROBLEMS,
         HOSTED_PROVISION_SECONDS,
         HOSTED_DISK_USED,

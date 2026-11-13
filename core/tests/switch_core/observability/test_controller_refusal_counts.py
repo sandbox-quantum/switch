@@ -77,7 +77,11 @@ async def test_the_hosted_controller_services_wrong_token_is_counted(
 
     settings = SimpleNamespace(token=SimpleNamespace(get_secret_value=lambda: "t" * 32))
     for header in ({}, {"authorization": f"Bearer {CANARY}"}):
-        request = SimpleNamespace(headers=header)
+        # With hosted agents v2 on, the refusal also passes the address
+        # lockout, which reads the request's scope.
+        request = SimpleNamespace(
+            headers=header, scope={"type": "http", "method": "GET"}
+        )
         session = controller_session(request, settings, None)  # type: ignore[arg-type]
         with pytest.raises(HTTPException) as refused:
             await session.__anext__()

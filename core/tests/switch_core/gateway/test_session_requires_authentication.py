@@ -155,6 +155,14 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # It opens a `tenant_session` per tenant `all_tenant_ids` names, and
     # answers 403 to anyone but the operator — see `list_every_workspace`.
     ("GET", "/operator/workspaces"),
+    # The box provisioner's two routes, on its own bearer
+    # (`provisioner_session`, refused everywhere else). A box belongs to a
+    # person, not a workspace, so a claim spans workspaces: it reads and writes
+    # only `server_audit_events` and `cloud_machines` (both global), and the
+    # gates' per-workspace reads each open their own `tenant_session`. Ids and
+    # codes only cross, and nothing per workspace is returned.
+    ("POST", "/hosted-provisioner/claim"),
+    ("POST", "/hosted-provisioner/actions/{action_id}/result"),
 }
 
 
@@ -260,6 +268,10 @@ def test_controller_credential_is_confined_to_the_controller_routes() -> None:
         ("GET", "/hosted-controller/machines"),
         ("POST", "/hosted-controller/machines/{machine_id}/prepare"),
         ("POST", "/hosted-controller/machines/{machine_id}/observation"),
+        # The cluster report. Node names, zones, memory shares and the
+        # listed services' copies, nothing per tenant; the body is strict and
+        # capped at 64 KiB, and nothing in it is echoed back.
+        ("POST", "/hosted-controller/cluster"),
     }
 
 

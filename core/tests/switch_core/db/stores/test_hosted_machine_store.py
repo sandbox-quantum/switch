@@ -961,3 +961,78 @@ async def test_only_a_held_machine_can_be_released(factory):
     )
     with pytest.raises(CloudMachineConflict, match="not stopped by an administrator"):
         CloudMachineStore().admin_release(machine, datetime.now(UTC))
+
+
+@pytest.mark.parametrize("stop_reason", ["paused", "turned_off"])
+async def test_an_administrator_s_stop_replaces_a_pause_or_turn_off(
+    factory, stop_reason
+):
+    """The pause and the turn-off are kept on the user and the member, which
+    every start and wake path still checks, so the hold can take the box's label."""
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason=stop_reason,
+        revision=3,
+    )
+    CloudMachineStore().admin_stop(machine, datetime.now(UTC))
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "stopped",
+        "admin",
+        4,
+    )
+
+
+@pytest.mark.parametrize("reason", ["idle", "owner", "paused", "turned_off"])
+async def test_no_other_stop_replaces_an_administrator_s(factory, reason):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=3,
+    )
+    CloudMachineStore().stop(machine, reason, datetime.now(UTC))
+    assert (machine.stop_reason, machine.revision) == ("admin", 3)
+
+
+async def test_a_held_machine_does_not_start(factory):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=3,
+    )
+    with pytest.raises(CloudMachineConflict) as raised:
+        CloudMachineStore().start(machine, datetime.now(UTC))
+    assert str(raised.value) == MACHINE_STOPPED_BY_ADMIN
+    assert (machine.desired_state, machine.stop_reason, machine.revision) == (
+        "stopped",
+        "admin",
+        3,
+    )
+
+
+async def test_clean_up_never_retains_a_held_machine(factory):
+    now = datetime.now(UTC)
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=3,
+    )
+    assert not await CloudMachineStore().retain_if_empty(
+        machine, [], retention_days=7, now=now
+    )
+    assert (machine.desired_state, machine.stop_reason, machine.retain_until) == (
+        "stopped",
+        "admin",
+        None,
+    )

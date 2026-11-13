@@ -148,8 +148,9 @@ and `multi-pod-dashboard.json` are not touched by it; import those by hand with
 `POST /api/v1/dashboard` if a deployment doesn't have them yet.
 
 `hosted-dashboard.json` is the hosted agents board for whoever is on call: the
-hosted alerts, then the main dashboard's hosted charts in reading order (a test
-keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
+hosted alerts, then the main dashboard's hosted charts in reading order, then
+its hosted agents v2 section, which stays empty unless `HOSTED_BOX_PROVISIONING`
+is on (a test keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
 dashboard JSON, then set `$service` and `$flint_env` to the deployment's, and
 replace `REPLACE-WITH-SERVICE` in the alerts panel's query with its service.
 
@@ -160,6 +161,7 @@ database query duration, pool hold and wait time (`switch.db.pool.hold.duration`
 `switch.db.pool.wait.duration`), platform call duration, rate-limit hold-backs,
 the agent buffer's scan length and duration, garbage-collection pauses
 (`switch.runtime.gc_pause`), cloud machine memory (`switch.hosted.box_memory_used`),
+hosted box anonymous memory (`switch.hosted.box_anon_memory`),
 and decision duration, model time, confidence
 and wait (`switch.decision.duration`, `switch.decision.model_time`,
 `switch.decision.confidence`, `switch.decision.wait`) are OTLP histograms, and the
@@ -339,22 +341,32 @@ alerts per pod, since one pod can exhaust its pool while the others idle.
 
 The `switch.hosted.*` metrics are reported only with the `hosted_agents` flag
 on, and come from what cloud machines already send Core: their controllers'
-status reports, and the hosted controller service's calls. Laptops and SSH
-hosts are never counted. No metric carries an id: every attribute is a word
-from a fixed set (`core/switch_core/observability/hosted.py`), and `backend`
-is the kind of machine (`vm` for every machine this server makes today).
+status reports, the hosted controller service's calls, and, for hosted agents
+v2 boxes, the operator's observations. Laptops and SSH hosts are never
+counted. No metric carries an id: every attribute is a word from a fixed set
+(`core/switch_core/observability/hosted.py`), and `backend` is the kind of
+machine: `vm` for a v1 machine, `box` for a hosted agents v2 box.
 
 - The gauges come from one Core process, the one holding the hosted metrics
   advisory lock, so several processes don't each report every machine. A
   report older than 3 minutes is left out rather than reported as it was.
+- Agents, stopped agents, sessions, machines expected and reporting, memory
+  and disk used, provider logins and provisioning time are reported for both
+  kinds, by `backend`. The rest (restarts, out-of-memory kills, waiting for
+  room, the valve, the gateway, evictions, guard stops and valve parks) are
+  boxes' only, with no `backend`.
 - A v1 machine reports no session state, so `switch.hosted.agents` always has
   `session:none` for it: chart it by `process`.
 - `switch.hosted.box_memory_used` is recorded once per machine report: a
   machine serving several workspaces sends its memory in each workspace's
   report, and only the first fresh one, by workspace id, is counted.
+- `switch.hosted.guard_stops` and `switch.hosted.valve_parks` are counts of the
+  rise in each box's since-start figures, so a controller restart reads as a
+  reset, not a drop.
 - **A silent machine** is `switch.hosted.boxes_reporting` below
   `switch.hosted.boxes_expected`. Machines stopped by their owner or for
-  idleness are not expected, so they don't set it off.
+  idleness, and boxes paused or turned off, are not expected, so they don't
+  set it off.
 - `switch.hosted.machine_events` counts cloud machine changes once committed,
   at the points where product telemetry reports the same change, so it counts
   whether or not product telemetry is on.
@@ -366,6 +378,11 @@ is the kind of machine (`vm` for every machine this server makes today).
   process's start until it first hears from the hosted controller service, so
   a reconciler that is down when Core restarts still shows as silent. Read the
   minimum over pods.
+  **On a server with hosted agents v2 on**, the box workers (the scaler and
+  the drain worker) poll the same machine list, so the gauge shows the
+  hosted controller service as a whole, not the v1 machines' reconciler
+  alone: it stays low while the box workers run, even if the v1 reconciler
+  has stopped. On a v1-only server it watches the v1 reconciler alone.
 - `switch.hosted.machine_events` with `event:failed` says why a machine
   failed: `not_scheduled`, `never_started`, `never_connected` (a first launch),
   `wake_failed` (a wake or restart that didn't come back), `owner_left`,
@@ -419,7 +436,10 @@ is the kind of machine (`vm` for every machine this server makes today).
   rather than logs.
 - `switch.controller.credential_refusals` counts refused controller
   credentials by reason code and kind of route only, never the client's
-  address or any part of the credential.
+  address or any part of the credential. With hosted agents v2 on it also
+  counts `locked_out` (a request refused while its address is locked out) and
+  `lockout_started`, and the cloud controller service's `hosted_provisioner`
+  and `hosted_operator` routes.
 - Credential refusals have two alerts. **The paging one** watches the bearer
   routes only (`agent`, `controller`, `hosted_controller`) for the reasons that
   mean a token was guessed (`invalid_credential`, `missing_credential`,
@@ -432,3 +452,8 @@ is the kind of machine (`vm` for every machine this server makes today).
   service isn't restarted for that (exit codes 3 and 6), so each revoked
   controller adds about one refusal: 30 is well above a normal day, and
   reached only by a large revoke or by someone trying credentials.
+- Two box alerts, low urgency: 3 or more memory guard stops, and 3 or more
+  evictions, in 30 minutes.
+- `switch.hosted.alerts_open` counts the operator alerts open now, by condition
+  only. Which box, machine or service is on the operator's Alerts tab, never
+  in Datadog.

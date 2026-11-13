@@ -347,6 +347,12 @@ def _elided_root(root_id: str) -> dict[str, Any]:
     }
 
 
+class AgentClientNotRunning(ValueError):
+    """The agent's client is not running in Core yet (just after a restart):
+    a post can be sent again shortly. A ValueError, as before, for every
+    caller that already handles one."""
+
+
 class AgentExistsError(Exception):
     """Raised when registering an agent whose name is already taken and the
     caller did not opt into re-registration via ``overwrite=True``."""
@@ -1972,11 +1978,16 @@ class AgentCore:
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
+        client_txn_id: str | None = None,
         ui: UISpec | None = None,
     ) -> SentMessage:
         """Send a message to a room. Returns its event_id and, when Switch
         Trust redacted or flagged it, what it did (`TrustFeedback`), so the
         agent learns its words changed.
+
+        `client_txn_id`, when given, makes the send idempotent for this agent:
+        a second send under the same key returns the first message's event id
+        and posts nothing.
 
         When thread_id is set the message is posted as a reply in that thread
         (the id is normalised to the thread root). `extra_content` carries
@@ -1995,7 +2006,13 @@ class AgentCore:
         room = await self.require_room_poster(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
-            raise ValueError("Agent client not running")
+            raise AgentClientNotRunning("Agent client not running")
+        if client_txn_id is not None:
+            # A resend of a post already made is that post: answered before
+            # Trust, so it is neither judged nor alerted on a second time.
+            already = await client.sent_under(room.transport_room_id, client_txn_id)
+            if already is not None:
+                return SentMessage(event_id=already, trust=None)
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
@@ -2022,6 +2039,7 @@ class AgentCore:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
             metered=True,
+            client_txn_id=client_txn_id,
         )
         if event_id is None:
             raise ValueError("Failed to send message")
@@ -2262,6 +2280,8 @@ class AgentCore:
         content: str,
         thread_id: str | None = None,
         target_roles: list[str] | None = None,
+        *,
+        client_txn_id: str | None = None,
         ui: UISpec | None = None,
     ) -> SendTargetedResult:
         """Send a message addressed to specific agents/users and/or roles.
@@ -2405,6 +2425,7 @@ class AgentCore:
             body,
             thread_id=thread_id,
             extra_content=room_wide_mention_content() if room_wide else None,
+            client_txn_id=client_txn_id,
             ui=ui,
         )
 

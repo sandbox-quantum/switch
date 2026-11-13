@@ -75,6 +75,43 @@ def test_each_route_names_the_flags_it_is_mounted_behind() -> None:
     assert routes["GET /gateway/service-connections"] == ["service_connections"]
 
 
+def test_routes_behind_the_hosted_v2_gate_name_the_hosted_v2_flag() -> None:
+    """With v2 off the gate answers 404 before any authentication, and
+    `/feature-flags` doesn't list `hosted_v2`, so the fast lane's session probe
+    counts these routes as not mounted rather than expecting a 401."""
+    routes = {
+        entry["route"]: entry["flags"]
+        for entry in json.loads(surface.render())["gatewayRoutes"]
+    }
+    for route in (
+        "GET /gateway/shared-cloud/overview",
+        "POST /gateway/shared-cloud/users/{user_keyed_id}/pause",
+        "GET /gateway/tenants/{tenant_id}/hosted-people",
+    ):
+        assert routes[route] == ["hosted_v2"], route
+    # A route with no gate keeps no flag, and a feature flag's route keeps only its own.
+    assert routes["POST /gateway/rooms"] == []
+    assert routes["POST /gateway/management/agents"] == ["agent_management"]
+
+
+def test_every_route_behind_the_gate_is_tagged() -> None:
+    """The same gates as core's route walk: every gateway route that depends on
+    either one names `hosted_v2`, and no other route does."""
+    app = surface.gateway_app(surface._config(frozenset(surface.KNOWN_FEATURE_FLAGS)))
+    gated = {
+        key
+        for key, route in surface._routes_by_key(app).items()
+        if surface._behind_hosted_v2(route)
+    }
+    tagged = {
+        entry["route"]
+        for entry in json.loads(surface.render())["gatewayRoutes"]
+        if "hosted_v2" in entry["flags"]
+    }
+    assert gated, "no route found behind the hosted v2 gate"
+    assert tagged == gated
+
+
 def test_operations_include_gated_groups() -> None:
     operations = json.loads(surface.render())["operations"]
     assert "list_rooms" in operations

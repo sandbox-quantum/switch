@@ -107,6 +107,7 @@ def _build_service(
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
+        client_txn_id: str | None = None,
         ui: UISpec | None = None,
     ) -> SentMessage:
         sent_bodies.append(body)

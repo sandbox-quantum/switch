@@ -20,6 +20,7 @@ from switch_core.agent_refusals import AgentRefused
 from switch_core.agent_templates import plan_template
 from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.operations.agent_management import (
+    WORKSPACE_NOT_ENABLED_MESSAGE,
     disable_agent_management,
     enable_agent_management,
 )
@@ -972,3 +973,29 @@ async def test_a_saved_template_run_by_an_agent_is_recorded_at_its_version(manag
     assert (install.source, install.revision) == ("saved", 1)
     assert resource.key == "helper"
     assert resource.fingerprints["instructions"] == fingerprint("Help.")
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_agent_management_isnt_on_for_creates_nothing(managed):
+    """Security (workspace gates v3): an agent in a workspace off `management_tenant_ids` can't run a template that
+    creates managed agents, whatever its capability says. "Off" is a refusal, naming the workspace, not another path
+    that creates them."""
+    enable_agent_management(
+        managed["management"], lambda _tenant_id: False, restricted=True
+    )  # type: ignore[arg-type]
+    template_id = await _stored(managed, TEAM)
+    before = await _agent_names(managed)
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(
+            managed["agent_id"],
+            run_template,
+            template_id=template_id,
+            inputs={"team": "red", "where": "laptop"},
+        )
+
+    assert {p.code for p in e.value.problems} == {"agent_management_off"}
+    assert WORKSPACE_NOT_ENABLED_MESSAGE in str(e.value)
+    assert managed["management"].created == []
+    assert await _agent_names(managed) == before
+    assert await _rooms(managed) == []

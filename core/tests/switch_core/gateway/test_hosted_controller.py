@@ -2,6 +2,7 @@
 one to boot (the controller it enrolled as, or a one-time code to enroll with),
 and recording what the operator controller observed of it."""
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ MACHINE_ITEM_KEYS = {
     "data_volume_id",
     "retain_until",
     "bundle_revision",
+    "backend",
 }
 
 
@@ -86,12 +88,25 @@ class FakeEnrollment:
 
     def __init__(self) -> None:
         self.minted: list[tuple[str, str]] = []
+        #: Codes a test has made unusable (expired or used), and codes Core retired.
+        self.dead: set[str] = set()
+        self.retired: list[str] = []
 
     async def machine_enrollment_code(
         self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
     ) -> str:
         self.minted.append((require_tenant_id(), workspace.id))
         return f"swce_synthetic-{len(self.minted)}"
+
+    async def machine_enrollment_code_live(
+        self, session: AsyncSession, code: str, now: datetime
+    ) -> bool:
+        return code not in self.dead and code not in self.retired
+
+    async def retire_machine_enrollment_code(
+        self, session: AsyncSession, code: str
+    ) -> None:
+        self.retired.append(code)
 
 
 @dataclass
@@ -348,6 +363,7 @@ async def test_routes_are_unavailable_without_controller_settings(controller_app
     assert response.json() == {"detail": "This server does not support cloud agents."}
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_machines_lists_every_live_machine_with_the_contract_keys(
     controller_app,
 ):
@@ -376,6 +392,7 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
         "data_volume_id": None,
         "retain_until": None,
         "bundle_revision": 1,
+        "backend": "vm",
     }
 
 
@@ -569,6 +586,82 @@ async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_ap
     assert (
         await workspace_of(app.factory, app.machine_id)
     ).enrollment_code_revision == 2
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_prepare_replaces_a_dead_code_and_retires_it(controller_app):
+    """A box whose first start comes after its code expired (or was used)
+    gets a fresh code at the same revision, never the dead one, and the old one
+    is retired so only one is live. A v2 box's (sweep row 16)."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, backend="box")
+    first = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert first["enrollment_code"] == "swce_synthetic-1"
+    again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert again["enrollment_code"] == "swce_synthetic-1"  # still live: the same
+    assert app.enrollment.retired == []
+    app.enrollment.dead.add("swce_synthetic-1")
+    fresh = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert fresh["enrollment_code"] == "swce_synthetic-2"
+    assert app.enrollment.retired == ["swce_synthetic-1"]
+    workspace = await workspace_of(app.factory, app.machine_id)
+    assert workspace.enrollment_code_revision == 1  # same revision, new code
+
+
+async def test_two_prepares_at_once_mint_one_code(controller_app):
+    """The machine's lock serialises them, so the
+    second finds the first's code live and returns it."""
+    app = controller_app
+    first, second = await asyncio.gather(
+        prepare(app.client, app.machine_id), prepare(app.client, app.machine_id)
+    )
+    assert first.status_code == second.status_code == 200
+    codes = {r.json()["controllers"][0]["enrollment_code"] for r in (first, second)}
+    assert codes == {"swce_synthetic-1"}
+    assert len(app.enrollment.minted) == 1
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_a_new_revision_retires_the_previous_unused_code(controller_app):
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, backend="box")
+    await prepare(app.client, app.machine_id)
+    await update_machine(app.factory, app.machine_id, revision=2)
+    await prepare(app.client, app.machine_id)
+    assert app.enrollment.retired == ["swce_synthetic-1"]
+
+
+@pytest.mark.parametrize(("backend", "cleared"), [("box", True), ("vm", False)])
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_the_listing_clears_a_spent_code_only_for_a_v2_box(
+    controller_app, monkeypatch, backend: str, cleared: bool
+):
+    """Sweep row 17: the once-a-minute clearing of stored codes that can no
+    longer enrol is a v2 box's; a v1 machine's copy is kept, as upstream. The
+    fake enrolment keeps no code rows, so a stored code reads as spent."""
+    from switch_core.gateway import hosted_controller
+
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, backend=backend)
+    await prepare(app.client, app.machine_id)
+    assert (await workspace_of(app.factory, app.machine_id)).enrollment_code_encrypted
+    monkeypatch.setattr(hosted_controller, "_codes_cleared_at", None)  # due now
+    await list_machines(app.client)
+    workspace = await workspace_of(app.factory, app.machine_id)
+    assert (workspace.enrollment_code_encrypted is None) is cleared
+
+
+async def test_v2_on_a_v1_machines_code_is_reused_as_upstream(controller_app):
+    """Fresh codes after expiry are a v2 box's: a v1 machine's stored code for the
+    revision is handed out as it is, and nothing retired."""
+    app = controller_app
+    first = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    app.enrollment.dead.add(first["enrollment_code"])
+    again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert again["enrollment_code"] == first["enrollment_code"]
+    await update_machine(app.factory, app.machine_id, revision=2)
+    await prepare(app.client, app.machine_id)
+    assert app.enrollment.retired == []
 
 
 async def test_prepare_names_the_controller_the_machine_enrolled_as(controller_app):
@@ -775,6 +868,7 @@ async def test_a_machine_is_retained_only_once_no_workspace_has_an_agent(
     assert before + timedelta(days=7) <= datetime.fromisoformat(item["retain_until"])
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_controller_observation_fixture_is_accepted(controller_app):
     app = controller_app
     body = fixture("controller_observation.json")
@@ -789,6 +883,52 @@ async def test_controller_observation_fixture_is_accepted(controller_app):
     assert saved.instance_id == body["instance_id"]
     assert saved.instance_type == body["instance_type"]
     assert saved.running_observed_at is not None
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_an_eviction_count_is_logged_once_and_nothing_else_changes(
+    controller_app, caplog
+):
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning", revision=1)
+    with caplog.at_level("WARNING", logger="switch_core.gateway.hosted_controller"):
+        plain = await observe(app.client, app.machine_id, state="running", revision=1)
+        counted = await observe(
+            app.client, app.machine_id, state="running", revision=1, evictions=2
+        )
+        zero = await observe(
+            app.client, app.machine_id, state="running", revision=1, evictions=0
+        )
+    # The field changes nothing in what Core records or answers.
+    assert plain == counted == zero
+    lines = [r.getMessage() for r in caplog.records if "pushed off" in r.getMessage()]
+    assert lines == [
+        f"Cloud machine {app.machine_id}: its box was pushed off its machine 2 time(s) since the last observation."
+    ]
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_an_eviction_is_remembered_as_visibility_v2s_box_moved(controller_app):
+    """On this cluster a box only moves by eviction, so the count marks the box as moved for
+    15 minutes (platform), and only a count above zero does."""
+    from switch_core.visibility.recent_moves import recent_moves
+
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning", revision=1)
+    await observe(app.client, app.machine_id, state="running", revision=1, evictions=0)
+    assert recent_moves.moved_at(app.machine_id, datetime.now(UTC)) is None
+    await observe(app.client, app.machine_id, state="running", revision=1, evictions=1)
+    moved = recent_moves.moved_at(app.machine_id, datetime.now(UTC))
+    assert moved is not None and datetime.now(UTC) - moved < timedelta(minutes=1)
+
+
+async def test_an_eviction_count_out_of_range_is_refused(controller_app):
+    app = controller_app
+    path = f"/hosted-controller/machines/{app.machine_id}/observation"
+    for evictions in (-1, 1_000_001, 1.5, [1]):
+        body = {"state": "running", "revision": 1, "evictions": evictions}
+        response = await app.client.post(path, headers=HEADERS, json=body)
+        assert response.status_code == 422
 
 
 async def test_observation_rejects_unknown_fields_and_codes(controller_app):
@@ -808,6 +948,38 @@ async def test_observation_rejects_unknown_fields_and_codes(controller_app):
         json={"state": "running", "revision": 1},
     )
     assert missing.status_code == 404
+
+
+@pytest.mark.parametrize("desired", ["retained", "deleted"])
+async def test_a_stop_report_never_moves_a_retained_or_deleted_desired_state(
+    controller_app, desired
+):
+    """The box scaler scales a retained or deleted box to 0 and reports
+    `stopping`, then `stopped`. Those reports set the observed state only:
+    what Core wants for the machine, its retention and its stop reason stay
+    exactly as they were."""
+    app = controller_app
+    retain_until = (
+        datetime.now(UTC) + timedelta(days=7) if desired == "retained" else None
+    )
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="ready",
+        desired_state=desired,
+        stop_reason=None,
+        retain_until=retain_until,
+        revision=2,
+    )
+    for observed in ("stopping", "stopped"):
+        item = await observe(app.client, app.machine_id, state=observed, revision=2)
+        assert item["state"] == observed
+        assert item["desired_state"] == desired
+    saved = await machine_of(app.factory, app.machine_id)
+    assert saved.desired_state == desired
+    assert saved.stop_reason is None
+    assert saved.revision == 2
+    assert (saved.retain_until is None) == (retain_until is None)
 
 
 async def test_stale_observation_is_ignored_unless_it_carries_an_error(
@@ -1191,6 +1363,28 @@ async def test_an_idle_machine_going_quiet_is_counted_either_way(
     assert stopped == [reason]
 
 
+@pytest.mark.parametrize(
+    ("agents", "reason"), [(1, "idle"), (0, "retained")], ids=["stopped", "released"]
+)
+async def test_an_idle_box_going_quiet_is_counted_as_a_box(
+    controller_app, machine_metrics, hosted_v2_on, agents, reason
+):
+    """A hosted agents v2 box stopped or released when idle counts under
+    `backend:box`, whichever way it goes quiet."""
+    app = controller_app
+    await _idle_ready(app, minutes=30, agents=agents)
+    await update_machine(app.factory, app.machine_id, backend="box")
+    await list_machines(app.client)
+    stopped = [
+        dict(point.attributes)
+        for payload in machine_metrics.collect()
+        if payload.name == "switch.hosted.machine_events"
+        for point in payload.numbers
+        if dict(point.attributes)["event"] == "stopped"
+    ]
+    assert stopped == [{"event": "stopped", "reason": reason, "backend": "box"}]
+
+
 async def test_a_machine_asleep_with_agents_stays_asleep(controller_app):
     app = controller_app
     await enrolled(app, agents=1)
@@ -1429,6 +1623,285 @@ async def test_a_stopped_machine_enrolls_its_revoked_controller_at_its_next_star
         assert await enroll_revoked_again(session, here, datetime.now(UTC)) is not None
         await session.commit()
     assert (await machine_of(app.factory, app.machine_id)).revision == before
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_the_operator_s_machine_list_says_when_machines_are_open_to_all(
+    controller_app,
+):
+    app = controller_app
+    fastapi_app = app.client._transport.app
+    listed = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert "open_to_all" not in listed.json()  # the fixture lists its workspace
+    fastapi_app.state.hosted_controller_settings = app.settings.model_copy(
+        update={"allowed_tenant_ids": None, "allowed_user_ids": None}
+    )
+    listed = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert listed.json()["open_to_all"] is True
+    # The owner's own view never carries how the server is configured.
+    owned = await app.client.get("/hosted-machines")
+    assert owned.status_code == 200
+    assert "open_to_all" not in owned.json()
+    fastapi_app.state.hosted_controller_settings = app.settings.model_copy(
+        update={"allowed_tenant_ids": None, "allowed_user_ids": [app.owner_id]}
+    )
+    listed = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert "open_to_all" not in listed.json()
+
+
+# ── The v1/v2 switch: with hosted agents v2 off, v1 as before v2 ─────────────
+
+
+@pytest.fixture
+def v2_off(monkeypatch):
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(hosted_v2, "_process_on", False)
+
+
+async def test_v2_off_stops_a_running_box_and_keeps_it(controller_app, v2_off):
+    app = controller_app
+    # A box with agents on it, as a live one has: an agentless machine asleep is
+    # retained by upstream's own idle sweep, whatever the switch says.
+    await enrolled(app, agents=1)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="running",
+    )
+    item = await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    # Asleep, not deleted or retained: a message wakes it once v2 is on again.
+    assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
+    assert item["desired_state"] == "stopped"
+
+
+async def test_v2_off_an_agentless_box_is_stopped_and_never_retained(
+    controller_app, v2_off
+):
+    """With v2 off a box is only kept stopped, its data kept: not retained or
+    expired, even with no agents on it. Retained, the box scaler (which scales
+    down only `stopped`) would leave it running."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="running",
+    )
+    for _ in range(2):  # and on the next pass too
+        await listed(app.client, app.machine_id)
+        machine = await machine_of(app.factory, app.machine_id)
+        assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
+        assert machine.retain_until is None
+
+
+async def test_v2_off_a_box_already_retained_is_stopped_and_kept(
+    controller_app, v2_off
+):
+    """A box retained before the switch went off is brought back to
+    stopped (the box scaler scales down only `stopped`), its retention dropped
+    so nothing expires while v2 is off."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="retained",
+        stop_reason=None,
+        retain_until=datetime.now(UTC) + timedelta(days=7),
+    )
+    for _ in range(2):  # and on the next pass too
+        await listed(app.client, app.machine_id)
+        machine = await machine_of(app.factory, app.machine_id)
+        assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
+        assert machine.retain_until is None
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_v2_on_a_retained_box_is_left_retained(controller_app):
+    """With v2 on, the listing never touches a retained box's retention:
+    it stays `retained`, with its `retain_until`, as before the switch."""
+    app = controller_app
+    until = datetime.now(UTC) + timedelta(days=7)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="retained",
+        stop_reason=None,
+        retain_until=until,
+    )
+    await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert (machine.desired_state, machine.stop_reason) == ("retained", None)
+    assert machine.retain_until == until
+
+
+async def test_v2_off_a_box_marked_for_deletion_is_left_as_it_is(
+    controller_app, v2_off
+):
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="deleted",
+    )
+    await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert machine.desired_state == "deleted"
+
+
+async def test_v2_off_leaves_a_v1_machine_running(controller_app, v2_off):
+    app = controller_app
+    await update_machine(
+        app.factory, app.machine_id, state="ready", desired_state="running"
+    )
+    await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert machine.backend == "vm" and machine.desired_state == "running"
+
+
+async def test_v2_off_no_box_boots_or_enrols(controller_app, v2_off):
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, backend="box")
+    response = await prepare(app.client, app.machine_id)
+    assert response.status_code == 409
+    assert app.enrollment.minted == []
+
+
+async def test_v2_off_a_v1_code_is_reused_as_before(controller_app, v2_off):
+    """Before v2, the stored code for a revision was handed out as
+    it was; with v2 off, still so, and nothing is retired."""
+    app = controller_app
+    first = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    app.enrollment.dead.add(first["enrollment_code"])
+    again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert again["enrollment_code"] == first["enrollment_code"]
+    assert app.enrollment.retired == []
+
+
+async def test_v2_off_the_listing_never_says_open_to_all(controller_app, v2_off):
+    app = controller_app
+    app.client._transport.app.state.hosted_controller_settings = (
+        app.settings.model_copy(
+            update={"allowed_tenant_ids": None, "allowed_user_ids": None}
+        )
+    )
+    listed_all = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert "open_to_all" not in listed_all.json()
+
+
+async def test_v2_off_the_owners_summary_is_as_before(controller_app, v2_off):
+    app = controller_app
+    owned = await app.client.get("/hosted-machines")
+    assert owned.status_code == 200, owned.text
+    (machine,) = owned.json()["machines"]
+    assert not {"room", "awake", "ai_calls_today", "backend"} & set(machine)
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_v2_on_the_owners_summary_names_the_backend(controller_app):
+    """Console tells a v2 box by it (`backend`), not by guessing."""
+    app = controller_app
+    owned = await app.client.get("/hosted-machines")
+    assert owned.status_code == 200, owned.text
+    (machine,) = owned.json()["machines"]
+    assert machine["backend"] == "vm"
+    await update_machine(app.factory, app.machine_id, backend="box")
+    (machine,) = (await app.client.get("/hosted-machines")).json()["machines"]
+    assert machine["backend"] == "box"
+
+
+async def test_v2_off_a_box_is_never_claimed_or_started(controller_app, v2_off):
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="idle",
+    )
+    ensured = await app.client.post("/hosted-machines/ensure")
+    started = await app.client.post(
+        f"/hosted-machines/{app.machine_id}/lifecycle",
+        json={"action": "start", "revision": 1},
+    )
+    machine = await machine_of(app.factory, app.machine_id)
+    assert ensured.status_code == 503
+    assert started.status_code == 409
+    assert machine.desired_state == "stopped" and machine.backend == "box"
+
+
+async def test_v2_off_a_status_report_keeps_only_the_counts_summary_beside_it(
+    controller_app, v2_off
+):
+    app = controller_app
+    controller_id, _ = await enrolled(app, agents=0)
+    await update_machine(app.factory, app.machine_id, heartbeat={"box": {"node": "n1"}})
+    await report_status(app, controller_id, sessions_running=0)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert "box" not in (machine.heartbeat or {})
+    # A counts-only summary is kept with v2 off too: fixed keys only, never
+    # an id or text.
+    reports = controller_reports(machine)
+    assert reports
+    for report in reports.values():
+        # A v1 machine's summary: the box-only counts are kept for a box only.
+        assert set(report["metrics"]) == {
+            "agents",
+            "stopped",
+            "sessions_running",
+            "sessions_max",
+            "login_problems",
+        }
+
+
+async def test_v2_off_a_message_never_wakes_a_box(controller_app, v2_off):
+    from switch_core.gateway.cloud_controllers import (
+        wake_controller_machine,
+        wake_lifted_machine,
+    )
+
+    app = controller_app
+    controller_id, _ = await enrolled(app, agents=0)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="idle",
+    )
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            await wake_controller_machine(
+                session, controller_id, datetime.now(UTC), "message"
+            )
+            assert (
+                await wake_lifted_machine(session, controller_id, datetime.now(UTC))
+                is None
+            )
+            await session.commit()
+    machine = await machine_of(app.factory, app.machine_id)
+    assert machine.desired_state == "stopped"
+    # A v1 machine asleep still wakes for a message, as before.
+    await update_machine(app.factory, app.machine_id, backend="vm")
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            await wake_controller_machine(
+                session, controller_id, datetime.now(UTC), "message"
+            )
+            await session.commit()
+    assert (await machine_of(app.factory, app.machine_id)).desired_state == "running"
 
 
 @pytest.fixture

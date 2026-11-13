@@ -226,6 +226,9 @@ def _bridge(
     async def noop(*_a: Any, **_kw: Any) -> None:
         return None
 
+    async def not_handed_in(_msg: Any) -> bool:
+        return False
+
     bridge = SimpleNamespace(
         _bridge_id="bridge-1",
         _adapter=_Adapter(),
@@ -243,6 +246,8 @@ def _bridge(
         _repair_placeholder_username=noop,
         _post_trust_notice=noop,
         _handle_text_answer=noop,
+        # Hosted agents v2's once-only check: no press is in its room yet.
+        _already_handed_in=not_handed_in,
         _record_message_map=noop,
         _session_factory=_session,
         _bridge_message_map_store=_Answers(),

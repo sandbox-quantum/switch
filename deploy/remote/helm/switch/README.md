@@ -445,3 +445,54 @@ controllers too. Set all three or none (the chart refuses to render otherwise);
 with none, controllers are told nothing and keep their version. To roll
 controllers back, point the three values at the previous release's package and
 upgrade.
+
+## Hosted agents v2
+
+Hosted agents v2 gives each person a box on a shared cluster instead of a
+cloud machine of their own. It's off by default: with
+`switchCore.hostedBoxProvisioning: false` the chart renders exactly as before,
+and switch-core runs v1. switch-core reads the setting once at start-up, so
+moving between v1 and v2 is a values change and a rollout, with no code change.
+
+```yaml
+switchCore:
+  hostedBoxProvisioning: true        # HOSTED_BOX_PROVISIONING
+  hostedControllerSecret: switch-hosted-controller
+  hostedLaunchCapacity: 20
+  hostedProvisionsPerMinute: 5       # optional; switch-core's default is 5
+  hostedBoxCeiling: 50               # optional; switch-core's default is 50
+  visibilityKeyedIdKeySecret: switch-visibility-key          # key: keyed-id.key
+  visibilityOperatorsSecret: switch-visibility-operators     # key: operators.json
+  featureFlags:
+    enabled: ["agent_management", "hosted_agents"]
+```
+
+- **Required with it on:** `hostedControllerSecret`, `hostedLaunchCapacity`
+  above 0, and the `hosted_agents` and `agent_management` feature flags (with
+  `secrets.controllerTokenSecret`, as above). The chart refuses to render
+  without them, because no box would ever be made.
+- **The Hosted area** (for Switch operators) needs the keyed-id key and the
+  operator list. Each Secret is mounted as a single file with mode 0400
+  (`subPath`), because switch-core refuses either one if it's a link or anyone
+  else can read it. A `subPath` mount doesn't follow changes to the Secret, so
+  restart switch-core after changing either. Without the key, the Hosted area's
+  pages say they're unavailable; without the operator list, nobody is an
+  operator.
+- **The box side** runs in the cluster, outside this chart: gVisor nodes, the
+  box provisioner and controller, and their permissions and network rules
+  (`deploy/hosted/k8s`). It needs cluster-admin to set up once, and boxes must
+  reach switch-core over HTTPS.
+- **`hosted_awake_budgets`** is an optional feature flag for awake-time budgets.
+  Leave it off until every box runs the split layout.
+- **`switchCore.extraEnv`** adds environment variables to switch-core for a
+  setting this chart has no value for (a list of `{name, value}` or
+  `{name, valueFrom}`). Never put a secret in `value`: it lands in the pod
+  spec, readable by anyone who can read the Deployment. Use
+  `valueFrom.secretKeyRef` instead. The v2 settings the chart sets
+  (`HOSTED_BOX_PROVISIONING`, `HOSTED_PROVISIONS_PER_MINUTE`,
+  `HOSTED_BOX_CEILING`, `VISIBILITY_*`) are refused in `extraEnv`: set their
+  values instead.
+
+**Rolling back** to a release from before hosted agents v2: an older
+switch-core won't start on the upgraded database, so restore the database
+backup taken before the upgrade, then roll the release back.

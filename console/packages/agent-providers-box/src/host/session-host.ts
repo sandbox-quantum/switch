@@ -1,0 +1,2006 @@
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  IMPORTED_TURN_PREFIX,
+  commandSchema,
+  eventBytes,
+  hasOwnActivity,
+  serverEventSchema,
+} from '@switch-console/shared/session-v1';
+import type {
+  Answer,
+  Attachment,
+  Command,
+  HostBody,
+  Origin,
+  Request,
+  ServerEvent,
+  Session,
+  Snapshot,
+} from '@switch-console/shared/session-v1';
+import { z } from 'zod';
+import { ProviderConversationUnavailableError } from '../adapter';
+import type {
+  ConversationHistoryTurn,
+  ProviderAdapter,
+  ProviderSessionStartInput,
+  TurnAttachment,
+} from '../adapter';
+import type { TokenUsage, TurnOutcome, UsageLimit, UserInputAnswers } from '../events';
+import type { ProviderRuntimeEvent } from '../events';
+import { ChatProjector, ITEM_PART_CHARACTERS, itemParts } from '../session-v1/chat-projector';
+import { ATTACHMENT_MIME_TYPES } from './attachments';
+import { Journal } from './journal';
+import { fitModelCatalog } from './model-catalog';
+import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
+import type { Redactions } from './redaction';
+import {
+  addRestartReplyRound,
+  RESTART_REPLY_ROUNDS,
+  restartReplyGivenUp,
+  restartReplyRounds,
+} from './restart-rounds';
+import { clearStopAsked, stopWasAsked } from './stop-asked';
+import { ToolDetailBuffer } from './tool-detail-buffer';
+import { ViewableReplica } from './viewable-replica';
+
+export const hostInboxRecordSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('accepted'), command: commandSchema }),
+  z.object({ type: z.literal('dispatched'), commandId: z.string() }),
+  z.object({
+    type: z.literal('finished'),
+    commandId: z.string(),
+    // What the turn spent; absent from a host that predates it, or when the provider said nothing.
+    usage: z
+      .array(
+        z.object({
+          model: z.string(),
+          inputTokens: z.number().int().nonnegative(),
+          outputTokens: z.number().int().nonnegative(),
+          cacheReadTokens: z.number().int().nonnegative(),
+          cacheWriteTokens: z.number().int().nonnegative(),
+        })
+      )
+      .optional(),
+  }),
+  z.object({ type: z.literal('native'), nativeSessionId: z.string() }),
+  z.object({ type: z.literal('stopped') }),
+  z.object({ type: z.literal('resumed'), operationId: z.string() }),
+  z.object({ type: z.literal('reset-started') }),
+  z.object({ type: z.literal('reset-completed') }),
+  z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
+  /** The host posts this turn's reply to its room itself: decided once, before posting. */
+  z.object({ type: z.literal('room-reply'), commandId: z.string() }),
+  /**
+   * The "I was restarted" line for a cut-off turn: `pending` before the first
+   * try, `sent` once Switch confirmed it, or once the room already showed it.
+   */
+  z.object({
+    type: z.literal('restart-reply'),
+    commandId: z.string(),
+    state: z.enum(['pending', 'sent']),
+  }),
+]);
+/**
+ * The notices that end a continued conversation's import, either way. Read
+ * back from the event journal rather than recorded in the inbox, whose
+ * records an older host could not read.
+ */
+const HISTORY_SETTLED = new Set(['HISTORY_IMPORTED', 'HISTORY_UNAVAILABLE']);
+type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
+export type HostSessionStart = {
+  session: Session;
+  resumeOperationId?: string;
+  authenticate?: () => Promise<void>;
+  input: ProviderSessionStartInput;
+  epochAuthority?: 'server';
+  resetEpoch?: () => Promise<string>;
+  stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
+  /**
+   * Posts to a room as the agent, raising when the post did not land. Absent
+   * where the host has no way to reach the agent's rooms.
+   */
+  replyToRoom?: (reply: RoomReply) => Promise<RoomReplyOutcome | void>;
+  /**
+   * Waits before each try of the "I was restarted" line after the first: about
+   * 30 s in all. Tests shorten it.
+   */
+  restartReplyRetryMs?: number[];
+  /** Service tokens to scrub from every event before it is recorded; none when absent. */
+  redactions?: Redactions;
+  /**
+   * The session continues a native conversation started outside Switch, so
+   * its transcript starts with that conversation's turns, and a conversation
+   * that cannot be resumed is never quietly replaced by a new one.
+   */
+  importHistory?: boolean;
+  /**
+   * Told each time the provider asks to run a connector's tool, before the
+   * request is published, so a notice it raises comes ahead of the card.
+   */
+  connectorApproval?: (connector: string) => void;
+};
+/** What the host posts for a turn a room message started that ended without the agent posting. */
+export type RoomReply = {
+  roomId: string;
+  threadId: string | null;
+  body: string;
+  /**
+   * Post only if the room doesn't already show this line from the agent, in
+   * this thread, after this message: a retry whose earlier try did post, with
+   * the answer lost on the way back, then posts nothing.
+   */
+  once?: { afterMessageId: string };
+  /**
+   * The turn this is the "I was restarted" line for. Where the watcher can,
+   * it posts the line through its controller under `restart:<turn>`, so
+   * Switch itself never posts it twice.
+   */
+  restartTurnId?: string;
+};
+/** `already` when a `once` reply was found in the room and not posted again. */
+export type RoomReplyOutcome = 'posted' | 'already';
+type PendingQuestion = { request: Request; options: Map<string, string> };
+/**
+ * What Switch recorded for a request: for an approval, `answer` is the chosen
+ * option; for questions, `answers` holds one answer per question. Both are
+ * null for an expiry.
+ */
+export type ApprovalOutcome = {
+  requestId: string;
+  kind: 'approval' | 'questions';
+  state: 'answered' | 'expired';
+  answer: string | null;
+  answers: Answer[] | null;
+  answeredBy: string | null;
+};
+
+/** Execution owner for a local-only session. Shared server leases are an external boundary. */
+export class HostedSession {
+  private readonly projector: ChatProjector;
+  private replica: ViewableReplica;
+  private readonly commands = new Map<string, Command>();
+  private readonly dispatched = new Set<string>();
+  private readonly finished = new Set<string>();
+  private readonly roomReplies = new Set<string>();
+  /** Turns someone asked to interrupt: their interrupted ending is wanted, and owes no restart line. */
+  private readonly interruptsAsked = new Set<string>();
+  /** This host's state root, where its supervisor marks a stop it asked for. */
+  private root = '';
+  /** Cut-off turns whose "I was restarted" line is owed or sent, by turn id. */
+  private readonly restartReplies = new Map<string, 'pending' | 'sent'>();
+  /** The turns whose line is being tried right now. */
+  private readonly restartReplyTurns = new Set<string>();
+  /** The line's tries under way, so a test (or a shutdown) can wait for them. */
+  private readonly restartReplyTries = new Set<Promise<void>>();
+  private historyImported = false;
+  private readonly postedTurns = new Set<string>();
+  /** Turns in which the agent did something through a Switch tool other than read. */
+  private readonly actedTurns = new Set<string>();
+  /**
+   * Turns started by a room message nobody tagged, which Switch routed here
+   * or following the conversation brought here.
+   */
+  private readonly unaskedTurns = new Set<string>();
+  /** Turns whose posts to the room were refused, with the last refusal. */
+  private readonly failedPosts = new Map<string, string>();
+  private readonly usage = new Map<string, TokenUsage[]>();
+  private readonly resumeOperations = new Set<string>();
+  private readonly queue: Command[] = [];
+  private readonly questions = new Map<string, PendingQuestion>();
+  private readonly listeners = new Set<(event: ServerEvent) => void>();
+  /** Recent reasoning, in memory only: never published, journaled or replayed. */
+  private readonly reasoningBuffer = new ReasoningBuffer();
+  /** Recent tool input and output, in memory only, under the same rules as reasoning. */
+  private readonly toolDetails = new ToolDetailBuffer();
+  private activeTurn: string | null = null;
+  private serial: Promise<unknown> = Promise.resolve();
+  private eventSerial: Promise<unknown> = Promise.resolve();
+  private publishing: Promise<unknown> = Promise.resolve();
+  private nativeId: string | null = null;
+  private fault: Error | null = null;
+  private shuttingDown = false;
+  private modelGeneration = 0;
+  private stopped = false;
+  private resetting = false;
+  private resetPending = false;
+  private decisionPending = false;
+  private decisionCode = 'RESET_OUTCOME_UNKNOWN';
+  private readonly unsubscribe: () => void;
+  private readonly timer: ReturnType<typeof setInterval>;
+
+  private constructor(
+    readonly config: HostSessionStart,
+    private readonly adapter: ProviderAdapter,
+    private readonly events: Journal<ServerEvent>,
+    private readonly inbox: Journal<RecordEntry>
+  ) {
+    // Every host from this one on runs `message.retry`; one built before says nothing, meaning no.
+    config.session.capabilities.retry = true;
+    const snapshot: Snapshot = {
+      contractVersion: 1,
+      throughSequence: 0,
+      session: structuredClone(config.session),
+      turns: [],
+      items: [],
+      requests: [],
+      commandStatuses: [],
+      notices: [],
+      nextPageToken: null,
+    };
+    // Replay old history before announcing the recovered generation.
+    const first = events.records.find((event) => event.body.type === 'session.upsert');
+    if (first?.body.type === 'session.upsert')
+      snapshot.session = structuredClone(first.body.session);
+    this.replica = new ViewableReplica(snapshot);
+    for (const event of events.records) {
+      if (
+        event.body.type === 'session.upsert' &&
+        event.body.session.epoch !== this.replica.snapshot().session.epoch
+      ) {
+        const prior = this.replica.snapshot();
+        prior.session = event.body.session;
+        this.replica = new ViewableReplica(prior);
+      }
+      this.replica.apply(event);
+      if (event.body.type === 'notice' && HISTORY_SETTLED.has(event.body.code))
+        this.historyImported = true;
+    }
+    for (const record of inbox.records) {
+      if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
+      if (record.type === 'dispatched') this.dispatched.add(record.commandId);
+      if (record.type === 'finished') {
+        this.finished.add(record.commandId);
+        if (record.usage) this.usage.set(record.commandId, record.usage);
+      }
+      if (record.type === 'native') this.nativeId = record.nativeSessionId;
+      if (record.type === 'stopped') this.stopped = true;
+      if (record.type === 'resumed') {
+        this.resumeOperations.add(record.operationId);
+        this.stopped = false;
+      }
+      if (record.type === 'reset-started') {
+        this.nativeId = null;
+        this.resetPending = true;
+      }
+      if (record.type === 'reset-completed') this.resetPending = false;
+      if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
+      if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
+      if (record.type === 'restart-reply') this.restartReplies.set(record.commandId, record.state);
+    }
+    this.projector = new ChatProjector(config.session, config.redactions ?? null);
+    this.projector.restore(this.replica.snapshot().items);
+    this.unsubscribe = adapter.subscribe((event) => {
+      if (event.sessionId !== config.session.sessionId) return;
+      this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
+      this.toolDetails.ingest(event, this.config.session.epoch);
+      // Process cleanup leaves this conversation available for recovery.
+      // An explicit session.stop is handled before shutdown and remains terminal.
+      if (
+        this.shuttingDown &&
+        !this.stopped &&
+        (event.type === 'session.exited' ||
+          (event.type === 'session.state.changed' && event.status === 'stopped'))
+      )
+        return;
+      this.eventSerial = this.eventSerial
+        .then(() => this.providerEvent(event))
+        .catch((error: unknown) => this.fail(error));
+    });
+    this.timer = setInterval(() => {
+      this.eventSerial = this.eventSerial
+        .then(() => this.publishAll(this.projector.flush(Date.now(), false)))
+        .catch((error: unknown) => this.fail(error));
+    }, 250);
+    this.timer.unref();
+  }
+
+  static async start(
+    root: string,
+    config: HostSessionStart,
+    adapter: ProviderAdapter
+  ): Promise<HostedSession> {
+    const events = await Journal.load(join(root, 'events.jsonl'), (input) =>
+      serverEventSchema.parse(input)
+    );
+    const inbox = await Journal.load(join(root, 'inbox.jsonl'), (input) =>
+      hostInboxRecordSchema.parse(input)
+    );
+    const host = new HostedSession(config, adapter, events, inbox);
+    host.root = root;
+    try {
+      if (config.resumeOperationId && !host.resumeOperations.has(config.resumeOperationId)) {
+        await inbox.append({ type: 'resumed', operationId: config.resumeOperationId });
+        host.resumeOperations.add(config.resumeOperationId);
+        host.stopped = false;
+      }
+      const recovered = events.records.length > 0;
+      // The last stop was asked for (the agent stopped, a new build, ...): a
+      // turn it cut off is still marked interrupted, but owes no line.
+      const stopAsked = await stopWasAsked(root);
+      // Cleared on every start, recovered or not: the mark speaks only for the stop just before this start.
+      await clearStopAsked(root);
+      if (recovered) {
+        const snapshot = host.replica.snapshot();
+        for (const request of snapshot.requests)
+          if (request.state === 'open' || request.state === 'submitting')
+            await host.publish({
+              type: 'request.settled',
+              requestId: request.requestId,
+              revision: request.revision + 1,
+              outcome: 'interrupted',
+              commandId: null,
+              result: null,
+            });
+        for (const turn of snapshot.turns)
+          if (turn.status === 'running' || turn.status === 'queued') {
+            await host.publish({ ...turn, status: 'interrupted' });
+            // The host died mid-turn (a crash, an out-of-memory kill, an
+            // upgrade): say so in the turn's room once, rather than leave the
+            // person waiting on a reply that will never come.
+            if (!stopAsked) host.tellRoomAfterRestart(turn.turnId);
+          }
+        // A line an earlier start owed but never confirmed: its turn already
+        // reads "interrupted", so the loop above no longer finds it.
+        for (const [turnId, state] of host.restartReplies)
+          if (state === 'pending') host.tellRoomAfterRestart(turnId);
+        for (const command of host.commands.values()) {
+          const status = host
+            .snapshot()
+            .commandStatuses.find((s) => s.commandId === command.commandId);
+          if (!status || status.status === 'accepted' || status.status === 'dispatched')
+            await host.publish({
+              type: 'command.status',
+              commandId: command.commandId,
+              status: 'unknown',
+              code: 'HOST_RESTARTED',
+              message: 'The host restarted before confirming the command. It will not resend it.',
+            });
+          if (command.body.type === 'message.send' && !host.finished.has(command.commandId))
+            await host.publish({
+              type: 'notice',
+              level: 'warning',
+              code: 'TURN_INTERRUPTED',
+              message: host.dispatched.has(command.commandId)
+                ? 'The host restarted during a turn. Its execution outcome is uncertain; the turn was not resent.'
+                : 'A queued turn was interrupted by the host restart and was not sent to the provider.',
+            });
+        }
+        if (host.stopped) {
+          host.config.session = { ...config.session, status: 'stopped' };
+          const stoppedSnapshot = host.replica.snapshot();
+          stoppedSnapshot.session = host.config.session;
+          host.replica = new ViewableReplica(stoppedSnapshot);
+          await host.publish({ type: 'session.upsert', session: host.config.session });
+          clearInterval(host.timer);
+          host.unsubscribe();
+          return host;
+        }
+        if (host.resetPending) {
+          await host.awaitResetDecision(
+            'RESET_OUTCOME_UNKNOWN',
+            'A reset was interrupted and its outcome is unknown. Start a fresh conversation to continue; earlier messages stay in the transcript.'
+          );
+          return host;
+        }
+        // A session whose provider never opened a conversation (its first
+        // start failed) has nothing to resume: it starts one below. One that
+        // continues a conversation resumes the copy it was started with.
+        if (!host.nativeId && host.providerAnswered())
+          throw new Error('Cannot recover a session without its native provider ID.');
+        if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
+        const next = host.replica.snapshot();
+        config.session.models = next.session.models;
+        config.session.context = next.session.context;
+        next.session = structuredClone(config.session);
+        host.replica = new ViewableReplica(next);
+      }
+      await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
+      if (config.importHistory) {
+        // Without the copy to resume, starting would open a new conversation
+        // in place of the one this session was made to continue.
+        const continued = config.input.resume?.nativeSessionId;
+        if (!continued)
+          throw new Error(
+            'This session continues a conversation started outside Switch, but no copy of it was recorded to resume.'
+          );
+        if (!host.historyImported) await host.importHistory(continued);
+      }
+      const native = await host.startProvider({
+        ...config.input,
+        ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
+      });
+      await host.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
+      host.nativeId = native.nativeSessionId;
+      await host.eventSerial;
+      void host
+        .refreshModels()
+        .catch(async (error: unknown) => {
+          if (host.shuttingDown) return;
+          await host.publish({
+            type: 'notice',
+            level: 'warning',
+            code: 'MODEL_CATALOG_UNAVAILABLE',
+            message: `Could not load provider models: ${String(error)}`,
+          });
+        })
+        .catch((error: unknown) => host.fail(error));
+      return host;
+    } catch (error) {
+      if (
+        error instanceof ProviderConversationUnavailableError &&
+        (host.nativeId || config.input.resume)
+      ) {
+        await host.eventSerial;
+        // Nothing the provider said is lost when it never answered (a session
+        // whose turns all failed while its CLI was signed out, say): start a
+        // new conversation rather than ask. Nor when the conversation it
+        // would resume never had a turn: a reset to a resting session opens
+        // one and parks before anything is said in it, so the provider never
+        // saved it. The reset already said the context was cleared. The copy
+        // of a conversation this session was started to continue was answered
+        // before Switch had it, so it counts as answered and as used; a fresh
+        // one it started since does not.
+        const resuming = host.nativeId ?? config.input.resume?.nativeSessionId;
+        const copy = config.importHistory ? config.input.resume?.nativeSessionId : undefined;
+        const resumingCopy = copy !== undefined && resuming === copy;
+        const answered = resumingCopy || host.providerAnswered();
+        const unused = !resumingCopy && host.conversationUnused();
+        if (!answered || unused) {
+          if (answered)
+            console.info(
+              `Session ${config.session.sessionId} starts a new conversation: the conversation it would resume had no turns.`
+            );
+          try {
+            await host.startFresh(!answered || !unused);
+            return host;
+          } catch (fresh) {
+            await host.fail(fresh);
+            await host.shutdown();
+            throw fresh;
+          }
+        }
+        await host.awaitResetDecision('NATIVE_CONVERSATION_UNAVAILABLE', error.message);
+        return host;
+      }
+      await host.fail(error);
+      await host.shutdown();
+      throw error;
+    }
+  }
+
+  /**
+   * Whether the provider has ever answered in this session. Turns copied in
+   * from a conversation this session continues are not its own answers.
+   */
+  private providerAnswered(): boolean {
+    const snapshot = this.replica.snapshot();
+    return hasOwnActivity({
+      items: snapshot.items.filter((item) => item.kind === 'assistant-message'),
+      turns: snapshot.turns.filter((turn) => turn.status === 'completed'),
+    });
+  }
+
+  /**
+   * Whether the provider conversation this session would resume never had a
+   * turn sent to it since it was opened: nothing was said in it, so there is
+   * nothing to lose by starting another.
+   */
+  private conversationUnused(): boolean {
+    let opened = false;
+    let used = false;
+    for (const record of this.inbox.records) {
+      if (record.type === 'native') {
+        opened = true;
+        used = false;
+      } else if (
+        record.type === 'dispatched' &&
+        this.commands.get(record.commandId)?.body.type === 'message.send'
+      )
+        used = true;
+    }
+    return opened && !used;
+  }
+
+  /**
+   * Start a new provider conversation in place of one that cannot be resumed,
+   * saying so unless `announce` is false (the reset before it already did).
+   */
+  private async startFresh(announce = true): Promise<void> {
+    const { resume: _resume, ...fresh } = this.config.input;
+    const native = await this.startProvider(fresh);
+    await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
+    this.nativeId = native.nativeSessionId;
+    await this.eventSerial;
+    void this.refreshModels()
+      .catch(async (error: unknown) => {
+        if (this.shuttingDown) return;
+        await this.publish({
+          type: 'notice',
+          level: 'warning',
+          code: 'MODEL_CATALOG_UNAVAILABLE',
+          message: `Could not load provider models: ${String(error)}`,
+        });
+      })
+      .catch((error: unknown) => this.fail(error));
+    if (!announce) return;
+    await this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'CONVERSATION_STARTED_FRESH',
+      message:
+        'Started a new provider conversation: the earlier one was never saved by the provider, so there was nothing to resume.',
+    });
+  }
+
+  /**
+   * Publishes the earlier turns of the native conversation this session
+   * continues, ahead of any of its own: the most recent ones, up to
+   * {@link HISTORY_ITEM_LIMIT} items, a batch to a journal write, under ids
+   * marked as imported (`IMPORTED_TURN_PREFIX`). Settled by the notice that
+   * ends it. An import a crash cut short runs again on the next start and
+   * publishes only what it had not; an item the conversation itself repeats
+   * is published once.
+   *
+   * A conversation that cannot be read, or whose turns cannot be recorded, is
+   * said in the transcript, once, and does not stop the session: resuming is
+   * what decides whether the conversation is there, and asks before replacing
+   * it.
+   */
+  private async importHistory(nativeSessionId: string): Promise<void> {
+    let turns: ConversationHistoryTurn[];
+    try {
+      if (!this.adapter.conversationHistory)
+        throw new Error(`${this.config.session.provider} cannot read its saved conversations.`);
+      turns = await this.adapter.conversationHistory(
+        nativeSessionId,
+        this.config.input.cwd,
+        this.config.input.env
+      );
+    } catch (error) {
+      await this.historyUnavailable(error);
+      return;
+    }
+    const shown = recentTurns(turns, HISTORY_ITEM_LIMIT);
+    // What an import a crash cut short already published stays as it was, and
+    // an id the conversation repeats is published the first time only:
+    // published again it could differ (a token scrubbed since, or another
+    // entry's text), and two versions of one revision are a conflict the
+    // transcript refuses.
+    const present = this.replica.snapshot();
+    const publishedTurns = new Set(present.turns.map((turn) => turn.turnId));
+    const publishedItems = new Set(present.items.map((item) => item.itemId));
+    const bodies: HostBody[] = [];
+    let shortened = false;
+    for (const turn of shown) {
+      const turnId = `${IMPORTED_TURN_PREFIX}${turn.turnId}`;
+      if (!publishedTurns.has(turnId)) {
+        publishedTurns.add(turnId);
+        bodies.push({ type: 'turn.upsert', turnId, status: 'completed', commandId: null });
+      }
+      for (const item of turn.items) {
+        // Scrubbed whole before it is cut, as the chat projector does, so no
+        // part carries a token in pieces that the scrub of each part would miss.
+        const scrubbed = this.config.redactions
+          ? this.config.redactions.text(item.text)
+          : item.text;
+        const characters = Array.from(scrubbed);
+        if (characters.length > HISTORY_TEXT_LIMIT) shortened = true;
+        const text =
+          characters.length > HISTORY_TEXT_LIMIT
+            ? `${characters.slice(0, HISTORY_TEXT_LIMIT - 1).join('')}…`
+            : scrubbed;
+        const title = this.config.redactions ? this.config.redactions.text(item.title) : item.title;
+        const parts = itemParts(
+          {
+            itemId: `${IMPORTED_TURN_PREFIX}${item.itemId}`,
+            turnId,
+            revision: 1,
+            kind: item.kind,
+            status: item.status,
+            title: Array.from(title).slice(0, ITEM_PART_CHARACTERS).join(''),
+            text: '',
+            attachments: [],
+            origin: null,
+          },
+          text,
+          1
+        );
+        for (const part of parts) {
+          if (publishedItems.has(part.itemId)) continue;
+          publishedItems.add(part.itemId);
+          bodies.push({ type: 'item.upsert', item: part });
+        }
+      }
+    }
+    const total = turns.reduce((count, turn) => count + turn.items.length, 0);
+    const kept = shown.reduce((count, turn) => count + turn.items.length, 0);
+    try {
+      // Batched to spare a flush to disk per event, and bounded in bytes too,
+      // so no one write is larger than a single event could already make it.
+      let batch: HostBody[] = [];
+      let batchBytes = 0;
+      for (const body of bodies) {
+        const bytes = Buffer.byteLength(JSON.stringify(body));
+        if (
+          batch.length &&
+          (batch.length >= HISTORY_BATCH || batchBytes + bytes > HISTORY_BATCH_BYTES)
+        ) {
+          await this.publishBatch(batch);
+          batch = [];
+          batchBytes = 0;
+        }
+        batch.push(body);
+        batchBytes += bytes;
+      }
+      if (batch.length) await this.publishBatch(batch);
+      await this.publish({
+        type: 'notice',
+        level: 'info',
+        code: 'HISTORY_IMPORTED',
+        message: `${kept < total ? `Above are the last ${kept} of the ${total} messages and tool calls in the conversation this session continues; the earlier ones are not shown here.` : 'Above is the conversation this session continues.'} It was copied when the session started, and the agent has all of it. The original is unchanged.${shortened ? ' Long messages are cut short here.' : ''}`,
+      });
+    } catch (error) {
+      await this.historyUnavailable(error);
+      return;
+    }
+    this.historyImported = true;
+  }
+
+  /**
+   * Says in the transcript why the earlier turns of the conversation this
+   * session continues are not shown, or not all of them, and settles the
+   * import so it is said once.
+   */
+  private async historyUnavailable(error: unknown): Promise<void> {
+    await this.publish({
+      type: 'notice',
+      level: 'warning',
+      code: 'HISTORY_UNAVAILABLE',
+      message: `Could not show the earlier turns of the conversation this session continues: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    this.historyImported = true;
+  }
+
+  private async startProvider(input: ProviderSessionStartInput) {
+    const [authentication, provider] = await Promise.allSettled([
+      Promise.resolve().then(() => this.config.authenticate?.()),
+      this.adapter.startSession(input),
+    ]);
+    if (authentication.status === 'rejected') throw authentication.reason;
+    if (provider.status === 'rejected') throw provider.reason;
+    return provider.value;
+  }
+
+  private async awaitResetDecision(code: string, message: string): Promise<void> {
+    this.decisionPending = true;
+    this.decisionCode = code;
+    this.queue.length = 0;
+    this.activeTurn = null;
+    this.config.session.status = 'error';
+    this.config.session.capabilities = {
+      ...this.config.session.capabilities,
+      reset: true,
+      modelChange: false,
+      compact: false,
+      attachmentMimeTypes: [],
+    };
+    const snapshot = this.replica.snapshot();
+    snapshot.session = structuredClone(this.config.session);
+    this.replica = new ViewableReplica(snapshot);
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+    await this.publish({ type: 'notice', level: 'error', code, message });
+  }
+
+  /** Reads how full the context window is and publishes it; unknown when the read fails. */
+  private async refreshContext(): Promise<void> {
+    if (!this.adapter.contextUsage) return;
+    const { sessionId, epoch } = this.config.session;
+    let usage: Awaited<ReturnType<NonNullable<ProviderAdapter['contextUsage']>>> = null;
+    try {
+      usage = await this.adapter.contextUsage(sessionId);
+    } catch (error) {
+      console.warn(`Could not read context usage for session ${sessionId}: ${String(error)}`);
+    }
+    if (this.shuttingDown || this.resetting || epoch !== this.config.session.epoch) return;
+    this.config.session.context = usage
+      ? {
+          usedTokens: Math.max(0, Math.round(usage.usedTokens)),
+          windowTokens:
+            usage.windowTokens && usage.windowTokens > 0 ? Math.round(usage.windowTokens) : null,
+          updatedAt: new Date().toISOString(),
+        }
+      : null;
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+  }
+
+  private async refreshModels(): Promise<void> {
+    const generation = ++this.modelGeneration;
+    const compact =
+      Boolean(this.adapter.compactSession) &&
+      (!this.adapter.canCompact || (await this.adapter.canCompact(this.config.session.sessionId)));
+    const modelsResult = this.adapter.listModels
+      ? await this.adapter.listModels(this.config.session.sessionId)
+      : undefined;
+    if (this.shuttingDown || generation !== this.modelGeneration) return;
+    this.config.session.capabilities.compact = compact;
+    if (!modelsResult) {
+      this.updateAttachmentCapabilities();
+      await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+      return;
+    }
+    let models = modelsResult;
+    const previousModels = this.replica.snapshot().session.models;
+    if (!models.length && previousModels?.length) {
+      models = previousModels;
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'MODEL_CATALOG_CACHED',
+        message:
+          'The provider did not return a model catalog on resume. Showing the last known choices; the provider will validate each change.',
+      });
+    }
+    const selected = this.config.input.model
+      ? { id: this.config.input.model.id, options: this.config.input.model.options ?? {} }
+      : null;
+    const fitted = fitModelCatalog(models, selected?.id ?? null);
+    this.config.session.models = fitted.models;
+    this.config.session.model = selected;
+    this.config.session.capabilities.modelChange = Boolean(
+      fitted.models.length && this.adapter.setModel
+    );
+    this.updateAttachmentCapabilities();
+    await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
+    if (fitted.omitted || fitted.optionsDropped)
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'MODEL_CATALOG_TRUNCATED',
+        message: fitted.omitted
+          ? `The provider offers ${models.length} models, more than a session can list: only ${fitted.models.length} are offered here, without their options. Narrow the providers it is signed in to, or pick a model in its own settings.`
+          : `The provider offers ${models.length} models: they are listed without their options, which would not fit. The selected model keeps its own.`,
+      });
+  }
+
+  private updateAttachmentCapabilities(): void {
+    const session = this.config.session;
+    const model = session.models?.find((entry) => entry.id === session.model?.id);
+    session.capabilities.attachmentMimeTypes = this.config.stageAttachments
+      ? ATTACHMENT_MIME_TYPES.filter(
+          (mime) => model?.imageInput !== false || !mime.startsWith('image/')
+        )
+      : [];
+  }
+
+  notice(message: string): Promise<void> {
+    return this.publish({ type: 'notice', level: 'error', code: 'ROOM_DELIVERY_FAILED', message });
+  }
+
+  /** A service the session reaches some other way than through Switch: said, not silent. */
+  serviceFallback(message: string): Promise<void> {
+    return this.publish({ type: 'notice', level: 'warning', code: 'SERVICE_FALLBACK', message });
+  }
+
+  roomDeliveryResumed(): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'ROOM_DELIVERY_RESUMED',
+      message: 'Room messages are reaching this session again.',
+    });
+  }
+
+  roomBacklogDelivered(count: number): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'ROOM_BACKLOG_DELIVERED',
+      message: `${count} room message(s) received while the conversation could not continue are now being delivered to the fresh conversation.`,
+    });
+  }
+
+  startingFreshForRoom(): Promise<void> {
+    return this.publish({
+      type: 'notice',
+      level: 'warning',
+      code: 'FRESH_START_FOR_ROOM',
+      message: `A room message arrived while the conversation could not continue (${this.decisionCode}). Starting a fresh conversation to answer it; earlier messages stay in the transcript.`,
+    });
+  }
+
+  /** A conversation that cannot continue without an explicit reset. */
+  get resetDecisionPending(): boolean {
+    return this.decisionPending;
+  }
+
+  /** Work the provider is doing outside any turn, such as background subagents. */
+  get backgroundWorkRunning(): boolean {
+    return this.adapter.hasBackgroundWork?.(this.config.session.sessionId) ?? false;
+  }
+
+  snapshot(): Snapshot {
+    return this.replica.snapshot();
+  }
+
+  /** The state without a copy, for the idle loop's checks; see `ViewableReplica.view`. */
+  view(): Readonly<Snapshot> {
+    return this.replica.view();
+  }
+  /**
+   * The reasoning and tool details still held for `turnIds` (all buffered
+   * turns when null), for this epoch.
+   */
+  reasoning(turnIds: string[] | null): HostReasoningList {
+    const epoch = this.config.session.epoch;
+    return {
+      ...this.reasoningBuffer.list(epoch, turnIds),
+      tools: this.toolDetails.list(epoch, turnIds),
+    };
+  }
+  replay(after: number): { events: ServerEvent[]; throughSequence: number } {
+    // Sequences only grow, so a caller already up to date gets nothing
+    // without a pass over the whole journal.
+    const last = this.events.records.at(-1);
+    if (!last || last.sequence <= after)
+      return { events: [], throughSequence: this.replica.view().throughSequence };
+    return {
+      events: structuredClone(this.events.records.filter((event) => event.sequence > after)),
+      throughSequence: this.replica.snapshot().throughSequence,
+    };
+  }
+
+  /** Hear every event as it is recorded, after it is on disk. Returns the unsubscribe. */
+  onPublished(listener: (event: ServerEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** What `turnId` spent, as its provider reported when it ended. */
+  usageOf(turnId: string): TokenUsage[] {
+    return this.usage.get(turnId) ?? [];
+  }
+
+  /**
+   * The agent did something through a Switch tool (posted, or acted in some
+   * other way): the running turn has answered, so the host has nothing to
+   * post for it.
+   */
+  agentActedInSwitch(): void {
+    if (this.activeTurn) this.actedTurns.add(this.activeTurn);
+  }
+
+  /** The agent's post to a room landed: a refused post earlier in the turn is not reported. */
+  agentPostedToRoom(): void {
+    if (this.activeTurn) this.postedTurns.add(this.activeTurn);
+  }
+
+  /**
+   * `commandId` carries a room message nobody tagged, which Switch routed to
+   * this agent or following the conversation brought to it: the agent may
+   * rightly stay silent on it, so a turn it finishes without posting tells
+   * the room nothing.
+   */
+  unaskedRoomTurn(commandId: string): void {
+    this.unaskedTurns.add(commandId);
+  }
+
+  /** A post to the room in the running turn was refused: why, the last one kept. */
+  agentPostFailed(reason: string): void {
+    if (this.activeTurn) this.failedPosts.set(this.activeTurn, reason);
+  }
+
+  /** Where the command that started `turnId` came from, if a command started it. */
+  originOf(turnId: string): Origin | null {
+    return this.commands.get(turnId)?.origin ?? null;
+  }
+
+  /**
+   * Apply what Switch recorded for one of this session's approval requests:
+   * a person's answer, or the request running out of time. Serialised with
+   * commands, since both settle the same requests. Returns false when the
+   * request is no longer open here — already answered another way, or
+   * resolved by the provider — which leaves nothing to apply.
+   */
+  applyApprovalOutcome(outcome: ApprovalOutcome): Promise<boolean> {
+    const result = this.serial.then(() => this.applyOutcome(outcome));
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
+  private async applyOutcome(outcome: ApprovalOutcome): Promise<boolean> {
+    if (this.shuttingDown) throw new Error('HOST_STOPPING');
+    const pending = this.questions.get(outcome.requestId);
+    const current = this.snapshot().requests.find((r) => r.requestId === outcome.requestId);
+    if (!pending || current?.state !== 'open') return false;
+    const content = pending.request.content;
+    if (content.kind !== outcome.kind)
+      throw new Error(
+        `INVALID_ANSWER: Switch recorded a ${outcome.kind} outcome for request ${outcome.requestId}, which asks for ${content.kind}.`
+      );
+    const sessionId = this.config.session.sessionId;
+    const commandId = `approval:${outcome.requestId}`;
+    let respond: () => Promise<void>;
+    let settled: Extract<HostBody, { type: 'request.settled' }>['outcome'];
+    let result: Extract<HostBody, { type: 'request.settled' }>['result'];
+    if (outcome.state === 'expired') {
+      // Declined rather than cancelled, and questions left unanswered: a
+      // cancel interrupts the whole turn, and nobody answering is not a reason
+      // to stop the agent's other work.
+      respond =
+        content.kind === 'approval'
+          ? () => this.adapter.respondToRequest(sessionId, outcome.requestId, 'decline')
+          : () => this.adapter.respondToUserInput(sessionId, outcome.requestId, {});
+      settled = 'expired';
+      result = null;
+    } else if (content.kind === 'approval') {
+      const option = content.options.find((x) => x.optionId === outcome.answer);
+      if (!option)
+        throw new Error(
+          `INVALID_ANSWER: Switch recorded option ${outcome.answer} for request ${outcome.requestId}, which it never offered.`
+        );
+      respond = () => this.adapter.respondToRequest(sessionId, outcome.requestId, option.decision);
+      const cancelled = option.decision === 'cancel';
+      // A person cancelling an approval interrupts the turn on purpose.
+      if (cancelled && this.activeTurn) this.interruptsAsked.add(this.activeTurn);
+      settled = cancelled ? 'cancelled' : 'answered';
+      result = cancelled ? null : { kind: 'approval', optionId: option.optionId };
+    } else {
+      const answers = outcome.answers;
+      if (answers === null)
+        throw new Error(
+          `INVALID_ANSWER: Switch recorded request ${outcome.requestId} as answered without any answers.`
+        );
+      checkQuestionAnswers(content, answers);
+      const provided = userInputAnswers(pending, answers);
+      respond = () => this.adapter.respondToUserInput(sessionId, outcome.requestId, provided);
+      settled = 'answered';
+      result = { kind: 'questions', answers };
+    }
+    // An expiry is marked submitting too, so the provider resolving the
+    // request as a result is not read as it resolving the request on its own.
+    const fromConsole = outcome.answeredBy?.startsWith('user:') ?? false;
+    await this.publish({
+      type: 'request.submitting',
+      requestId: outcome.requestId,
+      revision: current.revision,
+      commandId,
+      actorId: outcome.answeredBy ?? 'switch',
+      surface: fromConsole ? 'console' : 'switch-web',
+    });
+    try {
+      await respond();
+    } catch (error) {
+      await this.publish({
+        type: 'request.settled',
+        requestId: outcome.requestId,
+        revision: current.revision + 1,
+        outcome: 'provider-error',
+        commandId,
+        result: null,
+      });
+      throw error;
+    }
+    await this.publish({
+      type: 'request.settled',
+      requestId: outcome.requestId,
+      revision: current.revision + 1,
+      outcome: settled,
+      commandId,
+      result,
+    });
+    this.questions.delete(outcome.requestId);
+    return true;
+  }
+
+  command(input: Command): Promise<Snapshot['commandStatuses'][number]> {
+    const command = commandSchema.parse(input);
+    const result = this.serial.then(() => this.accept(command));
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
+  /** Resolves once every command and outcome queued before it has been taken or refused. */
+  barrier(): Promise<void> {
+    const result = this.serial.then(() => {});
+    this.serial = result;
+    return result;
+  }
+
+  /**
+   * A retry as the room message it repeats: the message's turn run again, under
+   * the retry's own id and tied to the same message, so nothing is posted twice
+   * and the new turn shows where the failed one did. Only a turn that ended
+   * without an answer is run again.
+   */
+  private retried(command: Command): Command {
+    if (command.body.type !== 'message.retry') return command;
+    const { messageId } = command.body;
+    const original = [...this.commands.values()]
+      .filter(
+        (each) =>
+          each.body.type === 'message.send' &&
+          each.origin.messageId === messageId &&
+          each.commandId !== command.commandId
+      )
+      .at(-1);
+    if (!original || original.body.type !== 'message.send')
+      throw new Error('NOT_FOUND: this session has no turn for that message to run again.');
+    const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
+    if (turn?.status !== 'error' && turn?.status !== 'interrupted')
+      throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
+    return { ...command, origin: original.origin, body: original.body };
+  }
+
+  private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
+    if (this.shuttingDown) throw new Error('HOST_STOPPING');
+    const { session } = this.snapshot();
+    if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
+    // Asked again (a double press, a reconnect replaying it): the answer it already has.
+    if (command.body.type === 'message.retry' && this.commands.has(command.commandId))
+      return this.status(command.commandId);
+    command = this.retried(command);
+    const previous = this.commands.get(command.commandId);
+    if (previous) {
+      if (!isDeepStrictEqual(previous, command)) throw new Error('IDEMPOTENCY_CONFLICT');
+      return this.status(command.commandId);
+    }
+    if (this.fault) throw this.fault;
+    if (command.epoch !== session.epoch) throw new Error('STALE_EPOCH');
+    const body = command.body;
+    if (this.decisionPending && body.type !== 'session.reset' && body.type !== 'session.stop')
+      throw new Error(
+        `UNSUPPORTED_CAPABILITY: ${this.decisionCode} — start a fresh conversation first.`
+      );
+    if (body.type === 'message.send') {
+      if (this.stopped) throw new Error('Session stop has been requested.');
+      if (body.delivery !== 'queue')
+        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      if (eventBytes(command) > 60 * 1024)
+        throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
+      if (body.attachments.length && !this.config.stageAttachments)
+        throw new Error('UNSUPPORTED_CAPABILITY: attachment staging is not configured.');
+      if (
+        body.attachments.some(
+          (file) => !session.capabilities.attachmentMimeTypes.includes(file.mimeType)
+        )
+      )
+        throw new Error(
+          'UNSUPPORTED_CAPABILITY: the selected provider model does not accept this attachment type.'
+        );
+      if (session.status !== 'ready' && session.status !== 'running')
+        throw new Error('Session is not ready.');
+    } else if (
+      body.type !== 'turn.interrupt' &&
+      body.type !== 'session.stop' &&
+      body.type !== 'session.reset' &&
+      body.type !== 'session.compact' &&
+      body.type !== 'session.model.set' &&
+      body.type !== 'request.answer'
+    )
+      throw new Error('UNSUPPORTED_CAPABILITY');
+    if (
+      body.type === 'session.reset' ||
+      body.type === 'session.model.set' ||
+      body.type === 'session.compact'
+    ) {
+      const decisionReset =
+        this.decisionPending && body.type === 'session.reset' && session.status === 'error';
+      if (
+        this.activeTurn ||
+        this.queue.length ||
+        (session.status !== 'ready' && !decisionReset) ||
+        this.snapshot().requests.some((r) => r.state === 'open' || r.state === 'submitting')
+      )
+        throw new Error('SESSION_BUSY: finish or interrupt the current turn first.');
+      if (
+        body.type === 'session.reset' &&
+        (!session.capabilities.reset ||
+          (this.config.epochAuthority === 'server' && !this.config.resetEpoch))
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: reset needs a generation authority.');
+      if (
+        body.type === 'session.compact' &&
+        (!session.capabilities.compact || !this.adapter.compactSession)
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: native compaction is unavailable.');
+      if (
+        body.type === 'session.model.set' &&
+        (!session.capabilities.modelChange || !this.adapter.setModel)
+      )
+        throw new Error('UNSUPPORTED_CAPABILITY: model changes are unavailable.');
+    }
+    if (body.type === 'session.model.set') {
+      const model = session.models?.find((entry) => entry.id === body.modelId);
+      if (
+        !model ||
+        Object.entries(body.options).some(([key, value]) => !model.options[key]?.includes(value))
+      )
+        throw new Error('UNSUPPORTED_MODEL: choose an offered model and options.');
+    }
+    if (body.type === 'request.answer') this.validateAnswer(command);
+    await this.inbox.append({ type: 'accepted', command });
+    this.commands.set(command.commandId, command);
+    await this.publish({
+      type: 'command.status',
+      commandId: command.commandId,
+      status: 'accepted',
+      code: null,
+      message: null,
+    });
+    try {
+      if (body.type === 'message.send') {
+        const turnId = command.commandId;
+        this.projector.bindTurn(turnId, {
+          commandId: command.commandId,
+          origin: command.origin,
+        });
+        await this.publish({
+          type: 'turn.upsert',
+          turnId,
+          commandId: command.commandId,
+          status: 'queued',
+        });
+        await this.publish({
+          type: 'item.upsert',
+          item: {
+            itemId: `user-${command.commandId}`,
+            turnId,
+            revision: 1,
+            kind: 'user-message',
+            status: 'completed',
+            title: '',
+            text: body.text,
+            attachments: body.attachments,
+            origin: command.origin,
+          },
+        });
+        this.queue.push(command);
+      } else if (body.type === 'session.compact') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        this.config.session.status = 'running';
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'COMPACTION_STARTED',
+          message: 'Compacting provider context…',
+        });
+        let timeout: ReturnType<typeof setTimeout>;
+        try {
+          await Promise.race([
+            this.adapter.compactSession!(session.sessionId),
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(
+                () => reject(new Error('Native compaction outcome is unknown after 180 seconds.')),
+                180000
+              );
+            }),
+          ]);
+          await this.eventSerial;
+          await this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'COMPACTION_COMPLETED',
+            message: 'Provider context compaction completed. The transcript remains available.',
+          });
+          this.config.session.status = 'ready';
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+          void this.refreshContext().catch((error: unknown) => this.fail(error));
+        } catch (error) {
+          await this.fail(error);
+          throw error;
+        } finally {
+          clearTimeout(timeout!);
+        }
+      } else if (body.type === 'session.model.set') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.adapter.setModel!(session.sessionId, {
+          id: body.modelId,
+          options: body.options,
+        });
+        await this.inbox.append({ type: 'model', id: body.modelId, options: body.options });
+        this.config.input.model = { id: body.modelId, options: body.options };
+        this.config.session.model = { id: body.modelId, options: body.options };
+        this.updateAttachmentCapabilities();
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+        await this.publish({
+          type: 'notice',
+          level: 'info',
+          code: 'MODEL_CHANGED',
+          message: `Model changed to ${body.modelId}.`,
+        });
+      } else if (body.type === 'session.reset') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.inbox.append({ type: 'reset-started' });
+        this.nativeId = null;
+        this.resetPending = true;
+        this.resetting = true;
+        this.modelGeneration++;
+        try {
+          if (this.adapter.hasSession(session.sessionId))
+            await this.adapter.stopSession(session.sessionId);
+          await this.eventSerial;
+          const epoch = this.config.resetEpoch ? await this.config.resetEpoch() : randomUUID();
+          this.config.session.epoch = epoch;
+          this.config.session.status = 'starting';
+          this.config.session.context = null;
+          const snapshot = this.snapshot();
+          snapshot.session = structuredClone(this.config.session);
+          this.replica = new ViewableReplica(snapshot);
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+          const { resume: _resume, ...fresh } = this.config.input;
+          const native = await this.startProvider(fresh);
+          await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
+          this.nativeId = native.nativeSessionId;
+          await this.eventSerial;
+          await this.inbox.append({ type: 'reset-completed' });
+          this.resetPending = false;
+          this.decisionPending = false;
+          await this.refreshModels();
+          await this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'CONTEXT_RESET',
+            message:
+              'Started a fresh provider conversation. Earlier messages remain in the transcript for reference.',
+          });
+        } catch (error) {
+          await this.fail(error);
+          throw error;
+        } finally {
+          this.resetting = false;
+        }
+      } else if (body.type === 'turn.interrupt') {
+        if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
+        this.interruptsAsked.add(body.turnId);
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.adapter.interruptTurn(session.sessionId);
+      } else if (body.type === 'session.stop') {
+        await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+        this.dispatched.add(command.commandId);
+        await this.inbox.append({ type: 'stopped' });
+        this.stopped = true;
+        for (const queued of this.queue)
+          await this.publish({
+            type: 'turn.upsert',
+            turnId: queued.commandId,
+            commandId: queued.commandId,
+            status: 'interrupted',
+          });
+        this.queue.length = 0;
+        if (this.adapter.hasSession(session.sessionId))
+          await this.adapter.stopSession(session.sessionId);
+        else {
+          this.config.session.status = 'stopped';
+          await this.publish({
+            type: 'session.upsert',
+            session: structuredClone(this.config.session),
+          });
+        }
+      } else await this.answer(command);
+      await this.publish({
+        type: 'command.status',
+        commandId: command.commandId,
+        status: 'applied',
+        code: null,
+        message: null,
+      });
+      if (body.type === 'message.send')
+        void this.runNext().catch((error: unknown) => this.fail(error));
+    } catch (error) {
+      if (body.type === 'session.model.set') await this.fail(error);
+      if (body.type === 'request.answer') {
+        const request = this.snapshot().requests.find((r) => r.requestId === body.requestId);
+        if (request?.state === 'submitting')
+          await this.publish({
+            type: 'request.settled',
+            requestId: request.requestId,
+            revision: request.revision + 1,
+            outcome: 'provider-error',
+            commandId: command.commandId,
+            result: null,
+          });
+      }
+      await this.publish({
+        type: 'command.status',
+        commandId: command.commandId,
+        status: this.dispatched.has(command.commandId) ? 'unknown' : 'rejected',
+        code: this.dispatched.has(command.commandId) ? 'OUTCOME_UNKNOWN' : 'PROVIDER_ERROR',
+        message: String(error),
+      });
+    }
+    return this.status(command.commandId);
+  }
+
+  async reject(command: Command, error: unknown): Promise<void> {
+    if (this.fault || this.commands.has(command.commandId)) throw error;
+    await this.inbox.append({ type: 'accepted', command });
+    this.commands.set(command.commandId, command);
+    await this.publish({
+      type: 'command.status',
+      commandId: command.commandId,
+      status: 'rejected',
+      code: 'COMMAND_REJECTED',
+      message: String(error),
+    });
+  }
+
+  status(commandId: string): Snapshot['commandStatuses'][number] {
+    const status = this.snapshot().commandStatuses.find((value) => value.commandId === commandId);
+    if (!status) throw new Error('NOT_FOUND: command not found.');
+    return status;
+  }
+
+  private async runNext(): Promise<void> {
+    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
+    const command = this.queue.shift();
+    if (!command || command.body.type !== 'message.send') return;
+    this.activeTurn = command.commandId;
+    try {
+      const attachments = command.body.attachments.length
+        ? await this.config.stageAttachments!(command.body.attachments)
+        : [];
+      if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+      await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+      this.dispatched.add(command.commandId);
+      await this.adapter.sendTurn({
+        sessionId: this.config.session.sessionId,
+        turnId: command.commandId,
+        text: command.body.text,
+        attachments,
+      });
+    } catch (error) {
+      await this.publish({
+        type: 'turn.upsert',
+        turnId: command.commandId,
+        commandId: command.commandId,
+        status: 'error',
+      });
+      await this.publish({
+        type: 'notice',
+        level: 'error',
+        code: 'TURN_FAILED',
+        message: String(error),
+      });
+      await this.replyIfUnposted(command.commandId, 'error', String(error), null);
+      this.activeTurn = null;
+      void this.runNext().catch((error: unknown) => this.fail(error));
+    }
+  }
+
+  /**
+   * Tells the room when a turn a room message started ended without the agent
+   * doing anything in Switch — a provider that failed on a quota or sign-in
+   * error, or an agent that finished with its answer, or a usage-limit
+   * notice, only in its final text — since the room would otherwise hear
+   * nothing about it (`unpostedReply`). A failed turn says so whenever no
+   * post landed. A turn that finished after the agent acted through a Switch
+   * tool says nothing, nor does one someone stopped, nor one that finished on
+   * a message nobody tagged (Switch routed it here, or
+   * following the conversation did), which the agent may rightly leave
+   * alone; one the host cut short on purpose (stopping, parking, a reset) is
+   * left alone too. A turn the provider stopped at its usage limit is told
+   * even when the agent had posted: the room would otherwise read that post
+   * as the agent's last word on the task.
+   *
+   * Decided once per turn and recorded before the post, so a restart never
+   * posts it twice. The post runs beside the session; one that fails is
+   * logged and noted in the transcript, and nothing else.
+   */
+  /**
+   * Records that a cut-off turn is owed its "I was restarted" line, then tries
+   * to post it after a short pause. A host that is itself stopping won't post
+   * (`replyAfterRestart` returns once shutting down); the next start finds the
+   * line pending and posts it then.
+   */
+  private async oweRestartReply(turnId: string): Promise<void> {
+    if (!this.config.replyToRoom || this.restartReplies.has(turnId)) return;
+    // Stopped on purpose by its supervisor: nothing restarted under the person.
+    if (this.root && (await stopWasAsked(this.root))) return;
+    const origin = this.commands.get(turnId)?.origin;
+    if (!origin?.roomId || !origin.messageId) return;
+    await this.inbox.append({ type: 'restart-reply', commandId: turnId, state: 'pending' });
+    this.restartReplies.set(turnId, 'pending');
+    this.roomReplies.add(turnId);
+    const pause = this.config.restartReplyRetryMs?.[0] ?? RESTART_REPLY_RETRY_MS[0];
+    setTimeout(() => {
+      if (!this.shuttingDown) this.tellRoomAfterRestart(turnId);
+    }, pause).unref?.();
+  }
+
+  /**
+   * Tell the room a turn was cut off by the host restarting, without holding
+   * up the rest of recovery: the tries can take about 2 minutes.
+   */
+  tellRoomAfterRestart(turnId: string): void {
+    // One round of tries per line at a time.
+    if (this.restartReplyTurns.has(turnId)) return;
+    this.restartReplyTurns.add(turnId);
+    const tries = this.replyAfterRestart(turnId).finally(() => {
+      this.restartReplyTries.delete(tries);
+      this.restartReplyTurns.delete(turnId);
+    });
+    this.restartReplyTries.add(tries);
+  }
+
+  /**
+   * Another round for every line still owed (`pending`) and not being tried
+   * now: the watcher's connection to Switch came back, and this start's tries
+   * may all have been lost to the outage. Lines given up on stay given up
+   * (`replyAfterRestart`). Answers how many were tried again.
+   */
+  retryOwedRestartReplies(): number {
+    let owed = 0;
+    for (const [turnId, state] of this.restartReplies)
+      if (state === 'pending' && !this.restartReplyTurns.has(turnId)) {
+        this.tellRoomAfterRestart(turnId);
+        owed++;
+      }
+    return owed;
+  }
+
+  /** Resolves once every "I was restarted" line under way has been sent or given up on. */
+  async restartRepliesSettled(): Promise<void> {
+    while (this.restartReplyTries.size > 0) await Promise.allSettled([...this.restartReplyTries]);
+  }
+
+  /**
+   * Tell the room a turn was cut off by the host restarting: once per turn.
+   *
+   * The journal records `pending` before the first try and `sent` after one
+   * Switch confirmed. Every try asks Switch to post only if the room doesn't
+   * already show the line (`once`), so a try that posted but whose answer was
+   * lost is not posted again, here or after another restart. A try that fails,
+   * including that check, posts nothing and is tried again: a few times over
+   * about 2 minutes, and again on the next start while still `pending`, for
+   * up to `RESTART_REPLY_ROUNDS` starts.
+   *
+   * Known limit: the room check matches the line's text in the turn's thread
+   * after the turn's message. Two turns in one thread cut off by the same
+   * restart get one line between them, not two.
+   */
+  async replyAfterRestart(turnId: string): Promise<void> {
+    const reply = this.config.replyToRoom;
+    if (!reply || this.restartReplies.get(turnId) === 'sent') return;
+    const origin = this.commands.get(turnId)?.origin;
+    if (!origin?.roomId || !origin.messageId) return;
+    if (this.root && restartReplyGivenUp(await restartReplyRounds(this.root), turnId)) return;
+    if (!this.restartReplies.has(turnId)) {
+      await this.inbox.append({ type: 'restart-reply', commandId: turnId, state: 'pending' });
+      this.restartReplies.set(turnId, 'pending');
+    }
+    // The turn ended here: its reply is ours to post, never `replyIfUnposted`'s too.
+    this.roomReplies.add(turnId);
+    const waits = [0, ...(this.config.restartReplyRetryMs ?? RESTART_REPLY_RETRY_MS)];
+    for (const [index, wait] of waits.entries()) {
+      // Unref'd: a wait of up to a minute must not hold a stopping host's process open.
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait).unref?.());
+      if (this.shuttingDown) return;
+      try {
+        await reply({
+          roomId: origin.roomId,
+          threadId: origin.threadId,
+          body: RESTARTED_REPLY,
+          once: { afterMessageId: origin.messageId },
+          restartTurnId: turnId,
+        });
+        await this.inbox.append({ type: 'restart-reply', commandId: turnId, state: 'sent' });
+        this.restartReplies.set(turnId, 'sent');
+        return;
+      } catch (error: unknown) {
+        console.warn(
+          `Could not tell room ${origin.roomId} that turn ${turnId} was cut off by a restart (try ${
+            index + 1
+          } of ${waits.length}): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    // Every try this start was lost. The line stays owed for the next start,
+    // up to RESTART_REPLY_ROUNDS starts, then it is given up on.
+    if (!this.root || this.shuttingDown) return;
+    const rounds = await addRestartReplyRound(this.root, turnId).catch(() => 0);
+    if (rounds >= RESTART_REPLY_ROUNDS)
+      console.warn(
+        `Gave up telling room ${origin.roomId} that turn ${turnId} was cut off by a restart, after ${rounds} starts' worth of tries.`
+      );
+  }
+
+  private async replyIfUnposted(
+    turnId: string,
+    outcome: TurnOutcome,
+    detail: string | null,
+    usageLimit: UsageLimit | null
+  ): Promise<void> {
+    const posted = this.postedTurns.delete(turnId);
+    const acted = this.actedTurns.delete(turnId);
+    const unasked = this.unaskedTurns.delete(turnId);
+    const failedPost = this.failedPosts.get(turnId) ?? null;
+    this.failedPosts.delete(turnId);
+    const reply = this.config.replyToRoom;
+    if (!reply || this.shuttingDown || this.stopped || this.resetting) return;
+    if (posted && usageLimit === null) return;
+    if (this.roomReplies.has(turnId)) return;
+    const origin = this.commands.get(turnId)?.origin;
+    if (!origin?.roomId || !origin.messageId) return;
+    const roomId = origin.roomId;
+    // A turn whose every post was refused ended in silence as far as the room
+    // could tell: it is told that, once, unless the turn failed and says so already.
+    const body =
+      usageLimit !== null
+        ? usageLimitReply(usageLimit, detail)
+        : failedPost !== null && outcome !== 'error'
+          ? postFailedReply(failedPost)
+          : (acted || unasked) && outcome === 'completed'
+            ? null
+            : unpostedReply(outcome, detail);
+    if (body === null) return;
+    await this.inbox.append({ type: 'room-reply', commandId: turnId });
+    this.roomReplies.add(turnId);
+    void reply({ roomId, threadId: origin.threadId, body })
+      .then(
+        () =>
+          this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'ROOM_REPLY_POSTED',
+            message:
+              usageLimit !== null
+                ? `The provider stopped the turn at its usage limit, so the host told room ${roomId}.`
+                : `The turn ended without the agent posting to room ${roomId}, so the host posted there for it.`,
+          }),
+        async (error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `Could not tell room ${roomId} that turn ${turnId} ended without a reply: ${reason}`
+          );
+          await this.publish({
+            type: 'notice',
+            level: 'warning',
+            code: 'ROOM_REPLY_FAILED',
+            message: `The turn ended without the agent posting to room ${roomId}, and the host could not post there for it: ${reason}`,
+          });
+        }
+      )
+      .catch((error: unknown) =>
+        console.warn(`Could not record the room reply for turn ${turnId}: ${String(error)}`)
+      );
+  }
+
+  private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
+    // A reset stops the old conversation on the way to a fresh one. That stop
+    // is not the session's: shown, it reads as the session ending.
+    if (
+      this.resetting &&
+      (event.type === 'session.exited' ||
+        (event.type === 'session.state.changed' && event.status === 'stopped'))
+    )
+      return;
+    if (event.type === 'session.exited') {
+      for (const request of this.snapshot().requests)
+        if (request.state === 'open' || request.state === 'submitting')
+          await this.publish({
+            type: 'request.settled',
+            requestId: request.requestId,
+            revision: request.revision + 1,
+            outcome: 'interrupted',
+            commandId: null,
+            result: null,
+          });
+      const cutOff: string[] = [];
+      for (const turn of this.snapshot().turns)
+        if (turn.status === 'running' || turn.status === 'queued') {
+          await this.publish({ ...turn, status: 'interrupted' });
+          cutOff.push(turn.turnId);
+        }
+      this.queue.length = 0;
+      this.activeTurn = null;
+      this.questions.clear();
+      // The provider went away mid-turn without anyone stopping the session:
+      // on a clean box stop the whole box gets SIGTERM at once, so the CLI
+      // exits before this host starts its own shutdown. Owe each cut-off turn
+      // its "I was restarted" line now, in the journal, so whichever start
+      // comes next posts it; if this host carries on, it posts it itself.
+      if (!this.stopped) for (const turnId of cutOff) await this.oweRestartReply(turnId);
+    }
+    if (event.type === 'session.started') {
+      this.nativeId = event.nativeSessionId;
+      await this.inbox.append({ type: 'native', nativeSessionId: event.nativeSessionId });
+    }
+    if (event.type === 'runtime.error' || event.type === 'runtime.warning')
+      await this.publish({
+        type: 'notice',
+        level: event.type === 'runtime.error' ? 'error' : 'warning',
+        code: 'PROVIDER_NOTICE',
+        message: event.message,
+      });
+    if (event.type === 'request.opened' || event.type === 'user-input.requested') {
+      const options = new Map<string, string>();
+      const request: Request = {
+        requestId: event.requestId,
+        turnId: event.turnId,
+        revision: 1,
+        state: 'open',
+        expiresAt: null,
+        content:
+          event.type === 'request.opened'
+            ? {
+                kind: 'approval',
+                title: event.title,
+                detail: event.detail ?? null,
+                options: event.options.map((option, index) => ({
+                  ...option,
+                  optionId: String(index),
+                })),
+              }
+            : {
+                kind: 'questions',
+                title: 'Question from the agent',
+                questions: event.questions.map((question) => ({
+                  questionId: question.id,
+                  title: question.header ?? '',
+                  prompt: question.question,
+                  multiSelect: question.multiSelect,
+                  allowCustomAnswer: question.allowCustomAnswer,
+                  options: question.options.map((option, index) => {
+                    const optionId = `${question.id}:${index}`;
+                    options.set(optionId, option.value);
+                    return {
+                      optionId,
+                      label: option.label,
+                      description: option.description ?? null,
+                    };
+                  }),
+                })),
+              },
+      };
+      this.questions.set(request.requestId, { request, options });
+      if (event.type === 'request.opened' && event.connector !== undefined)
+        this.config.connectorApproval?.(event.connector);
+      await this.publish({ type: 'request.opened', request });
+    }
+    if (event.type === 'request.resolved' || event.type === 'user-input.resolved') {
+      const request = this.snapshot().requests.find((r) => r.requestId === event.requestId);
+      if (request?.state === 'open')
+        await this.publish({
+          type: 'request.settled',
+          requestId: request.requestId,
+          revision: request.revision + 1,
+          outcome: 'interrupted',
+          commandId: null,
+          result: null,
+        });
+    }
+    if (
+      (event.type === 'item.started' ||
+        event.type === 'item.updated' ||
+        event.type === 'item.completed') &&
+      event.item.type === 'user_message'
+    )
+      return;
+    // A turn is finished, with what it spent, before anyone can read that it
+    // ended: its report to Switch is the one chance to count the spend.
+    if (event.type === 'turn.completed') {
+      await this.inbox.append({
+        type: 'finished',
+        commandId: event.turnId,
+        ...(event.usage.length > 0 ? { usage: event.usage } : {}),
+      });
+      this.finished.add(event.turnId);
+      if (event.usage.length > 0) this.usage.set(event.turnId, event.usage);
+    }
+    await this.publishAll(this.projector.ingest(event, Date.now()));
+    if (event.type === 'turn.completed') {
+      // Interrupted without anyone asking: the provider was killed under it,
+      // as when the whole box gets SIGTERM on a clean stop (the CLI reports its
+      // turn interrupted before this host shuts down). Owe the room its line.
+      if (
+        event.outcome === 'interrupted' &&
+        !this.interruptsAsked.has(event.turnId) &&
+        !this.stopped &&
+        !this.resetting
+      )
+        await this.oweRestartReply(event.turnId);
+      await this.replyIfUnposted(
+        event.turnId,
+        event.outcome,
+        event.message ?? null,
+        event.usageLimit ?? null
+      );
+      this.activeTurn = null;
+      void this.runNext().catch((error: unknown) => this.fail(error));
+      void this.refreshContext().catch((error: unknown) => this.fail(error));
+    }
+  }
+
+  private validateAnswer(command: Command): PendingQuestion {
+    if (command.body.type !== 'request.answer') throw new Error('INVALID_ANSWER');
+    const body = command.body;
+    const pending = this.questions.get(body.requestId);
+    const current = this.snapshot().requests.find((r) => r.requestId === body.requestId);
+    if (!pending || current?.state !== 'open') throw new Error('REQUEST_CLOSED');
+    if (current.revision !== body.expectedRevision) throw new Error('STALE_REVISION');
+    if (body.answer.kind !== pending.request.content.kind) throw new Error('INVALID_ANSWER');
+    if (body.answer.kind === 'approval' && pending.request.content.kind === 'approval') {
+      if (
+        !pending.request.content.options.some(
+          (x) => x.optionId === (body.answer as { optionId: string }).optionId
+        )
+      )
+        throw new Error('INVALID_ANSWER');
+    } else if (body.answer.kind === 'questions' && pending.request.content.kind === 'questions')
+      checkQuestionAnswers(pending.request.content, body.answer.answers);
+    return pending;
+  }
+
+  private async answer(command: Command): Promise<void> {
+    if (command.body.type !== 'request.answer') return;
+    const body = command.body;
+    const pending = this.validateAnswer(command);
+    await this.publish({
+      type: 'request.submitting',
+      requestId: body.requestId,
+      revision: body.expectedRevision,
+      commandId: command.commandId,
+      actorId: command.origin.actorId,
+      surface: command.origin.surface,
+    });
+    await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+    this.dispatched.add(command.commandId);
+    let cancelled = false;
+    if (body.answer.kind === 'approval' && pending.request.content.kind === 'approval') {
+      const option = pending.request.content.options.find(
+        (x) => x.optionId === (body.answer as { optionId: string }).optionId
+      )!;
+      cancelled = option.decision === 'cancel';
+      if (cancelled && this.activeTurn) this.interruptsAsked.add(this.activeTurn);
+      await this.adapter.respondToRequest(command.sessionId, body.requestId, option.decision);
+    } else if (body.answer.kind === 'questions') {
+      await this.adapter.respondToUserInput(
+        command.sessionId,
+        body.requestId,
+        userInputAnswers(pending, body.answer.answers)
+      );
+    }
+    await this.publish({
+      type: 'request.settled',
+      requestId: body.requestId,
+      revision: body.expectedRevision + 1,
+      outcome: cancelled ? 'cancelled' : 'answered',
+      commandId: command.commandId,
+      result: cancelled ? null : body.answer,
+    });
+    this.questions.delete(body.requestId);
+  }
+
+  private publishAll(bodies: HostBody[]): Promise<void> {
+    return bodies.reduce((tail, body) => tail.then(() => this.publish(body)), Promise.resolve());
+  }
+  private publish(body: ServerEvent['body']): Promise<void> {
+    return this.publishBatch([body]);
+  }
+  /** Publishes events in order, recorded with one write to the journal. */
+  private publishBatch(bodies: ServerEvent['body'][]): Promise<void> {
+    const pending = this.publishing.then(async () => {
+      const occurredAt = new Date().toISOString();
+      const events = bodies.map((body, index) => {
+        const event: ServerEvent = {
+          contractVersion: 1,
+          eventId: randomUUID(),
+          sessionId: this.config.session.sessionId,
+          sequence: this.events.records.length + 1 + index,
+          occurredAt,
+          // Scrubbed here, once: the journal, Console's view and the activity
+          // rows Switch shows on the bridges are all made from what is recorded.
+          body: this.config.redactions ? this.config.redactions.value(body) : body,
+        };
+        if (eventBytes(event) > 64 * 1024)
+          throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');
+        serverEventSchema.parse(event);
+        return event;
+      });
+      await this.events.appendAll(events);
+      for (const event of events) {
+        this.replica.apply(event);
+        for (const listener of this.listeners) listener(event);
+      }
+    });
+    this.publishing = pending.catch(() => {});
+    return pending;
+  }
+  private async fail(error: unknown): Promise<void> {
+    if (this.fault) return;
+    clearInterval(this.timer);
+    this.fault = error instanceof Error ? error : new Error(String(error));
+    this.config.session.status = 'error';
+    try {
+      try {
+        await this.publish({
+          type: 'session.upsert',
+          session: structuredClone(this.config.session),
+        });
+      } catch (upsertError) {
+        // The failure is recorded even when the session record is what could
+        // not be: without its model catalog it is a few hundred bytes.
+        console.error('SDK host could not record its session:', String(upsertError));
+        const { models: _models, ...session } = structuredClone(this.config.session);
+        await this.publish({ type: 'session.upsert', session });
+      }
+      await this.publish({
+        type: 'notice',
+        level: 'error',
+        code: 'HOST_ERROR',
+        message: this.fault.message,
+      });
+    } catch (persistenceError) {
+      console.error('SDK host could not persist its failure:', String(persistenceError));
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    clearInterval(this.timer);
+    if (this.adapter.hasSession(this.config.session.sessionId))
+      await this.adapter.stopSession(this.config.session.sessionId);
+    await this.serial;
+    await this.eventSerial;
+    await this.publishing;
+    this.unsubscribe();
+  }
+}
+
+/** How many items of a continued conversation's earlier turns a transcript starts with. */
+const HISTORY_ITEM_LIMIT = 500;
+/** How much of one imported item's text is shown; the agent still has all of it. */
+const HISTORY_TEXT_LIMIT = 4 * ITEM_PART_CHARACTERS;
+/** How many of a continued conversation's events are recorded with one journal write. */
+const HISTORY_BATCH = 100;
+/** And how much: no larger than one event may be, so no write is larger than one could be already. */
+const HISTORY_BATCH_BYTES = 64 * 1024;
+
+/**
+ * The most recent turns that together hold no more than `limit` items, oldest
+ * first. A latest turn larger than that on its own keeps its last `limit`.
+ */
+export function recentTurns(
+  turns: ConversationHistoryTurn[],
+  limit: number
+): ConversationHistoryTurn[] {
+  const kept: ConversationHistoryTurn[] = [];
+  let items = 0;
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index]!;
+    if (items + turn.items.length > limit) {
+      if (kept.length === 0) kept.push({ ...turn, items: turn.items.slice(-limit) });
+      break;
+    }
+    kept.push(turn);
+    items += turn.items.length;
+  }
+  return kept.reverse();
+}
+
+/**
+ * What the host posts for a room turn that ended without the agent doing
+ * anything in Switch. A failed turn says why, so a crash is not silent. A
+ * finished one says only that: its final text was never screened for the
+ * room, so none of it is posted. A turn someone stopped posts nothing: they
+ * know why it ended.
+ */
+/** What a room is told when the host restarted mid-turn. */
+/** The waits between tries of the "I was restarted" line: about 30 s in all. */
+/**
+ * The waits between tries of the "I was restarted" line within one start:
+ * about 2 minutes in all, so a room Switch can't reach for a minute or so still
+ * gets its line this start.
+ */
+export const RESTART_REPLY_RETRY_MS = [5_000, 10_000, 15_000, 30_000, 60_000];
+
+export const RESTARTED_REPLY =
+  'I was restarted while working on this and lost my reply. Please send it again.';
+
+export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
+  if (outcome === 'interrupted') return null;
+  if (outcome === 'completed') return 'I finished without replying.';
+  const hint = REQUEST_TOO_LARGE.test(detail ?? '')
+    ? 'Use !reset to start a fresh session, then send your message again. '
+    : '';
+  const reason = detail?.trim() ? `: ${hint}${cap(detail.trim(), 1000)}` : '.';
+  return `I finished without replying. The turn failed${reason}`;
+}
+
+const REQUEST_TOO_LARGE =
+  /exceeds [\d.]+ ?MB limit|request_too_large|request too large|prompt is too long/i;
+
+/**
+ * What the host posts for a turn the provider stopped at the account's usage
+ * limit: that the agent stopped, when it can carry on if the provider said in
+ * a form the adapter reads, and the provider's own notice, which often names
+ * the reset time in the account's local time.
+ */
+export function usageLimitReply(limit: UsageLimit, detail: string | null): string {
+  const resets = limit.resetsAt === null ? '' : ` It resets at ${formatResetTime(limit.resetsAt)}.`;
+  const notice = detail?.trim() ? `\n\nThe provider said: ${cap(detail.trim(), 1000)}` : '';
+  return `I stopped before finishing: my provider's usage limit was reached.${resets} Address me again after it resets to continue.${notice}`;
+}
+
+function formatResetTime(epochMs: number): string {
+  const iso = new Date(epochMs).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+/** What the host posts for a turn whose every post to the room was refused. */
+export function postFailedReply(reason: string): string {
+  return `I couldn't post my reply here: ${cap(reason.trim(), 1000)}`;
+}
+
+function cap(text: string, limit: number): string {
+  const characters = Array.from(text);
+  return characters.length <= limit
+    ? text
+    : `${characters
+        .slice(0, limit - 1)
+        .join('')
+        .trimEnd()}…`;
+}
+
+type QuestionsContent = Extract<Request['content'], { kind: 'questions' }>;
+
+/** Throws INVALID_ANSWER unless `answers` answers every question once, with what it offers. */
+function checkQuestionAnswers(content: QuestionsContent, answers: Answer[]): void {
+  if (
+    new Set(answers.map((a) => a.questionId)).size !== content.questions.length ||
+    answers.length !== content.questions.length
+  )
+    throw new Error('INVALID_ANSWER');
+  for (const question of content.questions) {
+    const answer = answers.find((a) => a.questionId === question.questionId);
+    if (!answer) throw new Error('INVALID_ANSWER');
+    const custom = Boolean(answer.customText?.trim());
+    if (custom && !question.allowCustomAnswer) throw new Error('INVALID_ANSWER');
+    if (
+      answer.selectedOptionIds.some((id) => !question.options.some((o) => o.optionId === id)) ||
+      new Set(answer.selectedOptionIds).size !== answer.selectedOptionIds.length
+    )
+      throw new Error('INVALID_ANSWER');
+    if (
+      question.multiSelect
+        ? !custom && !answer.selectedOptionIds.length
+        : Number(custom) + answer.selectedOptionIds.length !== 1
+    )
+      throw new Error('INVALID_ANSWER');
+  }
+}
+
+/** Checked answers, as the provider takes them: its own option values and any custom text. */
+function userInputAnswers(pending: PendingQuestion, answers: Answer[]): UserInputAnswers {
+  const provided: UserInputAnswers = {};
+  const content = pending.request.content;
+  for (const answer of answers) {
+    const values = answer.selectedOptionIds.map((id) => pending.options.get(id)!);
+    if (answer.customText?.trim()) values.push(answer.customText.trim());
+    const question =
+      content.kind === 'questions'
+        ? content.questions.find((q) => q.questionId === answer.questionId)!
+        : null;
+    provided[answer.questionId] = question?.multiSelect ? values : values[0];
+  }
+  return provided;
+}

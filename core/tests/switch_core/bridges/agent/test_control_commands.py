@@ -343,6 +343,7 @@ async def test_a_session_in_the_room_is_sent_the_command_through_its_controller(
         "messageId": "$reset-command",
     }
     assert frame["requesterName"] == "louisa"
+    assert "roomTold" not in frame
     assert frame["direct"] is False
     assert reply.bodies[-1].startswith("Resetting my session")
 
@@ -401,11 +402,88 @@ async def test_a_session_with_no_controller_connected_is_told_so(
     assert "controller is not connected" in reply.bodies[-1]
 
 
+@pytest.fixture
+def machine(monkeypatch: pytest.MonkeyPatch):
+    """The v1/v2 switch for `!reset` (sweep row 1): set v2 and what the agent's
+    controller runs on; records each database read of the machine."""
+    from contextlib import asynccontextmanager
+
+    from switch_core import hosted_v2
+
+    reads: list[str] = []
+
+    def _set(*, v2: bool, box: bool) -> list[str]:
+        monkeypatch.setattr(hosted_v2, "_process_on", v2)
+
+        @asynccontextmanager
+        async def _session(*_a: Any, **_k: Any):
+            yield object()
+
+        async def _v2_box(_session: Any, _tenant: str, controller_id: str) -> bool:
+            reads.append(controller_id)
+            return box
+
+        monkeypatch.setattr(commands, "tenant_session", _session)
+        monkeypatch.setattr(commands, "v2_box", _v2_box)
+        return reads
+
+    return _set
+
+
+@pytest.mark.parametrize(("v2", "box"), [(False, True), (False, False), (True, False)])
+@pytest.mark.parametrize("live", [True, False])
+@pytest.mark.asyncio
+async def test_a_reset_on_a_v1_machine_or_own_computer_keeps_upstreams_ack(
+    monkeypatch: pytest.MonkeyPatch, machine, live: bool, v2: bool, box: bool
+) -> None:
+    """Switch off (any controller), or on for a controller not on a box: the
+    upstream acknowledgement, no `roomTold`, and upstream's failure line. With
+    v2 off, nothing is read."""
+    reads = machine(v2=v2, box=box)
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+    registry = AgentConnectionRegistry()
+    registry.controllers.bind(
+        Binding(
+            agent_id="agent-1",
+            controller_id="controller-1",
+            tenant_id="tenant",
+            controller_name="machine",
+            running=True,
+        )
+    )
+    conn = registry.controllers.open(
+        controller_id="controller-1", tenant_id="tenant", resume_cursors={}
+    )
+    if live:
+        registry.controllers.attach_stream(conn)
+    client = _client(reply, command_level="unsupported", enqueue=[])
+    client._connections = registry
+
+    await _cmd_reset(client, SimpleNamespace(room_id="!m:server"), _event(), False)
+
+    assert reads == ([] if not v2 else ["controller-1"])
+    if live:
+        [(_agent, frame)] = conn.session_commands
+        assert "roomTold" not in frame
+        assert reply.bodies == [commands._RESET.ack]
+    else:
+        assert reply.bodies == [
+            "Could not send reset: the agent's controller is not connected to Switch."
+        ]
+
+
 @pytest.mark.parametrize("live", [True, False])
 @pytest.mark.asyncio
 async def test_a_controller_backed_agent_is_sent_the_command_on_its_controllers_stream(
-    monkeypatch: pytest.MonkeyPatch, live: bool
+    monkeypatch: pytest.MonkeyPatch, machine, live: bool
 ) -> None:
+    machine(v2=True, box=True)  # a v2 box's agent host says how its reset went
     reply = _Reply()
     monkeypatch.setattr(commands, "_reply", reply)
 
@@ -441,10 +519,14 @@ async def test_a_controller_backed_agent_is_sent_the_command_on_its_controllers_
         assert frame["sessionId"] is None
         assert frame["origin"]["roomId"] == "room-1"
         assert frame["body"] == {"type": "session.reset"}
-        assert reply.bodies[-1].startswith("Resetting my session")
+        # The box says how the reset went once it knows (an awake
+        # session, a resting one cleared, or one it couldn't reset), so Switch
+        # no longer claims one is under way when it has only relayed it.
+        assert frame["roomTold"] is False
+        assert reply.bodies == []
     else:
         assert conn.session_commands == []
-        assert "controller is not connected" in reply.bodies[-1]
+        assert reply.bodies == [commands.RESET_NOT_SENT]
 
 
 def test_an_interrupt_names_the_current_turn() -> None:

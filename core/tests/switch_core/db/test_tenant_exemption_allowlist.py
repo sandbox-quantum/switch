@@ -25,7 +25,8 @@ as functions rather than on a `TenantMemberStore`: whatever calls them —
 `gateway/tenants.py` included — reaches the exemption through this one
 module, never directly through a store any endpoint could declare for itself.
 
-**A raw `session_factory()` call** is the other surface. It inherits whatever
+**A raw factory call** (`session_factory()`, or a factory handed in as
+`factory`) is the other surface. It inherits whatever
 is ambient, which in background code is nothing at all, since the long-lived
 tasks deliberately unbind (see `tenant_context.no_tenant`). Such a session can
 now only read the tables that carry no policy — `users`, `oidc_identities`
@@ -178,6 +179,33 @@ _ALLOWED_MODULES = {
     # report a page of zeroes on a correctly configured deployment and look
     # perfectly healthy doing it.
     "switch_core.telemetry.snapshot",
+    #
+    # ── The operator's hosted visibility. Switch operators act
+    # for no tenant; each module below asks which workspaces are involved and
+    # then reads or writes each one's rows with that workspace bound
+    # (`tenant_session`). No row is read across tenants.
+    #
+    # An operator names a workspace only by its keyed id. `all_tenant_ids`
+    # turns that into a tenant by keying each id, and the workspace's copy of
+    # the audit entry is then read or written with that tenant bound.
+    "switch_core.visibility.audit_log",
+    # An operator's pause acts for no tenant. `tenants_of_user` names every
+    # workspace the paused person is in, for each one's admin copy of the entry
+    # and its controller revokes; `tenants_of_cloud_machine` names the workspaces
+    # a box serves. Each workspace's rows are then read and written with that
+    # workspace bound, the same shape as hosted_machine_store.
+    "switch_core.visibility.hosted_access",
+    # The operator's overview and Show name are server-wide, so no tenant
+    # is bound. `tenants_of_cloud_machine` names the workspaces a box serves.
+    # Each workspace's controller report is then read with that workspace
+    # bound (`tenant_session`), and only keyed ids leave.
+    "switch_core.visibility.read_views",
+    # An operator's restart acts for no tenant. `tenants_of_cloud_machine`
+    # names the workspaces a box serves, only so each workspace gets its admin
+    # copy of the restart, written with that workspace bound (`tenant_session`,
+    # in audit_log). Reached only from `require_operator` routes and the
+    # operator worker's bearer.
+    "switch_core.visibility.operator_actions",
 }
 
 # Every module allowed to open a session straight from the factory. Not short,
@@ -270,6 +298,12 @@ _RAW_SESSION_FACTORY_MODULES = {
     # their sign-in identities belong to no tenant. Its organization linking
     # binds the organization (`organization_session`).
     "switch_core.workos_linking",
+    # The operator's hold on a cloud machine (`switch-cloud-machine`), a
+    # command run where switch-core runs: it reads `users` and reads and
+    # writes `cloud_machines` and `server_audit_events`, all global
+    # (`rls_ddl.GLOBAL_TABLES`), with no tenant bound, since a machine serves
+    # its owner in every workspace.
+    "switch_core.cloud_machine_admin",
     # The operator's organization purge reads and deletes `users`,
     # `oidc_identities` and `cloud_machines`, all global
     # (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it touches
@@ -291,11 +325,79 @@ _RAW_SESSION_FACTORY_MODULES = {
     # deployment and service, shared by every tenant's sign-ins, so read at
     # boot and after the operator changes one, in a session bound to none.
     "switch_core.connections.app_credentials",
+    #
+    # ── The hosted alerts: raised and cleared as `server_audit_events` rows, decided
+    # from `cloud_machines` heartbeats, both tables with no tenant and no
+    # policy (`rls_ddl.GLOBAL_TABLES`). An alert is about a node, a box or a
+    # shared service, seen by Switch operators across the deployment, so there
+    # is no tenant to bind; each call is wrapped in `no_tenant()` to say so.
+    "switch_core.visibility.alerts",
+    # The operators' audit log: its unbound sessions touch only `server_audit_events`, a
+    # table with no tenant and no policy. Workspace copies use `tenant_session`.
+    "switch_core.visibility.audit_log",
+    # The operator list: reads only `users` (which listed operators also hold
+    # the admin role), a table with no tenant and no policy.
+    "switch_core.visibility.operators",
+    # Its unbound sessions touch only tables with no tenant and no policy:
+    # `users` (the pause mark, and the keyed-id resolve), `cloud_machines`
+    # (stopping and labelling the person's box) and `server_audit_events` (the
+    # expiry sweep). Anything in a workspace goes through `tenant_session`.
+    "switch_core.visibility.hosted_access",
+    # Box provisioning: its unbound sessions touch only `server_audit_events`
+    # (the provision requests, claims and results) and `cloud_machines` (the
+    # machine a box is made for), both tables with no tenant and no policy. A
+    # box belongs to a person, not a workspace; the gates' per-workspace reads
+    # go through the store's lookup and `tenant_session`.
+    "switch_core.visibility.box_provision",
+    #
+    # ── Factories handed in as `factory`. The check below only
+    # saw calls named `session_factory` until it was widened to bare
+    # `factory()`; these four were opening sessions that way all along.
+    #
+    # The hosted-machine store: `workspaces_on` opens one session per
+    # workspace a box serves, each with that workspace bound (`tenant_scope`),
+    # since the box belongs to none of them. It opens no unbound session.
+    "switch_core.db.stores.hosted_machine_store",
+    # The operator controller's routes: its credential's session is opened
+    # under `no_tenant()` and touches only `cloud_machines` and
+    # `server_audit_events` (the provision requests and the hosted alerts), tables
+    # with no tenant and no policy. Each workspace a box serves is read on a
+    # session with that workspace bound (`tenant_scope`).
+    "switch_core.gateway.hosted_controller",
+    # The provisioner routes: its credential's session is opened under
+    # `no_tenant()` and touches only `cloud_machines` and `server_audit_events`
+    # (the claim and the result, through box_provision). The pause and
+    # turn-off checks open their own sessions in hosted_access.
+    "switch_core.gateway.hosted_provisioner",
+    # The operator overview and Show name: its unbound sessions, each under
+    # `no_tenant()`, touch only `users` (the pause mark, and the person behind
+    # a raw id), `cloud_machines` (live boxes) and `server_audit_events` (the
+    # alerts, and the reveal count until the operator rate limits take it
+    # over). A workspace is read with that workspace bound (`tenant_session`).
+    "switch_core.visibility.read_views",
+    # The operator rate limits (RL): its unbound sessions, each under
+    # `no_tenant()`, touch only `server_audit_events`, a table with no tenant
+    # and no policy. They count operators' requested actions and reveals there,
+    # and raise and clear A11 there. They're opened only from operator routes
+    # and Core's A11 sweep. No workspace row is read or written.
+    "switch_core.visibility.operator_limits",
+    # The operator actions (restart): its unbound sessions, each under
+    # `no_tenant()`, touch only `cloud_machines` (the box's state) and
+    # `server_audit_events` (the action's request, steps and result, and the
+    # open provisions), tables with no tenant and no policy. Workspace copies
+    # go through `tenant_session` in audit_log.
+    "switch_core.visibility.operator_actions",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a
 # session with it.
 _FACTORY_ACCESSORS = {"create_session_factory", "get_session_factory"}
+
+# The other name a session factory goes by: modules handed one by dependency
+# injection call it `factory`. Matched exactly, so the engine, client and
+# transport factories (`_engine_factory()` and the like) are not mistaken for
+# sessions.
+_BARE_FACTORY_NAMES = {"factory", "_factory"}
 
 _LOOKUP_NAMES = {lookup.name for lookup in TENANT_LOOKUPS}
 
@@ -389,9 +491,11 @@ def _called_names(tree: ast.AST) -> set[str]:
 def _calls_session_factory(path: Path) -> bool:
     """Whether `path` opens a session straight from a factory.
 
-    Matches any call whose name ends in `session_factory`, which is how every
-    such call in this tree is spelled — `session_factory()`,
-    `self._session_factory()`, `self.session_factory()`.
+    Matches any call whose name ends in `session_factory` —
+    `session_factory()`, `self._session_factory()`, `self.session_factory()` —
+    or is exactly `factory` or `_factory`, the name a factory has when a route
+    or helper is handed one (`factory()`, `self._factory()`). Those are the
+    two ways a session factory is spelled in this tree.
 
     A name match rather than a resolved reference: there is no single
     definition to alias, since every service is handed its own factory. That
@@ -401,7 +505,8 @@ def _calls_session_factory(path: Path) -> bool:
     """
     tree = ast.parse(path.read_text(), filename=str(path))
     return any(
-        name.endswith("session_factory") and name not in _FACTORY_ACCESSORS
+        (name.endswith("session_factory") or name in _BARE_FACTORY_NAMES)
+        and name not in _FACTORY_ACCESSORS
         for name in _called_names(tree)
     )
 
@@ -627,6 +732,42 @@ class TestTheDetectorsCatchANewCaller:
             "        yield session\n"
         )
         assert _calls_session_factory(new_caller)
+
+    def test_a_factory_handed_in_as_factory_is_detected(self, tmp_path: Path) -> None:
+        """How the hosted routes and helpers are handed theirs. Missed until
+        the detector was widened, so it gets its own case."""
+        new_caller = tmp_path / "a_new_route_helper.py"
+        new_caller.write_text(
+            "async def read(factory):\n"
+            "    async with factory() as session:\n"
+            "        ...\n"
+        )
+        assert _calls_session_factory(new_caller)
+
+    def test_a_factory_held_on_self_as_factory_is_detected(
+        self, tmp_path: Path
+    ) -> None:
+        new_caller = tmp_path / "a_new_store.py"
+        new_caller.write_text(
+            "class Store:\n"
+            "    async def run(self):\n"
+            "        async with self._factory() as session:\n"
+            "            ...\n"
+        )
+        assert _calls_session_factory(new_caller)
+
+    def test_other_kinds_of_factory_are_not_sessions(self, tmp_path: Path) -> None:
+        """The engine, client and transport factories make no session, so the
+        widened match must not flag them."""
+        clean = tmp_path / "a_listener.py"
+        clean.write_text(
+            "class Listener:\n"
+            "    def start(self):\n"
+            "        engine = self._engine_factory()\n"
+            "        client = self._client_factory()\n"
+            "        return engine, client, transport_factory()\n"
+        )
+        assert not _calls_session_factory(clean)
 
     def test_handing_a_factory_back_is_not_opening_a_session(
         self, tmp_path: Path
