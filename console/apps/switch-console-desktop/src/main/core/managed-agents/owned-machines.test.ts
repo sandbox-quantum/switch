@@ -169,6 +169,14 @@ describe('ownedMachines', () => {
     });
     expect(cloud?.cloud).toBe(true);
   });
+
+  it('shows the cloud machine as Switch Cloud, whatever an older server named it', () => {
+    const [cloud] = ownedMachines([controller({ id: 'ec2', kind: 'ec2', name: 'Switch cloud' })], {
+      thisComputer: null,
+      sshHosts: [],
+    });
+    expect(cloud?.name).toBe('Switch Cloud');
+  });
 });
 
 describe('thisComputerReport', () => {

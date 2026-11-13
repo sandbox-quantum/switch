@@ -212,7 +212,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // The trigger has to say the host's name, not the value behind it: the value
   // for this machine is the sentinel "local", which is not what it is called.
   const runLocationLabel = isCloudRun
-    ? 'Switch cloud'
+    ? 'Switch Cloud'
     : isMachineRun
       ? serverMachine
         ? machineLabel(serverMachine)
@@ -805,7 +805,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               {cloudOffered && !cloudMachineListed && (
                 <SelectItem value="cloud" disabled={!cloudAvailable}>
                   <Cloud className="size-4 text-foreground-muted" />
-                  <span className="flex-1">Switch cloud</span>
+                  <span className="flex-1">Switch Cloud</span>
                   <span className="text-xs text-foreground-muted">
                     {cloudAvailable
                       ? cloudAsleep

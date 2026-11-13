@@ -117,7 +117,7 @@ OPERATION_LIST_LIMIT = 200
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
 
 # What a Switch cloud machine's controller is called, whatever enrolled it.
-CLOUD_MACHINE_NAME = "Switch cloud"
+CLOUD_MACHINE_NAME = "Switch Cloud"
 
 
 @dataclass(frozen=True)

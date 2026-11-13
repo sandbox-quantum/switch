@@ -36,7 +36,7 @@ export function AgentsSettingsPage() {
       <PageHeader
         sticky
         title="Agent providers"
-        description="Manage CLI agents and model configurations."
+        description="Configure the providers available for creating agents on this instance."
       >
         {/* <DefaultAgentSelector /> */}
         <div className="flex items-center justify-between gap-2">

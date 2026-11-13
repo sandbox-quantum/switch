@@ -63,7 +63,7 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
       <PageHeader
         sticky
         title="Devices"
-        description={`The devices that host your agents on ${server?.name ?? 'this server'}.`}
+        description="Devices that host your agents on Switch Rooms."
       >
         <div className="flex items-center justify-between gap-2">
           <ToggleGroup

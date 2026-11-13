@@ -297,7 +297,7 @@ class TestControllerMachines:
                 )
                 assert controller is not None
                 assert controller.kind == "ec2"
-                assert controller.name == "Switch cloud"
+                assert controller.name == "Switch Cloud"
             assert (
                 await _workspace(harness.session_factory, machine.id)
             ).controller_id == (enrolled["controller_id"])

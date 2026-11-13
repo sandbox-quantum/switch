@@ -82,7 +82,7 @@ export function lastContact(machine: MachineDetail, now: Date): string | null {
 export function machineKindLabel(machine: Pick<MachineDetail, 'local' | 'cloud' | 'kind'>): string {
   if (machine.local?.kind === 'this-computer') return 'This computer';
   if (machine.local?.kind === 'ssh-host') return 'SSH host';
-  if (machine.cloud) return 'Switch cloud';
+  if (machine.cloud) return 'Switch Cloud';
   if (machine.kind === 'console') return 'Computer';
   return 'Standalone machine';
 }
@@ -336,7 +336,7 @@ export function emptyCategoryText(
 ): string {
   switch (category) {
     case 'cloud':
-      return 'Your Switch cloud device shows here once you create an agent with Switch cloud as its run location.';
+      return 'Your Switch Cloud device shows here once you create an agent with Switch Cloud as its run location.';
     case 'computer':
       return 'This computer joins when you run a managed agent on it, and another computer once it is enrolled with Add device.';
     case 'ssh-host':

@@ -44,7 +44,7 @@ export function ApiKeysSettingsPage() {
       <PageHeader
         sticky
         title="API keys"
-        description="Your keys: the ones you register agents with, and your agents' own."
+        description="Manage registration tokens for connecting agents to this Switch Server."
       />
       <OnSignedInServer>
         {({ server, user }) => <ApiKeys serverId={server.id} userId={user.id} />}
