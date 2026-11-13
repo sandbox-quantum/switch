@@ -94,10 +94,11 @@ ADDRESSING_DENIED_MESSAGE = (
 # it cannot be recognised as the owner even if it is. Without this the owner
 # gets refused by their own agent with no idea why.
 ADDRESSING_UNCLAIMED_MESSAGE = (
-    "I only take instructions from my owner, and this chat account isn't "
-    "linked to a Switch user yet — so I can't tell whether that's you. If it "
-    "is, link this account to your Switch user in Switch Console, post the "
-    "code it shows you from this account, and try again."
+    "I currently accept instructions only from my owner. The owner can allow "
+    "anyone or specific people to give me instructions by changing my "
+    "addressing rules. If you're my owner, link this chat account to your "
+    "Switch user in Switch Console, post the code it shows you from this "
+    "account, and try again."
 )
 
 

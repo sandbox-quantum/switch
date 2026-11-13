@@ -419,7 +419,13 @@ class TestOwnerAddressing:
         )
         decision = await _decide(client)
         assert decision.allowed is False
-        assert decision.refusal == _ADDRESSING_UNCLAIMED_MESSAGE
+        assert decision.refusal == (
+            "I currently accept instructions only from my owner. The owner can "
+            "allow anyone or specific people to give me instructions by "
+            "changing my addressing rules. If you're my owner, link this chat "
+            "account to your Switch user in Switch Console, post the code it "
+            "shows you from this account, and try again."
+        )
 
     async def test_unclaimed_sender_without_owner_rule_gets_generic_wording(
         self,
