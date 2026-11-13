@@ -135,6 +135,10 @@ class ChatKickoff(CamelModel):
     agent_id: str | None
     user_id: str
     agent_note: str | None
+    # The agent's own label and picture, so the kickoff looks like it even
+    # when the agent is not in the room (switch-buddy rarely is).
+    display_name: str | None = None
+    icon_url: str | None = None
 
 
 class ChatMessage(CamelModel):
@@ -421,6 +425,22 @@ async def chat_messages(
             .group_by(Message.thread_root_event_id)
         ):
             threads[root] = (count, last)
+    kickoffs = {
+        message.id: kickoff
+        for message in shown
+        if (kickoff := _kickoff(message)) is not None
+    }
+    runners = {k.agent_id for k in kickoffs.values() if k.agent_id is not None}
+    if runners:
+        for agent_id, display_name, icon_url in await session.execute(
+            select(Agent.id, Agent.display_name, Agent.icon_url).where(
+                Agent.id.in_(runners)
+            )
+        ):
+            for kickoff in kickoffs.values():
+                if kickoff.agent_id == agent_id:
+                    kickoff.display_name = display_name
+                    kickoff.icon_url = icon_url
     out: list[ChatMessage] = []
     for message in shown:
         client = clients.get(message.sender_client_id or "")
@@ -438,7 +458,7 @@ async def chat_messages(
         format_ = message.content.get("format")
         thread = threads.get(message.transport_event_id)
         body = message.body or _command_text(message)
-        kickoff = _kickoff(message) if kind == "system" else None
+        kickoff = kickoffs.get(message.id) if kind == "system" else None
         if kickoff is not None and kickoff.agent_note is not None:
             body = body.split(TRACE_OPENING, 1)[0].rstrip()
         out.append(

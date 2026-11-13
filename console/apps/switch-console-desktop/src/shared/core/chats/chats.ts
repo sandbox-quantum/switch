@@ -85,6 +85,9 @@ export const chatKickoffSchema = z.object({
   agentId: z.string().nullable(),
   userId: z.string(),
   agentNote: z.string().nullable(),
+  /** The agent's own label and picture, which it keeps though it is not in the room. */
+  displayName: z.string().nullable().default(null),
+  iconUrl: z.string().nullable().default(null),
 });
 export type ChatKickoff = z.infer<typeof chatKickoffSchema>;
 

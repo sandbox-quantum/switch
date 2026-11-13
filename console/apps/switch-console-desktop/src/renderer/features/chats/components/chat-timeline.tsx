@@ -2,6 +2,7 @@ import { format, isToday, isYesterday } from 'date-fns';
 import { CornerUpLeft, Loader2, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, type ReactNode } from 'react';
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
@@ -573,10 +574,12 @@ const PendingBubble = observer(function PendingBubble({
 });
 
 /**
- * A template's kickoff, shown as the request of whoever ran the template
- * rather than as one of Switch's own centred notices: it is a full request,
- * often several paragraphs, and drawn as a notice it was hard to read. The run
- * history Switch appends for the agents folds away under it.
+ * A template's kickoff: a full request, often several paragraphs, that Switch
+ * posts for whoever ran the template. It is not a notice, so it is not drawn
+ * as one; and its sender is usually not in the room (switch-buddy rarely is),
+ * so it is not drawn as a room member speaking either, which would invite
+ * people to address it here. A card names who sent it, with that agent's own
+ * picture, and folds the run history Switch appends for the agents under it.
  */
 function KickoffRow({
   kickoff,
@@ -592,16 +595,27 @@ function KickoffRow({
   id: string;
   className: string;
 }) {
-  const content = (
-    <div className="flex flex-col gap-1">
-      <span className="self-start rounded bg-background-1 px-1.5 py-px text-[10px] text-foreground-passive">
-        Kickoff
-      </span>
+  const sender = kickoff.displayName ?? (agent ? chatAgentLabel(agent) : kickoff.name);
+  return (
+    <div {...props} className={cn('rounded-xl border bg-background-1 px-4 py-3', props.className)}>
+      <div className="mb-1.5 flex items-center gap-2 text-xs text-foreground-muted">
+        {kickoff.agentId !== null && (
+          <AgentAvatar
+            name={sender}
+            iconUrl={kickoff.iconUrl ?? agent?.iconUrl ?? null}
+            serverId={serverId}
+            size={16}
+          />
+        )}
+        <span>
+          Kickoff from <span className="font-medium text-foreground">{sender}</span>
+        </span>
+      </div>
       <div className="text-sm leading-relaxed">
         <ChatMarkdown>{body}</ChatMarkdown>
       </div>
       {kickoff.agentNote && (
-        <details className="text-xs text-foreground-muted">
+        <details className="mt-1 text-xs text-foreground-muted">
           <summary className="cursor-pointer">Details for agents</summary>
           <div className="mt-1">
             <ChatMarkdown>{kickoff.agentNote}</ChatMarkdown>
@@ -609,28 +623,5 @@ function KickoffRow({
         </details>
       )}
     </div>
-  );
-  if (kickoff.agentId === null)
-    return (
-      <div {...props} className={cn('flex gap-3', props.className)}>
-        <PersonAvatar name={kickoff.name} />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span className="mb-1 text-xs font-medium text-foreground-muted">{kickoff.name}</span>
-          {content}
-        </div>
-      </div>
-    );
-  return (
-    <AgentRow
-      {...props}
-      agent={{
-        name: agent ? chatAgentLabel(agent) : kickoff.name,
-        iconUrl: agent?.iconUrl ?? null,
-      }}
-      serverId={serverId}
-      head
-    >
-      {content}
-    </AgentRow>
   );
 }

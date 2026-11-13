@@ -2371,10 +2371,20 @@ async def test_a_kickoff_reads_back_as_the_agent_that_ran_the_template(
         assert sent.status_code == 200, sent.text
         sent_ids.append(sent.json()["messages"][0]["messageId"])
 
+    buddy = await chats.agent("switch-buddy", owner=chats.alice)
+    async with chats.factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == buddy.id)
+            .values(
+                display_name="Switch Buddy", icon_url="https://example.test/buddy.png"
+            )
+        )
+        await session.commit()
     on_behalf_of = {
         "user_id": chats.alice.id,
         "name": "switch-buddy",
-        "agent_id": "a-1",
+        "agent_id": buddy.id,
     }
     request = f"Sprint room is live.\n\n{TRACE_OPENING}Welcome. So far: ..."
     async with chats.factory() as session:
@@ -2411,7 +2421,10 @@ async def test_a_kickoff_reads_back_as_the_agent_that_ran_the_template(
     assert second["body"] == "Sprint room is live."
     assert second["kickoff"] == {
         "name": "switch-buddy",
-        "agentId": "a-1",
+        "agentId": buddy.id,
         "userId": chats.alice.id,
         "agentNote": f"{TRACE_OPENING}Welcome. So far: ...",
+        # Its own look, though it is not in the room.
+        "displayName": "Switch Buddy",
+        "iconUrl": "https://example.test/buddy.png",
     }

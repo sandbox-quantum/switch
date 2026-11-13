@@ -220,15 +220,19 @@ describe('ChatTimelineView kickoffs', () => {
         agentId: 'buddy-1',
         userId: 'me',
         agentNote: 'Note for the agents: this room is part of a run.',
+        displayName: 'Switch Buddy',
+        iconUrl: 'https://example.test/buddy.png',
       },
     });
     const html = render(timeline);
 
-    // The headline is not repeated as a centred notice above the request.
+    // One card: the headline notice above it is not repeated.
     expect(html).not.toContain('Kickoff from switch-buddy');
     expect(html).not.toContain('text-center');
-    expect(html).toContain('switch-buddy');
-    expect(html).toContain('>Kickoff<');
+    // Named and pictured as the agent itself, not as a room member speaking.
+    expect(html).toMatch(/Kickoff from <span[^>]*>Switch Buddy<\/span>/);
+    expect(html).toContain('src="https://example.test/buddy.png"');
+    expect(html).not.toContain('font-semibold text-foreground-muted">Switch Buddy');
     expect(html).toContain('Sprint room is live.');
     expect(html).toMatch(/<details[^>]*><summary[^>]*>Details for agents<\/summary>/);
     expect(html).toContain('Note for the agents: this room is part of a run.');
@@ -240,6 +244,6 @@ describe('ChatTimelineView kickoffs', () => {
     const html = render(timeline);
 
     expect(html).toContain('text-center');
-    expect(html).not.toContain('>Kickoff<');
+    expect(html).not.toContain('Kickoff from');
   });
 });
