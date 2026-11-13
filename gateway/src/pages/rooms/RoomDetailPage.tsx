@@ -69,6 +69,7 @@ import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 import type { RoomsNotice } from "./RoomsPage";
 import { RoomAccessChip } from "./RoomAccessChip";
+import { ROOM_STANDING_LABELS, roomStanding, roomStandingText } from "./roomStanding";
 import {
   ROOM_ACCESS_HELPERS,
   ROOM_ACCESS_LEVELS,
@@ -142,7 +143,7 @@ export default function RoomDetailPage() {
       </Stack>
 
       <Stack spacing={4}>
-        <RoomInfoSection room={room} />
+        <RoomInfoSection room={room} viewerId={viewerId} />
         <Divider />
         <RoomGroupSection
           room={room}
@@ -269,7 +270,8 @@ const BRIDGED_ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = Object
   ]),
 );
 
-function RoomInfoSection({ room }: { room: RoomDetail }) {
+function RoomInfoSection({ room, viewerId }: { room: RoomDetail; viewerId: string | null }) {
+  const standing = roomStanding(room, viewerId);
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
@@ -277,6 +279,7 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
         <RoomAccessChip room={room} />
+        <InfoChip label="Owner" value={ownerLabel(room)} />
         {room.channel_type && (
           <InfoChip
             label="Channel type"
@@ -293,8 +296,18 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
           />
         )}
       </Stack>
+      <Typography variant="body2" color="text.secondary">
+        <strong>Your access:</strong> {ROOM_STANDING_LABELS[standing]}.{" "}
+        {roomStandingText(room, standing)}
+      </Typography>
     </Stack>
   );
+}
+
+/** An owner with no name shows by id, as the rooms list shows them. */
+function ownerLabel(room: RoomDetail): string {
+  if (room.owner_id === null) return "No owner";
+  return room.owner_name ?? room.owner_id;
 }
 
 function InfoChip({
@@ -688,11 +701,7 @@ function EditableFieldsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Settings
       </Typography>
-      {!canWrite && (
-        <Alert severity="info">
-          Only this room's owner, its room admins and workspace admins can change these settings.
-        </Alert>
-      )}
+      {!canWrite && <Alert severity="info">{settingsNotice(room)}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
       <TextField
         label="Name"
@@ -748,6 +757,15 @@ function EditableFieldsSection({
       </Box>
     </Stack>
   );
+}
+
+/** Who may change the settings, naming the owner as Switch Console does. */
+function settingsNotice(room: RoomDetail): string {
+  if (room.owner_id === null) {
+    return "This room has no owner, so only its room admins and workspace admins can change these settings.";
+  }
+  const owner = room.owner_name ?? "this room's owner";
+  return `Only ${owner}, a room admin or a workspace admin can change these settings.`;
 }
 
 // ── Participants ─────────────────────────────────────────────────────────────
