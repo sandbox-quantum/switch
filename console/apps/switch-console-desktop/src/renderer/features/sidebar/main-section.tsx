@@ -9,6 +9,7 @@ import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
+import { appsOf, inApp } from '@renderer/features/switch-servers/room-apps';
 import {
   byActivity,
   holdingOpenRoom,
@@ -25,12 +26,14 @@ import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { NewRoomRow } from './new-room-row';
+import { RoomAppChips } from './room-app-chips';
 import { SidebarMenuRow } from './sidebar-primitives';
 import { isRoomViewActive, openRoomView } from './sidebar-room-grouping';
 
 type MainTab = 'agents' | 'rooms';
 
 const TAB_KEY = 'sidebar.mainTab';
+const ROOM_APP_KEY = 'sidebar.roomApp';
 const CHATS_TEASER_KEY = 'sidebar.chatsTeaserDismissed';
 
 const TABS: { value: MainTab; label: string }[] = [
@@ -162,7 +165,10 @@ function useHeldPlace(openId: string | null): {
  */
 const RoomList = observer(function RoomList({ rooms: listed }: { rooms: RemoteRoomSummary[] }) {
   const showCreateRoomModal = useShowModal('createRoomModal');
-  const ordered = sidebarOrder(listed);
+  const [app, setApp] = useState<string | null>(() => localStorage.getItem(ROOM_APP_KEY));
+  const apps = appsOf(listed);
+  const chosen = app !== null && apps.includes(app) ? app : null;
+  const ordered = sidebarOrder(inApp(listed, chosen));
   const openId = ordered.find((room) => isRoomViewActive(room.id))?.id ?? null;
   const { place, remember } = useHeldPlace(openId);
   const rooms = holdingOpenRoom(ordered, openId, place);
@@ -170,6 +176,15 @@ const RoomList = observer(function RoomList({ rooms: listed }: { rooms: RemoteRo
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
       <NewRoomRow onCreate={() => showCreateRoomModal({})} />
+      <RoomAppChips
+        apps={apps}
+        selected={chosen}
+        onSelect={(next) => {
+          setApp(next);
+          if (next === null) localStorage.removeItem(ROOM_APP_KEY);
+          else localStorage.setItem(ROOM_APP_KEY, next);
+        }}
+      />
       {rooms.length === 0 && (
         <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms on this server.</p>
       )}
