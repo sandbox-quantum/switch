@@ -1716,7 +1716,6 @@ class ChatService:
                                 created_by=user.id,
                                 owner_id=user.id,
                                 read_visibility=read_visibility or "private",
-                                write_visibility=write_visibility or "private",
                                 acting_user_id=user.id,
                                 created_by_kind="user",
                                 chat_operation_id=operation_id,

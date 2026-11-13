@@ -208,7 +208,7 @@ def build_management(
         presence=presence,
         clock=clock,
     )
-    # Switch cloud machines that run the controller enroll with codes it mints.
+    # Switch Cloud machines that run the controller enroll with codes it mints.
     set_cloud_enrollment(service)
     authenticator = ManagementAuthenticator(
         session_factory=session_factory,

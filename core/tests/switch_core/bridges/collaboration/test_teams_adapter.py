@@ -691,6 +691,7 @@ def test_conversation_update_bot_added_fires_app_joined() -> None:
         "type": "conversationUpdate",
         "serviceUrl": "https://smba.example/amer/",
         "recipient": {"id": "28:app-123"},
+        "from": {"id": "29:alice", "aadObjectId": "aad-alice"},
         "membersAdded": [{"id": "28:app-123"}],
         "conversation": {
             "id": "19:abc@thread.tacv2",
@@ -706,6 +707,8 @@ def test_conversation_update_bot_added_fires_app_joined() -> None:
     assert len(joins) == 1
     assert joins[0].channel_id == "19:abc@thread.tacv2"
     assert joins[0].channel_name == "Engineering"
+    # Who added the bot, by their Entra object id as Teams people are known.
+    assert joins[0].added_by_external_user_id == "aad-alice"
 
 
 def test_conversation_update_user_added_fires_user_joined() -> None:

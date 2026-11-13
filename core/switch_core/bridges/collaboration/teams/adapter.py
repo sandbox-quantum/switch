@@ -4059,11 +4059,16 @@ class TeamsAdapter(PlatformAdapter):
                 if channel_type in ("channel_public", "channel_private"):
                     await self._ensure_channel_subscription(channel_id)
                 if self._on_app_joined is not None:
+                    # Who added the bot, keyed as Teams people are elsewhere
+                    # (their Entra object id).
+                    actor = activity.get("from") or {}
+                    added_by = str(actor.get("aadObjectId") or "") or None
                     await self._on_app_joined(
                         InboundAppJoin(
                             channel_id=channel_id,
                             channel_type=channel_type,
                             channel_name=channel_name,
+                            added_by_external_user_id=added_by,
                         )
                     )
             elif self._on_user_joined is not None:

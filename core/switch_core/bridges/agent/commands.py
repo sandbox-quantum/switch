@@ -9,16 +9,19 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from sqlalchemy import select
 
+from switch_core import room_policy
 from switch_core.agent_display_name import (
     agent_label,
     agent_label_with_identifier,
     label_after_rename,
 )
+from switch_core.agent_exposure import others_can_address
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
     validate_alias_format,
 )
+from switch_core.authz import Principal
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -62,10 +65,15 @@ from switch_core.decision.room import (
     set_auto_route_fallback,
     set_auto_route_on,
 )
-from switch_core.delivery.addressing import AddressingResolver
+from switch_core.delivery.addressing import (
+    ADDRESSING_UNCLAIMED_MESSAGE,
+    AddressingResolver,
+)
 from switch_core.events import CommandEvent
 from switch_core.hosted_v2 import process_hosted_v2, v2_box
 from switch_core.platform_access import administers_on_record
+from switch_core.room_invites import not_addressable_refusal
+from switch_core.room_policy import RoomAction, RoomCaller, RoomDecision
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -532,15 +540,10 @@ async def _manages_room(
     room_id: str,
     sender: str,
     command: str,
-    *,
-    resolver: AddressingResolver | None = None,
 ) -> bool:
     """Whether the Switch user behind `sender` owns the room or administers
-    the tenant. `command` names the chat command in the admin audit record.
-    `resolver` resolves the sender; an agent's own recipient has one, and the
-    Switch app's command consumer passes `_command_resolver(host)`."""
-    resolve = resolver if resolver is not None else client._addressing
-    principal = await resolve.resolve_sender(session, sender)
+    the tenant. `command` names the chat command in the admin audit record."""
+    principal = await client._addressing.resolve_sender(session, sender)
     if principal is None or principal.kind != "user":
         return False
     room = await session.get(Room, room_id)
@@ -941,6 +944,16 @@ async def _cmd_follow_ups(
 
     async with client.session_factory() as session:
         if choice:
+            decision = await _room_decision(
+                cast("CommandConsumer", client),
+                session,
+                meta.room_id,
+                event,
+                "configure",
+                "follow-ups",
+            )
+            if await _refused(client, room, event, decision):
+                return
             await client._room_store.set_follow_ups_enabled(
                 session, meta.room_id, choice == "on"
             )
@@ -966,11 +979,6 @@ _AUTO_ROUTE_OFF = (
     "Automatic routing is **off** in this room. A message that tags nobody "
     "reaches an agent only as a follow-up or through an assigned agent. Turn it "
     "on with `!auto-route on`."
-)
-_AUTO_ROUTE_FALLBACK_REFUSED = (
-    "Only the room's owner or a workspace admin can name or clear the room's "
-    "triage agent. Nothing was changed. Anyone who can post here can still turn "
-    "auto-route on or off with `!auto-route on` or `!auto-route off`."
 )
 _AUTO_ROUTE_USAGE = (
     "Usage: `!auto-route on`, `!auto-route off`, `!auto-route` to see which it "
@@ -1010,6 +1018,11 @@ async def _cmd_auto_route(
             await _reply(client, room, event, "Room not found.")
             return
         if choice:
+            decision = await _room_decision(
+                host, session, meta.room_id, event, "configure", "auto-route"
+            )
+            if await _refused(client, room, event, decision):
+                return
             try:
                 await set_auto_route_on(
                     session, availability, client._room_store, row, choice == "on"
@@ -1075,16 +1088,15 @@ async def _auto_route_fallback(
         if len(args) > 1:
             await _reply(client, room, event, _AUTO_ROUTE_USAGE)
             return
-        host = cast("CommandConsumer", client)
-        if not await _manages_room(
-            client,
+        decision = await _room_decision(
+            cast("CommandConsumer", client),
             session,
             room_id,
-            event.user_id,
+            event,
+            "configure",
             "auto-route fallback",
-            resolver=_command_resolver(host),
-        ):
-            await _reply(client, room, event, _AUTO_ROUTE_FALLBACK_REFUSED)
+        )
+        if await _refused(client, room, event, decision):
             return
         handle = args[0]
         target: Agent | None = None
@@ -1163,6 +1175,11 @@ async def _cmd_assign_agent(
             return
         # Admin-owned: the Switch app's client runs it.
         host = cast("CommandConsumer", client)
+        settings = await _room_decision(
+            host, session, meta.room_id, event, "configure", "assign-agent"
+        )
+        if await _refused(client, room, event, settings):
+            return
         resolver = AddressingResolver(
             room_store=host._room_store,
             room_role_store=host._room_role_store,
@@ -1218,6 +1235,16 @@ async def _cmd_unassign_agent(
         current_id = await client._room_store.main_agent_id(session, meta.room_id)
         if current_id is None:
             await _reply(client, room, event, "No agent is assigned in this room.")
+            return
+        decision = await _room_decision(
+            cast("CommandConsumer", client),
+            session,
+            meta.room_id,
+            event,
+            "configure",
+            "unassign-agent",
+        )
+        if await _refused(client, room, event, decision):
             return
         current = await client._agent_store.get(session, current_id)
         await client._room_store.set_main_agent(session, meta.room_id, None)
@@ -1329,6 +1356,17 @@ async def _cmd_set_alias(
                 f"No agent named `{agent_token}` in this room. Run `!list-agents`.",
             )
             return
+        decision = await _room_decision(
+            cast("CommandConsumer", client),
+            session,
+            meta.room_id,
+            event,
+            "set_alias",
+            "set-alias",
+            target=target,
+        )
+        if await _refused(client, room, event, decision):
+            return
         try:
             validate_alias_format(alias)
             roles = await client._room_role_store.list_roles(session, meta.room_id)
@@ -1404,6 +1442,18 @@ async def _cmd_remove_alias(
                 f"No alias `{token}` in this room. Run `!list-aliases`.",
             )
             return
+        aliased = await client._agent_store.get(session, target_id)
+        decision = await _room_decision(
+            cast("CommandConsumer", client),
+            session,
+            meta.room_id,
+            event,
+            "set_alias",
+            "remove-alias",
+            target=aliased,
+        )
+        if await _refused(client, room, event, decision):
+            return
         await client._room_store.set_alias(session, meta.room_id, target_id, None)
         await session.commit()
 
@@ -1454,6 +1504,22 @@ async def _cmd_invite(
                 event,
                 f"**{agent_label_with_identifier(target.display_name, target.name)}** is already in this room.",
             )
+            return
+        # The invite rule every path shares (`room_invites`): whoever posts
+        # here is in the room, linked chat account or not, so what is left is
+        # whether they may address the agent. An unlinked poster passes only
+        # an agent anyone may address.
+        decision = await _command_resolver(cast("CommandConsumer", client)).permitted(
+            session, agent=target, room_id=meta.room_id, sender=event.user_id
+        )
+        if not decision.allowed:
+            refusal = not_addressable_refusal(target, markdown=True)
+            if decision.refusal == ADDRESSING_UNCLAIMED_MESSAGE:
+                refusal += (
+                    " If it's yours, this chat account isn't linked to your "
+                    "Switch user yet: link it in Switch Console and try again."
+                )
+            await _reply(client, room, event, refusal)
             return
 
     # `invite-agent` is admin-owned, so only the always-present admin client
@@ -1509,15 +1575,16 @@ async def _cmd_remove_agent(
                 f"No agent named `{token}` in this room. Run `!list-agents`.",
             )
             return
-        if not await _may_remove_agent(host, session, target, meta.room_id, event):
-            await _reply(
-                client,
-                room,
-                event,
-                f"You can't remove **{_label(target)}**: it doesn't take "
-                "instructions from you. Ask a workspace admin, or whoever it "
-                "answers to.",
-            )
+        decision = await _room_decision(
+            host,
+            session,
+            meta.room_id,
+            event,
+            "remove_member",
+            "remove_agent",
+            target=target,
+        )
+        if await _refused(client, room, event, decision):
             return
 
     await host._room_service.remove_agents_from_room(meta.room_id, [target.id])
@@ -1537,50 +1604,123 @@ def _command_resolver(host: CommandConsumer) -> AddressingResolver:
     )
 
 
-async def _may_remove_agent(
+async def _room_decision(
     host: CommandConsumer,
     session: AsyncSession,
-    target: Agent,
     room_id: str,
     event: CommandEvent,
-) -> bool:
-    """Whether the command's sender may take `target` out of the room.
+    action: RoomAction,
+    command: str,
+    *,
+    target: Agent | None = None,
+) -> RoomDecision:
+    """The room policy's answer (`room_policy`) for a chat command's sender.
 
-    Anyone the agent would take instructions from may; so may a workspace
-    admin, and an agent that manages agents for the target's owner.
+    They posted in the room, so they are in it, with or without a linked
+    Switch account. They act as the Switch users who linked the chat account,
+    the Console user who wrote it, whoever the platform posted it for, or an
+    agent's owner. `target` is the agent the command acts on, if any: a
+    person owning it may always; an agent whose owner owns it may only if it is
+    that agent, takes requests from it, or the agent can manage agents, since its
+    owner's "only me" was a choice. Being a workspace admin is asked last,
+    and recorded, only when nothing else lets them.
     """
-    resolver = _command_resolver(host)
-    decision = await resolver.permitted(
-        session, agent=target, room_id=room_id, sender=event.user_id
-    )
-    if decision.allowed:
-        return True
-    principal = await resolver.resolve_sender(session, event.user_id)
-    if principal is None:
-        return False
-    if principal.kind == "user":
-        for user_id in principal.user_ids:
-            user = await session.get(User, user_id)
-            if user is not None and await administers_on_record(
-                session,
-                host.session_factory,
-                host._user_store,
-                user,
-                target_type="agent",
-                target_id=target.id,
-                details={"event": "chat_command", "command": "remove_agent"},
-            ):
-                return True
-        return False
-    if principal.kind == "agent":
-        sender = await host._agent_store.get(session, principal.id)
-        return (
-            sender is not None
-            and sender.can_manage_agents
-            and sender.owner_id is not None
-            and sender.owner_id == target.owner_id
+    row = await session.get(Room, room_id)
+    if row is None:
+        return RoomDecision(False, "Room not found.")
+    sender = await _command_resolver(host).resolve_sender(session, event.user_id)
+    user_ids: list[str] = []
+    if sender is not None and sender.kind == "user":
+        user_ids = list(sender.user_ids)
+    elif sender is not None and sender.kind == "agent":
+        user_ids = [sender.owner_user_id] if sender.owner_user_id else []
+    elif sender is not None and sender.on_behalf_of:
+        user_ids = [sender.on_behalf_of]
+
+    # An agent that takes requests from people other than its owner doesn't
+    # get its owner's room-owner or admin rights: whoever may address it
+    # could otherwise use them.
+    owner_rights = True
+    acting: Agent | None = None
+    if sender is not None and sender.kind == "agent":
+        acting = await host._agent_store.get(session, sender.id)
+        owner_rights = acting is not None and not await others_can_address(
+            session, acting
         )
-    return False
+
+    owns_as_agent = False
+    if sender is not None and sender.kind == "agent" and target is not None:
+        owns_as_agent = (
+            acting is not None
+            and acting.owner_id is not None
+            and acting.owner_id == target.owner_id
+            and (
+                acting.id == target.id
+                or acting.can_manage_agents
+                or (
+                    await _command_resolver(host).permitted(
+                        session, agent=target, room_id=room_id, sender=event.user_id
+                    )
+                ).allowed
+            )
+        )
+
+    def owns(principal: Principal) -> bool:
+        if target is None or principal.id is None:
+            return False
+        if sender is not None and sender.kind == "agent":
+            return owns_as_agent
+        return principal.id == target.owner_id
+
+    def decide(principal: Principal) -> RoomDecision:
+        # Posted in the room's own conversation, so from inside it.
+        return room_policy.decide(
+            RoomCaller(principal, in_room=True, owner_rights=owner_rights),
+            row,
+            action,
+            owns_target=owns(principal),
+            from_inside=True,
+        )
+
+    for user_id in user_ids:
+        decision = decide(Principal(user_id, False))
+        if decision.allowed:
+            return decision
+    for user_id in user_ids if owner_rights else []:
+        user = await session.get(User, user_id)
+        if user is not None and await administers_on_record(
+            session,
+            host.session_factory,
+            UserStore(),
+            user,
+            target_type="room",
+            target_id=room_id,
+            details={"event": "chat_command", "command": command},
+        ):
+            return decide(Principal(user_id, True))
+    decision = decide(Principal(user_ids[0] if user_ids else None, False))
+    if decision.allowed or user_ids or (sender is not None and sender.kind != "user"):
+        return decision
+    return RoomDecision(False, f"{decision.reason} {_LINK_YOUR_ACCOUNT}")
+
+
+_LINK_YOUR_ACCOUNT = (
+    "Switch can't tell who you are until you link this chat account to your "
+    "Switch account, in Switch Console."
+)
+
+
+async def _refused(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    decision: RoomDecision,
+) -> bool:
+    """Reply with the policy's reason and return True when it said no."""
+    if decision.allowed:
+        return False
+    await _reply(client, room, event, f"{decision.reason} Nothing was changed.")
+    return True
 
 
 # ── Rename and delete ─────────────────────────────────────────────────────────
@@ -2369,7 +2509,8 @@ COMMANDS: list[Command] = [
         "follow-ups",
         "Turn follow-ups on or off for this room: whether a reply in an agent's "
         "thread, or the next message after an agent's answer, reaches it without "
-        "an @. Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
+        "an @. Turning it on or off is for the room's owner or an admin. "
+        "Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
         _cmd_follow_ups,
         args_spec=(CommandArg("state", "on or off", required=False),),
         admin_owned=True,
@@ -2379,7 +2520,8 @@ COMMANDS: list[Command] = [
         "Let Switch pick the agent to answer messages that tag nobody, using a "
         "decision service. Usage: `!auto-route on`, `!auto-route off`, "
         "`!auto-route`, or `!auto-route fallback @agent|off` for the agent that "
-        "gets them while the decision service is failing.",
+        "gets them while the decision service is failing. Changing it is for "
+        "the room's owner or an admin.",
         _cmd_auto_route,
         args_spec=(
             CommandArg("state", "on, off, or fallback @agent|off", required=False),
@@ -2389,8 +2531,8 @@ COMMANDS: list[Command] = [
     Command(
         "assign-agent",
         "Send every message in this room to one agent, unless it mentions "
-        "someone else. Usage: `!assign-agent @agent-name`, or `!assign-agent` "
-        "to see who is assigned.",
+        "someone else. Room owner or admin only. Usage: "
+        "`!assign-agent @agent-name`, or `!assign-agent` to see who is assigned.",
         _cmd_assign_agent,
         args_spec=(CommandArg("agent", "The agent to assign", required=False),),
         admin_owned=True,
@@ -2398,13 +2540,14 @@ COMMANDS: list[Command] = [
     Command(
         "unassign-agent",
         "Stop sending every message in this room to the assigned agent. "
-        "Usage: `!unassign-agent`.",
+        "Room owner or admin only. Usage: `!unassign-agent`.",
         _cmd_unassign_agent,
         admin_owned=True,
     ),
     Command(
         "set-alias",
-        "Give an agent a room alias. Usage: `!set-alias @agent-name @alias`.",
+        "Give an agent a room alias: the room's owner or an admin, or the "
+        "agent's own owner. Usage: `!set-alias @agent-name @alias`.",
         _cmd_set_alias,
         args_spec=(
             CommandArg("agent", "The agent to give an alias to", required=True),
@@ -2414,7 +2557,8 @@ COMMANDS: list[Command] = [
     ),
     Command(
         "remove-alias",
-        "Remove a room alias. Usage: `!remove-alias @alias` (or `@agent-name`).",
+        "Remove a room alias: the room's owner or an admin, or the agent's own "
+        "owner. Usage: `!remove-alias @alias` (or `@agent-name`).",
         _cmd_remove_alias,
         args_spec=(
             CommandArg(
@@ -2436,7 +2580,8 @@ COMMANDS: list[Command] = [
     ),
     Command(
         "remove-agent",
-        "Remove an agent from this room. Usage: `!remove-agent @agent-name`.",
+        "Remove an agent from this room: the room's owner or an admin, or the "
+        "agent's own owner. Usage: `!remove-agent @agent-name`.",
         _cmd_remove_agent,
         args_spec=(
             CommandArg("agent", "The agent to remove from this room", required=True),

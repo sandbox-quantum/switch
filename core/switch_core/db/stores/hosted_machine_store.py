@@ -31,7 +31,7 @@ MACHINE_NEEDS_ATTENTION = (
 MACHINE_NEEDS_ADMIN = (
     "Your cloud machine needs attention. Contact your server administrator."
 )
-MACHINES_FULL = "Every Switch cloud machine on this server is in use. Try again later."
+MACHINES_FULL = "Every Switch Cloud machine on this server is in use. Try again later."
 MACHINE_STOPPED_BY_ADMIN = (
     "Your cloud machine was stopped by a server administrator. Contact them to "
     "have it released."

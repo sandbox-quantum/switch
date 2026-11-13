@@ -60,6 +60,11 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
     ) -> None:
         pass
 
+    async def _owner_from_platform_account(
+        external_user_id: str | None, channel_id: str
+    ) -> None:
+        return None
+
     async def _adopt_existing_room(channel_id: str) -> tuple[str, str] | None:
         return None
 
@@ -68,6 +73,7 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         _room_service=_RoomService(),
         _resolve_agents_for_channel=_resolve_agents_for_channel,
         _adopt_existing_room=_adopt_existing_room,
+        _owner_from_platform_account=_owner_from_platform_account,
         add_room_mapping=add_room_mapping,
         _provisioning_channels=set(),
         _channel_to_room={},

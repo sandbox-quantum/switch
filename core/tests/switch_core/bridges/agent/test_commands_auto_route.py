@@ -342,7 +342,7 @@ class TestTheTriageAgent:
         assert "no longer has a triage agent" in posted[-1]
         assert await _fallback(session_factory, room_id) is None
 
-    async def test_a_member_turns_it_on_and_off(
+    async def test_a_member_cannot_turn_it_on_or_off_but_may_see_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         room_id = await _room(session_factory)
@@ -350,12 +350,14 @@ class TestTheTriageAgent:
         host, posted = _host(session_factory, room_id, sender=member)
 
         await _run(host, "on")
-        assert "Automatic routing is **on**" in posted[-1]
-        assert await _on(session_factory, room_id)
-
-        await _run(host, "off")
-        assert "Automatic routing is **off**" in posted[-1]
+        assert posted[-1] == (
+            "Only the room's owner or a workspace admin can change this room's "
+            "settings. Nothing was changed."
+        )
         assert not await _on(session_factory, room_id)
+
+        await _run(host, "")
+        assert "Automatic routing is **off**" in posted[-1]
 
     async def test_a_member_cannot_name_or_clear_it_but_may_see_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -367,7 +369,7 @@ class TestTheTriageAgent:
 
         await _run(host, "fallback @triage")
         assert posted[-1].startswith(
-            "Only the room's owner or a workspace admin can name or clear"
+            "Only the room's owner or a workspace admin can change"
         )
         assert "Nothing was changed" in posted[-1]
         assert await _fallback(session_factory, room_id) is None

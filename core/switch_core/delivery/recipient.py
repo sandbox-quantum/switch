@@ -470,7 +470,7 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
 
 @dataclass(frozen=True)
 class CloudMachineState:
-    """How a Switch cloud machine stood once a message for its agents tried to wake it."""
+    """How a Switch Cloud machine stood once a message for its agents tried to wake it."""
 
     state: str
     revision: int
@@ -494,7 +494,7 @@ class CloudMachineState:
 
 
 def _cloud_machine_waking_message(machine: str) -> str:
-    """A managed agent whose Switch cloud machine was asleep, and is starting
+    """A managed agent whose Switch Cloud machine was asleep, and is starting
     for this message: Switch keeps the message until the machine is back."""
     return (
         f"My device, **{machine}**, was asleep and is starting now. I'll pick "
@@ -554,7 +554,7 @@ def _hosted_block_notice_due(room_id: str, code: str) -> bool:
 
 
 def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> str:
-    """A managed agent whose Switch cloud machine its owner stopped: a message
+    """A managed agent whose Switch Cloud machine its owner stopped: a message
     does not start it again."""
     return (
         f"My device, **{machine}**, is stopped, so I can't answer. "
@@ -563,7 +563,7 @@ def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> st
 
 
 def _cloud_machine_admin_stopped_message(machine: str) -> str:
-    """A managed agent whose Switch cloud machine a server administrator
+    """A managed agent whose Switch Cloud machine a server administrator
     stopped: neither a message nor its owner can start it again."""
     return (
         f"My device, **{machine}**, was stopped by a server administrator, so "
@@ -1739,7 +1739,7 @@ class AgentRecipient:
         return _host_failure_reason(entry)
 
     async def _wake_cloud_machine(self, controller_id: str) -> CloudMachineState | None:
-        """Starts the Switch cloud machine running `controller_id` if it is
+        """Starts the Switch Cloud machine running `controller_id` if it is
         asleep, and says how it stands; None for a controller on no cloud
         machine, or when the machine could not be read."""
         try:
