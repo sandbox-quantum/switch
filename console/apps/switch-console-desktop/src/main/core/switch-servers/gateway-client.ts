@@ -4267,6 +4267,7 @@ export async function getConnectionCatalog(
     external_identity: entry.external_identity,
     consent: entry.consent,
     workspace_enabled: entry.workspace_enabled,
+    organization_locked: entry.organization_locked,
   }));
 }
 
@@ -4291,6 +4292,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         external_identity: null,
         consent: null,
         workspace_enabled: null,
+        organization_locked: false,
       }))
   );
 }
