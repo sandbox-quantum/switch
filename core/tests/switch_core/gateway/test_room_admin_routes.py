@@ -5,14 +5,17 @@ then do, through the real routes on Postgres."""
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.models import Client, ClientRoom, Room, User
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.messages.row import message_row, new_event_id
 from tests.switch_core.gateway.test_room_auto_route import _app as _rooms_app
 from tests.switch_core.gateway.test_room_auto_route import _as, _user
 
@@ -174,3 +177,40 @@ async def test_candidates_are_the_people_in_the_room_shown_to_the_owner_only(
     assert {p["user_id"] for p in before["room_admin_candidates"]} == {max_.id, bea.id}
     assert [p["user_id"] for p in after["room_admin_candidates"]] == [bea.id]
     assert as_admin["room_admin_candidates"] == []
+
+
+async def test_the_room_list_says_when_each_room_last_had_a_message(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Switch Console orders rooms by it, a messaging-app room included: the
+    server sees every room's messages, though Console does not."""
+    olivia = await _user(session_factory, f"olivia-{uuid.uuid4().hex[:4]}", "member")
+    busy = await _room(session_factory, olivia)
+    quiet = await _room(session_factory, olivia)
+    async with session_factory() as session:
+        for event_type, sent_at in (
+            ("m.room.message", datetime(2026, 11, 12, 9, 0, tzinfo=UTC)),
+            ("m.room.message", datetime(2026, 11, 13, 17, 30, tzinfo=UTC)),
+            # A join is not something said in the room.
+            ("m.room.member", datetime(2026, 11, 14, 8, 0, tzinfo=UTC)),
+        ):
+            message = message_row(
+                room_id=busy,
+                event_id=new_event_id(),
+                sender_id="@someone:test",
+                sender_client_id=None,
+                sender_name="someone",
+                event_type=event_type,
+                content={"msgtype": "m.text", "body": "hi"},
+                client_txn_id=None,
+            )
+            message.sent_at = sent_at
+            await MessageStore().create(session, message, [])
+        await session.commit()
+
+    async with _as(_app(session_factory), olivia) as client:
+        rooms = {r["id"]: r for r in (await client.get("/rooms")).json()}
+    assert datetime.fromisoformat(rooms[busy]["last_message_at"]) == datetime(
+        2026, 11, 13, 17, 30, tzinfo=UTC
+    )
+    assert rooms[quiet]["last_message_at"] is None
