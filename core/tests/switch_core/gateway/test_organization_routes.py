@@ -52,6 +52,9 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import organizations, workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.organization_workspaces import (
+    router as organization_workspaces_router,
+)
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.gateway.workos_sign_in_routes import (
@@ -95,6 +98,7 @@ def _app(
 
     app = FastAPI()
     app.include_router(organizations_router)
+    app.include_router(organization_workspaces_router)
     app.include_router(tenants_router)
     app.dependency_overrides[gw_deps.get_session] = _session_dep
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep

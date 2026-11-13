@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -27,7 +27,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.archived_workspace import WORKSPACE_ARCHIVED, archived_since
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -42,10 +41,8 @@ from switch_core.connections.broker import (
     get_service_broker,
 )
 from switch_core.db.audit import (
-    AuditAction,
     OrganizationAuditAction,
     list_organization_audit_events,
-    record_audit_event,
     record_organization_audit_event,
 )
 from switch_core.db.models import (
@@ -61,7 +58,6 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
-from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -97,15 +93,15 @@ from switch_core.gateway.schemas import (
     OrganizationCreateRequest,
     OrganizationCreateResponse,
     OrganizationIssueDetail,
-    OrganizationMemberAddRequest,
     OrganizationMemberDetail,
     OrganizationMemberListEntry,
     OrganizationMemberUpdateRequest,
     OrganizationMemberWorkspace,
+    OrganizationRenameRequest,
+    OrganizationRenameResponse,
     OrganizationSummary,
     OrganizationWorkspaceResponse,
     TenantMembershipResponse,
-    WorkspaceArchiveResponse,
     WorkspaceCreateRequest,
 )
 from switch_core.gateway.service_connections import service_refusal
@@ -136,7 +132,6 @@ from switch_core.organization_issues import (
     organization_wide_issues,
     workspace_issues,
 )
-from switch_core.room_schedules import skip_missed_runs
 from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
@@ -149,7 +144,7 @@ def _member_detail(
     member: OrganizationMember,
     warning: str | None,
     *,
-    access: _OrganizationAccess | None,
+    access: OrganizationAccess | None,
     accepts_promotion: bool,
 ) -> OrganizationMemberDetail:
     """`member`, with what the caller, who passes the role-change gate as
@@ -196,7 +191,7 @@ async def _current_organization_id(session: AsyncSession) -> str:
     return tenant.organization_id
 
 
-class _OrganizationAccess(NamedTuple):
+class OrganizationAccess(NamedTuple):
     organization_id: str
     # Let through on the operator flag alone, to restore an `org_admin`,
     # rather than as one: what the organization's audit log marks as
@@ -211,7 +206,7 @@ async def organization_access(
     user: User,
     *,
     operator_restores: bool,
-) -> _OrganizationAccess | None:
+) -> OrganizationAccess | None:
     """How `user` gets into the bound workspace's organization as its admin,
     or None when they don't; 404 when the workspace belongs to no
     organization.
@@ -226,13 +221,13 @@ async def organization_access(
         await user_store.organization_role(session, require_tenant_id(), user.id)
         == ORGANIZATION_ADMIN_ROLE
     ):
-        return _OrganizationAccess(organization_id, platform_access=False)
+        return OrganizationAccess(organization_id, platform_access=False)
     if (
         operator_restores
         and user.role == "admin"
         and await organization_store.count_admins(session, organization_id) == 0
     ):
-        return _OrganizationAccess(organization_id, platform_access=True)
+        return OrganizationAccess(organization_id, platform_access=True)
     return None
 
 
@@ -243,7 +238,7 @@ async def require_organization_admin(
     user: User,
     *,
     operator_restores: bool,
-) -> _OrganizationAccess:
+) -> OrganizationAccess:
     """`organization_access`, refused with 403 when there is none."""
     access = await organization_access(
         session,
@@ -352,6 +347,50 @@ async def current_organization(
     )
 
 
+@router.patch("/organizations/current")
+async def rename_current_organization(
+    req: OrganizationRenameRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> OrganizationRenameResponse:
+    """Rename the organization. Its `org_admin`s only: the operator who may
+    restore one is let in to change roles, not this. The slug stays as it
+    is, being an identifier. One whose members come from a directory such
+    as WorkOS keeps its own name here: Switch writes nothing about the
+    organization there, and reads no name back. The name it already has
+    changes and records nothing; a rename is recorded in its audit log."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    # Locked, so renames made at the same moment each record the name they
+    # replaced.
+    organization = await session.get(
+        Organization, access.organization_id, with_for_update=True
+    )
+    if organization is None:
+        raise RuntimeError(f"Organization {access.organization_id} is not visible here")
+    if req.name != organization.name:
+        await record_organization_audit_event(
+            session,
+            organization_id=organization.id,
+            actor_user_id=user.id,
+            action=OrganizationAuditAction.ORGANIZATION_RENAMED,
+            target_type="organization",
+            target_id=organization.id,
+            details={
+                "name": req.name,
+                "previous_name": organization.name,
+                **made_from(access),
+            },
+        )
+        organization.name = req.name
+        await session.commit()
+        logger.info("User %s renamed organization %s", user.id, organization.id)
+    return OrganizationRenameResponse(id=access.organization_id, name=req.name)
+
+
 @router.get("/organizations/current/workspaces")
 async def list_organization_workspaces(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -403,7 +442,7 @@ async def list_organization_workspaces(
             blocked = (
                 _ARCHIVE_ADMINS_ONLY
                 if not administers
-                else _archive_blocked_reason(tenant.id, current_id)
+                else archive_blocked_reason(tenant.id, current_id)
             )
             described.append(
                 OrganizationWorkspaceResponse(
@@ -431,7 +470,7 @@ _ARCHIVE_DEFAULT = (
 )
 
 
-def _archive_blocked_reason(workspace_id: str, current_id: str) -> str | None:
+def archive_blocked_reason(workspace_id: str, current_id: str) -> str | None:
     """Why an organization admin may not archive `workspace_id` from
     `current_id`, the workspace their request is bound to, or None when they
     may."""
@@ -440,133 +479,6 @@ def _archive_blocked_reason(workspace_id: str, current_id: str) -> str | None:
     if workspace_id == TENANT_ZERO_ID:
         return _ARCHIVE_DEFAULT
     return None
-
-
-async def _set_archived(
-    session_factory: async_sessionmaker[AsyncSession],
-    access: _OrganizationAccess,
-    user: User,
-    workspace_id: str,
-    *,
-    archived: bool,
-) -> WorkspaceArchiveResponse:
-    """Archive or restore one of the organization's workspaces, on a session
-    bound to it, with both audit logs' records of it in the same commit. One
-    already as asked changes and records nothing."""
-    # Read before the session binds the workspace changed in place of the one
-    # the change was made from.
-    made_here = made_from(access)
-    async with tenant_session(session_factory, workspace_id) as bound:
-        tenant = await bound.get(Tenant, workspace_id, with_for_update=True)
-        if tenant is None or tenant.organization_id != access.organization_id:
-            raise HTTPException(
-                status_code=404, detail="That workspace isn't in this organization."
-            )
-        if (tenant.archived_at is not None) != archived:
-            now = datetime.now(UTC)
-            tenant.archived_at = now if archived else None
-            tenant.archived_by = user.id if archived else None
-            if not archived:
-                # In the commit that opens it, so the scheduler never sees it
-                # open with the runs it missed still due.
-                await skip_missed_runs(bound, RoomScheduleStore(), now)
-            await record_audit_event(
-                bound,
-                tenant_id=workspace_id,
-                actor_user_id=user.id,
-                action=(
-                    AuditAction.TENANT_ARCHIVED
-                    if archived
-                    else AuditAction.TENANT_RESTORED
-                ),
-                target_type="tenant",
-                target_id=workspace_id,
-                details={},
-            )
-            await record_organization_audit_event(
-                bound,
-                organization_id=access.organization_id,
-                actor_user_id=user.id,
-                action=(
-                    OrganizationAuditAction.WORKSPACE_ARCHIVED
-                    if archived
-                    else OrganizationAuditAction.WORKSPACE_RESTORED
-                ),
-                target_type="workspace",
-                target_id=workspace_id,
-                details={"name": tenant.name, **made_here},
-            )
-        response = WorkspaceArchiveResponse(
-            id=tenant.id, name=tenant.name, archived_at=archived_since(tenant)
-        )
-        await bound.commit()
-    return response
-
-
-@router.post("/organizations/current/workspaces/{workspace_id}/archive")
-async def archive_organization_workspace(
-    workspace_id: str,
-    request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    session_factory: Annotated[
-        async_sessionmaker[AsyncSession], Depends(get_session_factory)
-    ],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
-    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
-    user: Annotated[User, Depends(get_current_user)],
-) -> WorkspaceArchiveResponse:
-    """Archive one of the organization's workspaces: closed, with nothing in
-    it deleted, until it is restored (`workspace_archive.py`). Its
-    organization's admins only, and not the workspace this request is bound
-    to, which they would be shut in, nor the one everyone signing up joins.
-
-    What archiving shuts is shut once it has committed, here and in every
-    other process; asked again of a workspace already archived, that is done
-    again, so a call that failed part way is finished by repeating it."""
-    access = await require_organization_admin(
-        session, user_store, organization_store, user, operator_restores=False
-    )
-    blocked = _archive_blocked_reason(workspace_id, require_tenant_id())
-    if blocked is not None:
-        raise HTTPException(status_code=409, detail=blocked)
-    # Let go of the request's connection while the workspace is changed on a
-    # session of its own.
-    await session.commit()
-    response = await _set_archived(
-        session_factory, access, user, workspace_id, archived=True
-    )
-    await request.app.state.workspace_archive.closed(workspace_id)
-    logger.info("User %s archived workspace %s", user.id, workspace_id)
-    return response
-
-
-@router.post("/organizations/current/workspaces/{workspace_id}/restore")
-async def restore_organization_workspace(
-    workspace_id: str,
-    request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    session_factory: Annotated[
-        async_sessionmaker[AsyncSession], Depends(get_session_factory)
-    ],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
-    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
-    user: Annotated[User, Depends(get_current_user)],
-) -> WorkspaceArchiveResponse:
-    """Restore one of the organization's archived workspaces: its members may
-    enter it again, its agents connect, its bridges and its devices' agents
-    start, and its schedules go on from their next run, the runs missed
-    meanwhile skipped in the same commit. Its organization's
-    admins only. As archiving, done again when repeated."""
-    access = await require_organization_admin(
-        session, user_store, organization_store, user, operator_restores=False
-    )
-    await session.commit()
-    response = await _set_archived(
-        session_factory, access, user, workspace_id, archived=False
-    )
-    await request.app.state.workspace_archive.reopened(workspace_id)
-    logger.info("User %s restored workspace %s", user.id, workspace_id)
-    return response
 
 
 @router.post("/organizations/current/workspaces", status_code=201)
@@ -627,7 +539,7 @@ async def create_organization_workspace(
     )
 
 
-def made_from(access: _OrganizationAccess) -> dict[str, object]:
+def made_from(access: OrganizationAccess) -> dict[str, object]:
     """Where an organization change was made: the workspace the request was
     bound to, and whether the platform operator made it on the operator flag
     alone."""
@@ -818,87 +730,6 @@ async def _memberships_in_organization(
     return held
 
 
-@router.post(
-    "/organizations/current/workspaces/{workspace_id}/members", status_code=201
-)
-async def add_organization_member_to_workspace(
-    workspace_id: str,
-    req: OrganizationMemberAddRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    session_factory: Annotated[
-        async_sessionmaker[AsyncSession], Depends(get_session_factory)
-    ],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
-    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
-    user: Annotated[User, Depends(get_current_user)],
-) -> OrganizationMemberWorkspace:
-    """Add someone already in the organization to one of its workspaces, as
-    `req.role`. Its `org_admin`s only. Refused for someone outside the
-    organization, who joins through an invitation, for someone already in
-    the workspace, and for an archived workspace. Recorded in the
-    workspace's audit log and the organization's."""
-    access = await require_organization_admin(
-        session, user_store, organization_store, user, operator_restores=False
-    )
-    if (
-        await session.get(OrganizationMember, (access.organization_id, req.user_id))
-        is None
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail="Not a member of this organization: invite them to a workspace.",
-        )
-    made_here = made_from(access)
-    await session.commit()
-    async with tenant_session(session_factory, workspace_id) as bound:
-        tenant = await bound.get(Tenant, workspace_id, with_for_update=True)
-        if tenant is None or tenant.organization_id != access.organization_id:
-            raise HTTPException(
-                status_code=404, detail="That workspace isn't in this organization."
-            )
-        if tenant.archived_at is not None:
-            raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
-        if await user_store.tenant_role(bound, workspace_id, req.user_id) is not None:
-            raise HTTPException(
-                status_code=409, detail=f"They're already in {tenant.name}."
-            )
-        await user_store.add_membership(
-            bound,
-            tenant_id=workspace_id,
-            user_id=req.user_id,
-            role=req.role,
-            organization_role="member",
-        )
-        await record_audit_event(
-            bound,
-            tenant_id=workspace_id,
-            actor_user_id=user.id,
-            action=AuditAction.MEMBER_ADDED_BY_ORGANIZATION,
-            target_type="user",
-            target_id=req.user_id,
-            details={"role": req.role},
-        )
-        await record_organization_audit_event(
-            bound,
-            organization_id=access.organization_id,
-            actor_user_id=user.id,
-            action=OrganizationAuditAction.MEMBER_ADDED_TO_WORKSPACE,
-            target_type="user",
-            target_id=req.user_id,
-            details={
-                "workspace": workspace_id,
-                "workspace_name": tenant.name,
-                "role": req.role,
-                **made_here,
-            },
-        )
-        added = OrganizationMemberWorkspace(
-            id=tenant.id, name=tenant.name, role=req.role, archived=False
-        )
-        await bound.commit()
-    return added
-
-
 # Why a change the directory did not make still took something away.
 _ACCESS_ALREADY_ENDED = (
     "They keep their place in the organization, but what they held in "
@@ -961,7 +792,7 @@ async def _member_change(
     user_store: UserStore,
     organization_directory: OrganizationDirectory,
     token: OrganizationToken | None,
-    access: _OrganizationAccess,
+    access: OrganizationAccess,
     organization: Organization,
     user_id: str,
     role: str | None,

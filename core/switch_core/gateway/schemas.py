@@ -1321,6 +1321,22 @@ class OrganizationWorkspaceResponse(TenantMembershipResponse):
     can_restore: bool
 
 
+class WorkspaceAdminsRequest(BaseModel):
+    """Who should be a workspace's admins among its members who are not its
+    organization's `org_admin`s; every other such member becomes a member."""
+
+    user_ids: list[str]
+
+
+class WorkspaceAdminsResponse(BaseModel):
+    """A workspace's admins by membership once chosen, by name, its
+    organization's `org_admin`s left out."""
+
+    id: str
+    name: str
+    admins: list[str]
+
+
 class WorkspaceArchiveResponse(BaseModel):
     """A workspace archived or restored: when it was archived, None once
     restored."""
@@ -1472,6 +1488,19 @@ class TenantRenameRequest(BaseModel):
         StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
         AfterValidator(_shown_on_one_line),
     ]
+
+
+class OrganizationRenameRequest(BaseModel):
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+        AfterValidator(_shown_on_one_line),
+    ]
+
+
+class OrganizationRenameResponse(BaseModel):
+    id: str
+    name: str
 
 
 class TenantRenameResponse(BaseModel):

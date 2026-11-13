@@ -216,7 +216,7 @@ router = APIRouter()
 TENANT_MEMBER_ROLES = ("admin", "member")
 
 
-def _member_role(role: str) -> str:
+def validated_member_role(role: str) -> str:
     """`role` as this server stores it. `owner` was a role of its own until it
     merged into `admin`; a client from before the merge may still ask for it,
     and gets the role that now carries everything it did."""
@@ -534,39 +534,62 @@ async def rename_tenant(
     added.
     """
     _require_bound_tenant(tenant_id)
+    made_from: dict[str, object] = (
+        {"platform_access": True} if request.state.platform_access else {}
+    )
+    if await rename_workspace(
+        session, tenant_id, req.name, actor_id=user.id, made_from=made_from
+    ):
+        await session.commit()
+    return TenantRenameResponse(id=tenant_id, name=req.name)
+
+
+async def rename_workspace(
+    session: AsyncSession,
+    tenant_id: str,
+    name: str,
+    *,
+    actor_id: str,
+    made_from: dict[str, object],
+) -> bool:
+    """Rename `tenant_id`, on a session bound to it, recording it in its audit
+    log and its organization's, with `made_from` (where the change was made)
+    in the organization's record. Whether anything changed: the name it
+    already has records nothing. The caller commits.
+
+    Shared by the workspace's own route and its organization's
+    (`gateway/organization_workspaces.py`)."""
     # Locked, so renames made at the same moment each record the name they
     # replaced, and the second of two the same is the no-op it should be.
     tenant = await session.get(Tenant, tenant_id, with_for_update=True)
     if tenant is None:
         raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
-    if req.name != tenant.name:
-        details: dict[str, object] = {"name": req.name, "previous_name": tenant.name}
-        tenant.name = req.name
-        await record_audit_event(
+    if name == tenant.name:
+        return False
+    details: dict[str, object] = {"name": name, "previous_name": tenant.name}
+    tenant.name = name
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=actor_id,
+        action=AuditAction.TENANT_RENAMED,
+        target_type="tenant",
+        target_id=tenant_id,
+        details=details,
+    )
+    # A workspace from before organizations has none to record it in.
+    if tenant.organization_id is not None:
+        await record_organization_audit_event(
             session,
-            tenant_id=tenant_id,
-            actor_user_id=user.id,
-            action=AuditAction.TENANT_RENAMED,
-            target_type="tenant",
+            organization_id=tenant.organization_id,
+            actor_user_id=actor_id,
+            action=OrganizationAuditAction.WORKSPACE_RENAMED,
+            target_type="workspace",
             target_id=tenant_id,
-            details=details,
+            details={**details, **made_from},
         )
-        # A workspace from before organizations has none to record it in.
-        if tenant.organization_id is not None:
-            if request.state.platform_access:
-                details = {**details, "platform_access": True}
-            await record_organization_audit_event(
-                session,
-                organization_id=tenant.organization_id,
-                actor_user_id=user.id,
-                action=OrganizationAuditAction.WORKSPACE_RENAMED,
-                target_type="workspace",
-                target_id=tenant_id,
-                details=details,
-            )
-        await session.commit()
-        logger.info("User %s renamed workspace %s", user.id, tenant_id)
-    return TenantRenameResponse(id=tenant_id, name=req.name)
+    logger.info("User %s renamed workspace %s", actor_id, tenant_id)
+    return True
 
 
 @router.delete("/tenants/{tenant_id}")
@@ -737,12 +760,30 @@ async def create_invitation(
     stands, and `email_delivery` tells the admin to share the link instead.
     """
     _require_bound_tenant(tenant_id)
+    return await mint_invitation(
+        session, invitation_store, config, mailer, tenant_id, req, actor=user
+    )
+
+
+async def mint_invitation(
+    session: AsyncSession,
+    invitation_store: InvitationStore,
+    config: SwitchConfig,
+    mailer: InviteMailer | None,
+    tenant_id: str,
+    req: InvitationCreateRequest,
+    *,
+    actor: User,
+) -> InvitationCreateResponse:
+    """Mint an invitation to `tenant_id` as `actor`, on a session bound to it,
+    commit, and send its e-mail when it names one. Shared by the workspace's
+    own route and its organization's (`gateway/organization_workspaces.py`)."""
     # Its admins can't be in it to ask, but its organization's can: nobody
     # could accept what they made.
     if await is_archived(session, tenant_id):
         raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
-    role = _member_role(req.role)
-    if req.email is not None and mailer is not None and user.role != "admin":
+    role = validated_member_role(req.role)
+    if req.email is not None and mailer is not None and actor.role != "admin":
         sent_today = await invitation_store.count_addressed_since(
             session, datetime.now(UTC) - timedelta(days=1)
         )
@@ -765,12 +806,12 @@ async def create_invitation(
         email=req.email,
         expires_at=expires_at,
         uses_remaining=req.uses_remaining,
-        created_by=user.id,
+        created_by=actor.id,
     )
     await record_audit_event(
         session,
         tenant_id=tenant_id,
-        actor_user_id=user.id,
+        actor_user_id=actor.id,
         action=AuditAction.INVITATION_CREATED,
         target_type="invitation",
         target_id=invitation.id,
@@ -790,7 +831,7 @@ async def create_invitation(
         invitation,
         token,
         workspace_name=tenant.name,
-        inviter_name=user.name,
+        inviter_name=actor.name,
     )
     emit_safely(current_telemetry(), "invitation_sent", {"delivery": delivery})
     return InvitationCreateResponse(
@@ -2109,8 +2150,42 @@ async def update_member_role(
     can manage it, and getting one back takes the server's operator.
     """
     _require_bound_tenant(tenant_id)
-    role = _member_role(req.role)
+    user, membership = await change_member_role(
+        session,
+        user_store,
+        tenant_id,
+        user_id,
+        validated_member_role(req.role),
+        actor_id=admin.id,
+    )
+    await session.commit()
 
+    return _member_detail(
+        user,
+        membership,
+        await user_store.organization_role(session, tenant_id, user_id),
+        caller_id=admin.id,
+        # Read again: an admin who just stepped down no longer administers.
+        administers=await user_store.administers(session, admin),
+        admin_count=await user_store.count_admins(session),
+    )
+
+
+async def change_member_role(
+    session: AsyncSession,
+    user_store: UserStore,
+    tenant_id: str,
+    user_id: str,
+    role: str,
+    *,
+    actor_id: str,
+) -> tuple[User, TenantMember]:
+    """Give a member of `tenant_id` the role `role`, on a session bound to it,
+    recording the change. Refuses an `org_admin` of its organization, whose
+    standing comes from there; making the registration service account an
+    admin; and demoting the last admin, whose rows are locked until the
+    caller commits. Shared by the workspace's own route and its
+    organization's (`gateway/organization_workspaces.py`)."""
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this workspace")
@@ -2128,24 +2203,14 @@ async def update_member_role(
         await record_audit_event(
             session,
             tenant_id=tenant_id,
-            actor_user_id=admin.id,
+            actor_user_id=actor_id,
             action=AuditAction.MEMBER_ROLE_CHANGED,
             target_type="user",
             target_id=user_id,
             details={"from": membership.role, "to": role},
         )
     membership.role = role
-    await session.commit()
-
-    return _member_detail(
-        user,
-        membership,
-        await user_store.organization_role(session, tenant_id, user_id),
-        caller_id=admin.id,
-        # Read again: an admin who just stepped down no longer administers.
-        administers=await user_store.administers(session, admin),
-        admin_count=await user_store.count_admins(session),
-    )
+    return user, membership
 
 
 async def _heir_detail(
@@ -2173,9 +2238,24 @@ async def preview_member_removal(
     the caller confirms: `handed_over_to` names them, or is None when the
     workspace has no other admin and what they own would stay theirs."""
     _require_bound_tenant(tenant_id)
+    return await member_removal_preview(
+        session, user_store, tenant_id, user_id, actor_id=admin.id
+    )
+
+
+async def member_removal_preview(
+    session: AsyncSession,
+    user_store: UserStore,
+    tenant_id: str,
+    user_id: str,
+    *,
+    actor_id: str,
+) -> dict:
+    """Who would receive what `user_id` owns in `tenant_id` if `actor_id`
+    removed them now, on a session bound to it."""
     if await session.get(TenantMember, (tenant_id, user_id)) is None:
         raise HTTPException(status_code=404, detail="Not a member of this workspace")
-    heir = await removal_heir(session, tenant_id, user_id, admin.id, lock=False)
+    heir = await removal_heir(session, tenant_id, user_id, actor_id, lock=False)
     return {"handed_over_to": await _heir_detail(session, user_store, heir)}
 
 
@@ -2236,6 +2316,41 @@ async def remove_member(
     owner's own connections or machine).
     """
     _require_bound_tenant(tenant_id)
+    revocation = AccessRevocation(
+        agent_store=agent_store,
+        api_key_store=api_key_store,
+        broker=broker,
+        protocol=protocol,
+        sign_in_flows=request.app.state.sign_in_flows,
+    )
+    try:
+        removed = await remove_member_from_workspace(
+            session, user_store, revocation, tenant_id, user_id, actor_id=admin.id
+        )
+    except ServiceError as error:
+        return service_refusal(error)
+    if user_id == admin.id:
+        await rebind_if_left(
+            request, response, session_factory, user_store, admin, config
+        )
+    return removed
+
+
+async def remove_member_from_workspace(
+    session: AsyncSession,
+    user_store: UserStore,
+    revocation: AccessRevocation,
+    tenant_id: str,
+    user_id: str,
+    *,
+    actor_id: str,
+) -> dict:
+    """Remove `user_id` from `tenant_id`, on a session bound to it, as
+    `remove_member` describes, and commit; then revoke what was issued on
+    what they held. The body both routes answer with. Shared by the
+    workspace's own route and its organization's
+    (`gateway/organization_workspaces.py`). Raises `ServiceError` when a
+    revocation is refused."""
     # Locked until the removal commits, as handing the member something locks
     # it (`accounts/transfer.py`), so no agent reaches them after the check
     # below finds none.
@@ -2253,7 +2368,7 @@ async def remove_member(
         if await user_store.lock_admins(session) <= 1:
             raise HTTPException(status_code=409, detail="Cannot remove the last admin")
 
-    owned_agents = await agent_store.get_by_owner(session, user_id)
+    owned_agents = await revocation.agent_store.get_by_owner(session, user_id)
     if owned_agents:
         names = ", ".join(sorted(agent.name for agent in owned_agents))
         raise HTTPException(
@@ -2264,35 +2379,20 @@ async def remove_member(
             ),
         )
 
-    revocation = AccessRevocation(
-        agent_store=agent_store,
-        api_key_store=api_key_store,
-        broker=broker,
-        protocol=protocol,
-        sign_in_flows=request.app.state.sign_in_flows,
+    removal = await remove_membership(
+        session,
+        revocation,
+        membership,
+        actor_id=actor_id,
+        details={},
+        keep_agent_keys=False,
     )
-    try:
-        removal = await remove_membership(
-            session,
-            revocation,
-            membership,
-            actor_id=admin.id,
-            details={},
-            keep_agent_keys=False,
-        )
-    except ServiceError as error:
-        return service_refusal(error)
     await session.commit()
 
     warning = await revocation.finish(session, user_id, removal.revoked)
-    handed_over_to = await _heir_detail(session, user_store, removal.heir)
-    if user_id == admin.id:
-        await rebind_if_left(
-            request, response, session_factory, user_store, admin, config
-        )
     return {
         "ok": True,
         "warning": warning,
-        "handed_over_to": handed_over_to,
+        "handed_over_to": await _heir_detail(session, user_store, removal.heir),
         "handed_over": removal.handed,
     }

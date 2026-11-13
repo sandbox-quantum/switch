@@ -458,6 +458,11 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/organizations/current"),
                 _get(f"{G}/organizations/current/audit-events"),
             ),
+            Check(
+                "administers",
+                _get(f"{G}/organizations/current"),
+                _act("PATCH", f"{G}/organizations/current", {"name": "{tag}-org"}),
+            ),
         ],
         "an organization member": [
             Check(

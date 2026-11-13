@@ -651,6 +651,88 @@ export class SwitchClient {
     );
   }
 
+  /** `PATCH /gateway/organizations/current` — rename the organization; its admins only. */
+  async renameOrganization(name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", "/organizations/current", { name });
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}` — rename one of the organization's workspaces. */
+  async renameOrganizationWorkspace(
+    workspaceId: string,
+    name: string,
+  ): Promise<{ id: string; name: string }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}`,
+      { name },
+    );
+  }
+
+  /** `PUT /gateway/organizations/current/workspaces/{id}/admins` — choose a workspace's admins among its members who are not organization admins. */
+  async setOrganizationWorkspaceAdmins(
+    workspaceId: string,
+    userIds: string[],
+  ): Promise<{ id: string; name: string; admins: string[] }> {
+    return this.gateway(
+      "PUT",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/admins`,
+      { user_ids: userIds },
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}/members/{user_id}` — change someone's role in one of the organization's workspaces. */
+  async changeOrganizationWorkspaceRole(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+      { role },
+    );
+  }
+
+  /** `GET /gateway/organizations/current/workspaces/{id}/members/{user_id}/removal` — who would receive what they own there. */
+  async previewOrganizationWorkspaceRemoval(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ handed_over_to: { user_id: string } | null }> {
+    return this.gateway(
+      "GET",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}/removal`,
+    );
+  }
+
+  /** `DELETE /gateway/organizations/current/workspaces/{id}/members/{user_id}` — remove someone from one of the organization's workspaces. */
+  async removeFromOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ ok: boolean }> {
+    return this.gateway(
+      "DELETE",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /**
+   * `POST /gateway/organizations/current/workspaces/{id}/invitations` — an
+   * invite link to one of the organization's workspaces. The token is a
+   * bearer credential, so it goes to the run's issued secrets.
+   */
+  async inviteToOrganizationWorkspace(
+    workspaceId: string,
+    role: "admin" | "member",
+  ): Promise<string> {
+    const { token } = await this.gateway<{ token: string }>(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/invitations`,
+      { role },
+    );
+    this.issued.record(token);
+    return token;
+  }
+
   /** `POST /gateway/organizations/current/workspaces/{id}/restore` — open an archived workspace again. */
   async restoreOrganizationWorkspace(
     workspaceId: string,

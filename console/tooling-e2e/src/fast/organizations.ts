@@ -10,8 +10,10 @@ import type { FastScenario } from './scenario.ts';
  * in, with nothing left for its admin to fix, no Switch Trust policy
  * connected, and each new workspace counted with its one user and no agents.
  * It archives the second and restores it, and may not archive the one it is
- * in. A plain member of the default workspace may not add one there, rename
- * it, or read its organization's guardrails.
+ * in. It renames the organization and the second workspace from the
+ * organization, invites the member to the second, makes them its admin and
+ * removes them again. A plain member of the default workspace may not add one
+ * there, rename it, or read its organization's guardrails.
  *
  * Users and workspaces cannot be deleted, so this runs only on a stack thrown
  * away after the run.
@@ -31,6 +33,13 @@ export const organizations: FastScenario = {
       'POST /gateway/organizations/current/workspaces/{workspace_id}/archive',
       'POST /gateway/organizations/current/workspaces/{workspace_id}/restore',
       'POST /gateway/organizations/current/workspaces/{workspace_id}/members',
+      'POST /gateway/organizations/current/workspaces/{workspace_id}/invitations',
+      'DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}',
+      'GET /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}/removal',
+      'PATCH /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}',
+      'PUT /gateway/organizations/current/workspaces/{workspace_id}/admins',
+      'PATCH /gateway/organizations/current/workspaces/{workspace_id}',
+      'PATCH /gateway/organizations/current',
       'GET /gateway/tenants/counts',
       'PATCH /gateway/tenants/{tenant_id}',
     ],
@@ -170,5 +179,36 @@ export const organizations: FastScenario = {
     expect(listed.map((row) => row.id).sort(), 'the new one beside the rest').toEqual(
       [...before.map((row) => row.id), organization.id].sort()
     );
+
+    const orgName = names.name('org-renamed');
+    expect((await founder.renameOrganization(orgName)).name, 'the organization renamed').toBe(
+      orgName
+    );
+    expect((await founder.currentOrganization()).name).toBe(orgName);
+    const secondName = names.name('second-renamed');
+    expect(
+      (await founder.renameOrganizationWorkspace(second.id, secondName)).name,
+      'a workspace renamed from its organization'
+    ).toBe(secondName);
+    expect(
+      (await founder.setOrganizationWorkspaceAdmins(second.id, [])).admins,
+      'no admin to choose beside the organization admin who made it'
+    ).toEqual([]);
+
+    // The member joins the second workspace through a link made from the
+    // organization, and is then made its admin and removed again.
+    const memberId = await member.userId();
+    await member.acceptInvitation(
+      await founder.inviteToOrganizationWorkspace(second.id, 'member')
+    );
+    expect(
+      (await founder.changeOrganizationWorkspaceRole(second.id, memberId, 'admin')).role
+    ).toBe('admin');
+    expect(
+      (await founder.previewOrganizationWorkspaceRemoval(second.id, memberId)).handed_over_to
+        ?.user_id,
+      'what they own would pass to the organization admin removing them'
+    ).toBe(await founder.userId());
+    expect((await founder.removeFromOrganizationWorkspace(second.id, memberId)).ok).toBe(true);
   },
 };

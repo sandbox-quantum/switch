@@ -95,6 +95,7 @@ class AuditAction(StrEnum):
 
 class OrganizationAuditAction(StrEnum):
     ORGANIZATION_CREATED = "organization.created"
+    ORGANIZATION_RENAMED = "organization.renamed"
     WORKSPACE_CREATED = "organization.workspace_created"
     WORKSPACE_RENAMED = "organization.workspace_renamed"
     WORKSPACE_ARCHIVED = "organization.workspace_archived"

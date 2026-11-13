@@ -69,6 +69,9 @@ from switch_core.gateway.organization_guardrails import (
 from switch_core.gateway.organization_services import (
     router as organization_services_router,
 )
+from switch_core.gateway.organization_workspaces import (
+    router as organization_workspaces_router,
+)
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.origin_check import (
     OriginCheckMiddleware,
@@ -250,6 +253,7 @@ def create_gateway_app(
     app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
+    app.include_router(organization_workspaces_router, tags=["organizations"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])

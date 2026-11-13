@@ -75,6 +75,13 @@ version of their own to them without also giving them a release of their own.
   `POST /organizations/current/workspaces/{id}/members` adds an existing
   member to a workspace as admin or member, recorded in both audit logs.
   Someone outside the organization is pointed to an invite link instead.
+- **An organization's admins rename it, and run any of its workspaces from
+  the organization.** `PATCH /organizations/current` renames the
+  organization (its slug stays). Under
+  `/organizations/current/workspaces/{id}`, its admins rename a workspace,
+  choose its admins in one step (`PUT …/admins`), change someone's role or
+  remove them (with the same hand-over preview), and make invite links,
+  each checked as on the workspace's own pages, without switching into it.
 - **Messages sent while an agent works can steer its running turn.** Each
   agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
   kept on the agent so re-registering leaves it alone, changed on the agent's

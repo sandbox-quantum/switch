@@ -199,6 +199,11 @@
       ]
     },
     {
+      "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/packages/{package_id}",
       "auth": "session",
       "flags": []
@@ -752,6 +757,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}/removal",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/packages",
       "auth": "session",
       "flags": []
@@ -1105,7 +1115,22 @@
       ]
     },
     {
+      "route": "PATCH /gateway/organizations/current",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PATCH /gateway/organizations/current/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/organizations/current/workspaces/{workspace_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}",
       "auth": "session",
       "flags": []
     },
@@ -1421,6 +1446,11 @@
     },
     {
       "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/archive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/invitations",
       "auth": "session",
       "flags": []
     },
@@ -1768,6 +1798,11 @@
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "PUT /gateway/organizations/current/workspaces/{workspace_id}/admins",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "PUT /gateway/room-groups/{group_id}/rooms",

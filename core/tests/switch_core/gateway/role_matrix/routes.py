@@ -370,6 +370,41 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/organizations/current/workspaces": post(
         f"{G}/organizations/current/workspaces", org_admin(), json={"name": "{tag}-ws"}
     ),
+    "PATCH /gateway/organizations/current": patch(
+        f"{G}/organizations/current", org_admin(), json={"name": "{tag}-org"}
+    ),
+    "PATCH /gateway/organizations/current/workspaces/{workspace_id}": patch(
+        f"{G}/organizations/current/workspaces/{{tenant}}",
+        org_admin(),
+        json={"name": "{tag}-renamed"},
+    ),
+    "PUT /gateway/organizations/current/workspaces/{workspace_id}/admins": put(
+        f"{G}/organizations/current/workspaces/{{tenant}}/admins",
+        org_admin(ok=400),
+        json={"user_ids": ["nobody-in-the-workspace"]},
+        why="The organization's admin; let through, then told nobody is choosable.",
+    ),
+    "PATCH /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}": patch(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members/nobody",
+        org_admin(ok=404),
+        json={"role": "member"},
+        why="The organization's admin; let through, then told there is no such member.",
+    ),
+    "GET /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}/removal": get(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members/nobody/removal",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such member.",
+    ),
+    "DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}": delete(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members/nobody",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such member.",
+    ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/invitations": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/invitations",
+        org_admin(),
+        json={"role": "member"},
+    ),
     "POST /gateway/organizations/current/workspaces/{workspace_id}/archive": post(
         f"{G}/organizations/current/workspaces/{{tenant}}/archive",
         org_admin(ok=409),

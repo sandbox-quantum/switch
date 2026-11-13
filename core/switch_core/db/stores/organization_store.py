@@ -77,6 +77,17 @@ class OrganizationStore:
         )
         return [(row[0], row[1]) for row in result.all()]
 
+    async def admin_ids(self, session: AsyncSession, organization_id: str) -> set[str]:
+        """The user ids of `organization_id`'s `org_admin`s."""
+        return set(
+            await session.scalars(
+                select(OrganizationMember.user_id).where(
+                    OrganizationMember.organization_id == organization_id,
+                    OrganizationMember.role == "org_admin",
+                )
+            )
+        )
+
     async def count_admins(self, session: AsyncSession, organization_id: str) -> int:
         """How many `org_admin`s `organization_id` has."""
         return (
