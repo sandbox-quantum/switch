@@ -400,6 +400,9 @@ never invisible.
 | `room_active_7d` | number | same over 7 days |
 | `room_archived_count` | number | archived rooms, both kinds |
 | `room_internal_only_count` | number | rooms with no external channel |
+| `room_console_chat_direct_count` | number | unarchived Switch Console chats with one person in them (`direct`), of any origin. Already counted in `room_count` and its siblings |
+| `room_console_chat_group_count` | number | unarchived Switch Console chats that are groups: a direct chat becomes one when a second person joins it |
+| `room_console_chat_active_7d` | number | of those Console chats, the ones a person (on a platform or in Console) used with an agent in 7 days, so never more than direct plus group |
 | `room_membership_total` | number | user–room memberships summed over rooms |
 | `room_users_mean` | number | mean human members per room |
 | `room_users_max` | number | largest human membership of any one room |
@@ -528,6 +531,8 @@ properties.
 | `turn_human_to_agent` | number | agent messages answering a person, as `turn_human_to_agent_1d`, with a person in Switch Console counted as a person |
 | `turn_agent_to_human` | number | person messages answering an agent, likewise |
 | `turn_agent_to_agent` | number | agent messages answering another agent |
+| `console_account_active` | number | of `account_active`, accounts that used Switch Console chat, whether or not they also used a platform |
+| `console_only_account_active` | number | of `console_account_active`, accounts no claimed platform identity of theirs used a room for in the period, in any tenant: people Switch reached only through Console. `account_active - console_account_active` is those it reached only through a platform; the rest used both |
 | `is_partial` | boolean | the period began before the deployment was installed or before telemetry was last switched on. Its counts still cover the whole period, read from the database; it is the deployment's first period of that length, dated no earlier than that moment |
 | `tenant_failed_count` | number | tenants whose counts could not be read, left out of every count above, as on the snapshot |
 
@@ -706,6 +711,7 @@ when Switch is first told about the bridge.
 | `has_instructions` | boolean |
 | `created_by_kind` | `user` \| `agent` \| `system` |
 | `from_template` | boolean |
+| `console_chat` | boolean — Switch Console made the room as a chat (1-1 or group) |
 
 **`room_became_active`** — the first interaction in a room, once per room,
 dated to that interaction rather than to the snapshot pass that noticed it. A
@@ -721,6 +727,7 @@ the snapshot's `room_active_*` leave such a room out (see
 | `channel_type` | channel type |
 | `agent_count` | number |
 | `created_by_kind` | `user` \| `agent` \| `system` |
+| `console_chat` | boolean — as for `room_created` |
 
 `created_by_kind` rides along rather than agent-created rooms being dropped, so
 the headline chart can filter to user-created rooms while the question "do
@@ -735,7 +742,8 @@ a slow average.
 (tri-state: `true` | `false` | `unknown` — whether a person, on a messaging
 platform or in Switch Console, ever used it with an agent in it; `unknown` when
 the activity count itself could not be run, which is not evidence the room was
-never used). Not sent for a room that was already archived.
+never used), `console_chat` (boolean, as for `room_created`). Not sent for a
+room that was already archived.
 
 **`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 
@@ -757,7 +765,7 @@ experiment, the second a deliberate clean-up.
 
 **`room_deleted`** — `bridge_platform`, `channel_type`, `created_by_kind`,
 `age_days`, `was_ever_active` (tri-state, see `room_archived` above),
-`agent_count`. The activity flag is read before the delete, because the
+`agent_count`, `console_chat` (boolean). The activity flag is read before the delete, because the
 cascade takes the room's messages with it and afterwards every room looks like
 it was never used.
 
@@ -893,6 +901,7 @@ carrying its runtime, and did not count Switch Console chat at all.
 | `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up; only on an agent's message, left out otherwise |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
+| `console_chat` | tri-state — Switch Console made the room as a chat; `unknown` if the room could not be read. A person can write in Console in a room that is not one, such as a Slack-bridged room they joined there |
 | `room_user_count` | number — the room's people, on a messaging platform and in Switch Console (someone who is both counts twice); left out if the room could not be read |
 | `room_agent_count` | number — agent members; left out if the room could not be read |
 | `has_attachment` | boolean |
@@ -926,8 +935,33 @@ the requests an agent could act on as they arrived.
 | `known_agent_type` | the receiving agent's runtime |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
+| `console_chat` | tri-state, as for `message_sent` |
 | `has_attachment` | boolean |
 | `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker refused the message (stopped, broken, or a full mailbox); always false for a `session_passive` agent, which reads its messages later rather than live |
+
+### Switch Console chats
+
+What people do to their chats in Switch Console, reported by the chat service
+once the change commits, so a change that rolls back is never reported. A chat
+being made is `room_created` with `console_chat = true`; it is not reported
+again here. Console lets a person manage any room they are in, not only the
+chats it made, so the membership and list events carry `console_chat` too.
+Each reports a change only: adding someone already in, or hiding a room that is
+already hidden, reports nothing.
+
+| Event | Properties | Sent when |
+|---|---|---|
+| `console_chat_became_group` | `trigger`: `person_added` / `agent_added` · `age_days` (number, left out if unknown) | a direct chat turned group, for good, because a second person or a second agent joined it. The creator rejoining is not a second person |
+| `console_member_added` | `member_kind`: `person` / `agent` · `channel_type` (the room's after the add) · `console_chat` (boolean) | a manager added someone to a room from Console. Not the owner of an agent being put in a chat with it, which Switch does itself. A person added is also a `room_users_added`, which counts adds from everywhere; this one says it was Console and what kind of room |
+| `console_member_removed` | `member_kind` · `left` (boolean): a person taking themselves out rather than a manager removing them, always `false` for an agent · `channel_type` · `console_chat` | someone was taken out of a room from Console |
+| `console_room_hidden` | `channel_type` · `age_days` (number, left out if unknown) · `console_chat` | a person took a room off their own list |
+| `console_room_shown` | as `console_room_hidden` | a person put a hidden room back. Not a room that came back on its own because something new was said in it, which is not reported at all |
+
+`trigger` says which kind of chat people grow into groups: one shared with
+colleagues, or one given more agents. `age_days` on `console_chat_became_group`
+is how long a chat stayed 1-1 before it did. Hidden and shown, with their ages,
+separate tidying a list from abandoning a chat; a chat that is archived is
+`room_archived` with `console_chat`.
 
 ### Decision routing — one per decision
 
@@ -990,6 +1024,7 @@ only when there was something to detach or remove.
 | `room_role_defined` | `exclusive` (boolean) |
 | `room_role_deleted` | none |
 | `room_users_added` | `user_count` (number): people added to a bridged room who are now in it; the one person added to a Switch Console chat, including an owner an agent puts in a room it made; or the people a Console chat is created with, not counting the person who created it. Not sent when nobody was added |
+| `room_users_removed` | `user_count` (number); `removed_by_kind` (`user` \| `platform`) |
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
@@ -1034,7 +1069,9 @@ not losing.
 
 **Tri-state facts**: `true` | `false` | `unknown`, for a yes/no property the
 server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,
-`connector_removed`.`was_ever_connected`). Not a boolean, deliberately — a
+`connector_removed`.`was_ever_connected`, and `console_chat` on the message
+events, which read the room through a lookup that can fail; the room events
+hold the row, so theirs is a boolean). Not a boolean, deliberately — a
 property that can be unknown is a three-valued fact, and collapsing the failed
 case into `false` reports a guess as a claim the code has no evidence for.
 
@@ -1348,10 +1385,10 @@ reason.
   paused or stopped run. `operation` and `reason` are fixed lists; which agent
   and which template stay in the server log.
 - `room_link_created` / `room_link_removed`, `room_role_defined` /
-  `room_role_deleted`, `room_users_added`. A role is defined in the gateway, by
-  an agent's `define_role`, or with the room it belongs to (an agent's
-  `create_room`, or a template); one per role. An agent's `delete_role` is a
-  `room_role_deleted` too.
+  `room_role_deleted`, `room_users_added` / `room_users_removed`. A role is
+  defined in the gateway, by an agent's `define_role`, or with the room it
+  belongs to (an agent's `create_room`, or a template); one per role. An
+  agent's `delete_role` is a `room_role_deleted` too.
 - `reference_detached_from_room` / `document_detached_from_room` /
   `package_detached_from_room` — the inverse of the attach events, so a
   resource tried and dropped is distinguishable from one never used.

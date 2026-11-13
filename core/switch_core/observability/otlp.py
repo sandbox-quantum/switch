@@ -14,6 +14,7 @@ Doubles stay numbers.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -147,6 +148,10 @@ class OtlpResource:
     restarts, which is what metric points are tagged with: the process id
     changes on every start, so tagging with it would add a new set of series
     each time.
+
+    ``flint_env`` is the deployment's `ENVIRONMENT` when it is a short, plain
+    name (`flint_env()`), else ``None``, which leaves it off, as product
+    telemetry's resource does: its sink adds its own.
     """
 
     service_name: str
@@ -157,6 +162,7 @@ class OtlpResource:
     repository_url: str | None
     instance_id: str | None
     pod_name: str | None = None
+    flint_env: str | None = None
 
     def attributes(self) -> dict[str, AttributeValue]:
         values: dict[str, AttributeValue] = {
@@ -178,7 +184,25 @@ class OtlpResource:
             values["git.commit.sha"] = self.commit_sha
         if self.repository_url:
             values["git.repository_url"] = self.repository_url
+        if self.flint_env:
+            # Which deployment it came from, for metrics and logs alike: a
+            # collector or relay in front of Datadog may rewrite `env` and drop
+            # `deployment.environment`, while keeping `flint_env` as a tag.
+            values["flint_env"] = self.flint_env
         return values
+
+
+# What `flint_env` may hold: a lowercase letter or digit, then up to 31 more of
+# those or `-`, so it can never mint unbounded series or carry free text.
+FLINT_ENV_SHAPE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+
+
+def flint_env(environment: str | None) -> str | None:
+    """`ENVIRONMENT` as the `flint_env` resource attribute, or None when it is
+    unset or not a short, plain name (`FLINT_ENV_SHAPE`)."""
+    if environment and FLINT_ENV_SHAPE.fullmatch(environment):
+        return environment
+    return None
 
 
 @dataclass(frozen=True)
@@ -194,6 +218,10 @@ class HistogramPoint:
     total: float
     bucket_counts: Sequence[int]
     bounds: Sequence[float]
+    # The smallest and largest value recorded in the interval, OTLP's optional
+    # `min` and `max`. None for an interval with nothing recorded.
+    minimum: float | None = None
+    maximum: float | None = None
 
 
 @dataclass(frozen=True)
@@ -252,6 +280,8 @@ def _histogram_data_point(
         "sum": point.total,
         "bucketCounts": [str(count) for count in point.bucket_counts],
         "explicitBounds": list(point.bounds),
+        **({"min": point.minimum} if point.minimum is not None else {}),
+        **({"max": point.maximum} if point.maximum is not None else {}),
     }
 
 

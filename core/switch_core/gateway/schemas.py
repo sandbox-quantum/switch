@@ -98,18 +98,31 @@ class RoomSummary(BaseModel):
     # a chat with no members from a server too old to count them.
     people_are_members: bool = False
     # What the caller may do with it, so a client offers a change only where
-    # the server would allow it. `can_write` covers its settings, roles,
-    # links and attaching resources; `can_change_members` covers adding and
-    # removing its agents and people, which is `can_write` unless it is a
-    # direct or group conversation, whose platform fixes who is in it;
-    # `can_manage` (owner or tenant admin) covers its access, deleting it and
-    # taking the platform channel's name; `can_unlink` (taking part in it, or
-    # tenant admin) covers unlinking a reference, document or package from it;
-    # `can_transfer` is `can_manage` for anything but a chat, which stays with
-    # its people.
+    # the server would allow it. Each flag is the room policy's answer
+    # (`room_policy`), asked the same way its route asks it.
+    # `can_write` (owner or tenant admin) covers its settings, instructions,
+    # roles, group and linked rooms; `can_manage` (the same tier) covers its
+    # access, archiving and deleting it and taking the platform channel's
+    # name. `can_attach` (anyone in the room) covers attaching a reference,
+    # document or package; `can_invite_agents` and `can_add_people`
+    # (anyone in the room) cover adding agents and people, though each agent's
+    # own addressing policy can still refuse a particular one
+    # (`room_invites`); `can_remove_members` (owner or tenant admin)
+    # covers taking them out. No membership flag is ever set on a direct
+    # or group conversation, whose platform fixes who is in it. `can_unlink`
+    # (owner or tenant admin) covers unlinking any resource; a resource's own
+    # owner may also unlink theirs, which its listing reports. `can_transfer`
+    # is `can_manage` for anything but a chat, which stays with its people.
+    # `can_change_members` is `can_remove_members`, for Switch Console
+    # releases that read one flag for adding and removing members: they offer
+    # both only where both are allowed.
     can_write: bool
-    can_change_members: bool
     can_manage: bool
+    can_attach: bool
+    can_invite_agents: bool
+    can_add_people: bool
+    can_remove_members: bool
+    can_change_members: bool
     can_unlink: bool
     can_transfer: bool
 
@@ -151,7 +164,7 @@ class RoomDetail(RoomSummary):
     agent_ids: list[str]
     agent_statuses: dict[str, str]
     roles: list[RoomRoleDetail] = []
-    # Agent ids configured to receive `room_join` events in this room.
+    # Agent ids configured to receive `room_join` and `room_leave` events in this room.
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
@@ -175,7 +188,7 @@ class RoomCreateRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
     bridge_id: str | None = None
@@ -184,8 +197,12 @@ class RoomCreateRequest(BaseModel):
     internal_only: bool = False
     external_channel_id: str | None = None
     group_id: str | None = None
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Left out, the room takes it from its channel: a private channel, group
+    # or DM makes a private room, anything else a public one.
+    read_visibility: str | None = None
+    # Accepted from older clients and ignored: a room has no write visibility
+    # of its own any more (see `room_policy`).
+    write_visibility: str | None = None
     roles: list[RoomRoleSpec] | None = None
 
 
@@ -195,6 +212,7 @@ class RoomUpdateRequest(BaseModel):
     instructions: str | None = None
     admin_mode: bool | None = None
     read_visibility: str | None = None
+    # Accepted from older clients and ignored, as on create.
     write_visibility: str | None = None
 
 
@@ -208,17 +226,28 @@ class RoomAgentsRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
 
 
 class RoomAgentUpdateRequest(BaseModel):
-    # Whether this agent receives `room_join` events in the room.
+    # Whether this agent receives `room_join` and `room_leave` events in the room.
     receives_join_events: bool
 
 
 class RoomUsersRequest(BaseModel):
     user_names: list[str]
+
+
+class RoomUsersRemoved(BaseModel):
+    """The room after people were taken out of it, and who did not go:
+    `not_in_room`, names nobody in the room goes by; `platform_refused`,
+    people the platform would not remove from its channel, who stay in the
+    room until someone removes them there."""
+
+    room: RoomDetail
+    not_in_room: list[str] = []
+    platform_refused: list[str] = []
 
 
 class RoomProtectionRequest(BaseModel):
@@ -446,7 +475,7 @@ class AgentDevice(BaseModel):
     id: str
     name: str
     # Whose device it is: two people's devices can share a name, as every
-    # Switch cloud device does.
+    # Switch Cloud device does.
     owner_name: str
     # Removed from Switch. The agent stays placed on it, and runs nowhere,
     # until its owner moves it.
@@ -900,6 +929,22 @@ class IdentityClaimant(BaseModel):
     can_unlink: bool
 
 
+class LinkPromptSummary(BaseModel):
+    """The message Switch sent the account alongside a code (CHOO-4121),
+    offering numbers to tap."""
+
+    # The number to show the Switch user: tapping it in the message confirms
+    # the link. Only ever on the response that issued it, like the code.
+    number: int
+    sent: bool
+    # Why no message went out, in words to show beside the code, when `sent`
+    # is false.
+    unavailable_reason: str | None
+    # A web link that opens the message on the platform, when it went out and
+    # the platform can link to it.
+    link: str | None
+
+
 class LinkCode(BaseModel):
     """A one-time code that confirms a link when posted from the account."""
 
@@ -911,6 +956,10 @@ class LinkCode(BaseModel):
     # How to post it on this platform, in Markdown. The platforms differ in
     # which messages reach Switch at all, so this is the bridge's to say.
     instructions: str
+    # Set when the caller asked for a prompt (`wants_prompt`): the quicker way
+    # to confirm, with the code as its fallback. Null for a caller that did
+    # not ask, which has no way to show the number.
+    prompt: LinkPromptSummary | None = None
 
 
 class LinkRequestSummary(BaseModel):
@@ -989,6 +1038,18 @@ class ClaimIdentityRequest(BaseModel):
     # refused while the link needs confirming, since that text would show the
     # code to the wrong person.
     expects_confirmation: bool = False
+    # That the caller can show the number from a prompt (CHOO-4121), so Switch
+    # should message the account one alongside the code. Left out by a Console
+    # from before then, whose user would be sent numbers they cannot match.
+    wants_prompt: bool = False
+
+
+class IssueLinkCodeRequest(BaseModel):
+    """Asking for a fresh link code. The body is optional: a Console from
+    before prompts sends none."""
+
+    # As on `ClaimIdentityRequest`.
+    wants_prompt: bool = False
 
 
 class LinkedIdentity(BaseModel):

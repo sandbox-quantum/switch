@@ -98,6 +98,8 @@ from switch_core.gateway.schemas import (
     SignupResponse,
     UpdateMeRequest,
 )
+from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
+from switch_core.observability.metrics import metrics
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
@@ -175,6 +177,8 @@ async def login(
     if user is None or not await verify_password_off_loop(
         req.password, user.password_hash
     ):
+        # Counted for the alert on password guessing; nothing about who.
+        metrics().increment(AUTH_SIGN_IN_FAILURES, {})
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     set_session_cookie(

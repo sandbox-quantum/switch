@@ -44,17 +44,25 @@ export interface RoomSummary {
   // their Switch name, rather than accounts on a messaging app. Absent from
   // servers that predate it.
   is_console_chat?: boolean;
-  // What the viewer may do, as the server decides it. `can_write` covers the
-  // room's settings, roles, links and attaching resources;
-  // `can_change_members` covers adding and removing its agents and people,
-  // which a direct or group chat takes from its platform instead;
-  // `can_manage` (owner or workspace admin) covers its access and deleting it;
-  // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
-  // reference, document or package from it; `can_transfer` (managing it,
-  // and never for a chat) covers handing it to someone else.
+  // What the viewer may do, as the server's room policy decides it.
+  // `can_write` (owner or workspace admin) covers the room's settings,
+  // roles, group and linked rooms; `can_manage` (the same) covers its access,
+  // archiving and deleting it. `can_attach`, `can_invite_agents` and
+  // `can_add_people` (anyone in the room) cover attaching resources and
+  // adding agents and people, though each agent's own "who can address me"
+  // setting can still refuse a particular one;
+  // `can_remove_members` (owner or workspace admin) covers taking them out,
+  // and neither membership flag is set on a direct or group chat. A person
+  // may also take out their own agent. `can_unlink` (owner or workspace
+  // admin) covers unlinking a reference, document or package; a resource's
+  // own owner may also unlink theirs while in the room. `can_transfer`
+  // (managing it, and never for a chat) covers handing it to someone else.
   can_write: boolean;
-  can_change_members: boolean;
   can_manage: boolean;
+  can_attach: boolean;
+  can_invite_agents: boolean;
+  can_add_people: boolean;
+  can_remove_members: boolean;
   can_unlink: boolean;
   can_transfer: boolean;
 }
@@ -107,7 +115,7 @@ export interface AgentDevice {
   id: string;
   name: string;
   // Whose device it is: two people's devices can share a name, as every
-  // Switch cloud device does.
+  // Switch Cloud device does.
   owner_name: string;
   // Removed from Switch: the agent stays placed on it, and runs nowhere,
   // until its owner moves it.
@@ -287,7 +295,7 @@ export interface RoomDetail extends RoomSummary {
   agent_ids: string[];
   agent_statuses: Record<string, string>;
   roles: RoomRoleDetail[];
-  // Agent ids configured to receive room_join events in this room.
+  // Agent ids configured to receive room_join and room_leave events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
   // What deleting the room can do to its platform channel, as that platform's
@@ -340,7 +348,7 @@ export interface CreateRoomInput {
   agent_names?: string[];
   // Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
   include_subagents_for?: string[];
-  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join
+  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join and room_leave
   // events in this room.
   join_event_listeners?: string[];
   user_names?: string[];
@@ -350,8 +358,9 @@ export interface CreateRoomInput {
   internal_only?: boolean;
   external_channel_id?: string | null;
   group_id?: string | null;
+  // Left out, the room takes it from its channel: a private channel makes a
+  // private room, anything else a public one.
   read_visibility?: "public" | "private";
-  write_visibility?: "public" | "private";
   roles?: RoomRoleSpec[];
 }
 
@@ -361,7 +370,6 @@ export interface UpdateRoomInput {
   instructions?: string | null;
   admin_mode?: boolean;
   read_visibility?: "public" | "private";
-  write_visibility?: "public" | "private";
 }
 
 /** A failed gateway call that keeps what the server said: the status, for
@@ -767,6 +775,30 @@ export async function fetchAgents(): Promise<AgentSummary[] | null> {
  * a failure can say why. */
 export async function loadAgents(): Promise<AgentListEntry[]> {
   return jsonRequest<AgentListEntry[]>("/agents", "GET");
+}
+
+/**
+ * The agents the viewer may bring in, as the server's invite rule decides: into
+ * `roomId`, less those already in it, or into a new room when it is absent.
+ * `agent_ids` is null when the server cannot say (one from before the route),
+ * where a picker offers every agent and leaves the refusal to the invite.
+ */
+export async function fetchRoomAgentCandidates(
+  roomId?: string,
+): Promise<{ agent_ids: string[] | null }> {
+  const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
+  const answer = await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
+  return { agent_ids: answer?.agent_ids ?? null };
+}
+
+/** Of `agents`, the ones a picker may offer given the candidates: all when unknown. */
+export function invitableAgents<T extends { id: string }>(
+  agents: readonly T[],
+  candidateIds: readonly string[] | null | undefined,
+): T[] {
+  if (!candidateIds) return [...agents];
+  const allowed = new Set(candidateIds);
+  return agents.filter((agent) => allowed.has(agent.id));
 }
 
 export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
@@ -3097,7 +3129,13 @@ export interface ServiceConnection {
   server_setup_needed: boolean;
   /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
   app_source: "organization" | "server";
-  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  /**
+   * Why it can be granted for reading only here (its GitHub App lacks the
+   * write permissions), said beside the write choice it disables; null where
+   * writing can be granted too.
+   */
+  read_only_reason: string | null;
+  status: "not_connected" | "active" | "needs_reauthorization";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
@@ -3258,8 +3296,10 @@ export async function fetchGitHubConnection(): Promise<GitHubConnection> {
 }
 
 /**
- * Owner-only addressing: the owner, and agents the owner runs. What the grant
- * screens offer when anyone can address an agent with grants.
+ * Owner-only addressing: the owner alone, none of the owner's agents, as
+ * Switch Console sends it. What the grant screens offer when others can
+ * address an agent with grants: an agent the owner runs could pass on a
+ * request someone else gave it.
  */
 export const OWNER_ONLY_POLICY: AddressingPolicy = {
   rules: [
@@ -3269,7 +3309,7 @@ export const OWNER_ONLY_POLICY: AddressingPolicy = {
       users: [],
       agents: [],
       owner: true,
-      owner_agents: true,
+      owner_agents: false,
     },
   ],
 };
@@ -3319,6 +3359,13 @@ export interface ConnectorApp {
   scopes: string[];
   /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
   setup_blocked: string | null;
+  /**
+   * A GitHub App short of the write permissions, as GitHub last answered:
+   * agents can only read through it, and a write grant is refused.
+   */
+  read_only: boolean;
+  /** The permissions it lacks to write, as the App's settings page names them. */
+  lacks_write: string[];
   install_url: string | null;
   /** When the app saved here was first saved; null with none saved. */
   created_at: string | null;

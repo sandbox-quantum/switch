@@ -21,9 +21,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Agent, ApiKey, Client, Room, User
+from switch_core.db.models import Agent, ApiKey, Client, ClientRoom, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomService
@@ -73,7 +74,32 @@ class _RecordingProvisioning:
     ) -> None:
         self.calls.append(("invite", transport_user_id, self._tracker.live))
 
-    async def kick_user(self, transport_room_id: str, transport_user_id: str) -> None:
+    async def record_leave(
+        self,
+        session: AsyncSession,
+        transport_room_id: str,
+        transport_user_id: str,
+        **_kwargs: object,
+    ) -> Callable[[], None]:
+        """Remove the `client_rooms` row in the caller's transaction, as the
+        real one does; the departure it would write is not this test's."""
+        await session.execute(
+            delete(ClientRoom).where(
+                ClientRoom.client_id.in_(
+                    select(Client.id).where(
+                        Client.transport_user_id == transport_user_id
+                    )
+                ),
+                ClientRoom.room_id.in_(
+                    select(Room.id).where(Room.transport_room_id == transport_room_id)
+                ),
+            )
+        )
+        return lambda: None
+
+    async def kick_user(
+        self, transport_room_id: str, transport_user_id: str, **_kwargs: object
+    ) -> None:
         self.calls.append(("kick", transport_user_id, self._tracker.live))
 
     async def delete_room(self, transport_room_id: str) -> None:

@@ -34,7 +34,7 @@ cloud machine (`kind` "ec2" in `list_machines`).
   they stopped the machine themselves: ask them to press **Start** on its card under
   [your agents](switchdash://open/agents), then try again.
 - **No cloud machine is listed:** a workspace that never used one has none yet. Ask them to
-  open [Add a new agent](switchdash://open/agents/new) and choose **Switch cloud** under
+  open [Add a new agent](switchdash://open/agents/new) and choose **Switch Cloud** under
   where it runs, which sets it up. Then ask again, and create the agent once `list_machines`
   shows it.
 - **Only their computer is listed and they're on Switch Cloud:** say the cloud machine is
@@ -176,17 +176,18 @@ Be clear about what that means:
 - **It is their own account.** The agent acts as them there.
 - **Only on that machine.** An agent on a cloud machine or another computer
   does not get it.
-- It does not show on the agent's Connections tab.
+- It does not show on the agent's Connectors tab.
 
 ## Connectors on a server Switch Console runs
 
-The server's address is plain `http://127.0.0.1`. Atlassian and Google sign-ins
-work there with an up-to-date Switch Console, once the server's admin has set up
-the vendor app: on the web gateway's Connectors page, or, for a Switch running
-without Docker, "Set up" on its card in
-[Connector apps](switchdash://open/admin?tab=apps). GitHub does not: GitHub Apps
-require an https address. For GitHub, the computer's own access (see "Access the
-machine already has") is the way.
+The server's address is plain `http://127.0.0.1`. Atlassian, Google and GitHub
+sign-ins work there with an up-to-date Switch Console and server, once the
+server's admin has set up the vendor app: on the web gateway's Connectors page,
+or, for a Switch running without Docker, "Set up" on its card in
+[Connector apps](switchdash://open/admin?tab=apps). GitHub takes that address
+because it is the computer's own; it refuses any other plain http one. For
+GitHub, the computer's own access (see "Access the machine already has") needs
+no app at all.
 
 ## Which server they're on
 

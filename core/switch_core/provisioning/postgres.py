@@ -103,7 +103,9 @@ class PostgresProvisioning:
         """
         return new_room_id()
 
-    async def invite_to_room(self, room_id: str, user_id: str) -> None:
+    async def invite_to_room(
+        self, room_id: str, user_id: str, *, quiet: bool = False
+    ) -> None:
         """Put a user in a room, waking them if they are running.
 
         A live client joins itself, which is what leaves its transport
@@ -141,6 +143,7 @@ class PostgresProvisioning:
                 room_id,
                 user_id,
                 (switch_room_id, tenant_id, client_id, display_name),
+                quiet=quiet,
             )
             await session.commit()
         committed()
@@ -161,7 +164,12 @@ class PostgresProvisioning:
         room_id: str,
         user_id: str,
         resolved: tuple[str, str, str, str],
+        *,
+        quiet: bool = False,
     ) -> Callable[[], None]:
+        """Record a membership and the arrival that announces it. A `quiet`
+        arrival is history only: it is marked so no agent is woken for it
+        (someone found already in a channel, not someone arriving now)."""
         switch_room_id, tenant_id, client_id, display_name = resolved
         if not await self._room_store.add_client(session, client_id, switch_room_id):
             # Recorded by another writer meanwhile, which wrote the arrival too.
@@ -177,7 +185,11 @@ class PostgresProvisioning:
             body=None,
             formatted_body=None,
             thread_root_event_id=None,
-            content={"membership": "join", "displayname": display_name},
+            content={
+                "membership": "join",
+                "displayname": display_name,
+                **({"quiet": True} if quiet else {}),
+            },
         )
         routed = await self._router.store(
             session,
@@ -194,10 +206,93 @@ class PostgresProvisioning:
 
         return committed
 
-    async def kick_user(self, room_id: str, user_id: str) -> None:
-        """Remove a membership, stopping a live client's delivery with it.
+    async def record_leave(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        user_id: str,
+        *,
+        removed_by: str | None = None,
+    ) -> Callable[[], None]:
+        """Remove a membership and write its departure in the caller's
+        transaction; what to run once the caller has committed. The caller
+        follows with `kick_user`, which finds the row gone and so writes no
+        second departure, but still stops the client reading the room."""
+        resolved = await self._resolve(session, room_id, user_id)
+        switch_room_id, _, client_id, _ = resolved
+        if not await self._room_store.remove_client(session, client_id, switch_room_id):
+            return lambda: None
+        return await self._write_leave(
+            session, room_id, user_id, resolved, removed_by=removed_by
+        )
 
-        Already out is success, per the port.
+    async def _write_leave(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        user_id: str,
+        resolved: tuple[str, str, str, str],
+        *,
+        removed_by: str | None,
+    ) -> Callable[[], None]:
+        """Write the departure that announces a membership just removed.
+
+        Sent as the member who left, as an arrival is, so `state_key` names
+        them and nobody's own event is the row they wrote: the member who left
+        is not told about their own departure. Returns what to run once the
+        caller has committed.
+        """
+        switch_room_id, tenant_id, client_id, display_name = resolved
+        content: dict[str, str] = {
+            "membership": "leave",
+            "prev_membership": "join",
+            "displayname": display_name,
+        }
+        if removed_by:
+            content["removed_by"] = removed_by
+        departure = Message(
+            room_id=switch_room_id,
+            transport_event_id=f"sw_{uuid.uuid4().hex}",
+            sender_id=user_id,
+            sender_client_id=client_id,
+            sender_name=display_name,
+            event_type=MEMBERSHIP_EVENT_TYPE,
+            msgtype=None,
+            body=None,
+            formatted_body=None,
+            thread_root_event_id=None,
+            content=content,
+        )
+        routed = await self._router.store(
+            session,
+            tenant_id=tenant_id,
+            room_id=switch_room_id,
+            transport_room_id=room_id,
+            message=departure,
+            attachments=[],
+        )
+        return routed.committed
+
+    async def kick_user(
+        self,
+        room_id: str,
+        user_id: str,
+        *,
+        removed_by: str | None = None,
+        announce: bool = True,
+    ) -> bool:
+        """Remove a membership, stopping a live client's delivery with it.
+        Returns whether this call removed it.
+
+        Already out is success, per the port, and returns False: a caller
+        told of the same departure twice acts on it once.
+
+        The departure is written in the same transaction as the removal, and
+        only by the call that removed the row, as an arrival is only written
+        by the call that recorded one: a member taken out twice leaves once.
+        Like an arrival it is stored with no sentence, only the facts
+        (`membership` "leave", and who removed them when someone did), so how
+        it reads stays the reader's to phrase.
 
         The wake-up is the other half of the removal, not a nicety. A running
         client holds its own subscription to the room, so deleting the row on
@@ -213,10 +308,21 @@ class PostgresProvisioning:
         the right one carried on reading a room it is not.
         """
         async with self._session_factory() as session:
-            switch_room_id, tenant_id, client_id, _ = await self._resolve(
+            switch_room_id, tenant_id, client_id, display_name = await self._resolve(
                 session, room_id, user_id
             )
-            await self._room_store.remove_client(session, client_id, switch_room_id)
+            was_member = await self._room_store.remove_client(
+                session, client_id, switch_room_id
+            )
+            departed: Callable[[], None] | None = None
+            if was_member and announce:
+                departed = await self._write_leave(
+                    session,
+                    room_id,
+                    user_id,
+                    (switch_room_id, tenant_id, client_id, display_name),
+                    removed_by=removed_by,
+                )
             removed = await self._router.remove(
                 session,
                 tenant_id=tenant_id,
@@ -224,9 +330,12 @@ class PostgresProvisioning:
                 room_id=switch_room_id,
             )
             await session.commit()
+        if departed is not None:
+            departed()
         await removed.committed()
         await self._invites.remove(client_id, room_id)
         self._membership_changed(tenant_id, switch_room_id, client_id)
+        return was_member
 
     async def delete_room(self, room_id: str) -> None:
         """Nothing of its own to discard.

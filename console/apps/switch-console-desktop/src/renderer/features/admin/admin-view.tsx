@@ -7,6 +7,7 @@ import {
   useConnectorCatalog,
   useServerFeatureFlags,
 } from '@renderer/features/connectors/connectors-queries';
+import { FlagsUnreadable } from '@renderer/features/connectors/flags-unreadable';
 import { GuardrailsSection } from '@renderer/features/switch-servers/GuardrailsSection';
 import { MessagingAppsCard } from '@renderer/features/switch-servers/MessagingAppsCard';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -53,13 +54,24 @@ const AdminTitlebar = observer(function AdminTitlebar() {
 const AdminPanel = observer(function AdminPanel() {
   const { params } = useParams('admin');
   const { serverId } = params;
-  const access = connectorsPageAccess(useServerFeatureFlags(serverId));
+  const flags = useServerFeatureFlags(serverId);
+  const access = connectorsPageAccess(flags);
   const workspace = workspacesStore.onServerInScope(serverId);
   const groups = adminGroupsInScope(serverId, access === 'shown');
   const section = shownAdminSection(groups, params.section);
   const serverName =
     switchServersStore.servers.find((s) => s.id === serverId)?.name ?? 'This server';
 
+  // Only the connector sections need the flags; the others still open.
+  if (
+    access === 'unreadable' &&
+    (section === null || params.section === 'connectors' || params.section === 'apps')
+  )
+    return (
+      <ServerPage width={880} title="Admin" description="">
+        <FlagsUnreadable flags={flags} />
+      </ServerPage>
+    );
   if (access === 'loading' || workspace === null)
     return (
       <ServerPage width={880} title="Admin" description="">
