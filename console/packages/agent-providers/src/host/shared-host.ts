@@ -1184,7 +1184,9 @@ export async function hostSessionProcess(input: {
 }): Promise<void> {
   const { config } = input;
   const parent = connectParent(input.port);
-  const mcp = await startSessionMcp(parent);
+  const mcp = await startSessionMcp(parent, {
+    compactTools: config.session.provider === 'antigravity',
+  });
   const redactions = new Redactions();
   parent.onRedactions((values) => redactions.addListed(values));
   const serviceNotices = new ServiceNotices();
