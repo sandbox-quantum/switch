@@ -388,7 +388,7 @@ def test_the_hosted_alerts_panel_lists_every_alert_on_its_charts() -> None:
     query = alerts["query"]
     assert query.startswith('tag:"service:REPLACE-WITH-SERVICE" (')
     assert set(re.findall(r'"([^"]+)"', query.split(" ", 1)[1])) == expected
-    assert len(expected) == 13
+    assert len(expected) == 14
 
 
 def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:
