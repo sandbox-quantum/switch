@@ -94,6 +94,12 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
         def set_channel_rename_handler(self, handler: Any) -> None:
             pass
 
+        def set_user_left_handler(self, handler: Any) -> None:
+            pass
+
+        def set_member_sync_hooks(self, **hooks: Any) -> None:
+            pass
+
         def set_agent_presentation_resolver(self, resolver: Any) -> None:
             # Not what this test is about; present so the stub satisfies what
             # `start` installs on its adapter.
@@ -118,6 +124,7 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
     bridge._refresh_channel_types = _noop  # type: ignore[assignment,method-assign]
     bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
     bridge._identity_task = None
+    bridge._member_sync_tasks = set()
 
     asyncio.run(CollaborationCore.start(bridge))
 

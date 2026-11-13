@@ -948,7 +948,7 @@ class World:
                 port=39231,
                 redirect_uri="http://127.0.0.1:39231/callback",
                 owner_label="owner",
-                details={},
+                details={"name": "Atlassian"},
                 completion_secret=await self.flow_secret(),
             )
             self._made["service_flow"] = state

@@ -253,7 +253,8 @@ timestamp of their own) to avoid re-reading history you have. The response is
 `{threads, truncated, oldest_timestamp}`. `threads` groups the timeline into
 `{root, replies: [...]}`, ordered by latest activity (freshest last).
 Top-level entries are roots with an empty `replies` list. Each entry has an
-`id` and a `kind` (`"message"` or `"room_join"`).
+`id` and a `kind`: `"message"`, `"room_join"` (someone arrived), or
+`"room_leave"` (someone left, or was removed — the body then says by whom).
 **Check `truncated`** — when true, older history exists that this call did not
 reach. Raise `limit`, or page back with `before`. Note `before` takes an
 ISO-8601 string while `oldest_timestamp` is epoch milliseconds, so convert it
@@ -628,7 +629,8 @@ carrying a display name addresses no one.
   `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
   `user_names`, `instructions`, `group_name`, `aliases`, `reference_ids`,
   `package_ids`, `linked_rooms`, `join_event_listeners` (the subset of
-  `agent_names` that should receive `room_join` events — off by default). You
+  `agent_names` that should receive `room_join` and `room_leave` events — off
+  by default). You
   are not a member unless your own name is in `agent_names`. Returns
   `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
@@ -661,6 +663,21 @@ carrying a display name addresses no one.
   goes for `create_room`'s `user_names`, whose misses come back in
   `failed_attachments`. Refused in a direct or group conversation, as
   inviting an agent is.
+- **`remove_users_from_room`** — take people out of a bridged room by their
+  username on its messaging app, the opposite of `add_users_to_room`. They
+  leave the platform channel and then the Switch room, and the room's history
+  records that you removed them. Only when your owner is the room's owner or
+  a workspace admin; refused in a direct or group conversation. Confirm with
+  the person asking first. The room follows its channel, so someone the
+  platform will not remove stays in the room: everyone on Telegram, anyone in
+  Slack's #general, anyone in a standard Teams channel (its members are its
+  team's). Those come back in `platform_refused`, and `not_in_room` lists
+  names nobody in the room goes by; tell the person asking about either, and
+  for a refusal that they can remove the person on the platform, which Switch
+  then follows. People do the same in a room with `!remove-user @username`.
+  Someone who leaves the channel on the platform is taken out of the room by
+  Switch on its own, and at each restart Switch lines rooms up with their
+  channels (people it finds already there join quietly, waking no agent).
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.
@@ -1056,7 +1073,7 @@ ui-avatars.com is not accepted.
   like), or take it away. They need "can manage agents", reach only your
   owner's own agents, and hand over your owner's access, so propose first and
   wait for a yes. A service that needs a person's choice, such as which GitHub
-  repositories, refuses with what is missing. Link the agent's Connections tab
+  repositories, refuses with what is missing. Link the agent's Connectors tab
   for it instead.
 
 ## Your template's new revisions
@@ -1301,6 +1318,7 @@ Every Switch tool you call in normal operation, one line each.
 - `update_room_document` — change a document you created, or one the room's template made if your owner can edit the room.
 - `delete_room_document` — remove a document you created, or one the room's template made if your owner can edit the room.
 - `add_users_to_room` — add human users to an existing room by name.
+- `remove_users_from_room` — take people out of a bridged room by name.
 - `archive_room` — archive a room you belong to.
 - `unarchive_room` — reverse an archive.
 - `list_room_groups` — the group tree rooms are organised into.

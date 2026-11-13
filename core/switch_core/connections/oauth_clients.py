@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -34,6 +35,8 @@ from switch_core.connections.adapters.oauth import (
 from switch_core.connections.loader import RedirectMode
 from switch_core.db.models import ServiceOAuthClient
 from switch_core.keys import Keyring
+
+logger = logging.getLogger(__name__)
 
 # Where Switch Console's listener takes a sign-in's code back.
 LOOPBACK_CALLBACK_PATH = "/switch-services/callback"
@@ -224,8 +227,10 @@ def _credentials(answer: dict[str, Any]) -> OAuthClientCredentials:
     if method == "none" or not isinstance(secret, str) or not secret:
         return OAuthClientCredentials(client_id, None, authentication=None)
     if method not in ("client_secret_basic", "client_secret_post"):
+        # The method is the vendor's text, so only the log names it.
+        logger.warning("Unsupported client authentication method: %r", method)
         raise ServiceAdapterError(
-            f"The vendor registered Switch to authenticate with {method}, "
-            "which Switch does not support."
+            "The vendor registered Switch with a client authentication method "
+            "that Switch does not support."
         )
     return OAuthClientCredentials(client_id, secret, authentication=method)

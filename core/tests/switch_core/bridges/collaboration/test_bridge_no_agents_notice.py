@@ -76,6 +76,7 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         _owner_from_platform_account=_owner_from_platform_account,
         add_room_mapping=add_room_mapping,
         _provisioning_channels=set(),
+        _sync_members_soon=lambda channel_ids: None,
         _channel_to_room={},
         _room_tenants={},
         _bridge_display_name="Switch",

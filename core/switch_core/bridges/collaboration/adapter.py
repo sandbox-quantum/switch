@@ -4,7 +4,7 @@ import logging
 import math
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.install import InboundWebhook, WebhookReq
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
+    ChannelMembers,
     ChannelRetirement,
     ChannelType,
     CreatedChannel,
@@ -42,6 +43,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -746,6 +748,17 @@ class PlatformAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_user_left_handler: called when a person leaves a bridged
+        # channel or is taken out of it. Unset on an adapter running without
+        # a bridge core behind it, where a departure is dropped.
+        self._on_user_left: Callable[[InboundUserLeave], Awaitable[None]] | None = None
+        # Set by set_member_sync_hooks: the channels this bridge has rooms for,
+        # and a way to ask for some of them to be lined up with their members
+        # again. For a platform whose membership changes arrive per guild
+        # rather than per channel (Discord), which must not act on channels
+        # nobody bridged.
+        self._bridged_channels: Callable[[], Collection[str]] | None = None
+        self._request_member_sync: Callable[[list[str]], None] | None = None
         # Set by set_interaction_handler. Called when someone operates a control
         # on a message this bridge posted. Left unset on a platform with no such
         # controls, and on an adapter running without a bridge core behind it.
@@ -1908,6 +1921,45 @@ class PlatformAdapter(ABC):
         """
         ...
 
+    async def remove_users_from_channel(
+        self, channel_id: str, user_external_ids: list[str]
+    ) -> list[str]:
+        """Take the given people out of a channel; return the ids that could
+        not be.
+
+        The base cannot remove anyone and says so for every id: a platform
+        whose bot may not take people out (Telegram, which cannot add them
+        either) keeps it. As with adding, one refusal does not stop the rest.
+        """
+        return list(user_external_ids)
+
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
+        """Who is in a channel, for lining its room up with it, or None on a
+        platform that cannot list a channel's members (Telegram).
+
+        People only: bots, the app itself and Switch's agents are left out.
+        A listing cut short says so (`complete` False) rather than passing
+        for the whole channel, as the caller removes whoever is missing from
+        a complete one.
+
+        `known_people` are platform ids Switch already files as people on
+        this bridge: an adapter that has to ask the platform about each
+        member may skip them, and list them with an empty name.
+        """
+        return None
+
+    async def members_gone(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> set[str] | None:
+        """Of these people, the ones the platform says are no longer in the
+        channel, asked one by one: for a platform that cannot list a
+        channel's members (Telegram) but can say whether one person is in it.
+        None where the platform cannot answer either. Someone it would not
+        answer about is not counted as gone."""
+        return None
+
     @abstractmethod
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Give the agent its platform handle, or bring an existing one in
@@ -2190,6 +2242,47 @@ class PlatformAdapter(ABC):
         platforms with interactive message controls ever call it, and an adapter
         that never does needs no change to go on working."""
         self._on_interaction = handler
+
+    def set_user_left_handler(
+        self, handler: Callable[[InboundUserLeave], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a person leaving a bridged channel.
+
+        A setter rather than another argument to `start`, as for
+        interactions: a platform that never reports departures needs no
+        change to go on working."""
+        self._on_user_left = handler
+
+    def set_member_sync_hooks(
+        self,
+        *,
+        bridged_channels: Callable[[], Collection[str]],
+        request_sync: Callable[[list[str]], None],
+    ) -> None:
+        """Install the bridge core's view of which channels have rooms, and
+        its way to line channels' rooms up with their members again.
+
+        A setter for the same reason as `set_user_left_handler`: only a
+        platform whose membership changes arrive per server rather than per
+        channel (Discord) needs them."""
+        self._bridged_channels = bridged_channels
+        self._request_member_sync = request_sync
+
+    def _bridged_channel_ids(self) -> set[str]:
+        """The channels this bridge has rooms for, or none when unknown."""
+        if self._bridged_channels is None:
+            return set()
+        return set(self._bridged_channels())
+
+    def _resync_members(self, channel_ids: list[str]) -> None:
+        """Ask the bridge core to line these channels' rooms up again."""
+        if self._request_member_sync is not None and channel_ids:
+            self._request_member_sync(channel_ids)
+
+    async def _user_left(self, leave: InboundUserLeave) -> None:
+        """Hand a departure to the bridge core, if one is listening."""
+        if self._on_user_left is not None:
+            await self._on_user_left(leave)
 
     def set_activity_resolver(
         self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]

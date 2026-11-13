@@ -5195,6 +5195,21 @@ class WorkspaceServiceSetting(TenantScoped, Base):
     )
 
 
+#: Above every revision a grant took before the sequence, which counted up
+#: from 1 per grant.
+SERVICE_GRANT_REVISION_FLOOR = 2**30
+
+service_grant_revision_sequence = Sequence(
+    "service_grant_revision",
+    metadata=Base.metadata,
+    data_type=Integer,
+    start=SERVICE_GRANT_REVISION_FLOOR,
+    minvalue=SERVICE_GRANT_REVISION_FLOOR,
+    maxvalue=2**31 - 1,
+    cycle=False,
+)
+
+
 class ServiceGrant(TenantScoped, Base):
     """An agent may use its owner's connection to a service.
 
@@ -5205,6 +5220,9 @@ class ServiceGrant(TenantScoped, Base):
     `tool_mode` `allow` means only `tools`; `deny` means every tool of the
     access level except `tools`. `revision` moves on every change to the grant,
     so a token being issued as it moves is taken back rather than recorded.
+    It comes from `service_grant_revision`, so a grant removed and made again
+    never takes a revision the removed one had: an agent host keeps a token
+    while the revision it reads is the one the token was issued under.
     """
 
     __tablename__ = "service_grants"
@@ -5247,7 +5265,9 @@ class ServiceGrant(TenantScoped, Base):
     resources: Mapped[dict] = mapped_column(JSONB, nullable=False)
     account_id: Mapped[str] = mapped_column(Text, nullable=False)
     revision: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("1")
+        Integer,
+        nullable=False,
+        server_default=service_grant_revision_sequence.next_value(),
     )
     created_by: Mapped[str] = mapped_column(
         Text, ForeignKey("users.id"), nullable=False

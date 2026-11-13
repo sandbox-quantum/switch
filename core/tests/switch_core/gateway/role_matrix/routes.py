@@ -594,6 +594,12 @@ ROUTES: dict[str, Case] = {
         json={"user_names": []},
         why="Let through, then refused: people join through the room's platform channel, and it has none.",
     ),
+    "POST /gateway/rooms/{room_id}/users/remove": post(
+        f"{G}/rooms/{{room}}/users/remove",
+        owner_or_admins(ok=400),
+        json={"user_names": ["nobody"]},
+        why="Removing a person is the owner's or an admin's; let through, then refused, as the room has no platform channel to take them out of.",
+    ),
     "PUT /gateway/rooms/{room_id}/group": put(
         f"{G}/rooms/{{room}}/group",
         admins(),
@@ -1095,6 +1101,16 @@ ROUTES: dict[str, Case] = {
         owner(ok=503, refused=410),
         json={"completion_secret": "{flow_secret}", "code": "matrix"},
         why="Its owner's; refused then, this server having no Atlassian app.",
+    ),
+    "POST /gateway/service-connections/{service}/flows/{flow_id}/fail": post(
+        f"{G}/service-connections/atlassian/flows/{{service_flow}}/fail",
+        owner(ok=400, refused=410),
+        json={
+            "completion_secret": "m" * 43,
+            "error": "access_denied",
+            "error_description": None,
+        },
+        why="Its owner's; refused then, the secret not being the one it was started with.",
     ),
     "GET /gateway/provider-connections/github": get(
         f"{G}/provider-connections/github", SELF

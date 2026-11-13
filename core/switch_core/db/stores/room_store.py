@@ -519,7 +519,7 @@ class RoomStore:
         """Add agents to a room.
 
         `join_event_listeners` is the subset of `agent_ids` that should receive
-        `room_join` events in this room. Any agent not in that set keeps the
+        `room_join` and `room_leave` events in this room. Any agent not in that set keeps the
         column default (off) — agents are opted in to join events explicitly.
         An agent already in the room is left as it is, so two concurrent adds
         of the same agent both succeed.
@@ -543,7 +543,7 @@ class RoomStore:
     async def set_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str, value: bool
     ) -> None:
-        """Toggle whether `agent_id` receives `room_join` events in `room_id`.
+        """Toggle whether `agent_id` receives `room_join` and `room_leave` events in `room_id`.
 
         Raises ValueError if the agent is not a member of the room.
         """
@@ -562,7 +562,7 @@ class RoomStore:
     async def get_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str
     ) -> bool:
-        """Whether `agent_id` is configured to receive `room_join` events in
+        """Whether `agent_id` is configured to receive `room_join` and `room_leave` events in
         `room_id`. Returns False if the agent is not a member."""
         result = await session.execute(
             select(room_agents.c.receives_join_events).where(
@@ -575,7 +575,7 @@ class RoomStore:
     async def get_join_event_listeners(
         self, session: AsyncSession, room_id: str
     ) -> list[str]:
-        """Agent ids in `room_id` configured to receive `room_join` events."""
+        """Agent ids in `room_id` configured to receive `room_join` and `room_leave` events."""
         result = await session.execute(
             select(room_agents.c.agent_id).where(
                 room_agents.c.room_id == room_id,
@@ -766,14 +766,23 @@ class RoomStore:
 
     async def remove_client(
         self, session: AsyncSession, client_id: str, room_id: str
-    ) -> None:
-        await session.execute(
-            delete(ClientRoom).where(
+    ) -> bool:
+        """Delete a membership, and say whether this call deleted it.
+
+        Whoever deletes it writes the departure that announces it, the mirror
+        of `add_client`: two writers racing to remove one member must not tell
+        the room twice that they left.
+        """
+        removed = await session.scalar(
+            delete(ClientRoom)
+            .where(
                 ClientRoom.client_id == client_id,
                 ClientRoom.room_id == room_id,
             )
+            .returning(ClientRoom.client_id)
         )
         await session.flush()
+        return removed is not None
 
     async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
         """The rooms a client is a member of.

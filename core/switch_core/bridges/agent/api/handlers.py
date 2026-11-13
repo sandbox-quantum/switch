@@ -1530,7 +1530,7 @@ async def poll_notifications(
 ) -> EventResponse | Response:
     """Long-poll the agent's notification stream across all its rooms.
 
-    Returns notifiable events only (addressed messages and the room_join
+    Returns notifiable events only (addressed messages and the room_join / room_leave
     events the agent listens for). Backed by a separate queue, so it never
     drains the per-room event queues live session pollers consume. Used by the
     auto_session watcher to decide when to spawn a session.

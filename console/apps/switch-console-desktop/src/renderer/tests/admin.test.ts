@@ -15,6 +15,10 @@ function service(overrides: Partial<WorkspaceService> = {}): WorkspaceService {
     updated_at: null,
     connected_members: 0,
     granted_agents: 0,
+    unavailable_code: null,
+    unavailable_reason: null,
+    can_change: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -31,6 +35,7 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     agent_access_note: null,
@@ -39,6 +44,7 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
     external_identity: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
   };
 }
 

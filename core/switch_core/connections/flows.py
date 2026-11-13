@@ -15,7 +15,9 @@ Either way Console posts the code back with its completion secret, and Core
 exchanges it, reads the account and writes the connection through
 `ServiceBroker.connect` in that one step. The flow then reads connected, or
 failed with the reason, holding no token, until it expires or Console drops
-it.
+it. A vendor that sends the browser back with an error rather than a code
+fails the flow with what it said: at Core's callback in core mode, and
+through Console, whose listener received it, in loopback mode.
 
 Flows are rows in `sign_in_flows` (`connections/sign_in_flows.py`), as
 GitHub's are, so any switch-core process can take any step: ten minutes each,
@@ -24,13 +26,16 @@ at most 256 per workspace, one per person.
 
 from __future__ import annotations
 
+import logging
 import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
 from switch_core.connections.adapters import (
     ReauthorizationRequiredError,
     ServiceAdapterError,
+    ServiceUnavailableError,
 )
 from switch_core.connections.adapters.oauth import (
     Identity,
@@ -51,7 +56,10 @@ from switch_core.connections.sign_in_flows import (
     SignInFlows,
     StoredFlow,
     digest,
+    vendor_refusal,
 )
+
+logger = logging.getLogger(__name__)
 
 KIND = "service"
 # Some vendors issue codes as signed tokens: Atlassian's run past 2,000
@@ -66,6 +74,11 @@ def client_changed(name: str) -> str:
 
 class FlowError(Exception):
     """The flow cannot go on; the message is for the person."""
+
+
+class SignInRefusedError(FlowError):
+    """The vendor sent the browser back with a refusal, and the flow failed
+    with it. Unlike other `FlowError`s, the message is for the browser too."""
 
 
 @dataclass(frozen=True)
@@ -242,9 +255,15 @@ class ServiceFlows:
         """Where the browser signs in at the vendor, and the nonce that marks
         the browser sent there; once per flow. The flow records the client it
         is sent through, so a code issued to one client is never exchanged
-        with another."""
+        with another. When the adapter or the vendor refuses, the flow fails
+        with why, for Console to show: trying the same sign-in again cannot
+        help. The `ServiceAdapterError` is raised on."""
         nonce = secrets.token_urlsafe(32)
-        client_id = await adapter.client_id()
+        try:
+            client_id = await adapter.client_id()
+        except ServiceAdapterError as error:
+            await self.refuse(flow.stored, str(error))
+            raise
         taken = await self._flows.advance(
             flow.stored,
             expect=("pending",),
@@ -263,14 +282,27 @@ class ServiceFlows:
                 code_challenge=s256(flow.stored.verifier),
                 scopes=list(flow.stored.details["scopes"]),
             )
+        except ServiceAdapterError as error:
+            await self.refuse(taken, str(error))
+            raise
         except BaseException:
             await self._flows.discard(flow.stored)
             raise
         return url, nonce
 
-    async def deliver(self, flow: ServiceFlow, code: str, nonce: str) -> str:
+    async def deliver(
+        self,
+        flow: ServiceFlow,
+        *,
+        code: str,
+        error: str,
+        description: str | None,
+        nonce: str,
+    ) -> str:
         """The browser is back at Core's callback, in core mode: where it
-        takes the code on to Console's listener. Once per flow."""
+        takes the code on to Console's listener. Once per flow. Back with the
+        vendor's `error` instead, the flow fails with it and
+        `SignInRefusedError` says why."""
         if (
             flow.mode != "core"
             or flow.status != "authorizing"
@@ -279,14 +311,14 @@ class ServiceFlows:
         ):
             raise FlowError("The sign-in could not be verified.")
         if not code:
-            error = f"{flow.name} sign-in was cancelled."
+            refusal = vendor_refusal(flow.name, error, description)
             await self._flows.advance(
                 flow.stored,
                 expect=("authorizing",),
                 to="failed",
-                changes={"error": error},
+                changes={"error": refusal},
             )
-            raise FlowError(error)
+            raise SignInRefusedError(refusal)
         taken = await self._flows.advance(
             flow.stored, expect=("authorizing",), to="delivered", changes={}
         )
@@ -296,6 +328,36 @@ class ServiceFlows:
             {"code": code, "state": flow.state}
         )
 
+    async def vendor_refused(
+        self,
+        flow: ServiceFlow,
+        *,
+        completion_secret: str,
+        error: str,
+        description: str | None,
+    ) -> None:
+        """Console's listener was sent the vendor's refusal rather than a
+        code, in loopback mode, and hands it on with its secret: the flow
+        fails with what the vendor said. Once per flow."""
+        if (
+            not flow.stored.holds_secret(completion_secret)
+            or flow.mode != "loopback"
+            or flow.status != "authorizing"
+        ):
+            raise FlowError(
+                f"{flow.name} sign-in could not be verified. Connect again."
+            )
+        failed = await self._flows.advance(
+            flow.stored,
+            expect=("authorizing",),
+            to="failed",
+            changes={"error": vendor_refusal(flow.name, error, description)},
+        )
+        if failed is None:
+            raise FlowError(
+                f"{flow.name} sign-in could not be verified. Connect again."
+            )
+
     async def complete(
         self,
         flow: ServiceFlow,
@@ -303,10 +365,13 @@ class ServiceFlows:
         completion_secret: str,
         code: str,
         adapter: OAuthAdapter,
+        discard: Callable[[SignIn], Awaitable[str | None]],
     ) -> Exchange:
         """Console hands back the code; Core exchanges it and reads the account.
         The flow stays `checking` until the caller writes the connection and
-        settles it with `connected` or `failed`."""
+        settles it with `connected` or `failed`. When the account cannot be
+        read, `discard` revokes the sign-in the vendor just issued, and returns
+        a sentence for the person when it could not."""
         ready_for = "authorizing" if flow.mode == "loopback" else "delivered"
         refused = FlowError(
             f"{flow.name} sign-in could not be verified. Connect again."
@@ -333,21 +398,48 @@ class ServiceFlows:
                 redirect_uri=flow.stored.redirect_uri,
                 scopes=list(flow.stored.details["scopes"]),
             )
-            account = await adapter.identify(signed_in.secret.access_token or "")
-        except ReauthorizationRequiredError:
-            await self.failed(
-                checking, f"{flow.name} refused the sign-in. Connect again."
-            )
-            raise FlowError(
-                f"{flow.name} refused the sign-in. Connect again."
-            ) from None
         except ServiceAdapterError as error:
-            await self.failed(checking, str(error))
-            raise FlowError(str(error)) from None
+            raise await self._refused(flow, checking, error, None) from None
+        except BaseException:
+            await self.failed(checking, INTERRUPTED)
+            raise
+        try:
+            account = await adapter.identify(signed_in.secret.access_token or "")
+        except ServiceAdapterError as error:
+            try:
+                note = await discard(signed_in)
+            except Exception:
+                logger.exception("%s unkept sign-in discard failed", flow.service)
+                note = f"Switch could not check the sign-in {flow.name} just issued."
+            except BaseException:
+                await self.failed(checking, INTERRUPTED)
+                raise
+            raise await self._refused(flow, checking, error, note) from None
         except BaseException:
             await self.failed(checking, INTERRUPTED)
             raise
         return Exchange(flow=checking, signed_in=signed_in, account=account)
+
+    async def _refused(
+        self,
+        flow: ServiceFlow,
+        checking: StoredFlow,
+        error: ServiceAdapterError,
+        note: str | None,
+    ) -> Exception:
+        """Mark the flow failed with why, and return the error to raise. An
+        outage stays a `ServiceUnavailableError`: the code is spent, but a new
+        sign-in can succeed, and the route answers 503."""
+        if isinstance(error, ReauthorizationRequiredError):
+            message = f"{flow.name} refused the sign-in. Connect again."
+        else:
+            message = str(error)
+        if note is not None:
+            message = f"{message} {note}"
+        await self.failed(checking, message)
+        if isinstance(error, ServiceUnavailableError):
+            return ServiceUnavailableError(message)
+        return FlowError(message)
 
     def consent(self, exchange: Exchange) -> AccessLevel:
         """What the person consented to, as the vendor granted it."""
@@ -375,16 +467,20 @@ class ServiceFlows:
             changes={"account_label": exchange.account.label, "warning": warning},
         )
 
-    async def refused(self, flow: ServiceFlow, error: str) -> None:
-        """The browser could not be sent to the vendor: the flow ends with
-        why, for Console to show, rather than waiting until it expires."""
-        await self._flows.advance(
-            flow.stored, expect=("pending",), to="failed", changes={"error": error}
-        )
-
     async def failed(self, flow: StoredFlow, error: str) -> None:
         await self._flows.advance(
             flow, expect=("checking",), to="failed", changes={"error": error}
+        )
+
+    async def refuse(self, flow: StoredFlow, error: str) -> None:
+        """The sign-in was refused before Core took a code: the flow fails
+        with `error`, for Console to read at once, rather than wait to
+        expire."""
+        await self._flows.advance(
+            flow,
+            expect=("pending", "authorizing", "delivered"),
+            to="failed",
+            changes={"error": error},
         )
 
     async def discard(self, flow: ServiceFlow) -> None:
