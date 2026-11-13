@@ -131,13 +131,14 @@ async def _claim(
 ) -> CloudMachine:
     async with session_factory() as session:
         await lock_claims(session)
-        machine, _workspace = await CloudMachineStore().claim(
+        claimed = await CloudMachineStore().claim(
             session,
             session_factory,
             owner_id=owner.id,
             capacity=1,
             now=datetime.now(UTC),
         )
+        machine = claimed.machine
         await session.commit()
         return machine
 
@@ -426,6 +427,18 @@ class TestControllerMachines:
                 assert became_ready["provisioning_seconds"] >= 0
                 await report_status(client, controller, 3)  # type: ignore[arg-type]
                 assert len(reported.events("cloud_machine_ready")) == 1
+                # Up again at the same revision: ready before, so not new,
+                # and not timed.
+                await _update(
+                    harness.session_factory,
+                    machine.id,
+                    state="provisioning",
+                    running_observed_at=datetime.now(UTC),
+                )
+                await report_status(client, controller, 4)  # type: ignore[arg-type]
+                assert reported.events("cloud_machine_ready")[1] == {
+                    "new_machine": False
+                }
 
                 created = await create_managed_agent(
                     client,
@@ -608,7 +621,8 @@ class TestControllerMachines:
         assert listed.status_code == 200, listed.text
         after = await _machine(harness.session_factory, machine.id)
         assert (after.desired_state, after.stop_reason) == ("stopped", "idle")
-        assert reported.events("cloud_machine_stopped") == [{"reason": "idle"}]
+        assert reported.events("cloud_machine_idle_stopped") == [{}]
+        assert reported.events("cloud_machine_stopped") == []
 
     async def test_a_message_or_a_placement_wakes_a_sleeping_machine(
         self, harness: Harness, reported: RecordingSink
@@ -663,9 +677,7 @@ class TestControllerMachines:
             await session.commit()
         held = await _machine(harness.session_factory, machine.id)
         assert (held.desired_state, held.stop_reason) == ("stopped", "admin")
-        assert reported.events("cloud_machine_woken") == [
-            {"trigger": "message", "stopped_by": "idle"}
-        ]
+        assert reported.events("cloud_machine_woken") == [{"trigger": "message"}]
 
     async def test_placing_an_agent_on_a_sleeping_machine_wakes_it(
         self, harness: Harness, reported: RecordingSink
@@ -694,9 +706,7 @@ class TestControllerMachines:
         assert created.status_code == 201, created.text
         after = await _machine(harness.session_factory, machine.id)
         assert (after.desired_state, after.stop_reason) == ("running", None)
-        assert reported.events("cloud_machine_woken") == [
-            {"trigger": "agent_placed", "stopped_by": "idle"}
-        ]
+        assert reported.events("cloud_machine_woken") == [{"trigger": "agent_placed"}]
 
 
 async def test_a_controller_machine_needs_agent_management(

@@ -40,6 +40,23 @@ MACHINE_WORKSPACES_FULL = (
 )
 
 
+# What a claim changed, the first of these that applies when it does two at
+# once: a machine made for the owner, the owner's machine joining another
+# workspace, a machine kept after its agents left running again, or a stopped
+# machine started.
+ClaimChange = Literal["new", "joined_workspace", "unretained", "restarted"]
+
+
+@dataclass(frozen=True)
+class Claimed:
+    """The owner's machine as a claim left it, serving the bound workspace.
+    `change` is None when the claim only marked a running machine active."""
+
+    machine: CloudMachine
+    workspace: MachineWorkspace
+    change: ClaimChange | None
+
+
 class CloudMachineConflict(Exception):
     """A machine cannot take the requested change; the message is the 409 detail."""
 
@@ -239,9 +256,9 @@ class CloudMachineStore:
         owner_id: str,
         capacity: int,
         now: datetime,
-    ) -> tuple[CloudMachine, MachineWorkspace]:
+    ) -> Claimed:
         """The owner's machine, reused or newly claimed within `capacity`,
-        serving the bound workspace.
+        serving the bound workspace, and what the claim changed.
 
         A machine joining a workspace takes a new revision, so it is prepared
         again with a controller for it. The caller holds `lock_claims`, so no
@@ -255,6 +272,7 @@ class CloudMachineStore:
                 raise CloudMachineConflict(conflict)
             workspace = await workspace_on(session, machine.id)
             joined = workspace is None
+            change: ClaimChange | None = "joined_workspace" if joined else None
             if joined:
                 serving = await tenants_of_cloud_machine(factory, machine.id)
                 if len(serving) >= MAX_MACHINE_WORKSPACES:
@@ -267,8 +285,10 @@ class CloudMachineStore:
                 machine.active_at = now
                 bump_revision(machine, now)
                 await_reconnect(machine)
+                change = change or "unretained"
             elif machine.desired_state == "stopped":
                 self.start(machine, now)
+                change = change or "restarted"
             else:
                 machine.active_at = now
                 if joined:
@@ -276,7 +296,7 @@ class CloudMachineStore:
                     await_reconnect(machine)
             assert workspace is not None
             await session.flush()
-            return machine, workspace
+            return Claimed(machine=machine, workspace=workspace, change=change)
 
         live = await session.scalar(
             select(func.count())
@@ -300,7 +320,7 @@ class CloudMachineStore:
         await session.flush()
         workspace = self._add_workspace(session, machine, now)
         await session.flush()
-        return machine, workspace
+        return Claimed(machine=machine, workspace=workspace, change="new")
 
     def _add_workspace(
         self, session: AsyncSession, machine: CloudMachine, now: datetime

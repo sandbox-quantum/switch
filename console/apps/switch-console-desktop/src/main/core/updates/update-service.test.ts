@@ -152,7 +152,7 @@ beforeEach(() => {
 });
 
 describe('what a check reports', () => {
-  it('reports a check that found nothing as up to date', async () => {
+  it('reports a check someone asked for that found nothing as up to date', async () => {
     // The updater answers its not-available branch with the release it just
     // compared this build against, so an `updateInfo` is present either way.
     h.checkForUpdatesAndNotify.mockResolvedValue({
@@ -161,15 +161,14 @@ describe('what a check reports', () => {
       updateInfo: { version: '1.2.3' },
     });
 
-    await expect(updateService.checkForUpdates('scheduled')).resolves.toBeNull();
+    await expect(updateService.checkForUpdates('user')).resolves.toBeNull();
 
-    expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
-      trigger: 'scheduled',
+    expect(h.trackEvent).toHaveBeenCalledWith('update_check_requested', {
       result: 'up_to_date',
     });
   });
 
-  it('reports a check that found one as available', async () => {
+  it('reports one that found an update as available', async () => {
     h.checkForUpdatesAndNotify.mockResolvedValue({
       isUpdateAvailable: true,
       versionInfo: { version: '1.3.0' },
@@ -180,21 +179,99 @@ describe('what a check reports', () => {
       version: '1.3.0',
     });
 
-    expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
-      trigger: 'user',
+    expect(h.trackEvent).toHaveBeenCalledWith('update_check_requested', {
       result: 'available',
     });
   });
 
-  it('reports a check that could not run as failed', async () => {
+  it('reports one that could not run as failed, and still hands the failure back', async () => {
     h.checkForUpdatesAndNotify.mockRejectedValue(new Error('HTTP 503'));
 
-    await expect(updateService.checkForUpdates('startup')).rejects.toThrow();
+    await expect(updateService.checkForUpdates('user')).rejects.toThrow();
 
-    expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
-      trigger: 'startup',
-      result: 'failed',
+    await vi.waitFor(() =>
+      expect(h.trackEvent).toHaveBeenCalledWith('update_check_requested', { result: 'failed' })
+    );
+  });
+
+  it.each(['scheduled', 'startup'] as const)(
+    'reports a %s check, which nobody asked for, as the app checking',
+    async (trigger) => {
+      h.checkForUpdatesAndNotify.mockResolvedValue({
+        isUpdateAvailable: false,
+        versionInfo: { version: '1.2.3' },
+        updateInfo: { version: '1.2.3' },
+      });
+
+      await updateService.checkForUpdates(trigger);
+
+      expect(h.trackEvent.mock.calls).toEqual([
+        ['update_checked', { trigger, result: 'up_to_date' }],
+      ]);
+    }
+  );
+
+  it('reports an automatic check that could not run as failed', async () => {
+    h.checkForUpdatesAndNotify.mockRejectedValue(new Error('HTTP 503'));
+
+    await expect(updateService.checkForUpdates('scheduled')).rejects.toThrow();
+
+    await vi.waitFor(() =>
+      expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
+        trigger: 'scheduled',
+        result: 'failed',
+      })
+    );
+  });
+
+  it('reports nothing for a check whose trigger nobody named', async () => {
+    h.checkForUpdatesAndNotify.mockResolvedValue({
+      isUpdateAvailable: false,
+      versionInfo: { version: '1.2.3' },
+      updateInfo: { version: '1.2.3' },
     });
+
+    await updateService.checkForUpdates('unknown');
+
+    expect(h.trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports an automatic check that joins one already running only once', async () => {
+    let finish!: (value: unknown) => void;
+    h.checkForUpdatesAndNotify.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+
+    const scheduled = updateService.checkForUpdates('scheduled');
+    const startup = updateService.checkForUpdates('startup');
+    finish({
+      isUpdateAvailable: false,
+      versionInfo: { version: '1.2.3' },
+      updateInfo: { version: '1.2.3' },
+    });
+    await Promise.all([scheduled, startup]);
+
+    expect(h.trackEvent.mock.calls).toEqual([
+      ['update_checked', { trigger: 'scheduled', result: 'up_to_date' }],
+    ]);
+  });
+
+  it('reports a request that joins the app’s own check, with that check’s result', async () => {
+    let finish!: (value: unknown) => void;
+    h.checkForUpdatesAndNotify.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+
+    const scheduled = updateService.checkForUpdates('scheduled');
+    const requested = updateService.checkForUpdates('user');
+    finish({
+      isUpdateAvailable: true,
+      versionInfo: { version: '1.3.0' },
+      updateInfo: { version: '1.3.0' },
+    });
+    await Promise.all([scheduled, requested]);
+
+    expect(h.checkForUpdatesAndNotify).toHaveBeenCalledTimes(1);
+    expect(h.trackEvent.mock.calls).toEqual([
+      ['update_checked', { trigger: 'scheduled', result: 'available' }],
+      ['update_check_requested', { result: 'available' }],
+    ]);
   });
 });
 
@@ -503,25 +580,25 @@ describe('the launch after an install', () => {
     h.trackEvent.mockClear();
   });
 
-  it('reports the handover the previous run wrote down', async () => {
+  it('takes the handover the previous run wrote down, and reports nothing when it worked', async () => {
     h.pending.target = '1.2.3';
     h.pending.from = '1.2.2';
     const { updateService: restarted } = await import('./update-service');
     await restarted.initialize();
 
-    expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(installEvents()).toEqual([]);
     expect(restarted.getState()).toMatchObject({ status: 'idle' });
     // Taken, not just read: a launch is counted once, and a user who never
     // updates again does not report this install on every start from here on.
     expect(h.pending.target).toBeNull();
   });
 
-  it('counts a marker from a build that recorded no version as a success', async () => {
+  it('counts a marker from a build that recorded no version as a success, reporting nothing', async () => {
     h.pending.legacy = true;
     const { updateService: restarted } = await import('./update-service');
     await restarted.initialize();
 
-    expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(installEvents()).toEqual([]);
     expect(h.pending.legacy).toBe(false);
   });
 
@@ -605,7 +682,7 @@ describe('the launch after an install', () => {
     expect(restartedEvents.emit).not.toHaveBeenCalled();
   });
 
-  it('counts a launch on a version other than the one that handed over as a success', async () => {
+  it('counts a launch on a version other than the one that handed over as a success, reporting nothing', async () => {
     // The handover to 1.3.0 did not take, and the user then installed 1.2.3 by
     // hand. An install happened, so there is nothing to show.
     h.pending.target = '1.3.0';
@@ -614,7 +691,7 @@ describe('the launch after an install', () => {
     await restarted.initialize();
     restarted.dispose();
 
-    expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(installEvents()).toEqual([]);
     expect(restarted.getState()).toMatchObject({ status: 'idle' });
   });
 

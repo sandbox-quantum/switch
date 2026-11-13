@@ -93,7 +93,6 @@ let relay: LocalRelay;
 let calls: SocketCalls;
 let token: string;
 let revokedCalls: number;
-let startsNoticed: { agentId: string; sessionId: string; startSource: string }[];
 let cursorsSaved: [string, number][];
 const stops: (() => void)[] = [];
 
@@ -119,7 +118,6 @@ function newRelay(): LocalRelay {
       },
       log: silentLogger,
       calls,
-      sessionStarted: (started) => startsNoticed.push(started),
     }),
   });
 }
@@ -129,7 +127,6 @@ beforeEach(async () => {
   await core.start();
   core.setAssignment({ revision: 1, agents: [assigned(AGENT), assigned('agent-2')] });
   revokedCalls = 0;
-  startsNoticed = [];
   cursorsSaved = [];
   calls = new SocketCalls();
   hub = new AgentHub({
@@ -682,22 +679,6 @@ describe('forwarding to Switch', () => {
     const response = await post('/agent-sessions/session-1/activity', { row: 1 });
     expect(response.status).toBe(200);
     expect(sent).toEqual([]);
-  });
-
-  it('passes on a session start once Switch has taken it, and nothing else', async () => {
-    await post('/agent-sessions/session-1/started', { start_source: 'room' });
-    await post('/agent-sessions/session-2/activity', { start_source: 'room' });
-    await post('/agent-sessions/session-3/started', { start_source: 'made-up' });
-    core.scripted.push({
-      method: 'POST',
-      path: '/agent-sessions/session-4/started',
-      status: 503,
-      body: { detail: 'not now' },
-    });
-    await post('/agent-sessions/session-4/started', { start_source: 'user' });
-    expect(startsNoticed).toEqual([
-      { agentId: AGENT, sessionId: 'session-1', startSource: 'room' },
-    ]);
   });
 
   it('answers 502 when the socket closes before Switch answers the call', async () => {

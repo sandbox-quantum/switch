@@ -2078,6 +2078,7 @@ def _agent_templates() -> AgentTemplates:
         max_bytes=protocol.config.template_max_bytes,
         agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
+        telemetry=protocol.telemetry,
     )
 
 
