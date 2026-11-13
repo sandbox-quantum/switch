@@ -295,7 +295,9 @@ stored one is ignored (`recorded: false`), an equal one is a no-op.
   "item_id": str,        // "turn" for the turn itself, "notice:<event sequence>" for a notice, else the item's id
   "kind": "turn" | "user-message" | "assistant-message" | "tool-activity" | "notice",
   "revision": int >= 0,  // turn: the host event sequence; item: item.revision; notice: 0
-  "status": str,         // turn: queued|running|completed|interrupted|error
+  "status": str,         // turn: queued|running|completed|interrupted|cancelled|error
+                         //   (cancelled: withdrawn by its sender before it ran;
+                         //   a server that refuses it gets the row as interrupted)
                          // item: in-progress|completed|failed|declined
                          // notice: info|warning|error
   "title": str,          // <= 500 chars, host truncates with "…"

@@ -293,6 +293,15 @@ describe('placeTurns', () => {
     ]);
     expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
   });
+
+  it('does not wait on a reply from a message cancelled before the agent started', () => {
+    const messages = [said('q1', null), said('q2', null), said('r2', 'helper')];
+    const bound = new Map([
+      ['q1', turn('t1', 'cancelled')],
+      ['q2', turn('t2')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
 });
 
 describe('foldTurnEndNotices', () => {

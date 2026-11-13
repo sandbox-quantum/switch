@@ -44,3 +44,10 @@ export function retryRefusal(reason: string | null): string {
     return "I couldn't try that again: my current session never worked on that message.";
   return `I couldn't try that again: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }
+
+/** What the room is told when the session refused to cancel a queued message. */
+export function roomCancelRefusal(reason: string | null): string {
+  if (reason?.includes('TURN_STARTED'))
+    return "I'd already started on that message, so it can't be cancelled. Use `!interrupt` to stop it.";
+  return `I couldn't cancel that message: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
+}

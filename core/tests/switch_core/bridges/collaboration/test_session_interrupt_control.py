@@ -29,7 +29,10 @@ surviving its own omission.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
+
+import pytest
 
 from switch_core.bridges.collaboration.adapter import TurnActivity
 from switch_core.bridges.collaboration.session.renderers import (
@@ -209,6 +212,48 @@ async def test_a_queued_turns_control_says_what_it_actually_stops() -> None:
     assert control["type"] == "section"
     assert "stays queued" in control["text"]["text"]
     assert _button(control)["text"]["text"] == INTERRUPT_LABEL
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_a_queued_turns_control_names_the_command_that_does_cancel_it(
+    streaming: bool,
+) -> None:
+    """Stop is not cancel, so the queued message names the command that is,
+    in a code span: copied whole, and not read as a mention of the agent."""
+    client = FakeWebClient()
+    adapter = _adapter(client, streaming=streaming)
+    queued = replace(
+        _activity(_turn(QUEUED_TURN, "queued")),
+        cancel_command=f"!cancel @agent {QUEUED_TURN}",
+    )
+
+    await adapter.post_rich(CHANNEL, "Agent", queued, THREAD)
+
+    blocks = _streamed(client) if streaming else client.posted[0]["blocks"]
+    control = _control(blocks)
+    assert control["text"]["type"] == "mrkdwn"
+    assert f"`!cancel @agent {QUEUED_TURN}`" in control["text"]["text"]
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_a_queued_turn_names_its_cancel_where_the_session_cannot_stop(
+    streaming: bool,
+) -> None:
+    """Cancelling takes the message out of the queue, which a session that
+    cannot be interrupted does too: the line is drawn without the button."""
+    client = FakeWebClient()
+    adapter = _adapter(client, streaming=streaming)
+    queued = replace(
+        _activity(_turn(QUEUED_TURN, "queued"), stops=None),
+        cancel_command=f"!cancel @agent {QUEUED_TURN}",
+    )
+
+    await adapter.post_rich(CHANNEL, "Agent", queued, THREAD)
+
+    blocks = _streamed(client) if streaming else client.posted[0]["blocks"]
+    control = _control(blocks)
+    assert control["type"] == "section" and "accessory" not in control
+    assert f"`!cancel @agent {QUEUED_TURN}`" in control["text"]["text"]
 
 
 async def test_a_session_with_nothing_running_gets_no_control() -> None:

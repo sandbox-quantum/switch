@@ -1241,6 +1241,12 @@ is meant to start the conversation fresh, so do not read back its history. A
 compaction there still queues the follow-up.
 Failed or unknown controls do not queue a success announcement.
 
+`!cancel @you <turn-id>` withdraws one message still waiting in your queue, and
+you never receive it. Only its sender can cancel it, and only before you start
+on it; after that it is `!interrupt`. The queued message's activity card shows
+the exact command, with the first 8 characters of the turn's id. The message
+itself stays in the room's history.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each.

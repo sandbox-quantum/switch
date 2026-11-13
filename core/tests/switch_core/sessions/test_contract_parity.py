@@ -23,7 +23,10 @@ from typing import Any
 import pytest
 
 from switch_core.sessions.contract import (
+    TURN_ENDED,
     Item,
+    TurnCancel,
+    TurnUpsert,
     event_bytes,
     parse_command,
     parse_host_event,
@@ -216,3 +219,28 @@ def test_subagent_is_a_shared_item_without_raw_child_output() -> None:
     )
     assert event.body.item.kind == "tool-activity"
     assert event.body.item.subagent is True
+
+
+def test_carries_a_cancel_of_one_queued_turn_and_a_turn_that_ended_cancelled() -> None:
+    cancel = {
+        **EXAMPLES["platformAnswer"],
+        "body": {"type": "turn.cancel", "turnId": "turn-demo"},
+    }
+    assert isinstance(parse_command(cancel).body, TurnCancel)
+    with pytest.raises(ValueError):
+        parse_command(
+            {**cancel, "body": {**cancel["body"], "messageId": "message-demo"}}
+        )
+    ended = parse_host_event(
+        {
+            **EXAMPLES["hostRequest"],
+            "body": {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "cancelled",
+                "commandId": None,
+            },
+        }
+    )
+    assert isinstance(ended.body, TurnUpsert)
+    assert ended.body.status in TURN_ENDED

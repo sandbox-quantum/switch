@@ -270,6 +270,14 @@ async def test_a_queued_turn_says_pressing_stop_leaves_it_queued() -> None:
     assert INTERRUPT_QUEUED_NOTE in webhook.sent[0]["content"]
 
 
+async def test_a_queued_turn_names_the_command_that_cancels_it() -> None:
+    adapter, webhook, _seen = _stopper()
+
+    await _post(adapter, _activity("queued", cancel_command="!cancel @worker turn-2"))
+
+    assert "`!cancel @worker turn-2`" in webhook.sent[0]["content"]
+
+
 async def test_a_running_turn_says_no_such_thing() -> None:
     """There is no queued message to reassure anyone about."""
     adapter, webhook, _seen = _stopper()

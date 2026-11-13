@@ -89,6 +89,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
     INTERRUPT_QUEUED_NOTE,
     Drawn,
+    cancel_note,
     offered_controls,
     position_action,
 )
@@ -1923,6 +1924,8 @@ class MattermostAdapter(PlatformAdapter):
             lines = []
             if self._offers_interrupt(content) and content.turn.status == "queued":
                 lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.cancel_command is not None:
+                lines.append(cancel_note(content.cancel_command, markup, escape))
             if content.notify_unreachable:
                 lines.append(self.unnotified_notice())
             tail = "".join(f"\n{line}" for line in lines)

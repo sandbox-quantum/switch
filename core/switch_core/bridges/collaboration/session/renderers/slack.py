@@ -51,6 +51,7 @@ from switch_core.sessions.contract import (
 
 from . import (
     ANSWER_ACTION,
+    CANCEL_PROMPT,
     CLOSED,
     INTERRUPT_ACTION,
     INTERRUPT_LABEL,
@@ -1189,6 +1190,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1236,7 +1238,9 @@ def render_activity_plan(
     # bytes that must survive whatever trimming the steps need, and a message
     # that dropped its stop button to make room for one more step line would
     # have traded the only thing on it a reader can act on.
-    control = _interrupt_block(interrupt_turn_id, turn, STREAM_SLOTS[len(blocks)])
+    control = _interrupt_block(
+        interrupt_turn_id, turn, STREAM_SLOTS[len(blocks)], cancel_command
+    )
     if control is not None:
         blocks.append(control)
     return SlackMessage(text=title, blocks=blocks)
@@ -1273,6 +1277,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1306,7 +1311,7 @@ def render_activity_stream(
     # heading of the newest plan block, and the control has no title at all.
     title = blocks[-1]["title"]
     slot = STREAM_SLOTS[len(blocks)]
-    control = _interrupt_block(interrupt_turn_id, turn, slot)
+    control = _interrupt_block(interrupt_turn_id, turn, slot, cancel_command)
     if control is None:
         return StreamedActivity(
             title=title, blocks=blocks, spent_control=_spent_control(slot)
@@ -1357,7 +1362,10 @@ def _session_card(*, live: bool) -> dict[str, Any]:
 
 
 def _interrupt_block(
-    interrupt_turn_id: str | None, turn: TurnUpsert, block_id: str
+    interrupt_turn_id: str | None,
+    turn: TurnUpsert,
+    block_id: str,
+    cancel_command: str | None,
 ) -> dict[str, Any] | None:
     """The stop control, or None where there is nothing for it to stop.
 
@@ -1392,9 +1400,25 @@ def _interrupt_block(
     Measured against Slack before it was written: both shapes are accepted in a
     stream and in an ordinary post, and a stream accepts one replacing the other
     under the same `block_id`, which is what a turn leaving the queue does.
+
+    A queued turn's cancel line does not depend on the stop button: cancelling
+    takes the message out of the queue, which a session that cannot be
+    interrupted does too. Where there is no button the line is drawn on its own
+    in the same slot, so a stream still overwrites it when the turn starts.
     """
-    if interrupt_turn_id is None or turn.status in TURN_ENDED:
+    if turn.status in TURN_ENDED:
         return None
+    if interrupt_turn_id is None:
+        if turn.status != "queued" or cancel_command is None:
+            return None
+        return {
+            "type": "section",
+            "block_id": block_id,
+            "text": {
+                "type": "mrkdwn",
+                "text": f"{CANCEL_PROMPT} `{escape_mrkdwn(cancel_command)}`",
+            },
+        }
     button = {
         "type": "button",
         "action_id": INTERRUPT_ACTION,
@@ -1403,10 +1427,13 @@ def _interrupt_block(
         "value": _truncate(interrupt_turn_id, _MAX_VALUE),
     }
     if turn.status == "queued":
+        note = escape_mrkdwn(INTERRUPT_QUEUED_NOTE)
+        if cancel_command is not None:
+            note += f"\n{CANCEL_PROMPT} `{escape_mrkdwn(cancel_command)}`"
         return {
             "type": "section",
             "block_id": block_id,
-            "text": {"type": "plain_text", "text": INTERRUPT_QUEUED_NOTE},
+            "text": {"type": "mrkdwn", "text": note},
             "accessory": button,
         }
     return {

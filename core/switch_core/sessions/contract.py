@@ -248,11 +248,13 @@ class SessionUpsert(_Model):
 class TurnUpsert(_Model):
     type: Literal["turn.upsert"]
     turn_id: Id
-    status: Literal["queued", "running", "completed", "interrupted", "error"]
+    status: Literal[
+        "queued", "running", "completed", "interrupted", "cancelled", "error"
+    ]
     command_id: Id | None
 
 
-TURN_ENDED = frozenset({"completed", "interrupted", "error"})
+TURN_ENDED = frozenset({"completed", "interrupted", "cancelled", "error"})
 
 # The text Switch gives a subagent it settles because the agent's session went
 # away while the subagent was still running, so nothing said how it ended.
@@ -378,6 +380,11 @@ class TurnInterrupt(_Model):
     turn_id: Id
 
 
+class TurnCancel(_Model):
+    type: Literal["turn.cancel"]
+    turn_id: Id
+
+
 class SessionStop(_Model):
     type: Literal["session.stop"]
 
@@ -407,6 +414,7 @@ CommandBody = Annotated[
     MessageSend
     | RequestAnswer
     | TurnInterrupt
+    | TurnCancel
     | SessionStop
     | SessionReset
     | SessionCompact
