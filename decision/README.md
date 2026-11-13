@@ -88,6 +88,29 @@ answered when nobody should, 1 missed), and six real pilot messages for a
 named agent all reached it, against five of six with the threshold. Plain
 argmax (a lead of 0) answered two more messages that were for nobody, both
 near ties with "none".
+
+### When the sender is talking to an agent
+
+Every backend gets more context when the sender is mid-exchange with an agent, which is when one of these holds in the conversation the message belongs to (the thread, or the room for a top-level message):
+
+- the sender and one agent have been going back and forth, with nobody else in between;
+- in a thread, an agent spoke or was addressed most recently;
+- the message just before this one is from an agent, and it addressed the sender or answered them.
+
+The state then gains a "Conversation state" block, just before the latest message, with one line for each fact that holds:
+
+```
+Conversation state:
+- nora's current back-and-forth with agents, nobody else speaking in between: manager (1)
+- In this thread, the last agent to speak or be addressed is manager; nobody else has spoken since.
+- The message just before this one is from manager, to nora.
+```
+
+The model's instructions also gain one sentence: a message right after an agent answered or addressed the sender continues that conversation and is for that agent, even when it is short, unless it answers or names another person. Strands gets it in its instructions; the other backends get it in the system prompt.
+
+When none of these holds, the request is exactly as it was without this context. The decide log line ends with `context=exchange` or `context=none`.
+
+Why: auto-route rooms skip switch-core's thread follow-up rule, and a short reply to the agent a person was talking to ("ok what else", "yes", "merged") often had "none" scored above that agent. On a labelled set of real messages, the context and the sentence turned misses into deliveries without adding wrong picks elsewhere. A room's people count was tried and left out: it changed nothing on real traffic, and misled the model when the history was short.
 - **Status codes:** `422` for a bad body, `502 {"detail", "error_kind"}` when
   the backend failed (see "Error kinds" below), `401` when a service token is
   set and the request lacks it, and `400 {"detail", "code": "backend_unavailable"}`
@@ -116,7 +139,8 @@ near ties with "none".
   - `X-Decision-Model`: the model for `anthropic` (default `claude-haiku-5-5`)
     or `bedrock` (default `DECISION_BEDROCK_MODEL`).
 - **Logs:** one line per decision: backend, model, number of candidates,
-  choice, confidence, threshold, pick and latency, the rule and the lead, plus
+  choice, confidence, threshold, pick and latency, the rule, the lead and
+  whether the conversation context was used (`context=`), plus
   the error kind when it
   failed. No message text, room name, room instructions or keys, and no error
   body from the backend. See "Logs" below.
