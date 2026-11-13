@@ -61,7 +61,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
-from switch_core.gateway.known_agents import known_agent, known_agents
+from switch_core.gateway.known_agents import known_agent, offered_known_agents
 from switch_core.gateway.schemas import (
     AgentCapabilities,
     AgentDetail,
@@ -90,6 +90,7 @@ from switch_core.gateway.schemas import (
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
+from switch_core.providers.registry import ProviderNotOffered, require_offered_provider
 from switch_core.request_validation import public_errors
 
 logger = logging.getLogger(__name__)
@@ -330,7 +331,9 @@ async def delete_agent(
 
 
 @router.get("/known-types")
-async def list_known_agent_types() -> list[KnownAgentType]:
+async def list_known_agent_types(
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> list[KnownAgentType]:
     return [
         KnownAgentType(
             key=key,
@@ -338,7 +341,7 @@ async def list_known_agent_types() -> list[KnownAgentType]:
             tool_count=len(spec.tools),
             options_schema=spec.options_schema.model_json_schema(),
         )
-        for key, spec in known_agents().items()
+        for key, spec in offered_known_agents(config.feature_flags).items()
     ]
 
 
@@ -377,6 +380,7 @@ async def register_known_agent(
     req: RegisterKnownAgentRequest,
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> RegisterAgentResponse:
     spec = known_agent(req.agent_type)
     if spec is None:
@@ -384,6 +388,10 @@ async def register_known_agent(
             status_code=400,
             detail=f"Unknown agent type: {req.agent_type}",
         )
+    try:
+        require_offered_provider(spec.provider.id, config.feature_flags)
+    except ProviderNotOffered as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         options = spec.parse_options(req.options)

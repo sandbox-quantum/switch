@@ -61,6 +61,7 @@ from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.providers.registry import offered_provider_ids
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
@@ -2326,6 +2327,7 @@ async def _run_document(
         inputs or {},
         builtins=builtins,
         machines=await _owners_machines(),
+        providers=offered_provider_ids(protocol.config.feature_flags),
     )
     result = await _provision_as_agent(
         plan.document,

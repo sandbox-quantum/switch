@@ -112,6 +112,14 @@ GATEWAY_V2 = "gateway_v2"
 # directory and no bridge of those types can be created or started.
 ADDITIONAL_MESSAGING_PLATFORMS = "additional_messaging_platforms"
 
+# Agent providers beyond Claude Code, Codex, OpenCode, Cursor and Antigravity:
+# DeepSeek Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code,
+# Factory Droid, Cline and Junie (`providers/registry.py` names each one's
+# flag). With it off they are missing from the provider list and the
+# known-agent types, a template does not pick them, and no new managed agent
+# can name one; an agent already defined on one keeps running.
+ADDITIONAL_AGENT_PROVIDERS = "additional_agent_providers"
+
 # Flags that need another flag on: the server refuses a configuration with
 # the key on and any of its values off, and tools that turn flags off one at a
 # time (scripts/e2e_surface.py) turn the dependants off with it.
@@ -150,5 +158,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         ORGANIZATION_CONNECTOR_APPS,
         GATEWAY_V2,
         ADDITIONAL_MESSAGING_PLATFORMS,
+        ADDITIONAL_AGENT_PROVIDERS,
     }
 )

@@ -13,6 +13,7 @@ from switch_core import official_templates as official
 from switch_core.agent_templates import plan_template
 from switch_core.management.schemas import MAX_INSTRUCTIONS_BYTES
 from switch_core.official_templates import official_templates
+from switch_core.providers.registry import provider_ids
 from switch_core.rooms_yaml import RoomSpec
 from switch_core.template_lint import lint_template
 
@@ -84,6 +85,7 @@ def test_every_room_template_plans_its_room_and_agents():
             _inputs(data["params"]),
             builtins=_BUILTINS,
             machines=_MACHINES,
+            providers=frozenset(provider_ids()),
         )
         assert len(plan.new_agents) == kinds.count("agent"), template.id
         assert {a.machine for a in plan.new_agents} == {"laptop"}
@@ -117,6 +119,7 @@ def test_room_template_runs_without_bridge():
         inputs,
         builtins=_BUILTINS,
         machines=_MACHINES,
+        providers=frozenset(provider_ids()),
     )
 
     assert len(plan.new_agents) == 3

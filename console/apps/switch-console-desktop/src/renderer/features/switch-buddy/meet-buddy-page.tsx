@@ -3,10 +3,11 @@ import { motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
-import { agentProviders } from '@shared/core/providers/agent-provider-registry';
+import { offeredAgentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';
 import { findBuddy, firstNameOf } from './buddy-identity';
 import { buddyPerson } from './buddy-person';
@@ -66,7 +67,11 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
           : null,
     [computer, earlyProviders]
   );
-  const providers = useMemo(() => buddyProviders(agentProviders(), reported), [reported]);
+  const flags = useFeatureFlags(serverId);
+  const providers = useMemo(
+    () => buddyProviders(offeredAgentProviders(flags), reported),
+    [reported, flags]
+  );
   const [outOfPatience, setOutOfPatience] = useState(false);
   const machineReady = reported !== null;
   useEffect(() => {

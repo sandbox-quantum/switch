@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { events, rpc } from '@renderer/lib/ipc';
-import { agentProviders } from '@shared/core/providers/agent-provider-registry';
+import { offeredAgentProviders } from '@shared/core/providers/agent-provider-registry';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
@@ -47,9 +48,14 @@ export function useProviderSetup({
   /** Has this computer check its providers again; a line when nothing new was found. */
   recheck: () => Promise<string | null>;
 }) {
+  const flags = useFeatureFlags(serverId);
   const providers = useMemo(
-    () => buddyProviders(agentProviders(), computer.kind === 'ready' ? computer.machine : null),
-    [computer]
+    () =>
+      buddyProviders(
+        offeredAgentProviders(flags),
+        computer.kind === 'ready' ? computer.machine : null
+      ),
+    [computer, flags]
   );
   const [picked, setPicked] = useState<string | null>(null);
   const selected =

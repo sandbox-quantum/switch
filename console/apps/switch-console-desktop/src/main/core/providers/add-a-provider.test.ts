@@ -3,6 +3,7 @@ import { pluginRegistry } from '@switch-console/plugins/agents';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { machineProviderOptions } from '@renderer/features/locations/components/add-agent-modal/machine-provider-picker';
 import { buildAgentGroups } from '@renderer/lib/components/agent-selector/agent-selector-options';
+import { allFeatureFlagsOff } from '@shared/core/feature-flags/feature-flags';
 import {
   agentProviderIds,
   isValidProviderId,
@@ -96,20 +97,23 @@ describe('a provider added as a plugin and a runtime', () => {
   });
 
   it('is listed among the providers a managed machine reports', () => {
-    const options = machineProviderOptions({
-      id: 'machine-1',
-      name: 'Build box',
-      kind: 'linux',
-      state: 'online',
-      providers: [
-        { provider: 'dummy', ready: true, problem: null, detail: null, loginHelps: true },
-      ],
-      acceptsLogins: false,
-      cloud: false,
-      workspacesDir: null,
-      os: null,
-      local: null,
-    });
+    const options = machineProviderOptions(
+      {
+        id: 'machine-1',
+        name: 'Build box',
+        kind: 'linux',
+        state: 'online',
+        providers: [
+          { provider: 'dummy', ready: true, problem: null, detail: null, loginHelps: true },
+        ],
+        acceptsLogins: false,
+        cloud: false,
+        workspacesDir: null,
+        os: null,
+        local: null,
+      },
+      allFeatureFlagsOff()
+    );
 
     expect(options).toContainEqual({ id: 'dummy', name: 'Dummy', ready: true, problem: null });
   });

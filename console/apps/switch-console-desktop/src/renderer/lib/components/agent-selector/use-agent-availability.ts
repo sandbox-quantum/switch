@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useProviderOfferedAnywhere } from '@renderer/lib/hooks/use-provider-offered-anywhere';
 import { useAgentInstallationStatuses } from '@renderer/lib/stores/use-agent-installation-statuses';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -47,12 +48,20 @@ export function useAgentAvailability({
   const installingAgents = new Set<AgentProviderId>();
 
   const getName = (id: AgentProviderId) => agentNameMap.get(id) ?? id;
+  const offered = useProviderOfferedAnywhere();
+  // The provider already chosen stays listed, offered or not, so the
+  // selector still shows what is set.
   const groups = buildAgentGroups(
     installedAgents,
     assumedInstalledAgents,
     installingAgents,
     getName
-  );
+  )
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => item.agentId === value || offered(item.agentId)),
+    }))
+    .filter((group) => group.items.length > 0);
 
   async function installAgent(agentId: AgentProviderId): Promise<void> {
     return new Promise((resolve) => {

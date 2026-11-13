@@ -62,6 +62,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.providers import router as providers_router
@@ -219,6 +220,7 @@ def build_harness(
     controller_auth_ttl_seconds: float = 5,
     server_url: str | None = SERVER_URL,
     third_party_avatars: bool = True,
+    additional_agent_providers: bool = True,
     controller_release: ControllerRelease | None = None,
     signal_engine: Callable[[], Any] = _no_listening_engine,
 ) -> Harness:
@@ -238,6 +240,7 @@ def build_harness(
         status_interval_seconds=STATUS_INTERVAL,
         server_url=server_url,
         third_party_avatars=third_party_avatars,
+        feature_flags={ADDITIONAL_AGENT_PROVIDERS: additional_agent_providers},
         controller_release=controller_release,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
@@ -299,7 +302,11 @@ def build_harness(
         keyring=TEST_KEYRING,
         gateway_tenant_choice_enabled=False,
         third_party_avatars_enabled=third_party_avatars,
-        feature_flags={"agent_management": True, "switch_buddy": True},
+        feature_flags={
+            "agent_management": True,
+            "switch_buddy": True,
+            ADDITIONAL_AGENT_PROVIDERS: additional_agent_providers,
+        },
     )
     agent_app.mount("/gateway", gateway_app)
     agent_app.add_middleware(
