@@ -40,7 +40,8 @@ const ACTION_LABEL = {
  * One connector, in place of the catalog: who the person is connected as and
  * what they allowed, which of their agents use it, and the way to connect,
  * reconnect or disconnect. When the workspace has it off, a member is told
- * who can switch it on and an admin is offered the switch; when its app is
+ * who can switch it on and an admin is offered the switch where it could
+ * work; when its app is
  * not set up, the server's operator is offered to set it up. Opened right
  * after connecting, the Add agent search under the agents starts open.
  */

@@ -1514,6 +1514,7 @@ describe('GitHub connection transport', () => {
         consent: 'write',
         // A server without the workspace switch: no workspace layer.
         workspace_enabled: null,
+        organization_locked: false,
       },
       expect.objectContaining({ slug: 'jira', status: 'coming_soon', unavailable_reason: null }),
       expect.objectContaining({
@@ -1589,6 +1590,7 @@ describe('GitHub connection transport', () => {
         external_identity: null,
         consent: null,
         workspace_enabled: null,
+        organization_locked: false,
       },
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1618,21 +1620,24 @@ describe('GitHub connection transport', () => {
       new Response(
         JSON.stringify({
           connections: [
-            { ...entry, workspace_enabled: false },
+            { ...entry, workspace_enabled: false, organization_locked: true },
             { ...entry, slug: 'other', workspace_enabled: true, status: 'active', consent: 'read' },
           ],
         })
       )
     );
     expect(
-      (await getConnectionCatalog(SERVER)).map(({ slug, workspace_enabled, consent }) => ({
-        slug,
-        workspace_enabled,
-        consent,
-      }))
+      (await getConnectionCatalog(SERVER)).map(
+        ({ slug, workspace_enabled, organization_locked, consent }) => ({
+          slug,
+          workspace_enabled,
+          organization_locked,
+          consent,
+        })
+      )
     ).toEqual([
-      { slug: 'example', workspace_enabled: false, consent: null },
-      { slug: 'other', workspace_enabled: true, consent: 'read' },
+      { slug: 'example', workspace_enabled: false, organization_locked: true, consent: null },
+      { slug: 'other', workspace_enabled: true, organization_locked: false, consent: 'read' },
     ]);
   });
   it("reads the person's own agents for a service", async () => {

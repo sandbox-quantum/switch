@@ -75,6 +75,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     external_identity: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -465,6 +466,23 @@ describe('the profile', () => {
     expect(workspaceOffNotice(entry(), true)).toBeNull();
     // No workspace layer on this server: nothing to say.
     expect(workspaceOffNotice(entry({ workspace_enabled: null }), false)).toBeNull();
+  });
+
+  it("offers an admin no switch the server can't serve, or the organization locked", () => {
+    const text = 'Example is switched off for this workspace.';
+    expect(
+      workspaceOffNotice(
+        entry({
+          workspace_enabled: false,
+          unavailable_reason: 'Example is not set up on this server.',
+          unavailable_code: 'app_not_set_up',
+        }),
+        true
+      )
+    ).toEqual({ text, canEnable: false });
+    expect(
+      workspaceOffNotice(entry({ workspace_enabled: false, organization_locked: true }), true)
+    ).toEqual({ text, canEnable: false });
   });
 });
 

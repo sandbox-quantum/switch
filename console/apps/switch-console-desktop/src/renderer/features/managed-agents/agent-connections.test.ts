@@ -34,6 +34,7 @@ function service(
     key: null,
     external_identity: null,
     workspace_enabled: null,
+    organization_locked: false,
     consent: null,
     ...overrides,
   };

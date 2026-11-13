@@ -55,6 +55,7 @@ function keyed(status: ConnectionCatalogEntry['status']): ConnectionCatalogEntry
     external_identity: status === 'connected' ? 'Datadog key · datadoghq.eu' : null,
     consent: null,
     workspace_enabled: null,
+    organization_locked: false,
     key: {
       fields: [
         {

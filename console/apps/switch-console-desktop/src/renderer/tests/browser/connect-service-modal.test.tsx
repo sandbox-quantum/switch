@@ -54,6 +54,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     external_identity: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
     ...overrides,
   };
 }

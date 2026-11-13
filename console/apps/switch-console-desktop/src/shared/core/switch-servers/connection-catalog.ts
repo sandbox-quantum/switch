@@ -99,6 +99,11 @@ export const connectionCatalogEntrySchema = z.object({
    * with no workspace switch, which every page treats as on.
    */
   workspace_enabled: z.boolean().nullable(),
+  /**
+   * Whether the workspace's organization locked `workspace_enabled`, out of
+   * the workspace admin's reach. False from a server without the lock.
+   */
+  organization_locked: z.boolean(),
 });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntrySchema>;
 
@@ -119,6 +124,7 @@ export const connectionCatalogSchema = z.object({
         external_identity: true,
         consent: true,
         workspace_enabled: true,
+        organization_locked: true,
       })
       .extend({ status: z.enum(['connected', 'not_connected', 'coming_soon']) })
   ),
@@ -147,6 +153,7 @@ export const serviceConnectionsSchema = z.object({
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),
       workspace_enabled: z.boolean().nullable().default(null),
+      organization_locked: z.boolean().default(false),
       status: z.enum(['not_connected', 'active', 'needs_reauthorization', 'error']),
     })
   ),

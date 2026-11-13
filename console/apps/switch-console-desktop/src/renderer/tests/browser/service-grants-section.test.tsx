@@ -302,6 +302,7 @@ function onOff(
     external_identity: null,
     consent: null,
     workspace_enabled: null,
+    organization_locked: false,
     ...overrides,
   };
 }

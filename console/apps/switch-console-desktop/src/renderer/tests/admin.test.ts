@@ -43,6 +43,7 @@ function entry(slug: string, category: string): ConnectionCatalogEntry {
     external_identity: null,
     consent: null,
     workspace_enabled: true,
+    organization_locked: false,
   };
 }
 
