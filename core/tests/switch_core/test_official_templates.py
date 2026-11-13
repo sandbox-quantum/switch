@@ -433,5 +433,7 @@ def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
         in text
     )
     assert "ask for one line (what it is, who it's for)" in text
+    # The new room's link closes the reply, where it can't be missed.
+    assert "**[Open <room name> →](switchdash://open/room/<room-id>)**" in text
     # Defaults are proposed in plain words, not the template's switch names.
     assert 'never a parameter\'s name or "bypass" / "auto mode"' in text
