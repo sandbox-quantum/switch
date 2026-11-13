@@ -1141,6 +1141,11 @@ ROUTES: dict[str, Case] = {
         json=FLOW,
         why="Your own sign-in; this server has no Atlassian app to sign in through.",
     ),
+    "POST /gateway/service-connections/{service}/flows/web": post(
+        f"{G}/service-connections/atlassian/flows/web",
+        anyone(ok=503),
+        why="Your own sign-in, from the dashboard; this server has no Atlassian app to sign in through.",
+    ),
     "GET /gateway/service-connections/{service}/flows/{flow_id}": get(
         f"{G}/service-connections/atlassian/flows/{{service_flow}}",
         owner(refused=410),
@@ -1174,6 +1179,9 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/provider-connections/github/flows": post(
         f"{G}/provider-connections/github/flows", SELF, json=FLOW
+    ),
+    "POST /gateway/provider-connections/github/flows/web": post(
+        f"{G}/provider-connections/github/flows/web", SELF
     ),
     "GET /gateway/provider-connections/github/flows/{flow_id}": get(
         f"{G}/provider-connections/github/flows/{{github_flow}}", owner()

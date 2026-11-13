@@ -44,6 +44,7 @@ import MachinesPage from "../pages/machines/MachinesPage";
 import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
 import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
 import ConnectorPage from "../pages/connectors/ConnectorPage";
+import ConnectorsPage from "../pages/connectors/ConnectorsPage";
 import OrganizationPage, {
   OrganizationAuditLogPage,
   OrganizationConnectorsPage,
@@ -231,7 +232,7 @@ export const ROUTES: readonly AppRoute[] = [
   // new layout it is everyone's connector catalogue, and the operator's page
   // moves to the Platform area.
   page("/connectors", CURRENT, operators, <ConnectorAppsPage />),
-  page("/connectors", V2, serviceConnections, <PlannedPage title="Connectors" />),
+  page("/connectors", V2, serviceConnections, <ConnectorsPage />),
   page("/connectors/:connectorId", V2, serviceConnections, <ConnectorPage />),
 
   page("/machines", CURRENT, agentManagement, <MachinesPage />),

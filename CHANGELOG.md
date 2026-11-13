@@ -53,6 +53,32 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **People connect their own connectors from the dashboard.** Behind
+  `gateway_v2`, Connectors is a catalogue of every connector, with Yours and
+  All tabs and a search. Each card shows its category, whether you have
+  connected it, and "Off here" where the workspace has it off; a workspace
+  admin also sees how many people have connected each one. A key-based
+  connector takes its keys from its card or its page. A connector whose
+  sign-ins this server sends back to Switch's own callback (Google
+  Workspace, Airtable, GitLab, Linear, and GitHub) now connects in the
+  browser: Switch exchanges the code at its
+  callback, writes the same connection a sign-in from Switch Console writes,
+  and returns to the connector's page, which says how the sign-in ended or
+  why it failed, and offers Reconnect when a connection needs a fresh
+  sign-in. The callback writes the connection only for the person who
+  started the sign-in, and only in a browser signed in to Switch as them; a
+  page open at another address than `GATEWAY_PUBLIC_URL`, where the vendor
+  returns the browser, is told to connect from there instead.
+  One whose sign-ins come back to Switch Console (Notion and Sentry always,
+  Atlassian and Datadog unless `SERVICE_SIGN_IN_REDIRECT` names `core` for
+  them) still signs in there, as does one that asks for a choice before
+  signing in. Datadog connects from the dashboard all the same: pick the
+  site, then paste a personal access token, or API and application keys
+  where the server allows keys that never expire; Datadog checks them before
+  anything is stored, and a refused token can be replaced from its page.
+  `GET /service-connections` reports `web_sign_in`, and
+  `POST /service-connections/{service}/flows/web` and
+  `POST /provider-connections/github/flows/web` start a sign-in.
 - **Your account in the new dashboard layout.** Behind `gateway_v2`, Settings
   › Your account shows your display name, which you can change in place, and
   your email, read-only. It has cards to change your password (not shown for
