@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   type ConnectFlowState,
+  allowListHint,
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  initialSignInChoices,
+  lifetimeText,
+  pasteAgainMethod,
+  pasteLinks,
+  pasteReady,
+  pastedConnection,
+  safetyLine,
+  signInChoicesReady,
   signInHint,
   signInProgress,
 } from '@renderer/features/connectors/connect-flow';
@@ -59,7 +68,10 @@ import {
   allFeatureFlagsOff,
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type {
+  ConnectionCatalogEntry,
+  ServicePasteMethod,
+} from '@shared/core/switch-servers/connection-catalog';
 import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatalogEntry {
@@ -80,7 +92,14 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     agent_access_note: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: true,
     organization_locked: false,
@@ -112,6 +131,22 @@ describe('the state a connector card shows', () => {
     });
     expect(connectorCardState(entry({ status: 'connected' }), MEMBER).kind).toBe('connected');
     expect(connectorCardState(entry(), MEMBER).kind).toBe('connect');
+  });
+
+  it("says why a connection must be reconnected in the server's words, where it gives them", () => {
+    expect(
+      connectorCardState(
+        entry({
+          status: 'needs_reauthorization',
+          reconnect_code: 'choices_missing',
+          reconnect_reason: 'Example was connected before it asked for a site. Connect it again.',
+        }),
+        MEMBER
+      )
+    ).toMatchObject({
+      kind: 'reconnect',
+      detail: 'Example was connected before it asked for a site. Connect it again.',
+    });
   });
 
   it('reads a server without the workspace switch as on', () => {
@@ -431,6 +466,33 @@ describe('the profile', () => {
     ).toBe('Connected with Key · example.test');
   });
 
+  it('names the site a sign-in was made at beside the account', () => {
+    expect(
+      connectedAsLine(
+        entry({
+          status: 'connected',
+          external_identity: 'ada@example.test',
+          choices: { site: 'datadoghq.eu' },
+          consent: 'read',
+        })
+      )
+    ).toBe('Connected as ada@example.test · datadoghq.eu · Read');
+    expect(
+      connectedAsLine(
+        entry({
+          status: 'needs_reauthorization',
+          external_identity: 'ada@example.test',
+          choices: { site: 'us5.datadoghq.com' },
+        })
+      )
+    ).toBe('Connected as ada@example.test · us5.datadoghq.com');
+    expect(
+      connectedAsLine(
+        entry({ status: 'connected', external_identity: 'ada', choices: {}, consent: 'write' })
+      )
+    ).toBe('Connected as ada · Read and write');
+  });
+
   it('claims no access level for a key, and says what agents can do with one', () => {
     const key = entry({
       status: 'connected',
@@ -496,6 +558,85 @@ describe('the profile', () => {
     );
     expect(reconnectNote(entry({ slug: 'notion', name: 'Notion' }))).toBe(
       'Choosing another Notion workspace replaces this connection. Each agent then needs Notion turned on again.'
+    );
+  });
+
+  it('says what a pasted connection reaches and how long it lasts, in place of a level', () => {
+    const token: ServicePasteMethod = {
+      method: 'token',
+      label: 'Personal access token',
+      fields: [
+        { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+      ],
+      help_url: null,
+      expires: 'vendor',
+      access_note: 'Reaches what your token allows.',
+    };
+    const pasted = entry({
+      name: 'Datadog',
+      status: 'connected',
+      paste: [token],
+      method: 'token',
+      access_note: 'Reaches what your token allows.',
+      external_identity: 'ada@example.test',
+      choices: { site: 'datadoghq.eu' },
+      consent: 'write',
+    });
+    expect(connectedAsLine(pasted)).toBe('Connected with ada@example.test · datadoghq.eu');
+    expect(pastedConnection(pasted)).toEqual({
+      reach: 'Reaches what your token allows.',
+      way: 'Personal access token',
+      lasts: 'Expires: on the date you set in Datadog',
+    });
+    expect(signInLabel(pasted)).toBe('Personal access token');
+    // Keys the server no longer offers here are still named, and the site
+    // their name already says is not said twice.
+    const keys = {
+      ...pasted,
+      method: 'keys',
+      access_note: 'Reaches what your keys allow.',
+      external_identity: 'Datadog keys · datadoghq.eu',
+    };
+    expect(connectedAsLine(keys)).toBe('Connected with Datadog keys · datadoghq.eu');
+    expect(pastedConnection(keys)).toEqual({
+      reach: 'Reaches what your keys allow.',
+      way: 'Pasted keys',
+      lasts: 'Never expires; only Datadog can revoke it',
+    });
+    // A sign-in says its level, as before.
+    const signedIn = { ...pasted, method: 'oauth', access_note: null };
+    expect(pastedConnection(signedIn)).toBeNull();
+    expect(connectedAsLine(signedIn)).toBe(
+      'Connected as ada@example.test · datadoghq.eu · Read and write'
+    );
+    expect(signInLabel(signedIn)).toBe('Sign in at Datadog');
+    // A service connected with a key form says so, as before.
+    const keyed = { ...keys, auth_type: 'api_key' as const, paste: [] };
+    expect(pastedConnection(keyed)).toBeNull();
+    expect(signInLabel(keyed)).toBe('Key');
+    expect(lifetimeText(3600)).toBe('1 hour');
+  });
+
+  it('offers to paste a new token where the vendor refused the one pasted', () => {
+    const refused = entry({
+      status: 'needs_reauthorization',
+      method: 'token',
+      reconnect_code: 'token_refused',
+      paste: [
+        {
+          method: 'token',
+          label: 'Personal access token',
+          fields: [{ name: 'pat', label: 'Token', secret: true, help: null, choices: null }],
+          help_url: null,
+          expires: 'vendor',
+          access_note: 'Reaches what your token allows.',
+        },
+      ],
+    });
+    expect(profileConnectAction(refused)).toBe('paste_again');
+    expect(profileConnectAction({ ...refused, paste: [] })).toBe('reconnect');
+    expect(profileConnectAction({ ...refused, reconnect_code: 'choices_missing' })).toBe(
+      'reconnect'
     );
   });
 
@@ -595,7 +736,7 @@ describe('the agents on a connector page', () => {
       { value: 'write', label: 'Read and push', disabled: false },
     ]);
     expect(
-      githubAccessOptions("This server's GitHub App lets agents read only.").map((option) => [
+      githubAccessOptions("Switch's GitHub App lets agents read only.").map((option) => [
         option.value,
         option.disabled,
       ])
@@ -727,7 +868,7 @@ function refusal(status: number, retryable?: boolean): RpcError {
 
 describe('the sign-in flow', () => {
   const waiting: ConnectFlowState = {
-    ...initialConnectFlow(false),
+    ...initialConnectFlow({ connected: false, pasting: null }),
     flowId: 'flow-1',
     flow: { status: 'pending', account: null, error: null, warning: null },
   };
@@ -758,9 +899,13 @@ describe('the sign-in flow', () => {
   });
 
   it('cannot be closed while waiting for the browser, or mid-call', () => {
-    expect(canCloseConnectFlow(initialConnectFlow(false))).toBe(true);
+    expect(canCloseConnectFlow(initialConnectFlow({ connected: false, pasting: null }))).toBe(true);
     expect(canCloseConnectFlow(waiting)).toBe(false);
-    expect(canCloseConnectFlow(run(initialConnectFlow(false), { type: 'act' }))).toBe(false);
+    expect(
+      canCloseConnectFlow(
+        run(initialConnectFlow({ connected: false, pasting: null }), { type: 'act' })
+      )
+    ).toBe(false);
   });
 
   it('counts a cancel answered 410 as cancelled, not as an error', () => {
@@ -789,6 +934,48 @@ describe('the sign-in flow', () => {
     expect(refused.error).toBe('Already linked elsewhere.');
   });
 
+  it('names the server’s callback to allow-list only while a sign-in returning through it waits on the browser', () => {
+    const callback =
+      'https://switch.example.test/gateway/service-connections/example/flows/callback';
+    const started = run(
+      initialConnectFlow({ connected: false, pasting: null }),
+      { type: 'act' },
+      { type: 'started', flowId: 'flow-1', callbackUrl: callback }
+    );
+    const hint = {
+      text: 'If Atlassian shows an error, an admin must allow-list this URL at Atlassian.',
+      url: callback,
+    };
+    expect(allowListHint(started, 'Atlassian')).toEqual(hint);
+    const pending = run(started, {
+      type: 'polled',
+      flow: { status: 'pending', account: null, error: null, warning: null },
+      failure: 'Signing in failed.',
+    });
+    expect(allowListHint(pending, 'Atlassian')).toEqual(hint);
+    for (const status of ['checking', 'failed'] as const)
+      expect(
+        allowListHint(
+          run(started, {
+            type: 'polled',
+            flow: { status, account: null, error: null, warning: null },
+            failure: 'Signing in failed.',
+          }),
+          'Atlassian'
+        )
+      ).toBeNull();
+    expect(allowListHint(run(started, { type: 'cancelled' }), 'Atlassian')).toBeNull();
+    expect(
+      allowListHint(run(started, { type: 'connected', warning: null }), 'Atlassian')
+    ).toBeNull();
+    const loopback = run(initialConnectFlow({ connected: false, pasting: null }), {
+      type: 'started',
+      flowId: 'flow-1',
+      callbackUrl: null,
+    });
+    expect(allowListHint(loopback, 'Atlassian')).toBeNull();
+  });
+
   it('is connected, with the warning, once the server has kept the account', () => {
     const after = run(waiting, { type: 'connected', warning: 'Access stays a while.' });
     expect(after).toMatchObject({
@@ -800,6 +987,156 @@ describe('the sign-in flow', () => {
       warning: 'Access stays a while.',
     });
     expect(canCloseConnectFlow(after)).toBe(true);
+  });
+});
+
+describe('the paste step', () => {
+  const token: ServicePasteMethod = {
+    method: 'token',
+    label: 'Personal access token',
+    fields: [
+      { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+    ],
+    help_url: null,
+    expires: 'vendor',
+    access_note: 'Reaches what your token allows.',
+  };
+  const keys: ServicePasteMethod = {
+    method: 'keys',
+    label: 'API and application keys',
+    fields: [
+      { name: 'api_key', label: 'API key', secret: true, help: null, choices: null },
+      {
+        name: 'application_key',
+        label: 'Application key',
+        secret: true,
+        help: null,
+        choices: null,
+      },
+    ],
+    help_url: null,
+    expires: 'never',
+    access_note: 'Reaches what your keys allow.',
+  };
+  const run = (state: ConnectFlowState, ...events: Parameters<typeof connectFlowReducer>[1][]) =>
+    events.reduce(connectFlowReducer, state);
+  const signIn = initialConnectFlow({ connected: false, pasting: null });
+
+  it('opens in place of the sign-in, and goes back to it, each time with no stale reason', () => {
+    const pasting = run(signIn, { type: 'paste', method: 'token' });
+    expect(pasting.pasting).toBe('token');
+    const refused = run(pasting, { type: 'act' }, { type: 'failed', error: 'Refused.' });
+    expect(refused).toMatchObject({ pasting: 'token', busy: false, error: 'Refused.' });
+    expect(canCloseConnectFlow(refused)).toBe(true);
+    expect(run(refused, { type: 'paste', method: null })).toMatchObject({
+      pasting: null,
+      error: null,
+    });
+  });
+
+  it('can be where the dialog opens, to paste a new credential', () => {
+    expect(initialConnectFlow({ connected: false, pasting: 'keys' }).pasting).toBe('keys');
+  });
+
+  it('is done once the server keeps what was pasted', () => {
+    const after = run(
+      signIn,
+      { type: 'paste', method: 'keys' },
+      { type: 'act' },
+      { type: 'connected', warning: 'Some access may remain.' }
+    );
+    expect(after).toMatchObject({
+      connected: true,
+      pasting: null,
+      busy: false,
+      warning: 'Some access may remain.',
+    });
+  });
+
+  it('is offered under the sign-in for each way the server lists', () => {
+    expect(pasteLinks([token, keys])).toEqual([
+      { method: 'token', text: 'Use a token instead' },
+      { method: 'keys', text: 'Use API keys instead' },
+    ]);
+    expect(pasteLinks([token])).toEqual([{ method: 'token', text: 'Use a token instead' }]);
+    expect(pasteLinks([])).toEqual([]);
+  });
+
+  it('says in one line how long what Switch keeps lasts, each way', () => {
+    const datadog = entry({ name: 'Datadog', token_lifetime: 3600 });
+    expect(safetyLine(datadog, 'sign_in')).toBe('Expires: 1 hour, refreshed by Switch');
+    expect(safetyLine(datadog, token)).toBe('Expires: on the date you set in Datadog');
+    expect(safetyLine(datadog, keys)).toBe('Never expires; only Datadog can revoke it');
+    expect(safetyLine(entry({ token_lifetime: null }), 'sign_in')).toBeNull();
+  });
+
+  it('sends every field, trimmed, with the site, and nothing before both are there', () => {
+    const site = { site: 'datadoghq.eu' };
+    expect(pasteReady(keys, { api_key: ' a ', application_key: 'b' }, site)).toEqual({
+      method: 'keys',
+      fields: { api_key: 'a', application_key: 'b' },
+      choices: site,
+    });
+    expect(pasteReady(keys, { api_key: 'a', application_key: '  ' }, site)).toBeNull();
+    expect(pasteReady(token, { pat: 'a' }, null)).toBeNull();
+    expect(pasteReady(token, { pat: 'a', other: 'b' }, {})).toEqual({
+      method: 'token',
+      fields: { pat: 'a' },
+      choices: {},
+    });
+  });
+
+  it('opens on the way a refused credential was pasted, where the server still offers it', () => {
+    const refused = { reconnect_code: 'token_refused', method: 'token', paste: [token, keys] };
+    expect(pasteAgainMethod(refused)).toBe('token');
+    expect(pasteAgainMethod({ ...refused, method: 'keys', paste: [token] })).toBeNull();
+    expect(pasteAgainMethod({ ...refused, reconnect_code: 'choices_missing' })).toBeNull();
+    expect(pasteAgainMethod({ ...refused, reconnect_code: null })).toBeNull();
+  });
+});
+
+describe('what a sign-in asks the person to pick first', () => {
+  const SITES = ['datadoghq.com', 'datadoghq.eu', 'us5.datadoghq.com'];
+  const site = { name: 'site', label: 'Datadog site', secret: false, help: null, choices: SITES };
+
+  it('starts on nothing picked, so the sign-in waits for a site', () => {
+    const datadog = entry({ slug: 'datadog', name: 'Datadog', sign_in_choices: [site] });
+    const picked = initialSignInChoices(datadog);
+    expect(picked).toEqual({});
+    expect(signInChoicesReady(datadog.sign_in_choices, picked)).toBeNull();
+  });
+
+  it('starts on the site the person connected at, to connect again there', () => {
+    const datadog = entry({
+      status: 'needs_reauthorization',
+      sign_in_choices: [site],
+      choices: { site: 'datadoghq.eu' },
+    });
+    const picked = initialSignInChoices(datadog);
+    expect(picked).toEqual({ site: 'datadoghq.eu' });
+    expect(signInChoicesReady(datadog.sign_in_choices, picked)).toEqual({ site: 'datadoghq.eu' });
+  });
+
+  it('forgets a site the service no longer offers', () => {
+    expect(
+      initialSignInChoices(entry({ sign_in_choices: [site], choices: { site: 'ddog-gov.com' } }))
+    ).toEqual({});
+  });
+
+  it('starts once each is picked from its list, with that and nothing else', () => {
+    expect(signInChoicesReady([site], { site: 'us5.datadoghq.com' })).toEqual({
+      site: 'us5.datadoghq.com',
+    });
+    expect(signInChoicesReady([site], { site: '' })).toBeNull();
+    expect(signInChoicesReady([site], { site: 'elsewhere.test' })).toBeNull();
+    expect(signInChoicesReady([site], { site: 'datadoghq.com', region: 'eu' })).toEqual({
+      site: 'datadoghq.com',
+    });
+  });
+
+  it('asks nothing of a service whose sign-in takes no choice', () => {
+    expect(initialSignInChoices(entry())).toEqual({});
+    expect(signInChoicesReady(null, {})).toEqual({});
   });
 });
 
@@ -842,6 +1179,28 @@ describe('the disconnect dialog', () => {
     const note = "Switch can't revoke this key at Example; delete it there.";
     expect(disconnectCopy(entry({ auth_type: 'api_key' }), ['M1']).lines).toContain(note);
     expect(disconnectCopy(entry({ auth_type: 'oauth' }), ['M1']).lines).not.toContain(note);
+  });
+
+  it('describes a pasted credential as pasted rather than a sign-in', () => {
+    for (const auth_type of ['oauth', 'api_key'] as const) {
+      for (const method of ['token', 'keys'] as const) {
+        const lines = disconnectCopy(entry({ auth_type, method }), ['M1']).lines;
+        expect(lines).toContain('Switch removes what you pasted for Example.');
+        expect(lines).not.toContain('Switch removes the sign-in it keeps for Example.');
+      }
+    }
+  });
+
+  it('keeps the vendor-revocation warning for pasted API-key credentials', () => {
+    for (const method of ['token', 'keys']) {
+      const lines = disconnectCopy(entry({ auth_type: 'api_key', method }), ['M1']).lines;
+      expect(lines).toContain("Switch can't revoke this key at Example; delete it there.");
+    }
+  });
+
+  it('describes a browser OAuth credential as a sign-in', () => {
+    const lines = disconnectCopy(entry({ auth_type: 'oauth', method: 'oauth' }), ['M1']).lines;
+    expect(lines).toContain('Switch removes the sign-in it keeps for Example.');
   });
 });
 

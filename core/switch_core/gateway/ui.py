@@ -62,6 +62,7 @@ PAGE_PATHS: tuple[str, ...] = (
     "/users",
     "/connectors",
     "/workspace",
+    "/workspace/private-channel-rooms",
     "/organization",
     "/operator/workspaces",
     # Behind `gateway_chats`.

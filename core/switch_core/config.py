@@ -90,6 +90,8 @@ def _require_matching_keypair(
 
 # A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
 _SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+# Where a service's sign-ins come back (`connections/loader.py`, RedirectMode).
+_RedirectMode = Literal["loopback", "core"]
 
 # The version shape the controller's package script accepts: a release's
 # x.y.z, or a dev build's x.y.z-<prerelease> (0.31.1-dev.412.gabc1234).
@@ -395,6 +397,34 @@ class SwitchConfig(BaseSettings):
     # ask for some scopes, e.g. {"google-workspace": "drive-file"}. Unknown
     # services or profiles stop the server.
     service_access_profiles: dict[str, str] = Field(default_factory=dict)
+    # Where a service's sign-ins come back, for a catalog entry that lists more
+    # than one way (Atlassian's, Datadog's), as JSON:
+    # {"<slug>": "loopback" | "core"}.
+    # `loopback` is Switch Console's listener on the person's computer; `core`
+    # is this server's own callback,
+    # `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<slug>/flows/callback`,
+    # which a vendor may refuse until its admin allow-lists it (Atlassian: each
+    # site's admin; Datadog: each organization's admin). A service not named comes back the first way its entry
+    # lists. A slug not in the catalog, or a way its entry does not list, stops
+    # the server; `core` without GATEWAY_PUBLIC_URL is a warning at startup,
+    # and that service signs in through loopback where its entry lists it.
+    # Core's callback is registered with a vendor only where sign-ins use it,
+    # so naming `core` for a service whose client Core registers itself, or no
+    # longer naming it, registers a new client, and every connection to that
+    # service on this server must be reconnected once. Set the same value on
+    # every replica: they share one registered client per service.
+    service_sign_in_redirect: dict[str, _RedirectMode] = Field(default_factory=dict)
+    # Whether a connector that takes a credential pasted in place of its
+    # sign-in offers one that never expires (its catalog method says
+    # `expires: never`, such as API and application keys), and hands it to
+    # agents. Off, such a method is not offered, cannot be connected, and a
+    # connection made with one while it was on must be reconnected another
+    # way; a pasted credential its vendor ends (`expires: vendor`, a token
+    # made with an end date) is offered either way. A never-expiring key can
+    # only be revoked at the vendor: disconnecting or removing a grant
+    # forgets it in Switch but leaves it working. An `api_key` catalog entry
+    # stays refused either way.
+    allow_non_expiring_keys: bool = False
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -594,7 +624,7 @@ class SwitchConfig(BaseSettings):
     telemetry_snapshot_interval_hours: float = 24.0
 
     # Which Amplitude project this deployment's usage lands in, sent as
-    # `flint_env`. The relay keeps one project per environment and files an
+    # `switch_trust.env`. The relay keeps one project per environment and files an
     # event naming none, or `prod`, under production — which is what every
     # customer's deployment is, and why it is the default for a release. A
     # build that is not a release (a `.dev` version) reports as `dev` unless
@@ -607,7 +637,7 @@ class SwitchConfig(BaseSettings):
     telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
 
     # Whether this deployment is one of the company's own, sent as
-    # `flint_internal` so staff usage can be told from adoption. A customer's
+    # `switch_trust.internal` so staff usage can be told from adoption. A customer's
     # deployment never sets it. Within a deployment, staff accounts are counted
     # separately by email domain whether or not this is set.
     telemetry_internal: bool = False
@@ -1589,6 +1619,15 @@ class SwitchConfig(BaseSettings):
                 raise ValueError(
                     f"SERVICE_ACCESS_PROFILES names an invalid profile for {slug}: "
                     f"{profile!r}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_service_sign_in_redirect(self) -> "SwitchConfig":
+        for slug in self.service_sign_in_redirect:
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"SERVICE_SIGN_IN_REDIRECT names an invalid service: {slug!r}"
                 )
         return self
 

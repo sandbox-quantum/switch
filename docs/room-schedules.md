@@ -39,8 +39,8 @@ of.
 ## Who can change them
 
 Anyone who can see the room can see its schedules. Changing them (adding,
-editing, pausing, resuming, deleting) takes the right to manage the room: its
-owner or a workspace admin. Being able to write in the room is not enough, even
+editing, pausing, resuming, deleting) takes the right to change the room's
+settings: its owner, one of its room admins, or a workspace admin. Being able to write in the room is not enough, even
 if it is open for writing.
 
 Each run checks that again for the schedule's author. If they may no longer

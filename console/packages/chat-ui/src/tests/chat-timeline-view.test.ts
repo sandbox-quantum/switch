@@ -24,6 +24,7 @@ function message(seq: number, userId: string, name: string): ChatMessage {
     mentions: [],
     threadReplyCount: 0,
     threadLastReplySeq: null,
+    kickoff: null,
   };
 }
 
@@ -189,5 +190,62 @@ describe('ChatTimelineView mentions from the server’s spans', () => {
       'agent',
       'person',
     ]);
+  });
+});
+
+describe('ChatTimelineView kickoffs', () => {
+  const system = { clientId: '', name: '', kind: 'system' as const, agentId: null, userId: null };
+  const render = (timeline: ChatTimeline) =>
+    renderToStaticMarkup(
+      withChatHost(
+        createElement(ChatTimelineView, {
+          serverId: 's',
+          timeline,
+          agents: [],
+          people: [],
+          activities: [],
+          onReply: () => {},
+        })
+      )
+    );
+
+  it('shows a kickoff as its runner’s request, with the agents’ note folded away', () => {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply({ ...message(1, '', ''), sender: system, body: 'Kickoff from switch-buddy' });
+    timeline.apply({
+      ...message(2, '', ''),
+      sender: system,
+      threadRootId: 'm1',
+      body: 'Sprint room is live. Post today’s standup.',
+      kickoff: {
+        name: 'switch-buddy',
+        agentId: 'buddy-1',
+        userId: 'me',
+        agentNote: 'Note for the agents: this room is part of a run.',
+        displayName: 'Switch Buddy',
+        iconUrl: 'https://example.test/buddy.png',
+      },
+    });
+    const html = render(timeline);
+
+    // One card: the headline notice above it is not repeated.
+    expect(html).not.toContain('Kickoff from switch-buddy');
+    expect(html).not.toContain('text-center');
+    // Named and pictured as the agent itself, not as a room member speaking.
+    expect(html).toMatch(/Kickoff from <span[^>]*>Switch Buddy<\/span>/);
+    expect(html).toContain('data-icon-url="https://example.test/buddy.png"');
+    expect(html).not.toContain('font-semibold text-foreground-muted">Switch Buddy');
+    expect(html).toContain('Sprint room is live.');
+    expect(html).toMatch(/<details[^>]*><summary[^>]*>Details for agents<\/summary>/);
+    expect(html).toContain('Note for the agents: this room is part of a run.');
+  });
+
+  it('still shows a Switch notice that is not a kickoff as a centred line', () => {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply({ ...message(1, '', ''), sender: system, body: 'Session reset.' });
+    const html = render(timeline);
+
+    expect(html).toContain('text-center');
+    expect(html).not.toContain('Kickoff from');
   });
 });

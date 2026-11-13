@@ -189,9 +189,18 @@ describe('OpencodeAdapter turn lifecycle', () => {
     session.push(sessionStatus(NATIVE, 'busy'));
     await recorder.waitFor('session.state.changed', (event) => event.status === 'running', 1_000);
 
+    await expect(
+      adapter.sendTurn({
+        sessionId: 'switch-session',
+        turnId: 'stale',
+        expectedTurnId: 'other',
+        text: 'wrong',
+      })
+    ).rejects.toThrow('authorized turn');
     const steer = await adapter.sendTurn({
       sessionId: 'switch-session',
       turnId: 't2',
+      expectedTurnId: 't1',
       text: 'stop counting',
     });
     expect(steer).toEqual({ turnId: 't2', steeredInto: 't1' });

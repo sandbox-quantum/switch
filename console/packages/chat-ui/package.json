@@ -45,6 +45,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/node": "^24.13.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/react-syntax-highlighter": "^15.5.13",

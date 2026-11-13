@@ -94,6 +94,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/collaborations", EVERYONE),
     built("/registration-keys", EVERYONE),
     built("/workspace", EVERYONE),
+    built("/workspace/private-channel-rooms", ADMINS),
     // Every workspace is in an organization, and today's page shows it to
     // anyone in one; what it lets them do is the page's own business.
     built("/organization", EVERYONE),
@@ -124,6 +125,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/connectors/:connectorId", EVERYONE),
 
     built("/settings/general", EVERYONE),
+    built("/workspace/private-channel-rooms", ADMINS),
     built("/settings/users", EVERYONE),
     built("/settings/messaging-apps", EVERYONE),
     built("/settings/connectors", EVERYONE),

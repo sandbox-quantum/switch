@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  agentAvatarUrlForName,
+  agentAvatarUrlForNewAgent,
   isThirdPartyAvatarUrl,
 } from '@switch-console/chat-ui/model/agent-avatar';
 import type { PluginFs, RepoAgentAttributes } from '@switch-console/core/agents/plugins';
@@ -328,7 +328,7 @@ function resolveNewAgentIconUrl(
   avatarSettings: AvatarSettings
 ): string | null {
   if (avatarSettings.thirdPartyAvatarsEnabled) {
-    return requestedIconUrl ?? agentAvatarUrlForName(name);
+    return requestedIconUrl ?? agentAvatarUrlForNewAgent(name);
   }
   return requestedIconUrl !== null && !isThirdPartyAvatarUrl(requestedIconUrl)
     ? requestedIconUrl

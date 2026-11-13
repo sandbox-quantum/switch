@@ -56,6 +56,7 @@ function message(roomId: string, seq: number): ChatMessage {
     mentions: [],
     threadReplyCount: 0,
     threadLastReplySeq: null,
+    kickoff: null,
   };
 }
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChatApproval, ChatApprovalAnswer } from '../contracts/activity';
 import { failureText } from '../model/failures';
 import { Button } from '../primitives/button';
@@ -30,6 +30,14 @@ export function ChatApprovalCard({
   const [answers, setAnswers] = useState<Record<string, Answers[number]>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const card = useRef<HTMLElement>(null);
+  const open = request.state === 'open';
+  // A question that opens is brought to the person: into view, and its first
+  // choice focused, unless they are typing a message, which keeps the focus.
+  useEffect(() => {
+    if (!open) return;
+    bringToQuestion(card.current, { onlyIfIdle: true });
+  }, [open]);
   if (request.state !== 'open')
     return (
       <details className="mt-2 text-xs text-foreground-muted">
@@ -51,7 +59,11 @@ export function ChatApprovalCard({
     }
   };
   return (
-    <section className="rounded-xl border border-border bg-background-1 p-4">
+    <section
+      ref={card}
+      data-chat-request={request.requestId}
+      className="rounded-xl border border-border bg-background-1 p-4"
+    >
       <h3 className="font-medium">{request.title}</h3>
       {request.kind !== 'questions' ? (
         <>
@@ -157,4 +169,31 @@ export function ChatApprovalCard({
       )}
     </section>
   );
+}
+
+/**
+ * Scroll an open request's card into view and focus its first control. With
+ * `onlyIfIdle`, focus moves only when the person is not typing: a message box
+ * or field with text in it keeps it.
+ */
+export function bringToQuestion(
+  card: HTMLElement | null,
+  { onlyIfIdle = false }: { onlyIfIdle?: boolean } = {}
+): void {
+  if (!card) return;
+  card.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  const active = document.activeElement;
+  const typing =
+    (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) &&
+    active.value !== '' &&
+    !card.contains(active);
+  if (onlyIfIdle && typing) return;
+  card
+    .querySelector<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea')
+    ?.focus({ preventScroll: true });
+}
+
+/** The card of an open request, by its id, if it is on screen. */
+export function questionCard(requestId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-chat-request="${CSS.escape(requestId)}"]`);
 }

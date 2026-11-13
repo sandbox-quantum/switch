@@ -53,6 +53,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Messages sent while an agent works can steer its running turn.** Each
+  agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
+  kept on the agent so re-registering leaves it alone, changed on the agent's
+  page in the dashboard, with `PUT /gateway/agents/{id}/mid-turn-delivery`, or
+  with `update_agent_detail`, and sent with every message. Activity cards on
+  every platform say how many messages were steered into a turn, with a line
+  for each in its sender's words; a turn waiting behind another says so; and
+  a steered message carries the working reaction while its turn runs (#801).
 - **Monitoring for hosted agents' cloud machines.** With `OTLP_ENDPOINT` set,
   Core reports hosted machine metrics to Datadog: machines expected against
   machines reporting, agents and sessions, memory and disk peaks, how long a
@@ -76,6 +84,14 @@ version of their own to them without also giving them a release of their own.
   counts with its next observation, which Core counts once the observation is
   saved. Against an older Core that refuses the counts, it sends the
   observation without them and leaves them off for an hour. Deploy Core first.
+- **Linear, connected as you.** Someone who connects their Linear account in
+  Switch Console can grant it to their agents, which then find, comment on and
+  update issues and projects through Linear's own MCP server. Nothing needs
+  configuring on the server.
+- **An MCP identity tool can take fixed arguments.** A catalog entry can give
+  fixed `arguments` to the MCP tool that tells Core whose sign-in it is, such
+  as `{ query: me }`. Core sends them only if the tool's schema declares each
+  one, with no type or as a string, and requires no other.
 - **Usage telemetry counts Switch Console chat.** Messages people post in a
   Switch Console chat were stored without being counted, so desktop chat was
   invisible to the message events and the period counts. Each post is now a
@@ -137,7 +153,7 @@ version of their own to them without also giving them a release of their own.
   requests, files and pipelines, as that person, through GitLab's MCP server. Each server's operator registers a
   GitLab OAuth application with the scopes `mcp`, `read_api`, `read_user`
   and `api`, and saves it under Connector apps or names it in
-  `GITLAB_CLIENT_CONFIG_PATH`. Like Google Workspace and Airtable, it needs
+  `GITLAB_CLIENT_CONFIG_PATH` (Helm: `switchCore.gitlabClientSecret`). Like Google Workspace and Airtable, it needs
   `GATEWAY_PUBLIC_URL`. GitLab's dynamic registration grants only `mcp` and
   no refresh, so Switch does not use it. Every connection can write: a
   sign-in asks for `api`, and GitLab's MCP server lets a token write even
@@ -264,6 +280,13 @@ version of their own to them without also giving them a release of their own.
   each connector's `category` and `description`.
 
 #### Changed
+- **New generated agent icons no longer carry the agent's name.** A managed
+  agent created without an icon, and every choice the icon picker offers, is
+  now a DiceBear face seeded with the first 32 hex digits of the name's
+  SHA-256 (`agent_icon.new_icon_url`) rather than the name, so the name does
+  not go to api.dicebear.com. Icons agents already have are unchanged, and an
+  agent with no icon stored is still drawn from its name, so no existing
+  agent changes face.
 - **Usage telemetry tells Switch Console chats apart.** The period events
   add `console_account_active`, the active accounts that used Console chat,
   and `console_only_account_active`, those that used nothing else, so Console
@@ -697,7 +720,9 @@ version of their own to them without also giving them a release of their own.
   reconnecting Google Workspace is an exception, as GitLab is: Switch revokes
   the sign-in at Google, which ends every token on it, so once that succeeds
   the warning leaves Google Workspace out. A catalog entry says so with
-  `revocation_ends_tokens`.
+  `revocation_ends_tokens`. Reconnecting the same Google account through the
+  same client does not revoke the old sign-in, so the warning names Google
+  Workspace then.
 - **A template's room params name only rooms its runner can see.** A room
   param checked its value against every room on the server, and `$first` or
   a list of candidates could settle on someone else's private room. That told
@@ -1063,6 +1088,85 @@ version of their own to them without also giving them a release of their own.
   permissions reads "Agents can read only", naming what it lacks. On an
   agent's Service access, a write grant on such an App shows why it gets
   nothing, and granting GitHub offers Read and push disabled with the reason.
+- **A server chooses where each connector's sign-ins come back, and
+  Atlassian's can come back to the server.** `SERVICE_SIGN_IN_REDIRECT` maps
+  a service to `loopback` (Switch Console, on the person's computer) or `core`
+  (the server's own callback,
+  `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`),
+  as JSON such as `{"atlassian":"core"}`. A service it does not name comes
+  back as before. A service, or a way back, that the catalog does not list
+  stops the server. `core` without `GATEWAY_PUBLIC_URL` is a warning at
+  startup: the service signs in through Switch Console where its entry lists
+  loopback; otherwise it cannot be connected until `GATEWAY_PUBLIC_URL` is set.
+  Atlassian now offers both, through Switch Console unless the server names
+  `core`; before naming it, each Atlassian site's admin must allow-list the
+  callback. Switch registers its own callback with a vendor only where
+  sign-ins use it, so a server that names `core` for Atlassian, or stops
+  naming it, registers a new client there, and everyone reconnects Atlassian
+  once. A server that does not name Atlassian registers what it did before.
+  Starting a sign-in also answers `callback_url`: the server's callback when
+  the browser comes back through it, null otherwise. With Helm, set
+  `switchCore.serviceSignInRedirect`, and restart all replicas together to
+  change it.
+- **Datadog connects again, by signing in at your Datadog site.** People pick
+  their Datadog site (US1, US3, US5, EU1, AP1, AP2 or UK1) and sign in to
+  Datadog, where its consent page's Full access connects for reading and
+  writing and Limited access for reading. Switch registers its own client at
+  each site people use, so nothing is set up on the server. Agents granted
+  Datadog get the owner's access token, which lives an hour and is renewed by
+  Switch, and call the MCP server at the connection's site. Sign-ins come back
+  to Switch Console; a server may name `core` for datadog in
+  `SERVICE_SIGN_IN_REDIRECT` once an admin of each Datadog organization has
+  allow-listed the server's callback under MCP OAuth Redirect URLs in
+  Organization Settings. Datadog cannot revoke a sign-in for Switch, so
+  disconnecting says to remove it in Datadog under Personal Settings,
+  Authorized Apps. The account is the Datadog user signed in to, named by
+  their email. A Datadog connection made with keys reads as needing to be
+  connected again and is never used; disconnecting it forgets the keys, which
+  only Datadog can revoke. `GET /gateway/service-connections` answers
+  `sign_in_choices`, what a sign-in asks people to pick first, and a
+  connection made in a way its service no longer offers reads
+  `needs_reauthorization`.
+- **An OAuth connector can take a pasted token or keys in place of its
+  sign-in.** A catalog entry may list `auth.paste`: a token, or keys, each
+  with the fields a person pastes and the MCP headers they go in.
+  `PUT /gateway/service-connections/{service}/paste` connects with one, at
+  the site picked for the sign-in. Switch checks the credential with an MCP
+  `initialize` at the service's MCP server before storing it, names the
+  connection by the account where the credential may read it, and connects
+  at the write level: an agent granted it reaches what the credential
+  allows. Switch neither asks for nor stores when the credential ends; it
+  checks it again at every token request, and a credential the vendor
+  refuses marks the connection as needing a new one (`token_refused`). A
+  pasted credential is handed to the session host with no `expires_at`, to
+  use for an hour at a time. The services list says what each service takes
+  pasted (`paste`), what a pasted connection reaches (`access_note`), and why
+  a connection must be reconnected (`reconnect_code`, `reconnect_reason`).
+- **`ALLOW_NON_EXPIRING_KEYS`** (off by default) lets a connector offer a
+  pasted credential that never expires, such as API and application keys,
+  and hand it to agents. Such a key can only be revoked at the vendor. Off,
+  it is not offered, and a connection made with one while the setting was on
+  must be reconnected another way. Connectors that connect with a key alone
+  stay refused either way. With Helm, set `switchCore.allowNonExpiringKeys`.
+- **Datadog takes a pasted personal access token, or API and application
+  keys, in place of its sign-in.** Either is pasted at the site picked for
+  the sign-in and checked at Datadog's MCP server there. A token goes to it
+  as a bearer and ends on the date set when it was made; give it `mcp_read`,
+  `mcp_write` for writes, and `user_access_read` to have the connection
+  named by its Datadog user rather than by the token's public part
+  (`ddpat_…`). Keys go in `DD_API_KEY` and `DD_APPLICATION_KEY`, never
+  expire, and are offered only with `ALLOW_NON_EXPIRING_KEYS` on. An agent
+  granted Datadog on such a connection reaches what the token or keys
+  allow, and the Datadog skill says so.
+- **A Datadog connection made with keys before Datadog asked for a site is
+  connected again, not filled in.** Its site sits only inside the keys
+  Switch keeps, so nothing reads it from there: the connection reads
+  `needs_reauthorization` with the `reconnect_code` `choices_missing` and
+  says "Datadog was connected before it asked for a site. Connect it again.",
+  whether or not the server allows keys that never expire. Its grants are
+  kept and left out of sessions, and a token request or a new grant is
+  refused with the same sentence. The same holds for any connection made
+  before its service asked for a choice it now needs.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A
@@ -1592,6 +1696,14 @@ version of their own to them without also giving them a release of their own.
   account still revokes it, and so does a disconnect. A sign-in that Switch
   does not keep, because the workspace switched Google Workspace off during
   it, no longer ends the existing connection either.
+- **Disconnecting Datadog keys no longer says Switch cannot revoke a
+  sign-in.** What a disconnect, or a connect that replaces a connection,
+  says Switch could not revoke now follows how the connection was made, as
+  Switch recorded it, not what the credential it kept happens to hold. A
+  Datadog connection made with keys before Datadog asked for a site said
+  Switch could not revoke the Datadog sign-in and to remove it under
+  Authorized Apps; it now says Switch has forgotten the pasted Datadog keys
+  but cannot revoke them, and to revoke them in Datadog.
 - **A sign-in the vendor refuses fails with the vendor's reason.** When a
   vendor sent the browser back with an error instead of a code, every one was
   recorded as "sign-in was cancelled" and what the vendor said was dropped, so
@@ -1799,10 +1911,9 @@ version of their own to them without also giving them a release of their own.
   replaced too, where it used to surface later as a refused sign-in.
 - **A refusal to reconnect is worded for who reads it.** Opening your own
   GitHub repositories, or granting a service, could answer "The agent's owner
-  must reconnect GitHub under Settings, Connections", addressed to someone
-  else and naming a page that does not exist. You are now told to reconnect
-  it from Connectors in Switch Console, and an agent asking for a token is
-  told its owner must.
+  must reconnect GitHub", as if someone else had to. You are now told to
+  reconnect it yourself in Switch Console, under Connectors, and an agent
+  asking for a token is told its owner must.
 - **The dashboard says when the workspace has a service switched off.** An
   agent's Service access offered to turn on, or to grant GitHub for, a
   service the workspace had switched off, and the server refused. It now
@@ -1921,6 +2032,13 @@ version of their own to them without also giving them a release of their own.
   by default, so an upgraded server behaves as before.
 
 #### Changed
+- **Telemetry attributes use `switch_trust.*` names.** `flint.client_id`,
+  `flint_env` and `flint_internal` are now `switch_trust.client_id`,
+  `switch_trust.env` and `switch_trust.internal` on usage events. The
+  operational OTLP export to your own collector carries
+  `switch_trust.client_id` in place of `flint.client_id` too, so update any
+  collector rule or query that matches the old name. What is sent is otherwise
+  unchanged.
 - **Upgrading from 0.30 or earlier: two things now work the other way round.**
   - **switch-core can run as multiple replicas.** Before 0.31.0 the chart
     refused any `switchCore.replicaCount` above 1. Now any replica can serve
@@ -3691,6 +3809,18 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
+- **A message sent while an agent works reaches the running turn.** On
+  Claude Code, Codex and OpenCode, any message that reaches the agent while it
+  is working is delivered into the running turn instead of waiting for it to
+  end: from anyone who can talk to the agent, in any thread or room, or typed
+  in the session's own view. The agent reads it at its next step (Claude Code
+  after the tool call or answer in progress). A steer the turn can no longer
+  take runs as the next turn, with a notice; nothing is lost or sent twice,
+  and a retry always queues. The transcript and chat work log label each
+  mid-turn message steered or queued, and the agent settings and
+  managed-agent page have the **Steer messages sent while it works** setting
+  (on by default) to keep room messages queueing instead. Built on #1445 by
+  Xuefeng-Zhu, with parts of #1494, #1465, #1499, #1565 and #1055 (#801).
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -3719,6 +3849,39 @@ version of their own to them without also giving them a release of their own.
 - **Connectors says why Airtable or Google Workspace can't be connected on a
   server without a public address**: the operator is told to set
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
+- **The Connect dialog names the server's callback when a sign-in comes back
+  through it.** While you sign in to a service whose sign-ins return through
+  your Switch server, the dialog shows the server's callback URL under the
+  spinner and says that if the service shows an error, an admin must
+  allow-list that URL there. A server that does not send `callback_url` is
+  read as one whose sign-ins come back to Console.
+- **The Connect dialog asks for your Datadog site before you sign in.** For a
+  service whose sign-in takes a choice first, the dialog shows a picker for
+  it above the Connect button, which stays off until you pick; connecting
+  again starts on the site you connected at. The connector's page names the
+  site beside the account you are connected as. A server that does not send
+  `sign_in_choices` is read as one whose sign-ins take no choice, and a
+  sign-in that takes none is started as before.
+- **A session can use a service connected with a pasted token or keys.**
+  Switch hands such a credential out with no expiry, which only its vendor
+  knows; the session host refused that answer. It now holds the credential
+  until Switch says to ask again, within the hour, and drops it as before
+  once its grant changes.
+- **Connect Datadog with a pasted token or keys in place of signing in.**
+  Under the sign-in, the Connect dialog offers "Use a token instead" and,
+  where the server allows keys that never expire, "Use API keys instead".
+  Either opens a paste step with the same site picker, the fields to paste,
+  a link to Datadog's help on making them, and Back to the sign-in; nothing
+  is sent until each field is filled and the site picked, and what was
+  typed is cleared once it is sent. Each way says in one line how long what
+  Switch keeps lasts: an hour, refreshed by Switch, for the sign-in; the
+  date you set in Datadog for a token; never, until Datadog revokes them,
+  for keys. A connector's page says what a pasted connection reaches in
+  place of its access level, and how long it lasts. Where Datadog refused a
+  pasted token, the page says so and offers "Paste a new one", which opens
+  the paste step at the same site. A connection to reconnect says why in
+  the server's words, where it gives them. A server that does not send
+  `paste` is read as one that takes nothing pasted.
 - **Codex sessions can use an API key kept in the OS keyring.** With
   `cli_auth_credentials_store = "keyring"` or `"auto"`, the execution machine's
   Codex keeps its login in the keyring, where a session's own Codex home cannot
@@ -3752,6 +3915,10 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **New agents' generated avatars no longer carry the name.** A new agent
+  created without a chosen icon gets the same digest-seeded DiceBear face the
+  server generates, and the picker's choices are drawn the same way. Existing
+  agents keep the face they have.
 - **Usage data tells what the app did by itself from what a person did.**
   Sessions the app found running on a host are sent as `session_discovered`
   rather than `session_started`. A session the app set up again by itself is
@@ -4100,6 +4267,10 @@ version of their own to them without also giving them a release of their own.
   before. Older versions of Console load those images whatever the server says.
 
 #### Changed
+- **Usage data attributes use `switch_trust.*` names.** `flint.client_id`,
+  `flint_env` and `flint_internal` are now `switch_trust.client_id`,
+  `switch_trust.env` and `switch_trust.internal`. Only the names change; what
+  is sent, and the opt-out, do not.
 - **Link your account right after adding a messaging app.** Every way into
   connecting an app, including a Console link from switch-buddy, now ends by
   offering to link your own account on it (Telegram explains how instead).

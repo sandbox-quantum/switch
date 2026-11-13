@@ -91,6 +91,9 @@ class RoomSummary(BaseModel):
     # The caller owns the room, is in it (in Switch Console or through a
     # platform account they claimed), or owns an agent in it.
     viewer_is_member: bool = False
+    # The caller is one of the room's room admins: the room's owner, or a
+    # workspace admin, made them one, and they change it as its owner does.
+    viewer_is_room_admin: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
     # Its people (`connected_user_*`) are its Switch members rather than
@@ -100,17 +103,20 @@ class RoomSummary(BaseModel):
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. Each flag is the room policy's answer
     # (`room_policy`), asked the same way its route asks it.
-    # `can_write` (owner or tenant admin) covers its settings, instructions,
-    # roles, group and linked rooms; `can_manage` (the same tier) covers its
-    # access, archiving and deleting it and taking the platform channel's
-    # name. `can_attach` (anyone in the room) covers attaching a reference,
+    # `can_write` (owner, room admin or tenant admin) covers its settings,
+    # instructions, roles, group and linked rooms; `can_manage` (owner or
+    # tenant admin) covers its access and deleting it and taking the platform
+    # channel's name; `can_archive` (owner, room admin or tenant admin) covers
+    # archiving it, which older clients read from `can_manage`;
+    # `can_manage_admins` (owner or tenant admin) covers choosing its room
+    # admins. `can_attach` (anyone in the room) covers attaching a reference,
     # document or package; `can_invite_agents` and `can_add_people`
     # (anyone in the room) cover adding agents and people, though each agent's
     # own addressing policy can still refuse a particular one
-    # (`room_invites`); `can_remove_members` (owner or tenant admin)
-    # covers taking them out. No membership flag is ever set on a direct
+    # (`room_invites`); `can_remove_members` (owner, room admin or tenant
+    # admin) covers taking them out. No membership flag is ever set on a direct
     # or group conversation, whose platform fixes who is in it. `can_unlink`
-    # (owner or tenant admin) covers unlinking any resource; a resource's own
+    # (owner, room admin or tenant admin) covers unlinking any resource; a resource's own
     # owner may also unlink theirs, which its listing reports. `can_transfer`
     # is `can_manage` for anything but a chat, which stays with its people.
     # `can_change_members` is `can_remove_members`, for Switch Console
@@ -118,6 +124,8 @@ class RoomSummary(BaseModel):
     # both only where both are allowed.
     can_write: bool
     can_manage: bool
+    can_archive: bool
+    can_manage_admins: bool
     can_attach: bool
     can_invite_agents: bool
     can_add_people: bool
@@ -150,6 +158,23 @@ class RoomAutoRouteRequest(BaseModel):
     fallback_agent: str | None = None
 
 
+class RoomPerson(BaseModel):
+    """A Switch user who takes part in a room."""
+
+    user_id: str
+    name: str
+
+
+class RoomAdminEntry(BaseModel):
+    """One of a room's room admins (`RoomAdmin`)."""
+
+    user_id: str
+    name: str | None = None
+    # Who made them one; null once that person's account is gone.
+    granted_by: str | None = None
+    granted_at: str
+
+
 class RoomDetail(RoomSummary):
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility
@@ -157,6 +182,13 @@ class RoomDetail(RoomSummary):
     # clicks Update, so both names are carried until the shipped ones have
     # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
+    # The room's room admins, longest-standing first. Only people still in
+    # the room are listed.
+    room_admins: list[RoomAdminEntry] = []
+    # Who the caller could make a room admin: the workspace members who take
+    # part in the room, other than its owner and its room admins. Filled
+    # only when the caller may choose room admins (`can_manage_admins`).
+    room_admin_candidates: list[RoomPerson] = []
     external_channel_id: str | None
     instructions: str | None
     protection_config: dict[str, Any] | None
@@ -371,6 +403,7 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
 
 
 class AgentToolSummary(BaseModel):
@@ -550,6 +583,10 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateAgentMidTurnDeliveryRequest(BaseModel):
+    mid_turn_delivery: Literal["steer", "queue"]
 
 
 class UpdateAgentCanManageAgentsRequest(BaseModel):
@@ -2468,6 +2505,81 @@ class RetentionPreviewResponse(BaseModel):
 
     message_retention_days: int
     messages_to_delete: int
+
+
+class PrivateChannelRoom(BaseModel):
+    """A Public room on a private channel, as the clean-up's preview lists it
+    (`private_channel_rooms.Candidate`)."""
+
+    room_id: str
+    name: str
+    bridge_id: str
+    bridge_name: str | None
+    bridge_type: str | None
+    # The recorded type; None when none was recorded.
+    channel_type: str | None
+    people: int
+    # Whether the platform can list the channel's members; None when its
+    # messaging app is not running.
+    members_listed: bool | None
+    # Why the room starts unticked: "members_not_listed",
+    # "channel_type_not_recorded", "channel_type_unknown", "many_people" or
+    # "bridge_not_connected". Empty when none.
+    cautions: list[str]
+    recommended: bool
+
+
+class PrivateChannelRoomsPreview(BaseModel):
+    rooms: list[PrivateChannelRoom]
+
+
+class MakeRoomsPrivateRequest(BaseModel):
+    """The rooms from the preview the admin confirmed."""
+
+    room_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class PrivateChannelRoomsCount(BaseModel):
+    count: int
+
+
+class AskPlatformRequest(BaseModel):
+    """Which listed rooms of unrecorded type to ask about; all of them, a
+    batch at a time, when absent."""
+
+    room_ids: list[str] | None = Field(default=None, max_length=200)
+
+
+class AnsweredRoom(BaseModel):
+    room_id: str
+    channel_type: str
+
+
+class UnansweredRoom(BaseModel):
+    room_id: str
+    # "bridge_not_connected" or "could_not_tell".
+    reason: str
+
+
+class AskPlatformResponse(BaseModel):
+    answered: list[AnsweredRoom]
+    unanswered: list[UnansweredRoom]
+    # "rate_limited" or "timed_out" when the batch stopped early.
+    stopped: str | None
+    # Listed rooms still to ask about: no recorded type, and not already
+    # found unplaceable.
+    remaining: int
+
+
+class SkippedRoom(BaseModel):
+    room_id: str
+    # "not_found", "already_private", "archived" or "not_eligible".
+    reason: str
+
+
+class MakeRoomsPrivateResponse(BaseModel):
+    changed: list[str]
+    skipped: list[SkippedRoom]
 
 
 # ── Erasing a person ────────────────────────────────────────────────────────

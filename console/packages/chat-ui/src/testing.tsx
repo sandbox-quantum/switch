@@ -27,8 +27,12 @@ export function stubChatHost(overrides: Partial<ChatHost> = {}): ChatHost {
     useGroupChats: () => true,
     useDarkMode: () => false,
     useAgentAccent: () => null,
-    AgentAvatar: ({ name, size }) =>
-      createElement('span', { 'data-agent-avatar': name, style: { width: size, height: size } }),
+    AgentAvatar: ({ name, iconUrl, size }) =>
+      createElement('span', {
+        'data-agent-avatar': name,
+        'data-icon-url': iconUrl ?? undefined,
+        style: { width: size, height: size },
+      }),
     BridgeIcon: ({ bridgeType }) => createElement('span', { 'data-bridge-icon': bridgeType }),
     ...overrides,
   };

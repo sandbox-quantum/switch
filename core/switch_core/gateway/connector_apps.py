@@ -48,7 +48,7 @@ from switch_core.connections.app_credentials import (
     github_needs_https,
 )
 from switch_core.connections.broker import ServiceBroker, get_service_broker
-from switch_core.connections.oauth_clients import redirect_uris
+from switch_core.connections.oauth_clients import preferred_mode, redirect_uris
 from switch_core.connections.registry import every_scope
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
@@ -304,15 +304,23 @@ def saved_app_redirects(apps: ConnectorApps, spec: AppSpec) -> list[str]:
         )
     oauth = apps.definition(spec.service).auth.oauth
     assert oauth is not None
-    return redirect_uris(spec.service, oauth.redirect, public_url, oauth.loopback_ports)
+    return redirect_uris(
+        spec.service,
+        oauth.redirect,
+        apps.named_redirect(spec.service),
+        public_url,
+        oauth.loopback_ports,
+    )
 
 
 def needs_public_url(apps: ConnectorApps, spec: AppSpec) -> bool:
+    """Whether people are sent back to the server rather than to Switch
+    Console, which takes its public URL."""
     if spec.kind == "github_app":
         return True
     oauth = apps.definition(spec.service).auth.oauth
     assert oauth is not None
-    return "core" in oauth.redirect
+    return preferred_mode(oauth.redirect, apps.named_redirect(spec.service)) == "core"
 
 
 def app_scopes(apps: ConnectorApps, spec: AppSpec) -> list[str]:

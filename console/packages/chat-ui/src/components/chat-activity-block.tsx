@@ -134,6 +134,18 @@ export function turnWarnings(turn: TurnActivity): ChatActivityItem[] {
   return turn.items.filter((item) => item.kind === 'notice' && item.status === 'warning');
 }
 
+/** Messages a person sent into this turn while it ran (steered), in the order they arrived. */
+export function turnDeliveries(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items.filter((item) => item.kind === 'user-message' && item.delivery === 'steered');
+}
+
+/** What a turn says while it has not started: behind another turn, or about to start. */
+export function queuedLabel(turn: TurnActivity): string {
+  return turn.items.some((item) => item.kind === 'user-message' && item.delivery === 'queued')
+    ? 'Queued behind the running turn…'
+    : 'Queued…';
+}
+
 /** Whether a turn has anything to show in its work log. */
 export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean {
   const running = turn.status === 'queued' || turn.status === 'running';
@@ -147,7 +159,8 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
-    turnWarnings(turn).length > 0
+    turnWarnings(turn).length > 0 ||
+    turnDeliveries(turn).length > 0
   );
 }
 
@@ -219,6 +232,15 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           …{children.length - 5} more subagents not shown.
         </div>
       )}
+      {turnDeliveries(turn).map((item) => (
+        <WorkLogRow
+          key={item.itemId}
+          icon={<ToolKindIcon kind="switch" />}
+          label={`Steered into this turn${item.text ? `: ${item.text}` : ''}`}
+          title={item.text}
+          tone="passive"
+        />
+      ))}
       {turnWarnings(turn).map((notice) => (
         <WorkLogRow
           key={notice.itemId}
@@ -231,7 +253,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
       {thinking && (
         <WorkLogRow
           icon={<ThinkingIcon />}
-          label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
+          label={turn.status === 'queued' ? queuedLabel(turn) : 'Thinking…'}
           active
         />
       )}

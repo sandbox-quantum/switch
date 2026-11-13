@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type { ConnectStart } from './connect-service-modal';
 import { useReloadConnectors } from './connectors-queries';
 
 /**
@@ -16,7 +17,7 @@ export function useConnectService(serverId: string, workspaceId: string) {
   return useCallback(
     (
       connection: ConnectionCatalogEntry,
-      startAt: 'connect' | 'reconnect' | 'replace',
+      startAt: ConnectStart,
       afterConnected: (warning: string | null) => void
     ) =>
       showConnect({

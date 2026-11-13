@@ -73,6 +73,8 @@ async def _connect(
         external_identity=f"login-{account_id}",
         encrypted_secret=TEST_KEYRING.encrypt(json.dumps(secret or SECRET)),
         oauth_client_id=None,
+        method="oauth",
+        choices={},
     )
 
 
@@ -258,6 +260,8 @@ class TestGrants:
                 external_identity="ada-example",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(SECRET)),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             await STORE.save_grant(
                 session,

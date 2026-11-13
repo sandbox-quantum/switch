@@ -2,6 +2,8 @@ import {
   AVATAR_CHOICE_COUNT,
   agentAvatarChoices,
   agentAvatarUrlForName,
+  agentAvatarUrlForNewAgent,
+  agentNameSeed,
   agentAvatarUrlForSeed,
   agentInitials,
   isThirdPartyAvatarUrl,
@@ -71,11 +73,32 @@ describe('agentAvatarUrlForSeed', () => {
   });
 });
 
+describe('agentAvatarUrlForNewAgent', () => {
+  it('matches the URL the Switch server generates for a new agent', () => {
+    // The server's test (`core/tests/switch_core/test_agent_icon.py`) pins this
+    // same string for `new_icon_url('pm-agent')`.
+    expect(agentAvatarUrlForNewAgent('pm-agent')).toBe(
+      'https://api.dicebear.com/10.x/gaze/png?seed=af076cef2d2acd06e8a21c475ec28b55&size=256&scale=1.1'
+    );
+  });
+
+  it('never puts the name in the URL', () => {
+    expect(agentAvatarUrlForNewAgent('acme-merger-bot')).not.toContain('acme');
+    expect(agentAvatarChoices('acme-merger-bot', 0).join(' ')).not.toContain('acme');
+    expect(agentAvatarChoices('acme-merger-bot', 1).join(' ')).not.toContain('acme');
+  });
+
+  it('leaves the avatar drawn from the name itself as it was', () => {
+    expect(agentAvatarUrlForName('worker')).toBe(agentAvatarUrlForSeed('worker'));
+    expect(agentNameSeed('worker')).not.toBe(agentNameSeed('manager'));
+  });
+});
+
 describe('agentAvatarChoices', () => {
-  it('leads with the avatar the agent already has', () => {
-    // The first tile is the one the agent is currently wearing, so the grid
-    // opens showing the status quo rather than ten alternatives to it.
-    expect(agentAvatarChoices('worker', 0)[0]).toBe(agentAvatarUrlForName('worker'));
+  it('leads with the avatar a new agent of that name gets', () => {
+    // The first tile is the one a new agent wears when nobody picks, so the
+    // grid opens on the default rather than ten alternatives to it.
+    expect(agentAvatarChoices('worker', 0)[0]).toBe(agentAvatarUrlForNewAgent('worker'));
   });
 
   it('offers a full page of distinct choices', () => {
@@ -90,9 +113,9 @@ describe('agentAvatarChoices', () => {
     expect(second.some((choice) => first.includes(choice))).toBe(false);
   });
 
-  it('drops the name avatar from later rounds', () => {
+  it('drops the default avatar from later rounds', () => {
     // Round 0 leads with it; after that the reader has already declined it.
-    expect(agentAvatarChoices('worker', 1)).not.toContain(agentAvatarUrlForName('worker'));
+    expect(agentAvatarChoices('worker', 1)).not.toContain(agentAvatarUrlForNewAgent('worker'));
   });
 
   it('gives the same page each time it is asked', () => {

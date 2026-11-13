@@ -25,7 +25,7 @@ from switch_core.connections.broker import (
     ServiceBroker,
     ServiceError,
 )
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import ConnectionDefinition, RedirectMode
 from switch_core.connections.oauth_clients import (
     LOOPBACK_REDIRECT_URI,
     RegisteredClient,
@@ -33,6 +33,7 @@ from switch_core.connections.oauth_clients import (
     core_callback,
     loopback_redirect,
     redirect_uris,
+    sign_in_mode,
 )
 from switch_core.db.models import ServiceOAuthClient
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
@@ -41,15 +42,17 @@ from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.connections.fake_vendor import (
     ISSUER,
     FakeOAuthServer,
+    FakeSites,
     UnregisteredRedirect,
     s256,
 )
 from tests.switch_core.connections.standing import standing
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
-from tests.switch_core.connections.test_loader import OAUTH_ENTRY
+from tests.switch_core.connections.test_loader import CHOICES_ENTRY, OAUTH_ENTRY
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STORE = ServiceConnectionStore()
+PUBLIC = "https://switch.example.com"
 PORTS = [43123, 43124]
 REDIRECT = loopback_redirect(43123)
 SCOPES = ["read:items", "write:items"]
@@ -91,10 +94,15 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer, redirect: str
         state="s",
         code_challenge=s256(verifier),
         scopes=SCOPES,
+        choices={},
     )
     back = parse_qs(urlsplit(vendor.authorize(url)).query)
     return await adapter.exchange_code(
-        code=back["code"][0], verifier=verifier, redirect_uri=redirect, scopes=SCOPES
+        code=back["code"][0],
+        verifier=verifier,
+        redirect_uri=redirect,
+        scopes=SCOPES,
+        choices={},
     )
 
 
@@ -107,9 +115,9 @@ async def test_registers_once_and_keeps_the_client_encrypted(
     session_factory, vendor
 ) -> None:
     adapter = _adapter(_client(session_factory, vendor), vendor)
-    endpoints = await adapter.endpoints()
-    first = await adapter._client.credentials(endpoints)
-    again = await adapter._client.credentials(endpoints)
+    endpoints = await adapter.endpoints({})
+    first = await adapter._client.credentials(endpoints, "")
+    again = await adapter._client.credentials(endpoints, "")
     assert first == again
     [registration] = vendor.registrations
     assert registration == {
@@ -129,7 +137,7 @@ async def test_registers_once_and_keeps_the_client_encrypted(
 
     # Another process, the same deployment: the stored client, no registration.
     restarted = _adapter(_client(session_factory, vendor), vendor)
-    assert await restarted._client.credentials(endpoints) == first
+    assert await restarted._client.credentials(endpoints, "") == first
     assert len(vendor.registrations) == 1
 
 
@@ -137,9 +145,9 @@ async def test_two_replicas_connecting_at_once_register_one_client(
     session_factory, vendor
 ) -> None:
     adapters = [_adapter(_client(session_factory, vendor), vendor) for _ in range(3)]
-    endpoints = await adapters[0].endpoints()
+    endpoints = await adapters[0].endpoints({})
     clients = await asyncio.gather(
-        *(adapter._client.credentials(endpoints) for adapter in adapters)
+        *(adapter._client.credentials(endpoints, "") for adapter in adapters)
     )
     assert len(vendor.registrations) == 1
     assert len({client.client_id for client in clients}) == 1
@@ -150,15 +158,15 @@ async def test_a_moved_registration_endpoint_registers_again(
     session_factory, vendor
 ) -> None:
     adapter = _adapter(_client(session_factory, vendor), vendor)
-    endpoints = await adapter.endpoints()
-    first = await adapter._client.credentials(endpoints)
+    endpoints = await adapter.endpoints({})
+    first = await adapter._client.credentials(endpoints, "")
     async with session_factory() as session:
-        row = await session.get(ServiceOAuthClient, "example")
+        row = await session.get(ServiceOAuthClient, ("example", ""))
         assert row is not None
         row.registration_endpoint = "https://old.example.test/register"
         await session.commit()
     second = await _client(session_factory, vendor).credentials(
-        replace(endpoints, registration=f"{ISSUER}/register")
+        replace(endpoints, registration=f"{ISSUER}/register"), ""
     )
     assert second.client_id != first.client_id
     [row] = await _rows(session_factory)
@@ -171,10 +179,10 @@ async def test_a_moved_registration_endpoint_registers_again(
 async def test_changed_ports_register_again_and_sign_in_on_the_new_ones(
     session_factory, vendor
 ) -> None:
-    endpoints = await _adapter(_client(session_factory, vendor), vendor).endpoints()
-    first = await _client(session_factory, vendor).credentials(endpoints)
+    endpoints = await _adapter(_client(session_factory, vendor), vendor).endpoints({})
+    first = await _client(session_factory, vendor).credentials(endpoints, "")
     adapter = _adapter(_client(session_factory, vendor, ports=[43125]), vendor)
-    second = await adapter._client.credentials(endpoints)
+    second = await adapter._client.credentials(endpoints, "")
     assert second.client_id != first.client_id
     assert vendor.registrations[-1]["redirect_uris"] == [loopback_redirect(43125)]
     signed_in = await _sign_in(adapter, vendor, loopback_redirect(43125))
@@ -204,6 +212,7 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     async with session_factory() as session:
         owner = await _user(session, "ada")
@@ -221,6 +230,8 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
                 json.dumps({**signed_in.secret.values, "expires_at": time.time() + 60})
             ),
             oauth_client_id=signed_in.client_id,
+            method="oauth",
+            choices={},
         )
         await STORE.save_grant(
             session,
@@ -249,7 +260,7 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
     assert caught.value.code == CONNECTOR_REVOKED
     assert caught.value.message == (
         "Example was connected through an app Switch no longer uses. The "
-        "agent's owner must reconnect Example from Connectors in Switch Console."
+        "agent's owner must reconnect Example in Switch Console, under Connectors."
     )
     assert len(vendor.registrations) == 2
     async with session_factory() as session:
@@ -259,6 +270,50 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
         "needs_reauthorization",
         CLIENT_REPLACED,
     )
+
+
+async def test_registers_a_client_at_each_choice_and_keeps_each(
+    session_factory,
+) -> None:
+    """Each site is another authorization server: a client registered at
+    one is never replaced by one registered at another."""
+    sites = FakeSites("example.test", "eu.example.test")
+
+    def adapter() -> OAuthAdapter:
+        client = RegisteredClient(
+            service="example",
+            name="Example",
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            http=sites.client(),
+            client_name="Switch (switch.example.com)",
+            redirect_uris=[loopback_redirect(port) for port in PORTS],
+            scopes=SCOPES,
+        )
+        definition = ConnectionDefinition.model_validate(yaml.safe_load(CHOICES_ENTRY))
+        return OAuthAdapter(definition, client, sites.client())
+
+    first = adapter()
+    here = await first.client_id({"site": "example.test"})
+    there = await first.client_id({"site": "eu.example.test"})
+    assert (here, there) == (
+        "registered-1-at-example.test",
+        "registered-1-at-eu.example.test",
+    )
+    assert await first.client_id({"site": "example.test"}) == here
+    assert first.current_client_id({"site": "example.test"}) == here
+    assert first.current_client_id({"site": "eu.example.test"}) == there
+    assert first.current_client_id({}) is None
+    assert {
+        (row.service, row.choice): row.oauth_client_id
+        for row in await _rows(session_factory)
+    } == {("example", "example.test"): here, ("example", "eu.example.test"): there}
+
+    # Another process: each site's stored client, and no registration.
+    restarted = adapter()
+    assert await restarted.client_id({"site": "eu.example.test"}) == there
+    assert await restarted.client_id({"site": "example.test"}) == here
+    assert [len(sites[site].registrations) for site in sites.sites] == [1, 1]
 
 
 async def test_the_vendor_refuses_a_port_the_client_did_not_register(
@@ -276,7 +331,11 @@ async def test_a_vendor_without_registration_is_refused(
     adapter = _adapter(_client(session_factory, vendor), vendor)
     with pytest.raises(ServiceAdapterError, match="offers no client registration"):
         await adapter.authorization_url(
-            redirect_uri=REDIRECT, state="s", code_challenge="c", scopes=["read:items"]
+            redirect_uri=REDIRECT,
+            state="s",
+            code_challenge="c",
+            scopes=["read:items"],
+            choices={},
         )
     assert await _rows(session_factory) == []
 
@@ -342,7 +401,7 @@ async def test_a_client_registered_for_another_method_is_refused(
     vendor.register_as = "private_key_jwt"
     adapter = _adapter(_client(session_factory, vendor), vendor)
     with pytest.raises(ServiceAdapterError) as refused:
-        await adapter.client_id()
+        await adapter.client_id({})
     # Fixed text only: a person sees it, and the method is the vendor's value.
     assert str(refused.value) == (
         "The vendor registered Switch with a client authentication method "
@@ -355,24 +414,86 @@ async def test_the_runtime_role_registers_outside_any_tenant(
     rls_harness: RLSHarness, vendor
 ) -> None:
     adapter = _adapter(_client(rls_harness.restricted, vendor), vendor)
-    client = await adapter._client.credentials(await adapter.endpoints())
+    client = await adapter._client.credentials(await adapter.endpoints({}), "")
     [row] = await _rows(rls_harness.owner)
     assert row.oauth_client_id == client.client_id
 
 
-def test_registers_the_redirects_this_server_can_use() -> None:
-    public = "https://switch.example.com"
-    core = f"{public}/gateway/service-connections/example/flows/callback"
-    assert redirect_uris("example", ["loopback", "core"], public, None) == [
+def test_registers_cores_callback_only_where_sign_ins_use_it() -> None:
+    core = f"{PUBLIC}/gateway/service-connections/example/flows/callback"
+    both: list[RedirectMode] = ["loopback", "core"]
+    # Beside loopback, Core's callback is registered only once the server
+    # names it, and only where it has a public URL.
+    assert redirect_uris("example", both, None, PUBLIC, None) == [LOOPBACK_REDIRECT_URI]
+    assert redirect_uris("example", both, "loopback", PUBLIC, None) == [
+        LOOPBACK_REDIRECT_URI
+    ]
+    assert redirect_uris("example", both, "core", PUBLIC, None) == [
         LOOPBACK_REDIRECT_URI,
         core,
     ]
-    assert redirect_uris("example", ["loopback", "core"], None, [43123, 43124]) == [
+    assert redirect_uris("example", both, "core", None, [43123, 43124]) == [
         "http://127.0.0.1:43123/switch-services/callback",
         "http://127.0.0.1:43124/switch-services/callback",
     ]
-    assert redirect_uris("example", ["core"], None, None) == []
-    assert core_callback(public + "/", "example") == core
+    # Alone, it is registered wherever the server has a public URL.
+    assert redirect_uris("example", ["core"], None, PUBLIC, None) == [core]
+    assert redirect_uris("example", ["core"], None, None, None) == []
+    assert core_callback(PUBLIC + "/", "example") == core
+
+
+@pytest.mark.parametrize(
+    ("modes", "named", "public_url", "mode"),
+    [
+        (["loopback", "core"], None, PUBLIC, "loopback"),
+        (["loopback", "core"], "loopback", PUBLIC, "loopback"),
+        (["loopback", "core"], "core", PUBLIC, "core"),
+        (["loopback", "core"], "core", None, "loopback"),
+        (["core", "loopback"], None, PUBLIC, "core"),
+        (["core", "loopback"], None, None, "loopback"),
+        (["core", "loopback"], "loopback", PUBLIC, "loopback"),
+        (["core"], None, PUBLIC, "core"),
+        (["core"], "core", None, None),
+        (["loopback"], None, None, "loopback"),
+    ],
+)
+def test_signs_in_the_way_the_server_names_where_it_can_else_the_entrys_first(
+    modes: list[RedirectMode],
+    named: RedirectMode | None,
+    public_url: str | None,
+    mode: RedirectMode | None,
+) -> None:
+    assert sign_in_mode(modes, named, public_url) == mode
+
+
+async def test_naming_core_registers_again_with_cores_callback(
+    session_factory, vendor
+) -> None:
+    def client(named: RedirectMode | None) -> RegisteredClient:
+        return RegisteredClient(
+            service="example",
+            name="Example",
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            http=vendor.client(),
+            client_name="Switch (switch.example.com)",
+            redirect_uris=redirect_uris(
+                "example", ["loopback", "core"], named, PUBLIC, PORTS
+            ),
+            scopes=SCOPES,
+        )
+
+    endpoints = await _adapter(client(None), vendor).endpoints({})
+    first = await client(None).credentials(endpoints, "")
+    loopback = [loopback_redirect(port) for port in PORTS]
+    assert vendor.registrations[-1]["redirect_uris"] == loopback
+    assert (await client(None).credentials(endpoints, "")) == first
+    second = await client("core").credentials(endpoints, "")
+    assert second.client_id != first.client_id
+    assert vendor.registrations[-1]["redirect_uris"] == [
+        *loopback,
+        core_callback(PUBLIC, "example"),
+    ]
 
 
 def test_names_switch_and_its_host_on_the_consent_screen() -> None:

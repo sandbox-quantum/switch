@@ -29,6 +29,7 @@ const {
   fetchArchivedRooms,
   fetchRoomAgentCandidates,
   fetchRoomDetail,
+  setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -149,7 +150,29 @@ describe('fetchRoomDetail', () => {
       groupId: null,
       roles: [],
       agentStatuses: {},
+      viewerIsRoomAdmin: false,
+      roomAdmins: [],
+      roomAdminCandidates: [],
     });
+  });
+
+  it('maps the room’s room admins and who could be one', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        room_admins: [
+          { user_id: 'u2', name: 'Bob', granted_by: 'u1', granted_at: '2026-11-01' },
+          { user_id: 'u3', name: null, granted_by: null, granted_at: '2026-11-02' },
+        ],
+        room_admin_candidates: [{ user_id: 'u4', name: 'Cy' }],
+      })
+    );
+    const room = await fetchRoomDetail(SERVER, 'room-1');
+    expect(room.roomAdmins).toEqual([
+      { userId: 'u2', name: 'Bob', grantedBy: 'u1', grantedAt: '2026-11-01' },
+      { userId: 'u3', name: null, grantedBy: null, grantedAt: '2026-11-02' },
+    ]);
+    expect(room.roomAdminCandidates).toEqual([{ userId: 'u4', name: 'Cy' }]);
   });
 });
 
@@ -169,6 +192,8 @@ describe('what the server says the caller may do', () => {
       canAttach: true,
       canRemoveMembers: true,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: true,
     });
   });
@@ -192,6 +217,8 @@ describe('what the server says the caller may do', () => {
       canAttach: true,
       canRemoveMembers: false,
       canManage: true,
+      canArchive: true,
+      canManageAdmins: false,
       canUnlink: true,
     });
   });
@@ -215,6 +242,8 @@ describe('what the server says the caller may do', () => {
       canAttach: false,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: true,
     });
   });
@@ -241,6 +270,8 @@ describe('what the server says the caller may do', () => {
       canAttach: true,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     });
   });
@@ -257,6 +288,8 @@ describe('what the server says the caller may do', () => {
       canAttach: true,
       canRemoveMembers: true,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     });
     fetchMock.mockImplementation(async () =>
@@ -265,6 +298,27 @@ describe('what the server says the caller may do', () => {
       ])
     );
     expect((await fetchRoomResources(SERVER, 'room-1', 'documents'))[0]!.canRemove).toBe(false);
+  });
+
+  it('carries room admins’ flags apart from managing the room', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        viewer_is_room_admin: true,
+        can_write: true,
+        can_manage: false,
+        can_archive: true,
+        can_manage_admins: false,
+      })
+    );
+    const room = await fetchRoomDetail(SERVER, 'room-1');
+    expect(room.viewerIsRoomAdmin).toBe(true);
+    expect(room.serverPermissions).toMatchObject({
+      canWrite: true,
+      canManage: false,
+      canArchive: true,
+      canManageAdmins: false,
+    });
   });
 
   it('leaves it out for a server that does not say, so Console works it out', async () => {
@@ -310,6 +364,14 @@ describe('room writes', () => {
     await addRoomUsers(SERVER, 'room-1', ['carol']);
     expect(lastCall()).toMatchObject({ method: 'POST', body: { user_names: ['carol'] } });
     expect(lastCall().url).toMatch(/\/rooms\/room-1\/users$/);
+  });
+
+  it('makes someone a room admin and takes them off, reading back the room', async () => {
+    await setRoomAdmin(SERVER, 'room-1', 'u 2', true);
+    expect(lastCall()).toMatchObject({ method: 'PUT' });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/admins\/u%202$/);
+    await setRoomAdmin(SERVER, 'room-1', 'u 2', false);
+    expect(lastCall()).toMatchObject({ method: 'DELETE' });
   });
 
   it('archives and unarchives through their own routes', async () => {
