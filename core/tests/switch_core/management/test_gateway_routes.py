@@ -140,7 +140,7 @@ class TestOwnerIsolation:
             return found
 
         routes = [r for r in gateway_router.routes if hasattr(r, "dependant")]
-        assert len(routes) == 16
+        assert len(routes) == 17
         for route in routes:
             assert get_current_user in calls(route.dependant), route.path  # type: ignore[attr-defined]
 
@@ -823,7 +823,7 @@ class TestTheWorkingDirectory:
 
 
 class TestRevocation:
-    async def test_revoking_nudges_keeps_definitions_and_refuses_the_token(
+    async def test_revoking_nudges_takes_its_agents_off_and_refuses_the_token(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -859,11 +859,15 @@ class TestRevocation:
         assert [event for event, _ in subscription.drain()] == [CREDENTIAL_REVOKED]
         assert listed.json()[0]["state"] == "revoked"
         assert listed.json()[0]["revoked_at"] is not None
+        # The agent stays managed, as it was, and placed nowhere until its
+        # owner places it again; the workspace its device made for it goes.
         [agent] = agents.json()
         assert agent["agent_id"] == created.json()["agent_id"]
-        assert agent["controller_state"] == "revoked"
-        assert agent["controller_name"] == listed.json()[0]["name"]
-        assert agent["controller_kind"] == listed.json()[0]["kind"]
+        assert agent["controller_id"] is None
+        assert agent["controller_state"] is None
+        assert agent["desired_state"] == created.json()["desired_state"]
+        assert created.json()["definition"]["directory"] == f"{WORKSPACES_DIR}/reviewer"
+        assert agent["definition"]["directory"] is None
         assert refused.status_code == 401
         assert refused.json()["error"]["code"] == "controller_revoked"
 
