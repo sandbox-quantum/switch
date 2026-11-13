@@ -5,14 +5,14 @@
   "reflow_type": "fixed",
   "template_variables": [
     {
-      "name": "env",
-      "prefix": "env",
-      "default": "*"
-    },
-    {
       "name": "service",
       "prefix": "service",
       "default": "switch-core"
+    },
+    {
+      "name": "flint_env",
+      "prefix": "flint_env",
+      "default": "*"
     }
   ],
   "widgets": [
@@ -44,7 +44,7 @@
         "legend_layout": "horizontal",
         "requests": [
           {
-            "q": "min:switch.health.check{$env,$service} by {check}",
+            "q": "min:switch.health.check{$service,$flint_env} by {check}",
             "display_type": "line",
             "style": {
               "palette": "cool",
@@ -71,7 +71,7 @@
         "title": "Agents connected",
         "requests": [
           {
-            "q": "sum:switch.agents.connected{$env,$service}",
+            "q": "sum:switch.agents.connected{$service,$flint_env}",
             "aggregator": "last"
           }
         ],
@@ -91,7 +91,7 @@
         "title": "Bridges running",
         "requests": [
           {
-            "q": "sum:switch.bridges.running{$env,$service}",
+            "q": "sum:switch.bridges.running{$service,$flint_env}",
             "aggregator": "last"
           }
         ],
@@ -111,7 +111,7 @@
         "title": "Consumers running (read loops)",
         "requests": [
           {
-            "q": "sum:switch.consumers.running{$env,$service}",
+            "q": "sum:switch.consumers.running{$service,$flint_env}",
             "aggregator": "last"
           }
         ],
@@ -131,7 +131,7 @@
         "title": "Event-loop lag (ms, worst)",
         "requests": [
           {
-            "q": "max:switch.runtime.event_loop_lag{$env,$service}",
+            "q": "max:switch.runtime.event_loop_lag{$service,$flint_env}",
             "aggregator": "max",
             "conditional_formats": [
               {
@@ -189,7 +189,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.http.requests{$env,$service} by {status_class}.as_rate()",
+            "q": "sum:switch.http.requests{$service,$flint_env} by {status_class}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -208,7 +208,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.http.requests{$env,$service,status_class:5xx} by {route}.as_rate()",
+            "q": "sum:switch.http.requests{$service,$flint_env,status_class:5xx} by {route}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -230,7 +230,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.http.request.duration{$env,$service} by {route}",
+            "q": "p95:switch.http.request.duration{$service,$flint_env} by {route}",
             "display_type": "line"
           }
         ]
@@ -269,11 +269,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.sent{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.sent{$service,$flint_env} by {actor}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.messages.delivered{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.delivered{$service,$flint_env} by {actor}.as_rate()",
             "display_type": "line"
           }
         ]
@@ -292,28 +292,28 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.delivery_failures{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.delivery_failures{$service,$flint_env}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
             }
           },
           {
-            "q": "sum:switch.messages.routing_failures{$env,$service} by {stage}.as_rate()",
+            "q": "sum:switch.messages.routing_failures{$service,$flint_env} by {stage}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "purple"
             }
           },
           {
-            "q": "sum:switch.messages.observer_failures{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.observer_failures{$service,$flint_env} by {actor}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "orange"
             }
           },
           {
-            "q": "sum:switch.messages.backlog_skipped{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.backlog_skipped{$service,$flint_env} by {actor}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "cool"
@@ -335,11 +335,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.messages.delivery_lag{$env,$service}",
+            "q": "p95:switch.messages.delivery_lag{$service,$flint_env}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.messages.delivery_lag{$env,$service}",
+            "q": "p99:switch.messages.delivery_lag{$service,$flint_env}",
             "display_type": "line"
           }
         ]
@@ -378,7 +378,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_in{$env,$service} by {bridge,platform}.as_rate()",
+            "q": "sum:switch.bridge.events_in{$service,$flint_env} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -397,7 +397,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_out{$env,$service} by {bridge,platform}.as_rate()",
+            "q": "sum:switch.bridge.events_out{$service,$flint_env} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -416,7 +416,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.errors{$env,$service} by {bridge,platform,direction}.as_rate()",
+            "q": "sum:switch.bridge.errors{$service,$flint_env} by {bridge,platform,direction}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -458,15 +458,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.db.pool.in_use{$env,$service}",
+            "q": "sum:switch.db.pool.in_use{$service,$flint_env}",
             "display_type": "area"
           },
           {
-            "q": "sum:switch.db.pool.size{$env,$service}",
+            "q": "sum:switch.db.pool.size{$service,$flint_env}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.db.pool.overflow{$env,$service}",
+            "q": "sum:switch.db.pool.overflow{$service,$flint_env}",
             "display_type": "line"
           }
         ]
@@ -485,11 +485,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.runtime.event_loop_lag{$env,$service}",
+            "q": "max:switch.runtime.event_loop_lag{$service,$flint_env}",
             "display_type": "bars"
           },
           {
-            "q": "count:switch.runtime.event_loop_stalls{$env,$service}.as_count()",
+            "q": "count:switch.runtime.event_loop_stalls{$service,$flint_env}.as_count()",
             "display_type": "line",
             "on_right_yaxis": true
           }
@@ -509,7 +509,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.runtime.memory_rss{$env,$service}",
+            "q": "sum:switch.runtime.memory_rss{$service,$flint_env}",
             "display_type": "area"
           }
         ]
@@ -528,7 +528,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.runtime.cpu_seconds{$env,$service} by {mode}.as_rate()",
+            "q": "sum:switch.runtime.cpu_seconds{$service,$flint_env} by {mode}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -547,7 +547,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.runtime.open_fds{$env,$service}",
+            "q": "sum:switch.runtime.open_fds{$service,$flint_env}",
             "display_type": "line"
           }
         ]
@@ -566,11 +566,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p99:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "q": "p99:switch.runtime.gc_pause{$service,$flint_env} by {generation}",
             "display_type": "line"
           },
           {
-            "q": "avg:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "q": "avg:switch.runtime.gc_pause{$service,$flint_env} by {generation}",
             "display_type": "bars"
           }
         ]
@@ -609,7 +609,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.send_failures{$env,$service} by {kind}.as_rate()",
+            "q": "sum:switch.messages.send_failures{$service,$flint_env} by {kind}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -631,7 +631,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.events_dropped{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.agent.events_dropped{$service,$flint_env} by {reason}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -653,7 +653,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.connections_expired{$env,$service}.as_rate()",
+            "q": "sum:switch.agent.connections_expired{$service,$flint_env}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -672,11 +672,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.db.query.duration{$env,$service} by {operation}",
+            "q": "p95:switch.db.query.duration{$service,$flint_env} by {operation}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.db.query.duration{$env,$service} by {operation}",
+            "q": "p99:switch.db.query.duration{$service,$flint_env} by {operation}",
             "display_type": "line"
           }
         ]
@@ -695,7 +695,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.bridge.call.duration{$env,$service} by {bridge,platform}",
+            "q": "p95:switch.bridge.call.duration{$service,$flint_env} by {bridge,platform}",
             "display_type": "line"
           }
         ]
@@ -714,7 +714,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.bridge.throttle.held{$env,$service} by {platform,delivery}",
+            "q": "p95:switch.bridge.throttle.held{$service,$flint_env} by {platform,delivery}",
             "display_type": "line"
           }
         ]
@@ -733,7 +733,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridges.running{$env,$service} by {platform}",
+            "q": "sum:switch.bridges.running{$service,$flint_env} by {platform}",
             "display_type": "line"
           }
         ]
@@ -751,8 +751,7 @@
         "title": "Crashed bridges, by name (empty while all run)",
         "requests": [
           {
-            "q": "max:switch.bridges.crashed{$env,$service} by {platform,bridge_name}",
-            "aggregator": "last"
+            "q": "top(max:switch.bridges.crashed{$service,$flint_env} by {platform,bridge_name}, 10, 'last', 'desc')"
           }
         ]
       },
@@ -770,7 +769,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messaging.events_ignored{$env,$service} by {platform,reason}.as_count()",
+            "q": "sum:switch.messaging.events_ignored{$service,$flint_env} by {platform,reason}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -789,7 +788,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.db.pool.timeouts{$env,$service}.as_count()",
+            "q": "sum:switch.db.pool.timeouts{$service,$flint_env}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -808,7 +807,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agents.connected{$env,$service} by {transport,client}",
+            "q": "sum:switch.agents.connected{$service,$flint_env} by {transport,client}",
             "display_type": "line"
           }
         ]
@@ -827,7 +826,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.connections_refused{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.agent.connections_refused{$service,$flint_env} by {reason}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -849,7 +848,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.http.refusals_throttled{$env,$service} by {route}.as_rate()",
+            "q": "sum:switch.http.refusals_throttled{$service,$flint_env} by {route}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -871,7 +870,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.opens_deferred{$env,$service} by {route}.as_rate()",
+            "q": "sum:switch.agent.opens_deferred{$service,$flint_env} by {route}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -893,7 +892,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.db.server.connections{$env,$service} by {state}",
+            "q": "max:switch.db.server.connections{$service,$flint_env} by {state}",
             "display_type": "area"
           }
         ]
@@ -912,7 +911,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "avg:switch.db.server.transactions{$env,$service}.as_rate()",
+            "q": "avg:switch.db.server.transactions{$service,$flint_env}.as_rate()",
             "display_type": "line"
           }
         ]
@@ -931,11 +930,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p50:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "q": "p50:switch.agent.buffer.scanned{$service,$flint_env} by {operation}",
             "display_type": "line"
           },
           {
-            "q": "p95:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "q": "p95:switch.agent.buffer.scanned{$service,$flint_env} by {operation}",
             "display_type": "line"
           }
         ]
@@ -954,11 +953,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "q": "p95:switch.agent.buffer.scan.duration{$service,$flint_env} by {operation}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "q": "p99:switch.agent.buffer.scan.duration{$service,$flint_env} by {operation}",
             "display_type": "line"
           }
         ]
@@ -977,11 +976,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "q": "p95:switch.db.pool.hold.duration{$service,$flint_env} by {caller}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "q": "p99:switch.db.pool.hold.duration{$service,$flint_env} by {caller}",
             "display_type": "line"
           }
         ]
@@ -1000,11 +999,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.db.pool.wait.duration{$env,$service}",
+            "q": "p95:switch.db.pool.wait.duration{$service,$flint_env}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.db.pool.wait.duration{$env,$service}",
+            "q": "p99:switch.db.pool.wait.duration{$service,$flint_env}",
             "display_type": "line"
           }
         ]
@@ -1023,7 +1022,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.connections_opened{$env,$service} by {kind}.as_rate()",
+            "q": "sum:switch.agent.connections_opened{$service,$flint_env} by {kind}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1047,7 +1046,7 @@
               {
                 "data_source": "metrics",
                 "name": "q1",
-                "query": "sum:switch.controllers.connections{service:switch-core} by {event}.as_rate()"
+                "query": "sum:switch.controllers.connections{$service,$flint_env} by {event}.as_rate()"
               }
             ],
             "formulas": [
@@ -1073,7 +1072,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.runtime.starts{$env,$service}.as_count()",
+            "q": "sum:switch.runtime.starts{$service,$flint_env}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -1112,7 +1111,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.reads{$env,$service} by {outcome}.as_rate()",
+            "q": "sum:switch.delivery_cache.reads{$service,$flint_env} by {outcome}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1131,15 +1130,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.fills{$env,$service} by {outcome}.as_rate()",
+            "q": "sum:switch.delivery_cache.fills{$service,$flint_env} by {outcome}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.delivery_cache.rows_read{$env,$service}.as_rate()",
+            "q": "sum:switch.delivery_cache.rows_read{$service,$flint_env}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.messages.delivered{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.delivered{$service,$flint_env}.as_rate()",
             "display_type": "line"
           }
         ]
@@ -1158,11 +1157,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.bytes{$env,$service}",
+            "q": "sum:switch.delivery_cache.bytes{$service,$flint_env}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.delivery_cache.rooms{$env,$service}",
+            "q": "sum:switch.delivery_cache.rooms{$service,$flint_env}",
             "display_type": "line"
           }
         ]
@@ -1181,7 +1180,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.evictions{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.delivery_cache.evictions{$service,$flint_env} by {reason}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1200,7 +1199,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.service_tokens.requests{$env,$service} by {connector,outcome}.as_rate()",
+            "q": "sum:switch.service_tokens.requests{$service,$flint_env} by {connector,outcome}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1239,7 +1238,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.decision.requests{$env,$service} by {outcome}.as_rate()",
+            "q": "sum:switch.decision.requests{$service,$flint_env} by {outcome}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1258,7 +1257,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.decision.failures{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.decision.failures{$service,$flint_env} by {reason}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1277,7 +1276,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.decision.backend_errors{$env,$service} by {kind}.as_rate()",
+            "q": "sum:switch.decision.backend_errors{$service,$flint_env} by {kind}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1296,7 +1295,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "min:switch.health.check{$env,$service,check:decision}",
+            "q": "min:switch.health.check{$service,$flint_env,check:decision}",
             "display_type": "line",
             "style": {
               "palette": "cool",
@@ -1324,11 +1323,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p50:switch.decision.duration{$env,$service} by {backend}",
+            "q": "p50:switch.decision.duration{$service,$flint_env} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "p95:switch.decision.duration{$env,$service} by {backend}",
+            "q": "p95:switch.decision.duration{$service,$flint_env} by {backend}",
             "display_type": "line"
           }
         ],
@@ -1354,11 +1353,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p50:switch.decision.model_time{$env,$service} by {backend}",
+            "q": "p50:switch.decision.model_time{$service,$flint_env} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "p95:switch.decision.model_time{$env,$service} by {backend}",
+            "q": "p95:switch.decision.model_time{$service,$flint_env} by {backend}",
             "display_type": "line"
           }
         ]
@@ -1377,15 +1376,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "min:switch.decision.confidence{$env,$service} by {backend}",
+            "q": "min:switch.decision.confidence{$service,$flint_env} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "p50:switch.decision.confidence{$env,$service} by {backend}",
+            "q": "p50:switch.decision.confidence{$service,$flint_env} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "p90:switch.decision.confidence{$env,$service} by {backend}",
+            "q": "p90:switch.decision.confidence{$service,$flint_env} by {backend}",
             "display_type": "line"
           }
         ],
@@ -1408,7 +1407,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.decision.settled{$env,$service} by {outcome}.as_rate()",
+            "q": "sum:switch.decision.settled{$service,$flint_env} by {outcome}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1427,7 +1426,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.decision.wait{$env,$service} by {outcome}",
+            "q": "p95:switch.decision.wait{$service,$flint_env} by {outcome}",
             "display_type": "line"
           }
         ]
@@ -1446,11 +1445,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.decision.pending.oldest_age{$env,$service}",
+            "q": "max:switch.decision.pending.oldest_age{$service,$flint_env}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.decision.pending{$env,$service}",
+            "q": "max:switch.decision.pending{$service,$flint_env}",
             "display_type": "line",
             "on_right_yaxis": true
           }
@@ -1482,7 +1481,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.decision.notices{$env,$service}.as_count()",
+            "q": "sum:switch.decision.notices{$service,$flint_env}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -1491,6 +1490,365 @@
         "x": 0,
         "y": 127,
         "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Hosted agents (cloud machines).** Read from the machines' status reports and the hosted controller service's calls: no ids, only counts and fixed words. Gauges come from one Core process (the hosted metrics lock holder) and leave out reports older than 3 minutes. A machine gone silent shows as reporting below expected; a machine stopped by its owner or for idleness isn't expected. `backend` is the kind of machine (`vm` today). Filter by `$service`, and by `$flint_env` for the deployment's environment.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 131,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents on cloud machines, by process state and kind (a v1 machine's session is always none)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.agents{$service,$flint_env} by {process,session,backend}",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 133,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents stopped on cloud machines, by reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.agents_stopped{$service,$flint_env} by {reason,backend}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 133,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Sessions on cloud machines: running vs max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.sessions{$service,$flint_env} by {kind,backend}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 137,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine memory used (%), p95 / max. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.box_memory_used{$service,$flint_env}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.box_memory_used{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 137,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machines reporting vs expected, by kind (silent = reporting below expected)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.boxes_reporting{$service,$flint_env} by {backend}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.boxes_expected{$service,$flint_env} by {backend}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 145,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Controller credentials refused per second, by reason and route",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.controller.credential_refusals{$service,$flint_env} by {reason,route}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 149,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine changes, by event and reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.machine_events{$service,$flint_env} by {event,reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 157,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Seconds since the hosted controller service last called Core (min over pods; rising = reconciler silent)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "min:switch.hosted.reconciler_silence{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 157,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "AI provider logins missing or expired on cloud machines, by provider and reason",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.provider_login_problems{$service,$flint_env} by {provider,reason}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 161,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "New cloud machines: seconds from request to first report, p95 / max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.provision_seconds{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 161,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine disk used (%), p95 / max. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.disk_used{$service,$flint_env}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.disk_used{$service,$flint_env}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 165,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Metrics samples that failed, by sampler",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.observability.sample_failures{$service,$flint_env} by {sampler}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 165,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Password sign-in failures",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.auth.sign_in_failures{$service,$flint_env}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 169,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Unhandled exceptions, by component and type",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.runtime.unhandled_exceptions{$service,$flint_env} by {component,type}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 169,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud calls that failed for hosted machines, by call and kind",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.cloud_errors{$service,$flint_env} by {call,kind}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 173,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted controller service errors, by kind",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.controller_errors{$service,$flint_env} by {kind}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 173,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent controller restarts on cloud machines",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.controller_restarts{$service,$flint_env}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 177,
+        "width": 6,
         "height": 4
       }
     }

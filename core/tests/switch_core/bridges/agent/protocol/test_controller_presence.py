@@ -654,6 +654,7 @@ def _addressing_client(
         return None
 
     ns._sender_role = _sender_role
+    ns._mid_turn_delivery = lambda: "steer"
 
     async def _no_notice(*_args: Any) -> None:
         return None

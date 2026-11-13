@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -13,6 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
 from switch_core.bridges.agent.protocol.types import OverallStatus
@@ -91,6 +93,9 @@ class RoomSummary(BaseModel):
     # The caller owns the room, is in it (in Switch Console or through a
     # platform account they claimed), or owns an agent in it.
     viewer_is_member: bool = False
+    # The caller is one of the room's room admins: the room's owner, or a
+    # workspace admin, made them one, and they change it as its owner does.
+    viewer_is_room_admin: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
     # Its people (`connected_user_*`) are its Switch members rather than
@@ -98,18 +103,36 @@ class RoomSummary(BaseModel):
     # a chat with no members from a server too old to count them.
     people_are_members: bool = False
     # What the caller may do with it, so a client offers a change only where
-    # the server would allow it. `can_write` covers its settings, roles,
-    # links and attaching resources; `can_change_members` covers adding and
-    # removing its agents and people, which is `can_write` unless it is a
-    # direct or group conversation, whose platform fixes who is in it;
-    # `can_manage` (owner or tenant admin) covers its access, deleting it and
-    # taking the platform channel's name; `can_unlink` (taking part in it, or
-    # tenant admin) covers unlinking a reference, document or package from it;
-    # `can_transfer` is `can_manage` for anything but a chat, which stays with
-    # its people.
+    # the server would allow it. Each flag is the room policy's answer
+    # (`room_policy`), asked the same way its route asks it.
+    # `can_write` (owner, room admin or tenant admin) covers its settings,
+    # instructions, roles, group and linked rooms; `can_manage` (owner or
+    # tenant admin) covers its access and deleting it and taking the platform
+    # channel's name; `can_archive` (owner, room admin or tenant admin) covers
+    # archiving it, which older clients read from `can_manage`;
+    # `can_manage_admins` (owner or tenant admin) covers choosing its room
+    # admins. `can_attach` (anyone in the room) covers attaching a reference,
+    # document or package; `can_invite_agents` and `can_add_people`
+    # (anyone in the room) cover adding agents and people, though each agent's
+    # own addressing policy can still refuse a particular one
+    # (`room_invites`); `can_remove_members` (owner, room admin or tenant
+    # admin) covers taking them out. No membership flag is ever set on a direct
+    # or group conversation, whose platform fixes who is in it. `can_unlink`
+    # (owner, room admin or tenant admin) covers unlinking any resource; a resource's own
+    # owner may also unlink theirs, which its listing reports. `can_transfer`
+    # is `can_manage` for anything but a chat, which stays with its people.
+    # `can_change_members` is `can_remove_members`, for Switch Console
+    # releases that read one flag for adding and removing members: they offer
+    # both only where both are allowed.
     can_write: bool
-    can_change_members: bool
     can_manage: bool
+    can_archive: bool
+    can_manage_admins: bool
+    can_attach: bool
+    can_invite_agents: bool
+    can_add_people: bool
+    can_remove_members: bool
+    can_change_members: bool
     can_unlink: bool
     can_transfer: bool
 
@@ -137,6 +160,23 @@ class RoomAutoRouteRequest(BaseModel):
     fallback_agent: str | None = None
 
 
+class RoomPerson(BaseModel):
+    """A Switch user who takes part in a room."""
+
+    user_id: str
+    name: str
+
+
+class RoomAdminEntry(BaseModel):
+    """One of a room's room admins (`RoomAdmin`)."""
+
+    user_id: str
+    name: str | None = None
+    # Who made them one; null once that person's account is gone.
+    granted_by: str | None = None
+    granted_at: str
+
+
 class RoomDetail(RoomSummary):
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility
@@ -144,6 +184,13 @@ class RoomDetail(RoomSummary):
     # clicks Update, so both names are carried until the shipped ones have
     # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
+    # The room's room admins, longest-standing first. Only people still in
+    # the room are listed.
+    room_admins: list[RoomAdminEntry] = []
+    # Who the caller could make a room admin: the workspace members who take
+    # part in the room, other than its owner and its room admins. Filled
+    # only when the caller may choose room admins (`can_manage_admins`).
+    room_admin_candidates: list[RoomPerson] = []
     external_channel_id: str | None
     instructions: str | None
     protection_config: dict[str, Any] | None
@@ -151,7 +198,7 @@ class RoomDetail(RoomSummary):
     agent_ids: list[str]
     agent_statuses: dict[str, str]
     roles: list[RoomRoleDetail] = []
-    # Agent ids configured to receive `room_join` events in this room.
+    # Agent ids configured to receive `room_join` and `room_leave` events in this room.
     join_event_listeners: list[str] = []
     # ISO timestamp of when the room was archived, or null if active.
     archived_at: str | None = None
@@ -175,7 +222,7 @@ class RoomCreateRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
     bridge_id: str | None = None
@@ -184,8 +231,12 @@ class RoomCreateRequest(BaseModel):
     internal_only: bool = False
     external_channel_id: str | None = None
     group_id: str | None = None
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Left out, the room takes it from its channel: a private channel, group
+    # or DM makes a private room, anything else a public one.
+    read_visibility: str | None = None
+    # Accepted from older clients and ignored: a room has no write visibility
+    # of its own any more (see `room_policy`).
+    write_visibility: str | None = None
     roles: list[RoomRoleSpec] | None = None
 
 
@@ -195,6 +246,7 @@ class RoomUpdateRequest(BaseModel):
     instructions: str | None = None
     admin_mode: bool | None = None
     read_visibility: str | None = None
+    # Accepted from older clients and ignored, as on create.
     write_visibility: str | None = None
 
 
@@ -208,17 +260,28 @@ class RoomAgentsRequest(BaseModel):
     # Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: ids (subset of agent_ids) that should receive
-    # `room_join` events in this room. Others default to off.
+    # `room_join` and `room_leave` events in this room. Others default to off.
     join_event_listeners: list[str] | None = None
 
 
 class RoomAgentUpdateRequest(BaseModel):
-    # Whether this agent receives `room_join` events in the room.
+    # Whether this agent receives `room_join` and `room_leave` events in the room.
     receives_join_events: bool
 
 
 class RoomUsersRequest(BaseModel):
     user_names: list[str]
+
+
+class RoomUsersRemoved(BaseModel):
+    """The room after people were taken out of it, and who did not go:
+    `not_in_room`, names nobody in the room goes by; `platform_refused`,
+    people the platform would not remove from its channel, who stay in the
+    room until someone removes them there."""
+
+    room: RoomDetail
+    not_in_room: list[str] = []
+    platform_refused: list[str] = []
 
 
 class RoomProtectionRequest(BaseModel):
@@ -342,6 +405,7 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
 
 
 class AgentToolSummary(BaseModel):
@@ -446,7 +510,7 @@ class AgentDevice(BaseModel):
     id: str
     name: str
     # Whose device it is: two people's devices can share a name, as every
-    # Switch cloud device does.
+    # Switch Cloud device does.
     owner_name: str
     # Removed from Switch. The agent stays placed on it, and runs nowhere,
     # until its owner moves it.
@@ -521,6 +585,10 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateAgentMidTurnDeliveryRequest(BaseModel):
+    mid_turn_delivery: Literal["steer", "queue"]
 
 
 class UpdateAgentCanManageAgentsRequest(BaseModel):
@@ -790,6 +858,9 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Why a new channel cannot be made here yet even so — a Teams connection
+    # with no default team — or None; said where a room would make one.
+    channel_creation_blocker: str | None = None
     # Whether a new room here can have a private channel, and whether that
     # channel needs the person asking to have linked their account on the
     # platform, through which Switch puts them in it (on Teams, as its owner).
@@ -900,6 +971,22 @@ class IdentityClaimant(BaseModel):
     can_unlink: bool
 
 
+class LinkPromptSummary(BaseModel):
+    """The message Switch sent the account alongside a code (CHOO-4121),
+    offering numbers to tap."""
+
+    # The number to show the Switch user: tapping it in the message confirms
+    # the link. Only ever on the response that issued it, like the code.
+    number: int
+    sent: bool
+    # Why no message went out, in words to show beside the code, when `sent`
+    # is false.
+    unavailable_reason: str | None
+    # A web link that opens the message on the platform, when it went out and
+    # the platform can link to it.
+    link: str | None
+
+
 class LinkCode(BaseModel):
     """A one-time code that confirms a link when posted from the account."""
 
@@ -911,6 +998,10 @@ class LinkCode(BaseModel):
     # How to post it on this platform, in Markdown. The platforms differ in
     # which messages reach Switch at all, so this is the bridge's to say.
     instructions: str
+    # Set when the caller asked for a prompt (`wants_prompt`): the quicker way
+    # to confirm, with the code as its fallback. Null for a caller that did
+    # not ask, which has no way to show the number.
+    prompt: LinkPromptSummary | None = None
 
 
 class LinkRequestSummary(BaseModel):
@@ -989,6 +1080,18 @@ class ClaimIdentityRequest(BaseModel):
     # refused while the link needs confirming, since that text would show the
     # code to the wrong person.
     expects_confirmation: bool = False
+    # That the caller can show the number from a prompt (CHOO-4121), so Switch
+    # should message the account one alongside the code. Left out by a Console
+    # from before then, whose user would be sent numbers they cannot match.
+    wants_prompt: bool = False
+
+
+class IssueLinkCodeRequest(BaseModel):
+    """Asking for a fresh link code. The body is optional: a Console from
+    before prompts sends none."""
+
+    # As on `ClaimIdentityRequest`.
+    wants_prompt: bool = False
 
 
 class LinkedIdentity(BaseModel):
@@ -1003,6 +1106,14 @@ class LinkedIdentity(BaseModel):
     # False for a link made before accounts had to confirm them: it works,
     # and Console asks its owner to confirm it.
     verified: bool
+    # When the link started counting. Confirming an older link later leaves
+    # this where it was: the link counted all along.
+    linked_at: datetime
+    # Whether a request to confirm this older link is waiting for the account:
+    # a code issued, and neither used nor cancelled. The pending list leaves
+    # such requests out, so this is how a client confirming one sees it end
+    # without the link ending too (a wrong number tapped, say).
+    awaiting_confirmation: bool
 
 
 class PendingIdentity(BaseModel):
@@ -1317,6 +1428,34 @@ class TenantDeleteRequest(BaseModel):
     name: str
 
 
+def _shown_on_one_line(name: str) -> str:
+    """A name shown on one line, as a breadcrumb or a switcher shows it: with
+    a character in it that can be seen, so it is never blank there, and no
+    control character, such as a line break, to break the line."""
+    if any(unicodedata.category(char) == "Cc" for char in name):
+        raise PydanticCustomError(
+            "control_character", "A name can't contain a line break or a tab."
+        )
+    if not any(char.isprintable() and not char.isspace() for char in name):
+        raise PydanticCustomError(
+            "nothing_visible", "A name needs at least one visible character."
+        )
+    return name
+
+
+class TenantRenameRequest(BaseModel):
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+        AfterValidator(_shown_on_one_line),
+    ]
+
+
+class TenantRenameResponse(BaseModel):
+    id: str
+    name: str
+
+
 class SessionStateUser(BaseModel):
     id: str
     name: str
@@ -1511,10 +1650,15 @@ class MemberDetail(BaseModel):
     via_organization: bool
     # What the caller may do with this member (`authz.can_change_workspace_member`):
     # an admin of the workspace, their own row included, never on an
-    # organization admin's. That the last admin stays and that someone still
-    # owning agents can't be removed is checked when it is asked.
+    # organization admin's; and not the workspace's last admin, nor making the
+    # registration service account an admin. That someone still owning agents
+    # can't be removed is checked when it is asked.
     can_change_role: bool
+    # Why not, set only when the caller administers the workspace and the
+    # flag beside it is false for one of the reasons above.
+    change_role_blocked_reason: str | None
     can_remove: bool
+    remove_blocked_reason: str | None
     # Whether the caller may hand them something they own: a member of the
     # workspace by their own membership, and not the caller.
     can_receive_transfer: bool
@@ -1712,7 +1856,8 @@ class ReferenceTypeInfo(BaseModel):
 
 
 class ReferenceTypeDetail(BaseModel):
-    """A stored reference type, for the management list. Never a built-in."""
+    """A stored reference type the caller may read, for the management list,
+    with what they may do to it. Never a built-in."""
 
     type: str
     display_name: str
@@ -2414,6 +2559,81 @@ class RetentionPreviewResponse(BaseModel):
 
     message_retention_days: int
     messages_to_delete: int
+
+
+class PrivateChannelRoom(BaseModel):
+    """A Public room on a private channel, as the clean-up's preview lists it
+    (`private_channel_rooms.Candidate`)."""
+
+    room_id: str
+    name: str
+    bridge_id: str
+    bridge_name: str | None
+    bridge_type: str | None
+    # The recorded type; None when none was recorded.
+    channel_type: str | None
+    people: int
+    # Whether the platform can list the channel's members; None when its
+    # messaging app is not running.
+    members_listed: bool | None
+    # Why the room starts unticked: "members_not_listed",
+    # "channel_type_not_recorded", "channel_type_unknown", "many_people" or
+    # "bridge_not_connected". Empty when none.
+    cautions: list[str]
+    recommended: bool
+
+
+class PrivateChannelRoomsPreview(BaseModel):
+    rooms: list[PrivateChannelRoom]
+
+
+class MakeRoomsPrivateRequest(BaseModel):
+    """The rooms from the preview the admin confirmed."""
+
+    room_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class PrivateChannelRoomsCount(BaseModel):
+    count: int
+
+
+class AskPlatformRequest(BaseModel):
+    """Which listed rooms of unrecorded type to ask about; all of them, a
+    batch at a time, when absent."""
+
+    room_ids: list[str] | None = Field(default=None, max_length=200)
+
+
+class AnsweredRoom(BaseModel):
+    room_id: str
+    channel_type: str
+
+
+class UnansweredRoom(BaseModel):
+    room_id: str
+    # "bridge_not_connected" or "could_not_tell".
+    reason: str
+
+
+class AskPlatformResponse(BaseModel):
+    answered: list[AnsweredRoom]
+    unanswered: list[UnansweredRoom]
+    # "rate_limited" or "timed_out" when the batch stopped early.
+    stopped: str | None
+    # Listed rooms still to ask about: no recorded type, and not already
+    # found unplaceable.
+    remaining: int
+
+
+class SkippedRoom(BaseModel):
+    room_id: str
+    # "not_found", "already_private", "archived" or "not_eligible".
+    reason: str
+
+
+class MakeRoomsPrivateResponse(BaseModel):
+    changed: list[str]
+    skipped: list[SkippedRoom]
 
 
 # ── Erasing a person ────────────────────────────────────────────────────────

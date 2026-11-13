@@ -168,3 +168,26 @@ async def test_the_command_reports_errors_as_json_and_exits_non_zero(
     assert json.loads(capsys.readouterr().err) == {
         "error": "'not-a-uuid' is not a cloud machine id (a UUID)."
     }
+
+
+async def test_an_operators_hold_is_counted_as_a_stop(rls_harness: RLSHarness) -> None:
+    """`stopped` with the fixed reason `admin`, beside idle and owner stops,
+    so a hold shows on the hosted machine events rather than as `other`."""
+    from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+
+    _owner_id, machine_id = await _owner_with_machine(
+        rls_harness, state="ready", desired_state="running", stop_reason=None
+    )
+    registry = MetricsRegistry()
+    install(registry)
+    try:
+        await stop_machine(rls_harness.restricted, machine_id, "suspected abuse")
+        events = [
+            dict(point.attributes)
+            for payload in registry.collect()
+            if payload.name == "switch.hosted.machine_events"
+            for point in payload.numbers
+        ]
+    finally:
+        uninstall()
+    assert events == [{"event": "stopped", "reason": "admin", "backend": "vm"}]

@@ -49,7 +49,7 @@ function PreferencesSettingsPage() {
       <PageHeader
         sticky
         title="Preferences"
-        description="How Switch Console looks and behaves on this computer."
+        description="Customize how Switch Console looks and behaves on this computer."
       />
       <ThemeCard />
       <AutoGenerateSessionNamesRow />

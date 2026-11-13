@@ -112,11 +112,11 @@ async def test_room_detail_reports_what_the_caller_may_do(
         read_only = await _room(session, "read-only", owner, write_visibility="private")
         await session.commit()
 
-        # Public write lets anyone edit the room, but its access and deleting
-        # it stay with the owner and admins.
+        # Public write no longer lets anyone change the room: that is its
+        # owner's and admins' (`room_policy`).
         assert await _permissions(session, public, owner, False) == (True, True)
         assert await _permissions(session, public, admin, True) == (True, True)
-        assert await _permissions(session, public, member, False) == (True, False)
+        assert await _permissions(session, public, member, False) == (False, False)
 
         assert await _permissions(session, read_only, owner, False) == (True, True)
         assert await _permissions(session, read_only, admin, True) == (True, True)
@@ -152,7 +152,6 @@ async def test_a_change_answers_with_what_its_caller_may_do(
 ) -> None:
     async with session_factory() as session:
         owner = await _user(session, "owner")
-        member = await _user(session, "member")
         public = await _room(session, "public", owner, write_visibility="public")
         await session.commit()
 
@@ -166,9 +165,9 @@ async def test_a_change_answers_with_what_its_caller_may_do(
             None,  # type: ignore[arg-type]
             _Protocol(),  # type: ignore[arg-type]
             _NO_DECISIONS,
-            member,
+            owner,
             False,
         )
 
     assert detail.name == "renamed"
-    assert (detail.can_write, detail.can_manage) == (True, False)
+    assert (detail.can_write, detail.can_manage) == (True, True)

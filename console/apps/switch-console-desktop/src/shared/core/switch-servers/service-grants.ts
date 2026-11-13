@@ -8,6 +8,11 @@ export const serviceGrantSchema = z.object({
   resources: z.record(z.string(), z.unknown()),
   /** What the grant lets the agent do, in a sentence. */
   summary: z.string(),
+  /**
+   * The grant was made for another account than the one connected now, so it
+   * gives no access until it is made again. An older server leaves it out.
+   */
+  account_changed: z.boolean().optional(),
 });
 export type ServiceGrant = z.infer<typeof serviceGrantSchema>;
 

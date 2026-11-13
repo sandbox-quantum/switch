@@ -11,6 +11,7 @@ import { operationsFrontDoor } from "./operations.ts";
 import { organizationMembers } from "./organization-members.ts";
 import { organizations } from "./organizations.ts";
 import { roomCapture } from "./room-capture.ts";
+import { privateChannelRooms } from "./room-visibility.ts";
 import { roomGroupPaths } from "./room-groups.ts";
 import { roomSchedules } from "./room-schedules.ts";
 import { roomScheduleTools } from "./room-schedule-tools.ts";
@@ -37,4 +38,5 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   decisionSettings,
   roomSchedules,
   roomScheduleTools,
+  privateChannelRooms,
 ];

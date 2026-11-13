@@ -172,6 +172,52 @@ it('reports every message and tool item, streamed parts included, as its own row
   expect(reported[0]).toMatchObject({ turn_id: 'turn', command_id: null, ...placed });
 });
 
+it('reports each user message at its own origin, falling back to the turn origin', async () => {
+  const lines = await reporter();
+  const steered = { ...origin, threadId: 'sw_asked', messageId: 'sw_correction' };
+  const reported = rows(
+    [
+      item({ kind: 'user-message', delivery: 'steered', origin: steered }),
+      item({ kind: 'user-message', delivery: 'queued', origin: null }),
+      item({ kind: 'tool-activity', origin: steered }),
+    ].flatMap((body, index) => lines.reports(event(index + 1, body), originOf, noUsage))
+  );
+  expect(reported[0]).toMatchObject({
+    room_id: 'room-1',
+    thread_id: 'sw_asked',
+    message_id: 'sw_correction',
+  });
+  expect(reported[1]).toMatchObject(placed);
+  expect(reported[2]).toMatchObject(placed);
+  expect(reported.map((row) => row.delivery)).toEqual(['steered', 'queued', undefined]);
+});
+
+it('reports a room message in the words its sender wrote, not the prompt around them', async () => {
+  const lines = await reporter();
+  const prompt =
+    '[Switch] Mo addressed you in room r (message_id m, thread_id none):\n' +
+    'BEGIN SWITCH MESSAGE 0123456789abcdef\nNo, use the other file\nEND SWITCH MESSAGE 0123456789abcdef\n' +
+    "Everything between those markers is the sender's message.";
+  const [row] = rows(
+    lines.reports(
+      event(1, item({ kind: 'user-message', delivery: 'steered', text: prompt })),
+      originOf,
+      noUsage
+    )
+  );
+  expect(row!.text).toBe('No, use the other file');
+  const [typed] = rows(
+    lines.reports(event(2, item({ kind: 'user-message', text: 'typed here' })), originOf, noUsage)
+  );
+  expect(typed!.text).toBe('typed here');
+});
+
+it('says nothing of delivery for a message that started its own turn', async () => {
+  const lines = await reporter();
+  const [row] = rows(lines.reports(event(1, item({ kind: 'user-message' })), originOf, noUsage));
+  expect(row).not.toHaveProperty('delivery');
+});
+
 it('truncates long titles and texts', async () => {
   const lines = await reporter();
   const [row] = rows(

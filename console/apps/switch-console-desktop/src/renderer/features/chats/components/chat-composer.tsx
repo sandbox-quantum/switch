@@ -52,6 +52,7 @@ import {
   PromptInputSubmit,
   PromptInputTextarea,
 } from '../ui/prompt-input';
+import { bringToQuestion, questionCard } from './chat-approval-card';
 import { MentionMark } from './mention-mark';
 
 async function toBase64(file: File): Promise<string> {
@@ -402,6 +403,20 @@ export const ChatComposer = observer(function ChatComposer({
   };
   const group = activities.length > 1;
   const stopActivities = activities.filter((activity) => activity.runningTurn);
+  // An agent waiting on a question or approval in this chat. A message typed
+  // meanwhile is not the answer: it waits its turn, so the person is told
+  // where the question is rather than left watching "queued".
+  const waitingOn = activities
+    .flatMap((activity) =>
+      [...activity.approvals.values()]
+        .filter((request) => request.state === 'open')
+        .map((request) => ({ activity, request }))
+    )
+    .at(0);
+  const [sentWhileWaiting, setSentWhileWaiting] = useState(false);
+  useEffect(() => {
+    if (!waitingOn) setSentWhileWaiting(false);
+  }, [waitingOn]);
 
   const addFiles = (list: File[]) => {
     if (!list.length) return;
@@ -477,6 +492,7 @@ export const ChatComposer = observer(function ChatComposer({
   const send = () => {
     const body = draft.trim();
     if (disabled || (!body && !files.length)) return;
+    if (waitingOn) setSentWhileWaiting(true);
     const sent = allowed(composeMentions(body, shiftMentions(draft, body, picked), targets));
     const threadRootId = replyTo?.messageId ?? null;
     const requestId = timeline.send({
@@ -565,6 +581,27 @@ export const ChatComposer = observer(function ChatComposer({
           who={labelOf(activity)}
         />
       ))}
+      {waitingOn && (draft.trim() !== '' || sentWhileWaiting) && (
+        <div
+          role="status"
+          data-testid="question-waiting"
+          className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-border bg-background-1 px-3 py-1.5 text-xs text-foreground-muted"
+        >
+          <span className="min-w-0 flex-1">
+            {labelOf(waitingOn.activity)} is waiting for your answer to the question above.
+            {sentWhileWaiting
+              ? ' Your message goes to it after that.'
+              : ' Did you mean to answer it?'}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => bringToQuestion(questionCard(waitingOn.request.requestId))}
+          >
+            Go to the question
+          </Button>
+        </div>
+      )}
       {replyTo && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-muted">
           <span className="min-w-0 flex-1 truncate">

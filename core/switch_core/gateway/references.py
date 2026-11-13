@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, can, can_manage
+from switch_core.authz import Principal, can, can_manage, owns
 from switch_core.bridges.resource.registry import ReferenceValue, is_builtin_type
 from switch_core.bridges.resource.service import (
     ReferenceTypeInUseError,
@@ -448,7 +448,7 @@ async def list_rooms_for_reference(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
-        await resource_service.get_reference_for_user(
+        resource = await resource_service.get_reference_for_user(
             session,
             reference_id,
             user.id,
@@ -462,7 +462,11 @@ async def list_rooms_for_reference(
         session, reference_id, reader_id=user.id, reader_is_admin=is_admin
     )
     return await resource_rooms(
-        session, room_store, rooms, Principal(user.id, is_admin)
+        session,
+        room_store,
+        rooms,
+        Principal(user.id, is_admin),
+        resource_owner_id=resource.owner_id,
     )
 
 
@@ -494,7 +498,7 @@ async def attach_reference_to_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ReferenceDetail:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "attach", is_admin)
     try:
         await resource_service.attach_reference_to_room(
             session,
@@ -526,6 +530,14 @@ async def detach_reference_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    await require_room_unlink(session, room_store, room_id, user, is_admin)
+    ref = await session.get(Reference, reference_id)
+    await require_room_unlink(
+        session,
+        room_store,
+        room_id,
+        user,
+        is_admin,
+        owns_target=ref is not None and owns(Principal(user.id, False), ref.owner_id),
+    )
     await resource_service.detach_reference_from_room(session, room_id, reference_id)
     await session.commit()

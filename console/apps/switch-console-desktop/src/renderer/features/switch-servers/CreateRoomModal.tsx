@@ -27,6 +27,10 @@ import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
+import {
+  invitableAgents,
+  useRoomAgentCandidates,
+} from '@renderer/lib/stores/use-room-agent-candidates';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -142,6 +146,8 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     queryFn: () =>
       rpc.workspaces.listBridgePeople({ workspaceId: workspaceId as string, bridgeId }),
   });
+  // The agents the server's invite rule lets this person put into a new room.
+  const invitableQuery = useRoomAgentCandidates(workspaceId, null);
 
   // Only a running bridge allowed to create channels can back a new room.
   const bridges = (bridgesQuery.data ?? []).filter(
@@ -180,7 +186,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   // app. A Switch Console room is driven through the server: the agents the
   // server says the person may use, and its people.
   const agentCandidates = selectedBridge
-    ? (agentsQuery.data ?? []).filter(
+    ? invitableAgents(agentsQuery.data ?? [], invitableQuery.data).filter(
         (remote) =>
           workspaceId !== null &&
           (managedProviders.has(remote.id) ||
@@ -265,6 +271,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     loaded:
       agentsQuery.isSuccess &&
       !agentsQuery.isFetching &&
+      (selectedBridge === null || !invitableQuery.isPending) &&
       (selectedBridge !== null || (allowedQuery.isSuccess && !allowedQuery.isFetching)),
   });
   const startingAgentName =
@@ -460,6 +467,14 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             {(agentsQuery.isError || (!selectedBridge && allowedQuery.isError)) && (
               <p className="text-xs text-destructive">
                 {failureText(agentsQuery.error ?? allowedQuery.error, 'Could not load the agents.')}
+              </p>
+            )}
+            {selectedBridge && invitableQuery.isError && (
+              <p className="text-xs text-destructive">
+                {failureText(
+                  invitableQuery.error,
+                  'Could not work out which agents you can invite.'
+                )}
               </p>
             )}
             {(selectedBridge ? peopleQuery.isError : rosterQuery.isError) && (

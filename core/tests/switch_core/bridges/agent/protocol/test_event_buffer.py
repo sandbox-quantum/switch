@@ -30,6 +30,7 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
     MessagePayload,
     RoomJoinPayload,
+    RoomLeavePayload,
 )
 from switch_core.db.models import (
     AGENT_EVENT_BOOT_MAX,
@@ -230,6 +231,44 @@ async def test_room_join_fans_out_only_when_listening(
     notifs = await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM})
     assert len(notifs) == 1
     assert notifs[0].type == "room_join"
+
+
+async def test_room_leave_fans_out_only_when_listening(
+    db_buffer: EventBuffer, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """A departure reads like an arrival: in the room's log for a session, and
+    one of the agent's own events only where it listens for joins and leaves."""
+    q = db_buffer
+    await say(
+        session_factory,
+        ROOM,
+        "",
+        sender="@u:s",
+        sender_name="u",
+        event_type="m.room.member",
+        content={"membership": "leave", "removed_by": "Rita"},
+    )
+    assert (
+        await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM}) == []
+    )
+    [departure] = await q.poll_room(TENANT_ZERO_ID, AGENT, ROOM, timeout=0)
+    assert departure.type == "room_leave"
+    assert isinstance(departure.payload, RoomLeavePayload)
+    assert departure.payload.listening is False
+    assert departure.payload.removed_by == "Rita"
+
+    await _keep(
+        q,
+        AgentEvent(
+            type="room_leave",
+            room_id=ROOM,
+            payload=RoomLeavePayload(
+                member="@u:s", member_name="u", timestamp=0, listening=True
+            ),
+        ),
+    )
+    notifs = await q.poll_notifications(TENANT_ZERO_ID, AGENT, timeout=0, rooms={ROOM})
+    assert [n.type for n in notifs] == ["room_leave"]
 
 
 async def test_polling_everything_can_be_limited_to_the_rooms_given(

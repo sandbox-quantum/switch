@@ -25,6 +25,9 @@ interface ConfirmDialogProps {
    *  refused action never looks like it worked. */
   onConfirm: () => Promise<void> | void;
   onClose: () => void;
+  /** Holds the confirm button while the question is not yet complete, such
+   *  as a list of what the action affects that is still loading. */
+  confirmDisabled?: boolean;
 }
 
 export default function ConfirmDialog({
@@ -35,6 +38,7 @@ export default function ConfirmDialog({
   tone,
   onConfirm,
   onClose,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const descriptionId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -105,6 +109,7 @@ export default function ConfirmDialog({
           color={tone === "destructive" ? "error" : "primary"}
           onClick={confirm}
           loading={busy}
+          disabled={confirmDisabled}
           // Busy, the button keeps its colour: greyed out, a destructive
           // confirm would read as refused while the action is still running.
           sx={{

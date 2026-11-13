@@ -14,7 +14,7 @@ Two charts are published:
   optional decision service (switch-decision), with its Strands Decider model
   server (switch-decision-strands).
 * `switch-hosted-controller` (deploy/hosted/chart): the controller that runs
-  Switch cloud machines, and its one image.
+  Switch Cloud machines, and its one image.
 
 Packaging and publishing them is scripts/release_charts.sh, which reads `charts`.
 

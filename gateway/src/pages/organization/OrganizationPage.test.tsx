@@ -135,6 +135,17 @@ describe("OrganizationPage", () => {
           target_name: "Bob",
           details: { from: "member", to: "org_admin", platform_access: true },
         },
+        {
+          id: "e2",
+          occurred_at: "2026-01-03",
+          actor_user_id: "u2",
+          actor_name: "Bob",
+          action: "organization.workspace_renamed",
+          target_type: "workspace",
+          target_id: "t1",
+          target_name: null,
+          details: { name: "Research", previous_name: "Acme" },
+        },
       ],
       "GET /organizations/current/issues": [],
     });
@@ -146,6 +157,9 @@ describe("OrganizationPage", () => {
     expect(screen.getByRole("heading", { name: "Users" })).toBeTruthy();
     expect(await screen.findByText("Organization role changed")).toBeTruthy();
     expect(screen.getByText("Olga (platform operator)")).toBeTruthy();
+    // A rename is of the workspace by its new name, not its id.
+    expect(screen.getByText("Workspace renamed")).toBeTruthy();
+    expect(screen.getByText("Research")).toBeTruthy();
   });
 
   it("shows an organization admin its connector apps, and changes them as its own", async () => {
