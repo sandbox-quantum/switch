@@ -1,0 +1,47 @@
+export { buildNpmGlobalCli, inferNpmPrefix } from './commands';
+export {
+  findExecutables,
+  realpathToInstallation,
+  installationId,
+  installedVia,
+  installationToRealpath,
+} from './executables';
+export {
+  checkAll,
+  checkInstallation,
+  checkStep,
+  cliStep,
+  runAction,
+  runCommand,
+  runContext,
+  setupContext,
+  step,
+  type CheckFound,
+  type InstallationFound,
+} from './steps';
+export type {
+  Action,
+  Executable,
+  InstallOffer,
+  RunSetupCheck,
+  LegacyInstallationConfig,
+  LegacyReadiness,
+  Installation,
+  InstallationActions,
+  InstallationCheck,
+  InstallationSetupContext,
+  InstallationState,
+  ManualStep,
+  ProviderActions,
+  ProviderSetup,
+  ProviderState,
+  RunContext,
+  SetupContext,
+  SetupHost,
+  SignInStatus,
+  Step,
+  StepBlock,
+  StepFailure,
+  UpdateCheck,
+} from './types';
+export { checkForUpdates, isBehind, latestOnGitHub, latestOnNpm } from './versions';

@@ -15,6 +15,10 @@
       "types": "./dist/agents.d.mts",
       "default": "./dist/agents.mjs"
     },
+    "./provider-setup": {
+      "types": "./dist/provider-setup.d.mts",
+      "default": "./dist/provider-setup.mjs"
+    },
     "./switch-skill": {
       "types": "./dist/switch-skill.d.mts",
       "default": "./dist/switch-skill.mjs"
@@ -31,7 +35,9 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
+    "@switch-console/agent-providers": "workspace:*",
     "@switch-console/core": "workspace:*",
+    "@switch-console/shared": "workspace:*",
     "smol-toml": "^1.8.0",
     "zod": "^4.6.7"
   },

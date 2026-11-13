@@ -1,5 +1,7 @@
 import { Check, Copy } from 'lucide-react';
 import React, { useCallback, useState } from 'react';
+import { buttonVariants } from '@renderer/lib/ui/button';
+import { cn } from '@renderer/utils/utils';
 import type { InstallMethod } from '@shared/core/providers/agent-payload';
 
 // ---------------------------------------------------------------------------
@@ -78,11 +80,25 @@ export function CommandRow({ command, action }: { command: string; action: React
 // CommandActionButton
 // ---------------------------------------------------------------------------
 
-export function CommandActionButton({ ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+/**
+ * The button joined to a {@link CommandRow}'s right edge: a design-system
+ * button (primary unless `variant` says otherwise) in the row's shape.
+ */
+export function CommandActionButton({
+  variant = 'default',
+  className,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: 'default' | 'outline';
+}) {
   return (
     <button
       type="button"
-      className="group flex items-center gap-2 rounded-r-lg bg-background-quaternary-1 px-4 text-sm hover:bg-background-quaternary-2 disabled:cursor-not-allowed disabled:text-foreground-passive disabled:hover:bg-background-quaternary-1"
+      className={cn(
+        buttonVariants({ variant }),
+        'h-auto rounded-none rounded-r-lg px-4 disabled:cursor-not-allowed',
+        className
+      )}
       {...props}
     />
   );

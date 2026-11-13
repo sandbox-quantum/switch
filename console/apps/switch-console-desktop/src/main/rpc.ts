@@ -14,6 +14,7 @@ import { managedAgentsController } from './core/managed-agents/controller';
 import { localSwitchServerController } from './core/managed-switch-server/controller';
 import { remoteSwitchServerController } from './core/managed-switch-server/remote-controller';
 import { onboardingController } from './core/onboarding/controller';
+import { providerSetupController } from './core/provider-setup/controller';
 import { providersController } from './core/providers/controller';
 import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
@@ -33,6 +34,7 @@ import { workspacesController } from './core/workspaces/controller';
 export const rpcRouter = createRPCRouter({
   sdkHost: sdkHostController,
   providers: providersController,
+  providerSetup: providerSetupController,
   agents: agentsController,
   agentTemplates: agentTemplatesController,
   app: appController,

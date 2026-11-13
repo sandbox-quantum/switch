@@ -196,6 +196,7 @@ export {
   MAX_SESSIONS_PER_REQUEST,
 } from './host/cli-conversations';
 export { verifyClaudeSignIn } from './claude/sign-in';
+export { type ClaudeAuthStatus } from './claude/auth-status';
 export type { ProviderReadiness, SignInCheckInput } from './readiness';
 export {
   acpProviderRuntime,
@@ -210,3 +211,16 @@ export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './hos
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
+export {
+  loginCommandFor,
+  runSetupCheck,
+  SETUP_CHECKS,
+  type CheckTarget,
+  type LegacyInstallationConfig,
+  type SetupCheck,
+  type SetupCheckInput,
+  type SetupCheckName,
+  type SetupCheckOutput,
+  type SetupCheckProvider,
+  type SetupCheckResult,
+} from './setup-checks';
