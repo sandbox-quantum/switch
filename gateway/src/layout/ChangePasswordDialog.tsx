@@ -69,7 +69,11 @@ export default function ChangePasswordDialog({ open, onClose }: Props) {
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
-          {success && <Alert severity="success">Password changed successfully.</Alert>}
+          {success && (
+            <Alert severity="success">
+              Password changed. You stay signed in here; other devices are signed out.
+            </Alert>
+          )}
           <TextField
             label="Current password"
             type="password"

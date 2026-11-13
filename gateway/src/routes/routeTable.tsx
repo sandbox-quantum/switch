@@ -32,6 +32,7 @@ import {
   workspaceAdmins,
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
+import AccountPage from "../pages/account/AccountPage";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
 import ApiKeysPage from "../pages/api-keys/ApiKeysPage";
 import AgentListPage from "../pages/agents/AgentListPage";
@@ -43,6 +44,7 @@ import MachinesPage from "../pages/machines/MachinesPage";
 import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
 import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
 import ConnectorPage from "../pages/connectors/ConnectorPage";
+import ConnectorsPage from "../pages/connectors/ConnectorsPage";
 import OrganizationPage, {
   OrganizationAuditLogPage,
   OrganizationConnectorsPage,
@@ -104,6 +106,8 @@ export interface PageRoute {
   /** The settings area the page sits in, with its label in that area's menu. */
   area?: SettingsArea;
   menu?: string;
+  /** About the person rather than the area, so its menu row sits apart. */
+  personal?: true;
 }
 
 /** An area's own URL, which opens the page last used there. */
@@ -173,6 +177,17 @@ function settingsPage(
   return { kind: "page", path, layouts: V2, access, element, area, menu };
 }
 
+/** A page about the signed-in person, listed in the workspace settings menu
+ * below the area's own pages, in a group of its own. */
+function personalSettingsPage(
+  path: string,
+  menu: string,
+  access: Rule,
+  element: ReactNode,
+): PageRoute {
+  return { ...settingsPage(path, "workspace", menu, access, element), personal: true };
+}
+
 function areaIndex(path: string, area: SettingsArea): AreaRoute {
   return { kind: "area", path, layouts: V2, area };
 }
@@ -217,7 +232,7 @@ export const ROUTES: readonly AppRoute[] = [
   // new layout it is everyone's connector catalogue, and the operator's page
   // moves to the Platform area.
   page("/connectors", CURRENT, operators, <ConnectorAppsPage />),
-  page("/connectors", V2, serviceConnections, <PlannedPage title="Connectors" />),
+  page("/connectors", V2, serviceConnections, <ConnectorsPage />),
   page("/connectors/:connectorId", V2, serviceConnections, <ConnectorPage />),
 
   page("/machines", CURRENT, agentManagement, <MachinesPage />),
@@ -271,13 +286,7 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   redirect("/settings/devices", CURRENT, "/machines"),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
-  settingsPage(
-    "/settings/account",
-    "workspace",
-    "Your account",
-    everyone,
-    <PlannedPage title="Your account" />,
-  ),
+  personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
   // Organization settings: the area admits the organization's admins, and
   // the operator to restore one; its pages beyond that are the admins' alone.
@@ -387,14 +396,14 @@ export function menuOf(
   area: SettingsArea,
   layout: Layout,
   caps: Capabilities,
-): { label: string; path: string }[] {
+): { label: string; path: string; personal: boolean }[] {
   return routesFor(layout)
     .filter(
       (r): r is PageRoute & { menu: string } =>
         r.kind === "page" && r.area === area && r.menu !== undefined,
     )
     .filter((r) => r.access(caps).allowed)
-    .map((r) => ({ label: r.menu, path: r.path }));
+    .map((r) => ({ label: r.menu, path: r.path, personal: r.personal === true }));
 }
 
 export interface RailItem {

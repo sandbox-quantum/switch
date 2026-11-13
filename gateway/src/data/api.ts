@@ -1611,11 +1611,10 @@ export async function login(email: string, password: string): Promise<UserInfo> 
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
+// Throws when the cookie wasn't cleared, so a failed sign-out never looks
+// like a signed-out browser that a reload would sign straight back in.
 export async function logout(): Promise<void> {
-  await fetch(`${BASE}/auth/logout`, {
-    method: "POST",
-    credentials: "include",
-  });
+  await jsonRequest("/auth/logout", "POST");
 }
 
 // Ends every session the account holds, this one included: a copied cookie or
@@ -1624,8 +1623,31 @@ export async function signOutEverywhere(): Promise<void> {
   await jsonRequest("/auth/sessions/revoke", "POST");
 }
 
-export async function fetchMe(): Promise<UserInfo | null> {
-  return fetchJson<UserInfo>("/auth/me");
+/** The signed-in account, as Your account shows it. */
+export interface Me extends UserInfo {
+  // False for an account made through single sign-on, which has no password
+  // of its own to change.
+  has_password: boolean;
+}
+
+export async function fetchMe(): Promise<Me> {
+  return jsonRequest<Me>("/auth/me", "GET");
+}
+
+export async function changeMyName(name: string): Promise<Me> {
+  return jsonRequest<Me>("/auth/me", "PATCH", { name });
+}
+
+/** What deleting the account would be refused with now, saying what to do
+ * first, or null when it would go ahead. */
+export async function accountDeletionRefusal(): Promise<string | null> {
+  const check = await jsonRequest<{ refusal: string | null }>("/auth/me/deletion", "GET");
+  return check.refusal;
+}
+
+/** Deletes the account everywhere, confirmed by its email typed out. */
+export async function deleteMyAccount(email: string): Promise<void> {
+  await jsonRequest("/auth/me", "DELETE", { email });
 }
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";
@@ -3437,12 +3459,43 @@ export interface ServiceConnection {
   organization_locked: boolean;
   /** Which setting `workspace_enabled` comes from; null where workspaces have no switch. */
   decided_by: WorkspaceServiceDecider | null;
+  /** Whether a sign-in can start and finish here in the browser; false where
+   * it returns only to Switch Console, and for a key. */
+  web_sign_in: boolean;
+  /** What a person picks before signing in or pasting (a vendor's site),
+   * each from its fixed list; null where nothing is asked. */
+  sign_in_choices: ServiceKeyField[] | null;
+  /** What a person may paste in place of signing in (a token, or keys);
+   * empty where the service takes none here. */
+  paste: ServicePasteMethod[];
+  /** Why the connection must be reconnected, where it must: `token_refused`
+   * asks for a new pasted credential. */
+  reconnect_code: string | null;
+  reconnect_reason: string | null;
   /** The level the person allowed when connecting; null while not connected. */
   consent: "read" | "write" | null;
   /** The account connected, as the vendor names it. */
   external_identity: string | null;
   /** Whether the person may disconnect it: their own, while they have one. */
   can_revoke: boolean;
+  /** How the person connected, and what they picked (a site); null while
+   * not connected. */
+  method: "oauth" | "token" | "keys" | null;
+  choices: Record<string, string> | null;
+  /** What a pasted credential reaches, said in place of an access level;
+   * null for a sign-in. */
+  access_note: string | null;
+}
+
+/** A credential a person may paste in place of signing in: its fields, and
+ * whether it ends on a date the vendor holds or only when revoked. */
+export interface ServicePasteMethod {
+  method: "token" | "keys";
+  label: string;
+  fields: ServiceKeyField[];
+  help_url: string | null;
+  expires: "vendor" | "never";
+  access_note: string;
 }
 
 /** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
@@ -3841,6 +3894,50 @@ export async function revokeServiceConnection(
 /** End your own connection; `warning` names what could not be revoked. */
 export async function disconnectService(service: string): Promise<{ warning: string | null }> {
   return jsonRequest(`/service-connections/${service}`, "DELETE");
+}
+
+/** Where a sign-in started here sends the browser, and the id the
+ * connector's page reads its outcome by when the browser comes back. GitHub
+ * signs in through its own App, so its flows have their own routes. */
+function signInFlows(service: string): string {
+  return service === "github" ? "/provider-connections/github/flows" : `/service-connections/${service}/flows`;
+}
+
+export async function startWebSignIn(service: string): Promise<{ id: string; url: string }> {
+  return jsonRequest(`${signInFlows(service)}/web`, "POST");
+}
+
+/** How a sign-in ended, as the connector's page reads it on the way back:
+ * `pending` while it never got back from the vendor. */
+export interface SignInOutcome {
+  status: "pending" | "checking" | "connected" | "failed";
+  account: string | null;
+  error: string | null;
+  warning: string | null;
+}
+
+export async function fetchSignInOutcome(service: string, id: string): Promise<SignInOutcome> {
+  const answer = await jsonRequest<SignInOutcome & { login?: string }>(`${signInFlows(service)}/${id}`, "GET");
+  return {
+    status: answer.status,
+    account: answer.account ?? (answer.login || null),
+    error: answer.error,
+    warning: answer.warning,
+  };
+}
+
+/** Done with a sign-in's outcome: it is dropped rather than left to expire. */
+export async function dropSignIn(service: string, id: string): Promise<void> {
+  return noContentRequest(`${signInFlows(service)}/${id}`, "DELETE");
+}
+
+/** Connect a service by pasting a token or keys in place of signing in, at
+ * the site picked, once its vendor accepts them; pasting again replaces them. */
+export async function connectServiceWithPaste(
+  service: string,
+  paste: { method: ServicePasteMethod["method"]; fields: Record<string, string>; choices: Record<string, string> },
+): Promise<{ warning: string | null; external_identity: string }> {
+  return jsonRequest(`/service-connections/${service}/paste`, "PUT", paste);
 }
 
 /** Connect a key-based connector, or replace its key, once the vendor accepts it. */
