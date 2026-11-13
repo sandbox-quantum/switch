@@ -167,6 +167,18 @@ export interface ConversationHistoryItem {
   text: string;
 }
 
+/**
+ * What a session advertises for a message sent mid-turn: `steer` when its
+ * provider can take one into the running turn, `queue` otherwise. Whether a
+ * given message may steer is decided per message, so this follows the
+ * provider alone.
+ */
+export function sessionInput(
+  capabilities: Pick<ProviderCapabilities, 'steering'>
+): 'steer' | 'queue' {
+  return capabilities.steering ? 'steer' : 'queue';
+}
+
 export interface ProviderCapabilities {
   /** The adapter can switch models on a live session, not only at start. */
   modelSwitchInSession: boolean;

@@ -5,6 +5,7 @@ import {
   EXECUTION_INHERIT_ENV,
   providerRuntime,
   runtimeModeFor,
+  sessionInput,
   type ProviderCapabilities,
   type SharedHostConfig,
   sharedConfigSchema,
@@ -116,7 +117,7 @@ export function buildWatcherTemplate(input: {
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: capabilities.steering ? 'steer' : 'queue',
+        input: sessionInput(capabilities),
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

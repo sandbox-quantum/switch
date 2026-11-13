@@ -1,4 +1,9 @@
-import type { ModelSelection, ProviderCapabilities, RuntimeMode } from '../adapter';
+import {
+  sessionInput,
+  type ModelSelection,
+  type ProviderCapabilities,
+  type RuntimeMode,
+} from '../adapter';
 import type { SharedHostConfig } from './shared-config';
 
 export type SharedHostProvider = SharedHostConfig['start']['provider'];
@@ -43,7 +48,7 @@ export function buildSharedHostConfig(input: BuildSharedHostConfigInput): Shared
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: input.capabilities.steering ? 'steer' : 'queue',
+        input: sessionInput(input.capabilities),
         approvals: input.capabilities.approvals,
         questions: input.capabilities.userInput,
         interrupt: true,

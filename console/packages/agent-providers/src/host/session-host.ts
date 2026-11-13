@@ -37,10 +37,17 @@ import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
+import type { SteerTarget } from './room-prompt';
 import { ToolDetailBuffer } from './tool-detail-buffer';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('accepted'), command: commandSchema }),
+  z.object({
+    type: z.literal('accepted'),
+    command: commandSchema,
+    // Who sent a room message, as Switch identified them, so a later message
+    // can be told whether it comes from the person who started this turn.
+    steeringActor: z.string().optional(),
+  }),
   z.object({
     type: z.literal('dispatched'),
     commandId: z.string(),
@@ -129,6 +136,8 @@ export class HostedSession {
   private readonly projector: ChatProjector;
   private replica: SessionReplica;
   private readonly commands = new Map<string, Command>();
+  /** Who started each room message's turn, as Switch identified them. */
+  private readonly steeringActors = new Map<string, string>();
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
@@ -206,7 +215,11 @@ export class HostedSession {
         this.historyImported = true;
     }
     for (const record of inbox.records) {
-      if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
+      if (record.type === 'accepted') {
+        this.commands.set(record.command.commandId, record.command);
+        if (record.steeringActor)
+          this.steeringActors.set(record.command.commandId, record.steeringActor);
+      }
       if (record.type === 'dispatched') {
         if (record.notSent) this.dispatched.delete(record.commandId);
         else this.dispatched.add(record.commandId);
@@ -891,9 +904,20 @@ export class HostedSession {
     return true;
   }
 
-  command(input: Command, expectedTurnId?: string): Promise<Snapshot['commandStatuses'][number]> {
+  /**
+   * `expectedTurnId` names the running turn a steered message is for; without
+   * it a steer queues. `steeringActor` is who sent a room message, as Switch
+   * identified them, kept so a later message can be matched to this turn's
+   * starter.
+   */
+  command(
+    input: Command,
+    options: { expectedTurnId?: string; steeringActor?: string | null } = {}
+  ): Promise<Snapshot['commandStatuses'][number]> {
     const command = commandSchema.parse(input);
-    const result = this.serial.then(() => this.accept(command, expectedTurnId));
+    const result = this.serial.then(() =>
+      this.accept(command, options.expectedTurnId, options.steeringActor ?? undefined)
+    );
     this.serial = result.catch(() => {});
     return result;
   }
@@ -938,7 +962,8 @@ export class HostedSession {
 
   private async accept(
     command: Command,
-    expectedTurnId?: string
+    expectedTurnId?: string,
+    steeringActor?: string
   ): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
@@ -1032,8 +1057,13 @@ export class HostedSession {
         throw new Error('UNSUPPORTED_MODEL: choose an offered model and options.');
     }
     if (body.type === 'request.answer') this.validateAnswer(command);
-    await this.inbox.append({ type: 'accepted', command });
+    await this.inbox.append({
+      type: 'accepted',
+      command,
+      ...(steeringActor ? { steeringActor } : {}),
+    });
     this.commands.set(command.commandId, command);
+    if (steeringActor) this.steeringActors.set(command.commandId, steeringActor);
     await this.publish({
       type: 'command.status',
       commandId: command.commandId,
@@ -1240,6 +1270,22 @@ export class HostedSession {
       code: 'COMMAND_REJECTED',
       message: String(error),
     });
+  }
+
+  /**
+   * The turn a message could be steered into now: the running one, once the
+   * provider has it. Null when nothing runs, or the turn is still on its way.
+   */
+  steerTarget(): SteerTarget | null {
+    const turnId = this.activeTurn;
+    if (turnId === null || !this.dispatched.has(turnId)) return null;
+    const command = this.commands.get(turnId);
+    if (!command) return null;
+    return {
+      turnId,
+      origin: command.origin,
+      steeringActor: this.steeringActors.get(turnId) ?? null,
+    };
   }
 
   status(commandId: string): Snapshot['commandStatuses'][number] {

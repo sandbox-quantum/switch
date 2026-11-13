@@ -204,75 +204,123 @@ describe('a room command', () => {
 });
 
 describe('the delivery a room message is sent with', () => {
-  const origin = {
-    surface: 'switch-web' as const,
-    actorId: 'starter',
-    roomId: 'room',
-    threadId: null,
-    messageId: 'root',
+  // Mo started the running turn with a top-level message `root` in a channel.
+  const running = {
+    turnId: 'running',
+    origin: {
+      surface: 'switch-web' as const,
+      actorId: '@mo-slack:test',
+      roomId: 'room',
+      threadId: null,
+      messageId: 'root',
+    },
+    steeringActor: 'mo',
   };
-  const message = (sender = 'starter', thread = 'root', extra = {}) =>
+  const message = (
+    payload: Record<string, unknown> = {},
+    channelType: string | null = 'channel_public'
+  ) =>
     roomMessageSchema.parse({
       type: 'message',
+      channel_type: channelType,
       payload: {
-        sender,
-        sender_name: sender,
+        sender: '@mo-slack:test',
+        sender_name: 'mo',
         sender_role: 'member',
+        sender_person: 'mo',
+        sender_owns_agent: false,
+        mid_turn_delivery: 'steer',
         message_id: 'reply',
-        thread_id: thread,
-        body: 'correction',
-        ...extra,
+        thread_id: 'root',
+        body: 'no, use the other file',
+        ...payload,
       },
     });
-  const input = {
-    canSteer: true,
-    roomId: 'room',
-    message: message(),
-    turns: [{ turnId: 'running', status: 'running' }],
-    items: [{ turnId: 'running', kind: 'user-message', origin }],
-  };
-  it('steers the starter or owner in the running thread', () => {
-    expect(roomMessageSteerTarget(input)).toBe('running');
+  const target = (overrides: Partial<Parameters<typeof roomMessageSteerTarget>[0]> = {}) =>
+    roomMessageSteerTarget({
+      canSteer: true,
+      roomId: 'room',
+      message: message(),
+      running,
+      ...overrides,
+    });
+
+  it.each([
+    ['a reply in the turn’s thread from its starter', message(), 'running'],
+    [
+      'the starter writing from another surface, as the same Switch user',
+      message({ sender: '@mo-console:test' }),
+      'running',
+    ],
+    [
+      'the owner replying in a colleague’s thread',
+      message({ sender: '@ana:test', sender_person: 'mo-owner', sender_owns_agent: true }),
+      'running',
+    ],
+    [
+      'a new top-level message in the channel',
+      message({ thread_id: null, message_id: 'fresh' }),
+      undefined,
+    ],
+    ['a reply in another thread', message({ thread_id: 'other-root' }), undefined],
+    [
+      'a colleague replying in the thread',
+      message({ sender: '@ana:test', sender_person: 'ana' }),
+      undefined,
+    ],
+    [
+      'a workspace admin who does not own the agent',
+      message({ sender: '@root:test', sender_person: 'boss', sender_role: 'admin' }),
+      undefined,
+    ],
+    [
+      'an agent, or a schedule the owner set up (no person)',
+      message({ sender_person: null, sender_role: null }),
+      undefined,
+    ],
+    ['an agent set to always queue', message({ mid_turn_delivery: 'queue' }), undefined],
+    [
+      'a server from before steering, which says nothing of the sender',
+      roomMessageSchema.parse({
+        type: 'message',
+        payload: {
+          sender: '@mo-slack:test',
+          sender_name: 'mo',
+          message_id: 'reply',
+          thread_id: 'root',
+          body: 'x',
+        },
+      }),
+      undefined,
+    ],
+    [
+      'a follow-up anywhere in a direct room',
+      message({ thread_id: null, message_id: 'fresh' }, 'direct'),
+      'running',
+    ],
+  ])('%s', (_name, incoming, expected) => {
+    expect(target({ message: incoming })).toBe(expected);
+  });
+
+  it('steers a reply in the thread of a turn started by a reply', () => {
     expect(
-      roomMessageSteerTarget({
-        ...input,
-        message: message('owner', 'root', { sender_owns_agent: true }),
+      target({
+        running: { ...running, origin: { ...running.origin, threadId: 'root', messageId: 'r1' } },
       })
     ).toBe('running');
   });
-  it('steers the current turn when the conversation has imported history', () => {
-    expect(
-      roomMessageSteerTarget({
-        ...input,
-        turns: [{ turnId: 'imported', status: 'completed' }, ...input.turns],
-        items: [{ turnId: 'imported', kind: 'user-message', origin: null }, ...input.items],
-      })
-    ).toBe('running');
+
+  it('queues when nothing runs, in another room, or on a provider that cannot steer', () => {
+    expect(target({ running: null })).toBeUndefined();
+    expect(target({ roomId: 'elsewhere' })).toBeUndefined();
+    expect(target({ canSteer: false })).toBeUndefined();
   });
-  it('queues another sender, thread, room, unknown sender, or agent', () => {
-    expect(roomMessageSteerTarget({ ...input, message: message('other') })).toBeUndefined();
-    expect(
-      roomMessageSteerTarget({ ...input, message: message('starter', 'other') })
-    ).toBeUndefined();
-    expect(roomMessageSteerTarget({ ...input, roomId: 'other' })).toBeUndefined();
-    expect(
-      roomMessageSteerTarget({
-        ...input,
-        message: message('starter', 'root', { sender_role: null }),
-      })
-    ).toBeUndefined();
-  });
-  it('queues when disabled, unsupported, idle, or origin is unknown', () => {
-    expect(
-      roomMessageSteerTarget({
-        ...input,
-        message: message('starter', 'root', { mid_turn_delivery: 'queue' }),
-      })
-    ).toBeUndefined();
-    expect(roomMessageSteerTarget({ ...input, canSteer: false })).toBeUndefined();
-    expect(
-      roomMessageSteerTarget({ ...input, turns: [{ turnId: 'running', status: 'queued' }] })
-    ).toBeUndefined();
-    expect(roomMessageSteerTarget({ ...input, items: [] })).toBeUndefined();
+
+  it('never matches a turn whose starter Switch did not identify, except for the owner', () => {
+    const anonymous = { ...running, steeringActor: null };
+    expect(target({ running: anonymous })).toBeUndefined();
+    expect(target({ running: anonymous, message: message({ sender_owns_agent: true }) })).toBe(
+      'running'
+    );
   });
 });

@@ -802,7 +802,11 @@ export async function runSharedHost(
     const run = async (
       value: unknown,
       requesterName: string | null,
-      { direct = false, expectedTurnId }: { direct?: boolean; expectedTurnId?: string } = {}
+      {
+        direct = false,
+        expectedTurnId,
+        steeringActor,
+      }: { direct?: boolean; expectedTurnId?: string; steeringActor?: string | null } = {}
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -832,7 +836,7 @@ export async function runSharedHost(
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
       try {
-        await host!.command(command, expectedTurnId);
+        await host!.command(command, { expectedTurnId, steeringActor });
       } catch (error) {
         await host!.reject(command, error);
       }
@@ -924,8 +928,7 @@ export async function runSharedHost(
           canSteer: snapshot.session.capabilities.input === 'steer',
           roomId: event.roomId,
           message: message.data,
-          turns: snapshot.turns,
-          items: snapshot.items,
+          running: host!.steerTarget(),
         });
         const command = roomCommand({
           agentId,
@@ -944,7 +947,10 @@ export async function runSharedHost(
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null, { expectedTurnId });
+        const outcome = await run(command, null, {
+          expectedTurnId,
+          steeringActor: message.data.payload.sender_person ?? null,
+        });
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)

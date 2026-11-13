@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { AgentLaunchDefinition, ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import {
+  sessionInput,
+  type AgentLaunchDefinition,
+  type ProviderAdapter,
+  type ProviderSessionStartInput,
+} from '../adapter';
 import { isProviderRuntime, providerRuntime, providerRuntimeIds } from '../providers/registry';
 import { replaceFile } from './replace-file';
 import type { ServiceSkill } from './service-access';
@@ -132,7 +137,7 @@ export async function startHostServer(
         connectivity: 'online',
         pendingRequestIds: [],
         capabilities: {
-          input: adapter.capabilities.steering ? 'steer' : 'queue',
+          input: sessionInput(adapter.capabilities),
           approvals: adapter.capabilities.approvals,
           questions: adapter.capabilities.userInput,
           interrupt: true,
