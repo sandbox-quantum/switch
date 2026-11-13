@@ -260,6 +260,7 @@
     "PUT /gateway/agents/{agent_id}/description",
     "PUT /gateway/agents/{agent_id}/display-name",
     "PUT /gateway/agents/{agent_id}/icon",
+    "PUT /gateway/agents/{agent_id}/mid-turn-delivery",
     "PUT /gateway/agents/{agent_id}/service-grants/{service}",
     "PUT /gateway/auth/me/password",
     "PUT /gateway/chats/{room_id}/hidden",
