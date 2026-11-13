@@ -204,7 +204,7 @@ it('grants GitHub on the repositories picked, for reading unless asked', async (
 
 it("offers GitHub for reading only where the server's App can't write, saying why", async () => {
   const reason =
-    "This server's GitHub App lets agents read only, so GitHub can't be granted for writing.";
+    "Switch's GitHub App lets agents read only, so GitHub can't be granted for writing.";
   workspaces.getServiceGrants.mockResolvedValue({ grants: [], addressing_open: false });
   workspaces.getServiceConnections.mockResolvedValue([
     onOff('connected', {
@@ -320,7 +320,14 @@ function onOff(
     agent_access_note: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
+    paste: [],
+    method: null,
+    access_note: null,
+    reconnect_code: null,
+    reconnect_reason: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: null,
     organization_locked: false,

@@ -83,6 +83,7 @@ def _apps(
             keyring=TEST_KEYRING,
             public_url=settings.gateway_public_url,
             server_name="switch.local",
+            redirects=settings.service_sign_in_redirect,
         ),
     )
 
@@ -136,6 +137,7 @@ def _broker(session_factory: async_sessionmaker[AsyncSession]) -> ServiceBroker:
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
 
 

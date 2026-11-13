@@ -144,7 +144,7 @@ async def _identify(monkeypatch, vendor: _SentryMcp) -> oauth.Identity:
         oauth, "guarded_transport", lambda policy, **kw: httpx.MockTransport(vendor)
     )
     async with guarded_async_client(OutboundPolicy.parse("")) as http:
-        return await _adapter(http).identify("example-bearer-value")
+        return await _adapter(http).identify("example-bearer-value", {})
 
 
 async def test_sentry_whoami_names_the_account(monkeypatch):
@@ -218,6 +218,7 @@ async def _signed_in(session_factory, *, expires_in: float):
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     async with session_factory() as session:
         owner = await _user(session, "ada")
@@ -240,6 +241,8 @@ async def _signed_in(session_factory, *, expires_in: float):
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await STORE.save_grant(
             session,
@@ -297,7 +300,7 @@ async def test_a_sentry_flow_cannot_fall_back_to_read_consent(session_factory):
     async with session_factory() as session:
         owner = await _user(session, "sentry-owner")
         await session.commit()
-    flows = ServiceFlows(None, SignInFlows(session_factory, TEST_KEYRING))
+    flows = ServiceFlows(None, {}, SignInFlows(session_factory, TEST_KEYRING))
     flow = await flows.start(
         definition=SENTRY,
         tenant_id=TENANT_ZERO_ID,
@@ -306,6 +309,7 @@ async def test_a_sentry_flow_cannot_fall_back_to_read_consent(session_factory):
         port=39231,
         completion_secret="synthetic-completion",
         owner_label="sentry-owner",
+        choices={},
     )
     details = flow.stored.details
     assert (details["consent"], details["scopes"]) == ("write", SCOPES)
@@ -316,6 +320,7 @@ async def test_a_sentry_flow_cannot_fall_back_to_read_consent(session_factory):
                 flow.stored,
                 SignIn(ConnectionSecret({}), scopes, "synthetic-client"),
                 Identity("123", "ada@example.test"),
+                {},
             )
         )
 
@@ -408,6 +413,7 @@ async def test_sentry_discovery_sign_in_identity_refresh_and_revocation(
             state="synthetic-state",
             code_challenge=challenge,
             scopes=SCOPES,
+            choices={},
         )
         query = parse_qs(urlsplit(authorization).query)
         assert query["scope"] == [" ".join(SCOPES)]
@@ -418,9 +424,10 @@ async def test_sentry_discovery_sign_in_identity_refresh_and_revocation(
             verifier="synthetic-verifier",
             redirect_uri=redirect,
             scopes=SCOPES,
+            choices={},
         )
         assert signed_in.granted_scopes == SCOPES
-        identity = await adapter.identify(signed_in.secret.access_token or "")
+        identity = await adapter.identify(signed_in.secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("123", "ada@example.test")
         renewed = await adapter.refresh(signed_in.secret)
         assert renewed.access_token == "SYNTHETIC-RENEWED"

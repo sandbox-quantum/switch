@@ -18,7 +18,9 @@ how its tools reach a session: the vendor's MCP servers (``mcp``), or the
 vendor's command-line tool, run by the session host (``cli``). An ``api_key``
 entry names the fields a person pastes and the call that checks them
 (``auth.api_key``), and how the session host puts them into each MCP request's
-headers or each CLI run's environment, by template. Placeholder entries may
+headers or each CLI run's environment, by template. An ``oauth`` entry may also
+take a credential the person pastes in place of signing in (``auth.paste``): a
+token, or keys, each with the MCP headers it goes in. Placeholder entries may
 leave all of those out.
 
 An ``oauth`` entry may also name other levels a server can choose in place of
@@ -26,7 +28,9 @@ its own (``access_profiles``, chosen in ``SERVICE_ACCESS_PROFILES``), each with
 the skill file sessions are then given.
 """
 
+import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
@@ -57,6 +61,13 @@ class CatalogError(RuntimeError):
 
 
 AccessLevel = Literal["read", "write"]
+# How a person connected a service: signed in (`oauth`), or pasted a token
+# (`token`) or keys (`keys`).
+ConnectionMethod = Literal["oauth", "token", "keys"]
+PasteMethodName = Literal["token", "keys"]
+# Who ends a pasted credential: its vendor, on the date it was made to end
+# (`vendor`), or nobody until it is revoked at the vendor (`never`).
+PasteExpiry = Literal["vendor", "never"]
 
 
 AdapterName = Literal["github", "oauth", "api_key"]
@@ -64,6 +75,82 @@ RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
 AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+
+
+FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+HEADER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+# A choice ends up in a URL's host or path, so it is a plain DNS-ish word.
+CHOICE_PATTERN = r"^[a-z0-9][a-z0-9.-]{0,62}$"
+TEMPLATE_FIELD_RE = re.compile(r"\{([^{}]*)\}")
+# What a session host puts in a template for a token that is not made of
+# fields: the whole token, as an OAuth entry's servers take it.
+TOKEN_PLACEHOLDER = "token"
+
+
+def template_fields(template: str) -> list[str]:
+    """The fields a template names, as `{name}`; a stray brace is refused."""
+    names = TEMPLATE_FIELD_RE.findall(template)
+    if TEMPLATE_FIELD_RE.sub("", template).count("{") or TEMPLATE_FIELD_RE.sub(
+        "", template
+    ).count("}"):
+        raise ValueError(f"{template!r} has a brace that names no field")
+    for name in names:
+        if not re.fullmatch(FIELD_NAME_PATTERN, name):
+            raise ValueError(f"{template!r} names a field that cannot be one: {name!r}")
+    return names
+
+
+def render(template: str, values: Mapping[str, str]) -> str:
+    """`template` with each `{field}` replaced by its value."""
+    return TEMPLATE_FIELD_RE.sub(lambda match: values[match.group(1)], template)
+
+
+def choice_key(choices: Mapping[str, str]) -> str:
+    """Choices as one stable string, which keys what is kept per choice (a
+    client Core registered): empty for none, a lone choice's value, or
+    several as compact JSON in the order of their names."""
+    if not choices:
+        return ""
+    if len(choices) == 1:
+        return next(iter(choices.values()))
+    return json.dumps(dict(sorted(choices.items())), separators=(",", ":"))
+
+
+class ChoicesError(ValueError):
+    """Choices that are not an entry's own; the message is for the person."""
+
+
+class ApiKeyField(BaseModel):
+    """One value a person pastes, or picks, to connect.
+
+    A `secret` field is the key itself, typed freely and never shown again.
+    Any other field is a choice among `choices` (a site, a region), which
+    templates may put in a URL: never free text.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: str = Field(pattern=FIELD_NAME_PATTERN)
+    label: str = Field(min_length=1, max_length=64)
+    secret: bool
+    help: str | None = Field(
+        default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
+    )
+    choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
+        default=None, min_length=1, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def _secret_or_choice(self) -> "ApiKeyField":
+        if self.name == TOKEN_PLACEHOLDER:
+            raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
+        if self.secret == (self.choices is not None):
+            raise ValueError(
+                f"field {self.name} is a secret typed freely, or a choice among "
+                "choices: one of the two"
+            )
+        if self.choices is not None and len(set(self.choices)) != len(self.choices):
+            raise ValueError(f"field {self.name} lists a choice twice")
+        return self
 
 
 class OAuthClient(BaseModel):
@@ -105,6 +192,14 @@ class OAuthClient(BaseModel):
     So are `authorization_params`, which only a vendor-specific key may name
     (`access_type: offline`, for a vendor that hands out a refresh token only
     when asked), never one Core sets itself.
+
+    `choices`: what the person picks from a fixed list before signing in (a
+    vendor's site or region), each a field that is never secret. The entry's
+    URLs (its MCP servers', which endpoints are discovered from, its
+    identity's, and its authorization, token and revocation URLs) may name
+    them as `{name}`, and are rendered with the choices each sign-in and each
+    connection was made with. A client Core registers is registered once per
+    choice, since each may be another authorization server.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -129,9 +224,17 @@ class OAuthClient(BaseModel):
     revocation_ends_grant: bool = False
     revocation_ends_tokens: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
+    choices: list[ApiKeyField] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":
+        names = [field.name for field in self.choices]
+        if len(set(names)) != len(names):
+            raise ValueError("two choices share a name")
+        if any(field.secret for field in self.choices):
+            raise ValueError(
+                "a choice before a sign-in is picked from a list, never a secret"
+            )
         if self.prompt is not None:
             prompts = self.prompt.split(" ")
             if len(set(prompts)) != len(prompts):
@@ -184,6 +287,28 @@ class OAuthClient(BaseModel):
             )
         return self
 
+    def checked_choices(self, submitted: Mapping[str, str]) -> dict[str, str]:
+        """`submitted` as this entry's choices: each one picked from its list,
+        and nothing else. `ChoicesError` says what does not fit."""
+        expected = {field.name: field for field in self.choices}
+        unknown = sorted(set(submitted) - set(expected))
+        if unknown:
+            raise ChoicesError(f"There is no choice named {', '.join(unknown)}.")
+        values: dict[str, str] = {}
+        for name, field in expected.items():
+            listed = field.choices or []
+            value = submitted.get(name)
+            if value is None:
+                raise ChoicesError(f"{field.label} is required.")
+            if value not in listed:
+                raise ChoicesError(f"{field.label} must be one of {', '.join(listed)}.")
+            values[name] = value
+        return values
+
+    def first_choices(self) -> dict[str, str]:
+        """The first of each choice's list."""
+        return {field.name: (field.choices or [])[0] for field in self.choices}
+
 
 class ConnectionIdentity(BaseModel):
     """Read account identity from an authenticated GET, an MCP tool result,
@@ -213,62 +338,6 @@ class ConnectionIdentity(BaseModel):
             self.account_id
         ):
             raise ValueError("account_id lists a path twice")
-        return self
-
-
-FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
-HEADER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-# A choice ends up in a URL's host or path, so it is a plain DNS-ish word.
-CHOICE_PATTERN = r"^[a-z0-9][a-z0-9.-]{0,62}$"
-TEMPLATE_FIELD_RE = re.compile(r"\{([^{}]*)\}")
-# What a session host puts in a template for a token that is not made of
-# fields: the whole token, as an OAuth entry's servers take it.
-TOKEN_PLACEHOLDER = "token"
-
-
-def template_fields(template: str) -> list[str]:
-    """The fields a template names, as `{name}`; a stray brace is refused."""
-    names = TEMPLATE_FIELD_RE.findall(template)
-    if TEMPLATE_FIELD_RE.sub("", template).count("{") or TEMPLATE_FIELD_RE.sub(
-        "", template
-    ).count("}"):
-        raise ValueError(f"{template!r} has a brace that names no field")
-    for name in names:
-        if not re.fullmatch(FIELD_NAME_PATTERN, name):
-            raise ValueError(f"{template!r} names a field that cannot be one: {name!r}")
-    return names
-
-
-class ApiKeyField(BaseModel):
-    """One value a person pastes, or picks, to connect.
-
-    A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    name: str = Field(pattern=FIELD_NAME_PATTERN)
-    label: str = Field(min_length=1, max_length=64)
-    secret: bool
-    help: str | None = Field(
-        default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
-    )
-    choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
-        default=None, min_length=1, max_length=20
-    )
-
-    @model_validator(mode="after")
-    def _secret_or_choice(self) -> "ApiKeyField":
-        if self.name == TOKEN_PLACEHOLDER:
-            raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
-            raise ValueError(
-                f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
-            )
-        if self.choices is not None and len(set(self.choices)) != len(self.choices):
-            raise ValueError(f"field {self.name} lists a choice twice")
         return self
 
 
@@ -313,7 +382,8 @@ class ApiKeySignIn(BaseModel):
         if not any(field.secret for field in self.fields):
             raise ValueError("an api_key sign-in has at least one secret field")
         check_templates(
-            self,
+            fields=self.field_names(),
+            choices=self.choice_names(),
             urls=[self.identity.url],
             values=list(self.identity.headers.values()),
             where="the identity call",
@@ -328,11 +398,15 @@ class ApiKeySignIn(BaseModel):
 
 
 def check_templates(
-    sign_in: "ApiKeySignIn", *, urls: list[str], values: list[str], where: str
+    *,
+    fields: set[str],
+    choices: set[str],
+    urls: list[str],
+    values: list[str],
+    where: str,
 ) -> None:
-    """Templates name only the sign-in's fields, and a URL only its choices."""
-    known = sign_in.field_names()
-    choices = sign_in.choice_names()
+    """Templates name only the entry's `fields`, and a URL only its `choices`:
+    the fields picked from a list, never a secret."""
     for url in urls:
         for name in template_fields(url):
             if name not in choices:
@@ -341,8 +415,83 @@ def check_templates(
                 )
     for value in values:
         for name in template_fields(value):
-            if name not in known:
+            if name not in fields:
                 raise ValueError(f"{where} names an unknown field {name!r}")
+
+
+class PasteMethod(BaseModel):
+    """A way to connect an OAuth entry's service by pasting a credential the
+    person made at the vendor, in place of signing in (`auth.paste`).
+
+    `name` is how the connection records it was made: `token` or `keys`.
+    `fields` are what the person pastes, each secret and typed freely; what
+    they pick (a site) is the entry's own `auth.oauth.choices`, shared with
+    its sign-in. `headers` are the MCP request headers the credential goes in,
+    templates of the fields and the choices; the entry's identity call is made
+    with them too. `expires`: `vendor` for a credential its vendor ends on the
+    date it was made to end, which Switch neither asks for nor stores;
+    `never` for one that works until someone revokes it at the vendor, which
+    a server offers only where it allows such keys (`ALLOW_NON_EXPIRING_KEYS`).
+
+    `alias`, for a one-field method, is a pattern anchored at the start of the
+    pasted value whose one group, itself starting there, is the part the
+    vendor shows people (a token's public portion): it names the connection
+    where the vendor will not say whose the credential is. `help_url` is where
+    the person makes one.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: PasteMethodName
+    label: str = Field(min_length=1, max_length=64)
+    fields: list[ApiKeyField] = Field(min_length=1, max_length=4)
+    headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] = Field(
+        min_length=1, max_length=8
+    )
+    expires: PasteExpiry
+    alias: str | None = Field(default=None, min_length=3, max_length=200)
+    help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "PasteMethod":
+        names = [field.name for field in self.fields]
+        if len(set(names)) != len(names):
+            raise ValueError(f"paste method {self.name}: two fields share a name")
+        if not all(field.secret for field in self.fields):
+            raise ValueError(
+                f"paste method {self.name}'s fields are what is pasted, each a "
+                "secret; what is picked is the entry's auth.oauth.choices"
+            )
+        if self.alias is not None:
+            if len(self.fields) != 1:
+                raise ValueError(
+                    f"paste method {self.name}'s alias names a one-field credential"
+                )
+            try:
+                pattern = re.compile(self.alias)
+            except re.error as error:
+                raise ValueError(
+                    f"paste method {self.name}'s alias is not a pattern: {error}"
+                ) from None
+            if not self.alias.startswith("^(") or pattern.groups != 1:
+                raise ValueError(
+                    f"paste method {self.name}'s alias starts ^( and has one group: "
+                    "the public part, at the start of the value"
+                )
+        return self
+
+    def field_names(self) -> set[str]:
+        return {field.name for field in self.fields}
+
+    def alias_of(self, values: Mapping[str, str]) -> str | None:
+        """The public part of a pasted one-field credential, where `alias`
+        finds one shorter than the value; None otherwise."""
+        if self.alias is None:
+            return None
+        value = values[self.fields[0].name]
+        match = re.match(self.alias, value)
+        if match is None or match.start(1) != 0 or not match.group(1):
+            return None
+        return match.group(1) if match.end(1) < len(value) else None
 
 
 class ConnectionAuth(BaseModel):
@@ -355,6 +504,11 @@ class ConnectionAuth(BaseModel):
     oauth: OAuthClient | None = None
     identity: ConnectionIdentity | None = None
     api_key: ApiKeySignIn | None = None
+    # Credentials an oauth entry takes pasted, in place of a sign-in.
+    paste: list[PasteMethod] = Field(default_factory=list, max_length=2)
+
+    def paste_method(self, name: str) -> PasteMethod | None:
+        return next((method for method in self.paste if method.name == name), None)
 
 
 class TokenPolicy(BaseModel):
@@ -367,7 +521,10 @@ class TokenPolicy(BaseModel):
     out may stay valid at the vendor; one valid for longer is refused. It is
     null for a credential that never expires (a pasted key): Switch could
     neither take such a credential back nor wait for it to lapse, so it is
-    never handed to an agent.
+    never handed to an agent. For an OAuth entry it bounds the sign-in's
+    access token only: a credential pasted in place of the sign-in
+    (`auth.paste`) ends when its vendor ends it, and is handed out for an
+    hour at a time.
 
     `note` is shown to people beside how long agent access lasts, for a
     vendor that limits it further (Sentry's renewed tokens outlive the cap,
@@ -558,11 +715,37 @@ class LevelAccess(BaseModel):
         return self
 
 
+# A scope as a token answer lists it: one printable word.
+SCOPE_PATTERN = r"^[\x21-\x7e]{1,256}$"
+
+
+class ConsentMarkers(BaseModel):
+    """How a sign-in's level is read where the scopes asked for cannot tell
+    it: a vendor whose consent page offers levels of its own, and whose
+    token answers with its own list of permissions. The level is `write`
+    where the token's scope holds the `write` marker, `read` where it holds
+    only the `read` one; with neither, the sign-in is refused."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    read: str = Field(pattern=SCOPE_PATTERN)
+    write: str = Field(pattern=SCOPE_PATTERN)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> "ConsentMarkers":
+        if self.read == self.write:
+            raise ValueError("the read and write consent markers are one scope")
+        return self
+
+
 class ConnectionAccess(BaseModel):
+    """What each level reaches, and, where the scopes cannot say which one a
+    sign-in was given, the markers that do (`consent`)."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     read: LevelAccess
     write: LevelAccess | None = None
     unscoped: bool = False
+    consent: ConsentMarkers | None = None
 
     @model_validator(mode="after")
     def _scopes_match_consent(self) -> "ConnectionAccess":
@@ -570,6 +753,8 @@ class ConnectionAccess(BaseModel):
         if self.unscoped:
             if self.write is None or any(level.scopes != [] for level in levels):
                 raise ValueError("unscoped access needs empty read and write scopes")
+            if self.consent is not None:
+                raise ValueError("unscoped access is always write: it has no markers")
         elif any(level.scopes == [] for level in levels):
             raise ValueError("an access level needs at least one scope or permission")
         return self
@@ -663,6 +848,13 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
         if self.access is not None and self.access.unscoped and self.adapter != "oauth":
             raise ValueError("only an oauth entry can have unscoped access")
+        if self.access is not None and self.access.consent is not None:
+            if self.adapter != "oauth":
+                raise ValueError("only an oauth entry reads its consent from markers")
+            if self.access.write is None:
+                raise ValueError(
+                    "consent markers tell read from write: the entry names both levels"
+                )
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":
@@ -678,6 +870,19 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError("only an api_key entry's MCP servers name headers")
             if self.cli is not None and self.cli.env is not None:
                 raise ValueError("only an api_key entry's tool takes env templates")
+        if self.adapter != "oauth" and self.auth.paste:
+            raise ValueError(
+                "only an oauth entry takes a pasted credential in place of its sign-in"
+            )
+        if (
+            self.auth.paste
+            and self.auth.identity is not None
+            and self.auth.identity.url is None
+        ):
+            raise ValueError(
+                "a pasted credential is checked with a GET of the identity url: "
+                "an entry with paste methods reads its identity from a url"
+            )
         return self
 
     def _check_access_profiles(self) -> None:
@@ -692,6 +897,12 @@ class ConnectionDefinition(BaseModel):
         # looks changed, and every grant would ask to reconnect.
         if self.access.unscoped:
             raise ValueError("an unscoped entry has no access profiles")
+        if self.auth.paste:
+            raise ValueError(
+                "an entry with access profiles takes no pasted credential: a "
+                "pasted connection holds no granted scopes, so a profile would "
+                "mark it for reconnecting for good"
+            )
         for name, profile in self.access_profiles.items():
             if profile.access.unscoped:
                 raise ValueError(f"access profile {name} cannot be unscoped")
@@ -741,7 +952,8 @@ class ConnectionDefinition(BaseModel):
                         f"MCP server {server.name} names the headers the key goes in"
                     )
                 check_templates(
-                    sign_in,
+                    fields=sign_in.field_names(),
+                    choices=sign_in.choice_names(),
                     urls=[server.url],
                     values=list(server.headers.values()),
                     where=f"MCP server {server.name}",
@@ -750,7 +962,8 @@ class ConnectionDefinition(BaseModel):
             if self.cli.env is None:
                 raise ValueError("an api_key entry's tool names env templates")
             check_templates(
-                sign_in,
+                fields=sign_in.field_names(),
+                choices=sign_in.choice_names(),
                 urls=[],
                 values=list(self.cli.env.values()),
                 where=f"command-line tool {self.cli.name}",
@@ -842,6 +1055,85 @@ class ConnectionDefinition(BaseModel):
             for level in (self.access.read, self.access.write)
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+        self._check_oauth_templates()
+        self._check_paste()
+
+    def _check_paste(self) -> None:
+        """A pasted credential is checked at, and goes to, the entry's MCP
+        servers, in headers naming only its own fields and the choices."""
+        methods = self.auth.paste
+        if not methods:
+            return
+        names = [method.name for method in methods]
+        if len(set(names)) != len(names):
+            raise ValueError("two paste methods share a name")
+        if self.mcp is None:
+            raise ValueError(
+                "a pasted credential is checked at and used through the entry's "
+                "MCP servers, and this entry has none"
+            )
+        oauth = self.auth.oauth
+        choices = set() if oauth is None else {field.name for field in oauth.choices}
+        for method in methods:
+            shared = sorted(method.field_names() & choices)
+            if shared:
+                raise ValueError(
+                    f"paste method {method.name} names a field after a choice: "
+                    f"{', '.join(shared)}"
+                )
+            check_templates(
+                fields=method.field_names() | choices,
+                choices=choices,
+                urls=[],
+                values=list(method.headers.values()),
+                where=f"paste method {method.name}'s headers",
+            )
+            named = {
+                name
+                for value in method.headers.values()
+                for name in template_fields(value)
+            }
+            unused = sorted(method.field_names() - named)
+            if unused:
+                raise ValueError(
+                    f"paste method {method.name} asks for fields no header "
+                    f"carries: {', '.join(unused)}"
+                )
+
+    def _check_oauth_templates(self) -> None:
+        """An OAuth entry's URLs name only its choices, and only as `{name}`."""
+        oauth = self.auth.oauth
+        choices = set() if oauth is None else {field.name for field in oauth.choices}
+        urls: list[tuple[str, str | None]] = [
+            *(
+                (f"MCP server {server.name}", server.url)
+                for server in (self.mcp.servers if self.mcp is not None else [])
+            ),
+            (
+                "the identity call",
+                None if self.auth.identity is None else self.auth.identity.url,
+            ),
+        ]
+        if oauth is not None:
+            urls += [
+                ("the authorization endpoint", oauth.authorization_url),
+                ("the token endpoint", oauth.token_url),
+                ("the revocation endpoint", oauth.revocation_url),
+            ]
+        for where, url in urls:
+            if url is not None:
+                check_templates(
+                    fields=choices, choices=choices, urls=[url], values=[], where=where
+                )
+
+    def methods(self) -> list[ConnectionMethod]:
+        """The ways a person connects the service: pasted keys for an api_key
+        entry; a sign-in, and each credential the entry takes pasted in its
+        place (`auth.paste`), for any other. A connection made another way,
+        which the entry offered once, must be made again."""
+        if self.adapter == "api_key":
+            return ["keys"]
+        return ["oauth", *(method.name for method in self.auth.paste)]
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while

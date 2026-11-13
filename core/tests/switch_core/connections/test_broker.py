@@ -63,6 +63,7 @@ from tests.switch_core.connections.standing import (
     standing,
 )
 from tests.switch_core.connections.test_loader import (
+    API_KEY_ENTRY,
     CLI_ENTRY,
     OAUTH_ENTRY,
     _write_example,
@@ -94,6 +95,7 @@ def broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
 
 
@@ -154,6 +156,8 @@ async def _connect(
             json.dumps(_secret(expires_in=expires_in))
         ),
         oauth_client_id=None,
+        method="oauth",
+        choices={},
     )
 
 
@@ -363,7 +367,10 @@ class TestIssue:
         )
         again = await _refused(broker, session_factory, world.agent.id)
         assert again.code == "connector_revoked"
-        assert "Switch Console, under Connectors" in again.message
+        assert again.message == (
+            "The GitHub sign-in was revoked or has lapsed. The agent's owner must "
+            "reconnect GitHub in Switch Console, under Connectors."
+        )
         assert vendor.refreshes == 1
         assert vendor.issued == []
 
@@ -469,6 +476,7 @@ class TestChecks:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            allow_non_expiring_keys=False,
         )
         world = await _world(session_factory)
         refused = await _refused(broker, session_factory, world.agent.id)
@@ -786,6 +794,7 @@ class TestConnectOnly:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            allow_non_expiring_keys=False,
         )
         world = await _world(session_factory, expires_in=60)
 
@@ -826,9 +835,9 @@ class TestConnectOnly:
 
 
 READ_ONLY = (
-    "This server's GitHub App lets agents read only, so GitHub can't be granted "
-    "for writing. Whoever runs your Switch server can change that in Switch "
-    "Console, under Admin → Connector apps."
+    "Switch's GitHub App lets agents read only, so GitHub can't be granted "
+    "for writing. Whoever runs Switch can change that in Switch Console, under "
+    "Admin → Connector apps."
 )
 
 
@@ -961,6 +970,7 @@ def _switched_off(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
 
 
@@ -1010,6 +1020,8 @@ class TestSwitchedOff:
                     external_identity="ada-gh",
                     secret=ConnectionSecret(_secret(expires_in=3600)),
                     oauth_client_id=None,
+                    method="oauth",
+                    choices={},
                 )
             assert (caught.value.status_code, caught.value.message) == (403, reason)
 
@@ -1089,6 +1101,7 @@ async def _pass_through(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     async with session_factory() as session:
         owner = await _user(session, "ada")
@@ -1111,6 +1124,8 @@ async def _pass_through(
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         grant = await STORE.save_grant(
             session,
@@ -1166,6 +1181,7 @@ async def _two_pass_through(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     async with session_factory() as session:
         owner = await _user(session, "ada")
@@ -1189,6 +1205,8 @@ async def _two_pass_through(
                     )
                 ),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             await STORE.save_grant(
                 session,
@@ -1227,6 +1245,8 @@ async def _reconnect_example(pt: PassThrough, session_factory) -> str | None:
                 }
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
 
 
@@ -1550,7 +1570,7 @@ class TestPassThrough:
             warning = await pt.broker.finish_disconnect(
                 session,
                 pt.world.owner.id,
-                [("unset", SignIn(ConnectionSecret({}), None))],
+                [("unset", SignIn(ConnectionSecret({}), None, {}, "oauth"))],
             )
         assert warning is not None
         assert "unset is not set up here" in warning
@@ -1719,6 +1739,113 @@ class TestPassThrough:
         assert warning is not None
         assert "Example access already given to agents cannot be taken back" in warning
 
+    async def test_a_disconnect_whose_revocation_ended_nothing_says_until_when(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        """A vendor that knew no such sign-in ended no token issued on it."""
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+
+        async def ends_nothing(secret: ConnectionSecret, method: str) -> bool:
+            return False
+
+        monkeypatch.setattr(pt.vendor, "revoke_connection", ends_nothing)
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert warning is not None and warning.startswith("Example access already")
+
+    async def test_a_reconnect_whose_revocation_ended_nothing_says_until_when(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+
+        async def ends_nothing(secret: ConnectionSecret, method: str) -> bool:
+            return False
+
+        monkeypatch.setattr(pt.vendor, "revoke_connection", ends_nothing)
+        warning = await _reconnect(pt, session_factory, account_id="acct-2")
+        assert warning is not None and warning.startswith("Example access already")
+
+    async def test_a_reconnect_revoked_where_that_ends_its_tokens_names_none(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        warning = await _reconnect(pt, session_factory, account_id="acct-2")
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is None
+
+    async def test_a_reconnect_that_keeps_the_old_sign_in_names_its_tokens(
+        self, session_factory, tmp_path
+    ) -> None:
+        """At a vendor that revokes whole grants, as Google does, a reconnect
+        to the same account does not revoke, so nothing ended the tokens
+        already handed out."""
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=50 * 60,
+            entry=ENDS_TOKENS.replace(
+                "    revocation_ends_tokens: true\n",
+                "    revocation_ends_tokens: true\n    revocation_ends_grant: true\n",
+            ),
+        )
+        pt.vendor.client_id = "the-client"
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        warning = await _reconnect(pt, session_factory, account_id="acct-1")
+        assert pt.vendor.connections_revoked == []
+        assert warning is not None and warning.startswith("Example access already")
+
+    async def test_a_reconnect_whose_revocation_failed_says_until_when(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+
+        async def refuses(secret: ConnectionSecret, method: str) -> None:
+            raise ServiceAdapterError("Example refused to revoke the sign-in.")
+
+        monkeypatch.setattr(pt.vendor, "revoke_connection", refuses)
+        warning = await _reconnect(pt, session_factory, account_id="acct-2")
+        assert warning is not None
+        assert "Example could not revoke the old sign-in." in warning
+        assert "Example access already given to agents cannot be taken back" in warning
+
+
+async def _reconnect(
+    pt: PassThrough, session_factory, *, account_id: str
+) -> str | None:
+    """Connect `example` again for Ada, with a new sign-in to `account_id`."""
+    async with session_factory() as session:
+        return await pt.broker.connect(
+            session,
+            user_id=pt.world.owner.id,
+            service="example",
+            consent="write",
+            granted_scopes=["read:items", "write:items"],
+            account_id=account_id,
+            external_identity="ada@example.test",
+            secret=ConnectionSecret(
+                {
+                    "access_token": "owner_access_new",
+                    "expires_at": time.time() + 50 * 60,
+                    "refresh_token": "owner_refresh_new",
+                }
+            ),
+            oauth_client_id=None,
+            method="oauth",
+            choices={},
+        )
+
 
 def _workspace_refusal(name: str) -> str:
     return (
@@ -1745,6 +1872,20 @@ class Gated:
         self.world = world
 
 
+def _write_telemetry(root: Path) -> None:
+    """`telemetry`, a service connected with a key that never expires."""
+    directory = root / "telemetry"
+    (directory / "skill").mkdir(parents=True)
+    (directory / "connection.yaml").write_text(
+        API_KEY_ENTRY.replace("slug: example", "slug: telemetry")
+        .replace("name: Example", "name: Telemetry")
+        .replace("    - name: example\n", "    - name: telemetry\n")
+    )
+    (directory / "skill" / "SKILL.md").write_text(
+        "---\nname: telemetry\ndescription: Query telemetry.\n---\n\nUse the tools.\n"
+    )
+
+
 async def _gated(
     session_factory: async_sessionmaker[AsyncSession],
     root: Path,
@@ -1756,10 +1897,12 @@ async def _gated(
     example = FakeVendor()
     example.pass_through = True
     example.revocable = False
+    pass_through_catalog(root)
+    _write_telemetry(root)
     broker = ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
-        catalog=pass_through_catalog(root),
+        catalog=load_catalog(root),
         adapters={"github": github, "example": example},
         organization_apps=None,
         disabled=disabled or {},
@@ -1768,6 +1911,7 @@ async def _gated(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=gate,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     world = await _world(session_factory)
     async with session_factory() as session:
@@ -1789,6 +1933,8 @@ async def _gated(
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await STORE.save_grant(
             session,
@@ -1854,7 +2000,7 @@ NEW_EXAMPLE_SIGN_IN = {
     "expires_at": time.time() + 3600,
     "refresh_token": "owner_refresh_new",
 }
-DATADOG_KEY = {"api_key": "k", "application_key": "a", "site": "datadoghq.eu"}
+TELEMETRY_KEY = {"api_key": "k", "region": "eu.example.test"}
 
 
 async def _connect_github(g: Gated, session_factory) -> None:
@@ -1869,6 +2015,8 @@ async def _connect_github(g: Gated, session_factory) -> None:
             external_identity="ada-gh",
             secret=ConnectionSecret(dict(NEW_GITHUB_SIGN_IN)),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
 
 
@@ -1877,13 +2025,15 @@ async def _connect_key(g: Gated, session_factory) -> None:
         await g.broker.connect(
             session,
             user_id=g.world.owner.id,
-            service="datadog",
+            service="telemetry",
             consent="write",
             granted_scopes=[],
-            account_id="dd-org",
-            external_identity="Key · datadoghq.eu",
-            secret=ConnectionSecret(dict(DATADOG_KEY)),
+            account_id="acct-1",
+            external_identity="Telemetry key · eu.example.test",
+            secret=ConnectionSecret(dict(TELEMETRY_KEY)),
             oauth_client_id=None,
+            method="keys",
+            choices={},
         )
 
 
@@ -1899,6 +2049,8 @@ async def _relink_oauth(g: Gated, session_factory) -> None:
             external_identity="ada@example.test",
             secret=ConnectionSecret(dict(NEW_EXAMPLE_SIGN_IN)),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
 
 
@@ -2010,15 +2162,15 @@ class TestWorkspaceSwitch:
         self, session_factory, tmp_path, enabled
     ) -> None:
         g = await _gated(session_factory, tmp_path / "c", gate=True)
-        await _switch(session_factory, "datadog", enabled, g.world.owner.id)
+        await _switch(session_factory, "telemetry", enabled, g.world.owner.id)
         with pytest.raises(ServiceError) as caught:
             await _connect_key(g, session_factory)
         assert (caught.value.status_code, caught.value.code) == (403, "forbidden")
         assert caught.value.message == (
-            "Datadog keys do not expire and only Datadog can revoke them, so "
+            "Telemetry keys do not expire and only Telemetry can revoke them, so "
             "Switch does not hand them to agents."
         )
-        assert "datadog" not in {
+        assert "telemetry" not in {
             service for service, _, _ in await _all_connections(session_factory)
         }
 
@@ -2184,8 +2336,8 @@ class TestReplacedClient:
         assert refused.code == CONNECTOR_REVOKED
         assert refused.message == (
             "GitHub was connected through an app Switch no longer uses. "
-            "The agent's owner must reconnect GitHub from Connectors in Switch "
-            "Console."
+            "The agent's owner must reconnect GitHub in Switch Console, under "
+            "Connectors."
         )
         assert vendor.refreshes == 0 and vendor.issued == []
         connection = await _connection(session_factory, world.owner.id)
@@ -2194,6 +2346,22 @@ class TestReplacedClient:
             "needs_reauthorization",
             CLIENT_REPLACED,
         )
+
+    async def test_the_agent_is_told_the_same_reason_on_every_request(
+        self, broker, session_factory, vendor
+    ) -> None:
+        """Once as the replaced client is found, and again once it is recorded."""
+        world = await _world(session_factory, expires_in=60)
+        await self._recorded(session_factory, world, "old-client")
+        vendor.client_id = "new-client"
+        for _ in range(2):
+            refused = await _refused(broker, session_factory, world.agent.id)
+            assert refused.code == CONNECTOR_REVOKED
+            assert refused.message == (
+                "GitHub was connected through an app Switch no longer uses. "
+                "The agent's owner must reconnect GitHub in Switch Console, under "
+                "Connectors."
+            )
 
     async def test_the_owner_is_told_to_reconnect_it_themselves(
         self, broker, session_factory, vendor
@@ -2217,7 +2385,7 @@ class TestReplacedClient:
             )
             assert caught.value.message == (
                 "GitHub was connected through an app Switch no longer "
-                "uses. Reconnect GitHub from Connectors in Switch Console."
+                "uses. Reconnect GitHub in Switch Console, under Connectors."
             )
         assert vendor.refreshes == 0
 
@@ -2234,8 +2402,8 @@ class TestReplacedClient:
                 await broker.connection_access_token(session, world.owner.id, "github")
 
         assert caught.value.message == (
-            "GitHub refused the sign-in. Reconnect GitHub from Connectors in "
-            "Switch Console."
+            "GitHub refused the sign-in. Reconnect GitHub in Switch Console, "
+            "under Connectors."
         )
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
@@ -2270,7 +2438,7 @@ class TestReplacedClient:
     ) -> None:
         world = await _world(session_factory)
 
-        async def refused(secret: object) -> None:
+        async def refused(secret: object, method: str) -> None:
             raise ServiceAdapterError("GitHub answered 500.")
 
         vendor.revoke_connection = refused  # type: ignore[method-assign]
@@ -2294,3 +2462,80 @@ class TestReplacedClient:
         assert (await standing(broker, connection.service)).client_replaced(
             connection
         ) is False
+
+
+class TestWithdrawnMethod:
+    """A connection made in a way its entry no longer offers (a token pasted
+    for a service people now sign in to) must be made again, and nothing it
+    holds is used meanwhile."""
+
+    async def _made_by(
+        self, session_factory: async_sessionmaker[AsyncSession], world: World
+    ) -> None:
+        async with session_factory() as session:
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == world.owner.id)
+                .values(method="token")
+            )
+            await session.commit()
+
+    async def test_reads_as_needing_reconnecting_and_is_refused(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory, expires_in=60)
+        await self._made_by(session_factory, world)
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert broker.method_withdrawn(connection) is True
+        assert (
+            broker.connection_status(
+                await standing(broker, connection.service), connection
+            )
+            == "needs_reauthorization"
+        )
+        assert broker.reconnect_reason(
+            await standing(broker, connection.service), connection
+        ) == (
+            "method_not_offered",
+            "GitHub was connected in a way Switch no longer offers.",
+        )
+
+        refused = await _refused(broker, session_factory, world.agent.id)
+
+        assert refused.code == CONNECTOR_REVOKED
+        assert refused.message == (
+            "GitHub was connected in a way Switch no longer offers. The "
+            "agent's owner must reconnect GitHub in Switch Console, under Connectors."
+        )
+        with pytest.raises(ServiceError) as caught:
+            async with session_factory() as session:
+                await broker.connection_access_token(session, world.owner.id, "github")
+        assert caught.value.message == (
+            "GitHub was connected in a way Switch no longer offers. "
+            "Reconnect GitHub in Switch Console, under Connectors."
+        )
+        assert vendor.refreshes == 0 and vendor.issued == []
+        # Nothing is recorded: the entry may offer that way again.
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert (connection.status, connection.error_code) == ("active", None)
+
+    async def test_a_new_grant_on_it_is_refused(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        await self._made_by(session_factory, world)
+        async with session_factory() as session:
+            with pytest.raises(ServiceError) as caught:
+                await broker.check_grant_terms(
+                    session,
+                    owner_id=world.owner.id,
+                    service="github",
+                    access="read",
+                    repositories=[],
+                )
+        assert (caught.value.status_code, caught.value.message) == (
+            409,
+            "Reconnect GitHub in Switch Console, under Connectors, first.",
+        )

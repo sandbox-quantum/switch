@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
+import subprocess
+import sys
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -19,20 +23,27 @@ from switch_core.connections.adapters.oauth import (
     StaticClient,
 )
 from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
-from switch_core.connections.oauth_clients import RegisteredClient
+from switch_core.connections.oauth_clients import (
+    RegisteredClient,
+    check_sign_in_redirects,
+    sign_in_redirect_warnings,
+)
 from switch_core.connections.registry import (
     ClientRegistration,
     ServiceSetupError,
     build_adapters,
     load_client_settings,
 )
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _app_files, _config
 from tests.switch_core.connections.standing import availability, connectable, standing
 from tests.switch_core.connections.test_loader import (
+    API_KEY_ENTRY,
     CLI_ENTRY,
     OAUTH_ENTRY,
     _write_example,
@@ -44,6 +55,7 @@ REG = ClientRegistration(
     keyring=TEST_KEYRING,
     public_url=None,
     server_name="switch.local",
+    redirects={},
 )
 STATIC = OAUTH_ENTRY.replace(
     "    registration: dynamic\n",
@@ -78,11 +90,15 @@ def test_github_without_the_app_is_left_not_set_up() -> None:
     assert "github" not in adapters
 
 
-def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
+def test_a_key_service_needs_nothing_set_up_on_the_server(tmp_path: Path) -> None:
     adapters = build_adapters(
-        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+        _catalog(tmp_path, API_KEY_ENTRY),
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=REG,
     )
-    assert isinstance(adapters["datadog"], ApiKeyAdapter)
+    assert isinstance(adapters["example"], ApiKeyAdapter)
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
@@ -103,6 +119,44 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
         "search:confluence:agent-interface write:jira:agent-interface "
         "write:confluence:agent-interface"
     )
+
+
+def test_atlassian_registers_cores_callback_only_where_the_server_names_it() -> None:
+    public = "https://switch.example.com"
+    loopback = [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    definition = CATALOG["atlassian"].definition
+
+    def registered(named: dict) -> list[str]:
+        adapter = build_adapters(
+            CATALOG,
+            github_app=None,
+            oauth_clients={},
+            http=HTTP,
+            registration=replace(REG, public_url=public, redirects=named),
+        )["atlassian"]
+        assert isinstance(adapter, OAuthAdapter)
+        assert isinstance(adapter._client, RegisteredClient)
+        return adapter._client._request["redirect_uris"]
+
+    def mode(named: dict) -> str | None:
+        flows = ServiceFlows(
+            public, named, SignInFlows(async_sessionmaker(), TEST_KEYRING)
+        )
+        return flows.mode(definition)
+
+    # A server that does not name Atlassian registers what it always has, and
+    # signs in through Switch Console, so no connection has to reconnect.
+    assert registered({}) == loopback
+    assert mode({}) == "loopback"
+    assert registered({"atlassian": "loopback"}) == loopback
+    assert registered({"atlassian": "core"}) == [
+        *loopback,
+        f"{public}/gateway/service-connections/atlassian/flows/callback",
+    ]
+    assert mode({"atlassian": "core"}) == "core"
 
 
 def test_notion_needs_no_settings_and_registers_a_loopback_on_any_port() -> None:
@@ -132,6 +186,42 @@ def test_sentry_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
         for port in (39231, 39232, 39233, 39234, 39235)
     ]
     assert client._request["scope"] == "org:read project:write team:write event:write"
+
+
+def test_datadog_needs_no_settings_and_registers_its_ports_and_scope() -> None:
+    adapter = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )["datadog"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request == {
+        "redirect_uris": [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in (39241, 39242, 39243, 39244, 39245)
+        ],
+        "scope": "mcp_all",
+    }
+
+
+def test_datadog_registers_cores_callback_only_where_the_server_names_it() -> None:
+    public = "https://switch.example.com"
+    adapter = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=replace(REG, public_url=public, redirects={"datadog": "core"}),
+    )["datadog"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, RegisteredClient)
+    assert adapter._client._request["redirect_uris"][-1] == (
+        f"{public}/gateway/service-connections/datadog/flows/callback"
+    )
+    flows = ServiceFlows(
+        public, {"datadog": "core"}, SignInFlows(async_sessionmaker(), TEST_KEYRING)
+    )
+    assert flows.mode(CATALOG["datadog"].definition) == "core"
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:
@@ -238,6 +328,7 @@ def _broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=public_url,
+        allow_non_expiring_keys=False,
     )
 
 
@@ -338,20 +429,20 @@ async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
 async def test_a_key_that_never_expires_is_neither_connected_nor_granted(
     tmp_path: Path, session_factory
 ) -> None:
-    catalog = _catalog(tmp_path, STATIC)
+    catalog = _catalog(tmp_path, API_KEY_ENTRY)
     adapters = build_adapters(
         catalog, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     broker = _broker(catalog, session_factory, adapters, None)
-    datadog = (await standing(broker, "datadog")).unavailable
-    assert datadog is not None
-    assert (datadog.code, datadog.reason) == (
+    example = (await standing(broker, "example")).unavailable
+    assert example is not None
+    assert (example.code, example.reason) == (
         "key_never_expires",
-        "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+        "Example keys do not expire and only Example can revoke them, so Switch "
         "does not hand them to agents.",
     )
-    assert await connectable(broker, "datadog") is False
-    assert (await standing(broker, "datadog")).server_setup_needed is False
+    assert await connectable(broker, "example") is False
+    assert (await standing(broker, "example")).server_setup_needed is False
 
 
 async def test_a_replaced_adapter_is_used_at_once(
@@ -453,6 +544,16 @@ class TestDisabledServices:
     def test_empty_by_default(self) -> None:
         assert _config().disabled_services == {}
 
+    def test_names_datadog_as_atlassian(self) -> None:
+        config = _config(
+            service_sign_in_redirect={"datadog": "core", "atlassian": "loopback"},
+            gateway_public_url="https://switch.example.com",
+        )
+        assert config.service_sign_in_redirect == {
+            "datadog": "core",
+            "atlassian": "loopback",
+        }
+
     def test_read_from_the_environment_as_json(self, monkeypatch) -> None:
         monkeypatch.setenv("DISABLED_SERVICES", '{"jira": "Not here."}')
         assert _config().disabled_services == {"jira": "Not here."}
@@ -464,3 +565,114 @@ class TestDisabledServices:
     def test_refuses_a_bad_entry(self, disabled: dict[str, str]) -> None:
         with pytest.raises(ValueError, match="DISABLED_SERVICES"):
             _config(disabled_services=disabled)
+
+
+class TestServiceSignInRedirect:
+    def test_reading_the_config_does_not_load_the_catalog(self) -> None:
+        # A subprocess, because this one has imported the loader already.
+        # Alembic reads the config on every migration, and must not depend
+        # on the catalog's files.
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys, switch_core.config; "
+                "assert 'switch_core.connections.loader' not in sys.modules",
+            ],
+            check=True,
+        )
+
+    def test_read_as_a_map_of_service_to_the_way_back(self) -> None:
+        config = _config(
+            service_sign_in_redirect={"atlassian": "core"},
+            gateway_public_url="https://switch.example.com",
+        )
+        assert config.service_sign_in_redirect == {"atlassian": "core"}
+        assert (
+            sign_in_redirect_warnings(
+                CATALOG, config.service_sign_in_redirect, config.gateway_public_url
+            )
+            == []
+        )
+
+    def test_empty_by_default(self) -> None:
+        assert _config().service_sign_in_redirect == {}
+
+    def test_read_from_the_environment_as_json(self, monkeypatch) -> None:
+        monkeypatch.setenv("SERVICE_SIGN_IN_REDIRECT", '{"atlassian": "loopback"}')
+        assert _config().service_sign_in_redirect == {"atlassian": "loopback"}
+
+    @pytest.mark.parametrize(
+        ("named", "message"),
+        [
+            ({"nowhere": "core"}, "names 'nowhere', which is not in the catalog."),
+            (
+                {"airtable": "loopback"},
+                "names 'loopback' for airtable, which allows only 'core'.",
+            ),
+            (
+                {"github": "core"},
+                "names 'core' for github, which allows none: it has no OAuth sign-in.",
+            ),
+        ],
+    )
+    def test_a_service_or_way_its_entry_does_not_list_stops_the_server(
+        self, named: dict, message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=re.escape(message)):
+            check_sign_in_redirects(CATALOG, named)
+
+    @pytest.mark.parametrize(
+        ("named", "message"),
+        [
+            ({"atlassian": "web"}, "Input should be 'loopback' or 'core'"),
+            ({"Not A Slug": "core"}, "names an invalid service: 'Not A Slug'"),
+        ],
+    )
+    def test_a_malformed_entry_is_refused_as_the_config_is_read(
+        self, named: dict, message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=re.escape(message)):
+            _config(service_sign_in_redirect=named)
+
+    def test_core_without_a_public_url_warns_and_signs_in_through_loopback(
+        self,
+    ) -> None:
+        config = _config(service_sign_in_redirect={"atlassian": "core"})
+        assert sign_in_redirect_warnings(
+            CATALOG, config.service_sign_in_redirect, config.gateway_public_url
+        ) == [
+            "SERVICE_SIGN_IN_REDIRECT names 'core' for atlassian, but "
+            "GATEWAY_PUBLIC_URL is unset, so atlassian's sign-ins come back to "
+            "Switch Console (loopback) instead."
+        ]
+        flows = ServiceFlows(
+            config.gateway_public_url,
+            config.service_sign_in_redirect,
+            SignInFlows(async_sessionmaker(), TEST_KEYRING),
+        )
+        assert flows.mode(CATALOG["atlassian"].definition) == "loopback"
+        adapter = build_adapters(
+            CATALOG,
+            github_app=None,
+            oauth_clients={},
+            http=HTTP,
+            registration=replace(REG, redirects=config.service_sign_in_redirect),
+        )["atlassian"]
+        assert isinstance(adapter, OAuthAdapter)
+        assert isinstance(adapter._client, RegisteredClient)
+        assert all(
+            uri.startswith("http://127.0.0.1:")
+            for uri in adapter._client._request["redirect_uris"]
+        )
+
+    def test_a_service_that_signs_in_only_through_core_cannot_fall_back(
+        self,
+    ) -> None:
+        assert sign_in_redirect_warnings(
+            CATALOG, {"google-workspace": "core"}, None
+        ) == [
+            "SERVICE_SIGN_IN_REDIRECT names 'core' for google-workspace, but "
+            "GATEWAY_PUBLIC_URL is unset, so google-workspace cannot be "
+            "connected until it is set."
+        ]
