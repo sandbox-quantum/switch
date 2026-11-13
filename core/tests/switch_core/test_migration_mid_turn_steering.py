@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 _CORE = Path(__file__).resolve().parents[2]
 _DB = "migration_mid_turn_steering"
 
-_PRE_MIGRATION_REVISION = "b7e2c4a9d1f6"
+_PRE_MIGRATION_REVISION = "947ed1a48729"
 _MIGRATION_UNDER_TEST = "d7a3c1e9f205"
 
 

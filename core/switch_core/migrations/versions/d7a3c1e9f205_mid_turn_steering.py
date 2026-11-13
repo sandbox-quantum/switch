@@ -22,7 +22,7 @@ transaction, so validating here would scan under this revision's lock;
 `VALIDATE CONSTRAINT` is left to a later release.
 
 Revision ID: d7a3c1e9f205
-Revises: b7e2c4a9d1f6
+Revises: 947ed1a48729
 Create Date: 2026-11-13 00:00:00.000000
 
 """
@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d7a3c1e9f205"
-down_revision: str | Sequence[str] | None = "b7e2c4a9d1f6"
+down_revision: str | Sequence[str] | None = "947ed1a48729"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
