@@ -1661,6 +1661,11 @@
       "flags": []
     },
     {
+      "route": "PUT /gateway/agents/{agent_id}/mid-turn-delivery",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/agents/{agent_id}/name",
       "auth": "session",
       "flags": []

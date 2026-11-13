@@ -223,6 +223,19 @@ Two annotations tell you when that matters:
   none arrives or interrupts you on its own — it rides along on the next line
   you are sent for that room.
 
+### Messages sent while you are working
+
+On Claude Code, Codex and OpenCode, messages can reach you **during** a turn
+rather than after it ends: a new `[Switch]` line arrives in the middle of your
+work. It can come from anyone who can talk to you, from any thread or room,
+and each line names its sender, room and thread. Read it at your next step and
+decide what it means for the work in hand: change course for a correction,
+take on or note a separate request, and reply to each where it was asked. You
+are still in the same turn, so one turn can answer several messages. A message
+never answers an approval you are waiting on: the person answers the request
+itself. Your owner can turn this off with the `mid_turn_delivery` setting, and
+then every message waits for the turn to end.
+
 ## When to call `read_context` again
 
 Once on arrival, and then **whenever something tells you the room moved
@@ -545,8 +558,11 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
   On any agent: `description`, `display_name` and `icon_url` (`""` clears
-  either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
-  `"anyone"`. With "can manage agents": `name` (rename it — see below). On a
+  either), `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
+  `"anyone"` — and `mid_turn_delivery`: `"steer"` (the default) lets a
+  message sent while it works reach the running turn, `"queue"` always waits
+  for the turn to end (see "Messages sent while you are working"). With "can
+  manage agents": `name` (rename it — see below). On a
   managed agent (one `list_managed_agents` shows), and only with "can manage
   agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing

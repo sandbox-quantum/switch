@@ -96,6 +96,11 @@ ROUTES: dict[str, Case] = {
     "PATCH /gateway/agents/{agent_id}/options": patch(
         f"{G}/agents/{{console_agent}}/options", owner_or_admins(), json={"options": {}}
     ),
+    "PUT /gateway/agents/{agent_id}/mid-turn-delivery": put(
+        f"{G}/agents/{{agent}}/mid-turn-delivery",
+        owner_or_admins(),
+        json={"mid_turn_delivery": "queue"},
+    ),
     "PUT /gateway/agents/{agent_id}/icon": put(
         f"{G}/agents/{{agent}}/icon", owner_or_admins(), json={"icon_url": None}
     ),

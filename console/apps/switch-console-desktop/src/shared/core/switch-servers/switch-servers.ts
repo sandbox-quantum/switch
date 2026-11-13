@@ -303,6 +303,7 @@ export type RemoteAgentSummary = {
    * owner" is one list read rather than a read per agent. Null also for a
    * server older than the field, which reads the same as open. */
   addressingPolicy: AddressingPolicy | null;
+  midTurnDelivery?: 'steer' | 'queue';
   /** Absolute URL of the agent's own icon, or null when it has none. Null is
    * the ordinary state rather than an error: the display layer draws a
    * name-derived avatar instead, so the fallback can change without every

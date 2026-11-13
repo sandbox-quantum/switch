@@ -2610,6 +2610,7 @@ async def update_agent_detail(
     display_name: str | None = None,
     icon_url: str | None = None,
     addressing: str | None = None,
+    mid_turn_delivery: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     advanced_config: dict[str, Any] | None = None,
@@ -2646,6 +2647,11 @@ async def update_agent_detail(
         addressing: Who can address it: "owner_only" (your owner alone, not
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
+        mid_turn_delivery: What a message sent while it is working does:
+            "steer" (the default) hands it to the running turn, whoever sent
+            it and from wherever; "queue" always runs it as a turn of its own
+            once the running one ends. Providers that cannot steer always
+            queue.
 
     A managed agent (one `list_managed_agents` shows) only, and only with the
     "can manage agents" capability:
@@ -2696,6 +2702,7 @@ async def update_agent_detail(
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        mid_turn_delivery=mid_turn_delivery,
         third_party_avatars=protocol.config.third_party_avatars_enabled,
     )
     changes = ManagedAgentChanges(
