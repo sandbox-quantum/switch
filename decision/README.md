@@ -338,25 +338,52 @@ terms can run without this image: Qwen on llama.cpp's CPU image (compose's
 
 ## Evaluate
 
-`eval/` holds four scenario sets: `scenarios.json` (15 easy cases, three agents),
-`scenarios_hard.json` (40 cases, five agents with overlapping jobs; regenerate
-it with `eval/make_hard_scenarios.py`), `scenarios_extra60.json` (60 cases
-across four rooms), and `scenarios_names.json` (24 cases where an agent is
-named in plain text: spoken to, so it answers, or only mentioned, quoted or
-named in code or a link, so it doesn't; each case's `note` says which). The
-standard run is the hard, extra60 and names sets.
+`eval/` holds the scenario sets:
+
+- `scenarios_hard.json`: 40 cases, five agents with overlapping jobs. Regenerate it with `eval/make_hard_scenarios.py`.
+- `scenarios_extra60.json`: 60 cases across four rooms.
+- `scenarios_names.json`: 24 cases where an agent is named in plain text. Spoken to, it answers. Only mentioned, quoted, or named in code or a link, it doesn't. Each case's `note` says which.
+- `scenarios_followups.json`: 45 cases from a busy team room. They cover:
+  - replies that continue an exchange with an agent, in a thread and at the top level, often short ("ok what else", "yes", "merged");
+  - people answering people inside an agent's thread;
+  - agents spoken to by a spoken form of their name;
+  - announcements and requests aimed at people;
+  - people talking about an agent rather than to it.
+
+  Regenerate it with `eval/make_followups_scenarios.py`. It is written from patterns seen in real rooms, reworded, with made-up people.
+- `scenarios.json`: 15 easy cases, three agents.
+
+**History.** Every case in the first three sets carries a `background`: three to five earlier messages from people talking among themselves. `eval.py` sends them before the case's own history, so no case is decided on the message alone. `eval/add_history.py` writes them with a fixed seed. Run it again after regenerating a set.
+
+The standard run is the hard, extra60, names and followups sets:
 
 ```
-uv run python eval/eval.py --url http://localhost:8230
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_extra60.json
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_names.json
+uv run python eval/eval.py --all --url http://localhost:8230
+uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_followups.json
 # through the Haiku override (reads ANTHROPIC_API_KEY)
-uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json --backend anthropic
+uv run python eval/eval.py --all --url http://localhost:8230 --backend anthropic
 ```
 
-`DECISION_SERVICE_TOKEN` is sent when set. It prints each pick, then the
-accuracy and the median and maximum latency.
+`DECISION_SERVICE_TOKEN` is sent when set. For each set it prints every pick, then four counts:
+- **right**;
+- **wrong**: the wrong agent, or an agent when nobody should answer;
+- **missed**: nobody, when an agent should answer;
+- **precision of deliveries**.
+
+It also prints the median and maximum latency. `--all` ends with one table of all the sets.
+
+Strands Decider 4B with the lead rule (0.05), before the conversation-state context:
+
+| set | right | wrong | missed |
+|---|---|---|---|
+| hard | 36/40 | 3 | 1 |
+| extra60 | 52/60 | 8 | 0 |
+| names | 16/24 | 7 | 1 |
+| followups | 29/45 | 5 | 11 |
+
+Adding the history made the benchmark harder: the same model and prompt scored 112 right, 11 wrong and 1 missed over the first three sets without it, against 104, 18 and 2 with it.
+
+A change to what the service sends its model is also checked against a labelled set of real messages from a deployment, before it merges. That set holds people's messages, so it is never kept in this repository; the pull request reports only its counts.
 
 ## Latency so far
 
