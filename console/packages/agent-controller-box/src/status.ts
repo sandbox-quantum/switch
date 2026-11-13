@@ -923,7 +923,12 @@ export class StatusCollector {
       /** The box's `/proc/meminfo` figures, or null where there are none (`readMeminfo`). */
       meminfo?: () => Promise<MeminfoReading | null>;
     }
-  ) {}
+  ) {
+    this.startedAt = new Date(deps.now()).toISOString();
+  }
+
+  /** When this collector, and so this controller process, started. */
+  private readonly startedAt: string;
 
   /**
    * The disk to report: the agents' on a split box, marked `workspace`, else
@@ -1023,6 +1028,7 @@ export class StatusCollector {
         protocol: PROTOCOL_VERSION,
         assignment_revision: assignment?.revision ?? 0,
         updated_by: this.deps.updatedBy,
+        started_at: this.startedAt,
       },
       machine: {
         platform: contractPlatform(),

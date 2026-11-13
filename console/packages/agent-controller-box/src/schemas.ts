@@ -279,6 +279,8 @@ export const statusReportSchema = z.object({
     protocol: z.literal(PROTOCOL_VERSION),
     assignment_revision: revision,
     updated_by: updatedBySchema,
+    /** When this controller process started; a new one tells Switch it restarted. */
+    started_at: time.optional(),
   }),
   machine: z.object({
     platform: platformSchema,

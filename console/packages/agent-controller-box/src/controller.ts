@@ -11,7 +11,6 @@ import {
   type ProviderReadiness,
   type RestartNotice,
   SESSION_ALLOWANCE_BYTES,
-  type SessionStartedNotice,
   startReserveFromEnv,
 } from '@switch-console/agent-providers-box';
 import { AgentHub } from './agent-hub';
@@ -246,11 +245,6 @@ export type ControllerDeps = {
   refreshPath: () => Promise<void>;
   /** Provider checks made before this controller started, taken as its own (`ProviderStatuses.seed`). */
   providerSeed: ProviderSeed;
-  /**
-   * A session of an agent here started, and Switch took its host's report:
-   * passed to whoever runs this controller (`SessionStartedNotice`).
-   */
-  sessionStarted: (started: Omit<SessionStartedNotice, 'kind'>) => void;
   /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
   tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
@@ -739,11 +733,6 @@ export async function runController(
         revoked: () => void revoke(),
       },
       log,
-      sessionStarted: ({ agentId, sessionId, startSource }) => {
-        const entry = assignment?.agents.find((held) => held.agent_id === agentId);
-        if (!entry) return;
-        deps.sessionStarted({ sessionId, provider: entry.definition.provider, startSource });
-      },
       calls,
     }),
   });
