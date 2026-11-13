@@ -554,7 +554,7 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off', 'admin')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off', 'admin', 'migration')",
             name="ck_cloud_machine_stop_reason",
         ),
         CheckConstraint(
@@ -610,6 +610,59 @@ class CloudMachine(Base):
     )
 
 
+class HostedMigration(Base):
+    """One person's move from a v1 machine to a v2 box.
+
+    Global, as `cloud_machines` is: the move is of the person's one machine
+    row, whatever workspaces it serves, and nothing here names a workspace.
+    It keeps the step last finished, so a run carries on from there, and what
+    the v1 machine had (its instance, disk and type), so a rollback can hand
+    the same disk back to the v1 controller. A run holds this row's lock, so
+    two runs for one person can't overlap. No secrets, file names or message
+    content: the audit has who ran each step.
+    """
+
+    __tablename__ = "hosted_migrations"
+    __table_args__ = (
+        CheckConstraint(
+            "step IN ('freezing', 'frozen', 'snapshot', 'flipped', 'holding', "
+            "'held', 'copy_failed', 'copied', 'released', 'done', 'rolled_back', "
+            "'cleaned')",
+            name="ck_hosted_migration_step",
+        ),
+    )
+
+    owner_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    machine_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("cloud_machines.id"), nullable=False
+    )
+    step: Mapped[str] = mapped_column(Text, nullable=False)
+    # The v1 machine as the freeze found it, for a rollback.
+    v1_instance_id: Mapped[str | None] = mapped_column(Text)
+    v1_data_volume_id: Mapped[str | None] = mapped_column(Text)
+    v1_instance_type: Mapped[str | None] = mapped_column(Text)
+    # The safety snapshot of the v1 disk, taken outside Core and recorded here.
+    snapshot_id: Mapped[str | None] = mapped_column(Text)
+    # What the copy job reported: counts and sizes only.
+    files_copied: Mapped[int | None] = mapped_column(Integer)
+    bytes_copied: Mapped[int | None] = mapped_column(BigInteger)
+    symlinks_skipped: Mapped[int | None] = mapped_column(Integer)
+    copy_refused: Mapped[int | None] = mapped_column(Integer)
+    copy_seconds: Mapped[int | None] = mapped_column(Integer)
+    # The volume the copy job made from the snapshot and read from: never the
+    # v1 disk itself. Kept here only, never in the audit.
+    copy_source_volume_id: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class MachineWorkspace(TenantScoped, Base):
     """A workspace on its owner's cloud machine: the agent controller the
     machine runs for this workspace, enrolled with a one-time code minted here.
@@ -640,6 +693,11 @@ class MachineWorkspace(TenantScoped, Base):
     # was issued at, so every retry of that revision hands over the same one.
     enrollment_code_encrypted: Mapped[str | None] = mapped_column(Text)
     enrollment_code_revision: Mapped[int | None] = mapped_column(Integer)
+    # While an operator moves the machine from v1 to a v2 box: the v1
+    # controller the owner's agents stay placed on until the copy is verified.
+    # A controller enrolling meanwhile takes no agents from it; the release
+    # puts it back as `controller_id`, so the next enrolment moves them.
+    moving_from_controller_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

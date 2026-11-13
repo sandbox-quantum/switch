@@ -309,6 +309,13 @@ Not releasing it is safe to leave: while it is stopped by an administrator,
 Core keeps its disk past any retention and starts nothing, and the snapshot
 stays until you delete it.
 
+A machine that was being moved to a box (`switch-hosted-migration`): the stop
+replaces the move's hold, and the move refuses to carry on while it lasts.
+`core-admin release` puts the move's hold back when the move was holding the
+machine (the v1 machine frozen, or the box held for its copy), so its owner
+can't start it and the move carries on from where it was. At any other step it
+releases as usual.
+
 ## Machine lifecycle
 
 When the last managed agent leaves a user's machine, its instance is

@@ -14,6 +14,7 @@ from switch_core.db.models import (
     AgentControllerEnrollmentCode,
     AgentDefinition,
     CloudMachine,
+    HostedMigration,
     MachineWorkspace,
     TenantMember,
     User,
@@ -47,6 +48,11 @@ MACHINE_PAUSED = "Your hosted agents are paused by Switch. Contact your admin."
 MACHINE_TURNED_OFF = (
     "Hosted agents are turned off for you in this workspace. "
     "Ask your admin to turn them on."
+)
+#: While an operator moves the person's v1 machine to a v2 box (the
+#: migration's freeze): fixed text, as above.
+MACHINE_MIGRATING = (
+    "Your hosted agents are being moved to a new machine. They'll be back shortly."
 )
 MACHINE_WORKSPACES_FULL = (
     f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
@@ -202,12 +208,43 @@ async def owner_paused(session: AsyncSession, owner_id: str) -> bool:
     return paused_at is not None
 
 
+#: The steps a move has finished at: anything else is a move under way.
+MOVE_FINISHED = frozenset({"done", "rolled_back", "cleaned"})
+#: The steps at which the move holds the machine stopped (`migration`): the v1
+#: machine frozen, or the box held for the copy.
+MOVE_HOLD_STEPS = frozenset(
+    {"freezing", "frozen", "snapshot", "holding", "held", "copy_failed", "copied"}
+)
+
+
+async def owner_moving(session: AsyncSession, owner_id: str) -> bool:
+    """Whether an operator is moving this person's machine to a box: a move
+    started and not yet done, rolled back or cleaned up. Their machine takes no
+    new workspace until it ends, whatever its stop reason at the moment (the
+    box runs unheld for its first start)."""
+    step = await session.scalar(
+        select(HostedMigration.step).where(HostedMigration.owner_id == owner_id)
+    )
+    return step is not None and step not in MOVE_FINISHED
+
+
+async def move_holds(session: AsyncSession, owner_id: str) -> bool:
+    """Whether this person's move is at a step where it holds their machine
+    stopped (`MOVE_HOLD_STEPS`)."""
+    step = await session.scalar(
+        select(HostedMigration.step).where(HostedMigration.owner_id == owner_id)
+    )
+    return step in MOVE_HOLD_STEPS
+
+
 def claim_conflict(machine: CloudMachine, now: datetime) -> str | None:
     """The reason a live machine cannot be claimed, or None when it can."""
     if machine.stop_reason == "paused":
         return MACHINE_PAUSED
     if admin_stopped(machine):
         return MACHINE_STOPPED_BY_ADMIN
+    if machine.stop_reason == "migration":
+        return MACHINE_MIGRATING
     if machine.state == "error" and machine.error_code == "machine_needs_attention":
         return MACHINE_NEEDS_ADMIN
     if (
@@ -307,6 +344,10 @@ class CloudMachineStore:
         # pause is v2's: with it off, no read, as before v2.
         if process_hosted_v2() and await owner_paused(session, owner_id):
             raise CloudMachineConflict(MACHINE_PAUSED)
+        # Nor does a person whose machine is being moved to a box: a workspace
+        # joining mid-move would be one the move didn't plan for.
+        if process_hosted_v2() and await owner_moving(session, owner_id):
+            raise CloudMachineConflict(MACHINE_MIGRATING)
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:
             machine = await self.locked(session, machine.id)
@@ -408,34 +449,7 @@ class CloudMachineStore:
             or machine.owner_id != owner_id
         ):
             return None
-        for tenant_id in await tenants_of_cloud_machine(factory, machine.id):
-            async with tenant_session(factory, tenant_id) as scoped:
-                row = await workspace_on(scoped, machine.id)
-                if row is None:
-                    continue
-                if row.controller_id is not None:
-                    await revoke(scoped, tenant_id, row.controller_id)
-                row.enrollment_code_encrypted = None
-                row.enrollment_code_revision = None
-                member = await scoped.get(TenantMember, (tenant_id, owner_id))
-                if member is None:
-                    # No link to a workspace the owner has left.
-                    await scoped.execute(
-                        update(AgentControllerEnrollmentCode)
-                        .where(
-                            AgentControllerEnrollmentCode.tenant_id == tenant_id,
-                            AgentControllerEnrollmentCode.machine_workspace_id
-                            == row.id,
-                        )
-                        .values(machine_workspace_id=None)
-                    )
-                    await scoped.execute(
-                        delete(MachineWorkspace).where(
-                            MachineWorkspace.tenant_id == tenant_id,
-                            MachineWorkspace.id == row.id,
-                        )
-                    )
-                await scoped.commit()
+        await self._forget_controllers(factory, machine.id, owner_id, revoke)
         machine.state = "queued"
         machine.desired_state = "running"
         # Revived for the box provisioner to make a box.
@@ -466,6 +480,210 @@ class CloudMachineStore:
         await session.flush()
         return machine, workspace
 
+    async def _forget_controllers(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        machine_id: str,
+        owner_id: str,
+        revoke: RevokeController,
+    ) -> None:
+        """Nothing of the machine's old controllers comes back: each is
+        revoked (its credential, open operations and sealed logins go), each
+        stored code is forgotten, and a workspace row stays only where the
+        owner is still a member. The revoked ids stay on the rows, so the next
+        controller to enrol moves the owner's agents across. Each workspace
+        commits in its own scoped session. Shared by `_revive` and the
+        migration's `flip_to_box` and `flip_back` (the same
+        conditions)."""
+        for tenant_id in await tenants_of_cloud_machine(factory, machine_id):
+            async with tenant_session(factory, tenant_id) as scoped:
+                row = await workspace_on(scoped, machine_id)
+                if row is None:
+                    continue
+                if row.controller_id is not None:
+                    await revoke(scoped, tenant_id, row.controller_id)
+                row.enrollment_code_encrypted = None
+                row.enrollment_code_revision = None
+                member = await scoped.get(TenantMember, (tenant_id, owner_id))
+                if member is None:
+                    # No link to a workspace the owner has left.
+                    await scoped.execute(
+                        update(AgentControllerEnrollmentCode)
+                        .where(
+                            AgentControllerEnrollmentCode.tenant_id == tenant_id,
+                            AgentControllerEnrollmentCode.machine_workspace_id
+                            == row.id,
+                        )
+                        .values(machine_workspace_id=None)
+                    )
+                    await scoped.execute(
+                        delete(MachineWorkspace).where(
+                            MachineWorkspace.tenant_id == tenant_id,
+                            MachineWorkspace.id == row.id,
+                        )
+                    )
+                await scoped.commit()
+
+    async def flip_to_box(
+        self,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        machine: CloudMachine,
+        owner_id: str,
+        revoke: RevokeController,
+        now: datetime,
+    ) -> None:
+        """The migration's step 4: the person's frozen v1 machine row becomes
+        a box, same id, for the box provisioner to make. The revive variant that
+        starts from a stopped `vm` row rather than a `deleted` one.
+
+        Refused unless the row is the person's own, a `vm`, frozen for the
+        move (desired and observed `stopped`, `stop_reason` `migration`). The
+        v1 controller stops listing a `box`, and leaves its stopped VM and
+        disk as they are (the controller's own tests). The caller holds the
+        machine lock and the migration's, has recorded the v1 values a
+        rollback needs, and commits.
+        """
+        if (
+            machine.owner_id != owner_id
+            or machine.backend != "vm"
+            or machine.desired_state != "stopped"
+            or machine.state != "stopped"
+            or machine.stop_reason != "migration"
+        ):
+            raise CloudMachineConflict("The machine isn't frozen for the move.")
+        await self._forget_controllers(factory, machine.id, owner_id, revoke)
+        await self._set_moving_from(factory, machine.id, hold=True)
+        machine.backend = "box"
+        machine.state = "queued"
+        machine.desired_state = "running"
+        machine.stop_reason = None
+        machine.retain_until = None
+        machine.instance_type = None
+        machine.instance_id = None
+        machine.data_volume_id = None
+        machine.heartbeat = None
+        machine.heartbeat_at = None
+        machine.running_observed_at = None
+        # A new box: its first ready counts as new, with its provisioning time.
+        machine.first_ready_at = None
+        machine.error = None
+        machine.error_code = None
+        machine.active_at = now
+        bump_revision(machine, now)
+        # The same entry a revival writes, so the box provisioner asks for a box
+        # for a machine whose v1 controllers once enrolled (`box_provision`).
+        await record_server_audit_event(
+            session,
+            actor_user_id=None,
+            action=ServerAuditAction.HOSTED_BOX_REVIVED,
+            target_type="box",
+            target_id=_keyed_box(machine.id),
+            details={"by": "migration", "machine_id": machine.id},
+        )
+        await session.flush()
+
+    async def flip_back(
+        self,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        machine: CloudMachine,
+        owner_id: str,
+        revoke: RevokeController,
+        *,
+        instance_id: str | None,
+        data_volume_id: str,
+        instance_type: str | None,
+        now: datetime,
+    ) -> None:
+        """The migration's rollback: the person's box, once stopped for it,
+        becomes their `vm` again, with the v1 machine's disk, and starts. The
+        box's controllers are revoked as `flip_to_box` revoked the v1 ones,
+        and no old v1 controller comes back: the v1 machine enrols afresh with
+        a new code and the agents move back. With that code in its boot data,
+        the v1 controller starts a new VM on the same disk (the controller's
+        own tests). The caller holds the locks and commits.
+        """
+        if (
+            machine.owner_id != owner_id
+            or machine.backend != "box"
+            or machine.desired_state != "stopped"
+            or machine.state != "stopped"
+            or machine.stop_reason != "migration"
+        ):
+            raise CloudMachineConflict("The box isn't stopped for the rollback.")
+        await self._forget_controllers(factory, machine.id, owner_id, revoke)
+        await self._set_moving_from(factory, machine.id, hold=False)
+        machine.backend = "vm"
+        machine.state = "queued"
+        machine.desired_state = "running"
+        machine.stop_reason = None
+        machine.retain_until = None
+        machine.instance_id = instance_id
+        machine.data_volume_id = data_volume_id
+        machine.instance_type = instance_type
+        machine.heartbeat = None
+        machine.heartbeat_at = None
+        machine.running_observed_at = None
+        machine.error = None
+        machine.error_code = None
+        machine.active_at = now
+        bump_revision(machine, now)
+        await session.flush()
+
+    async def release_hold(
+        self,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        machine: CloudMachine,
+        owner_id: str,
+        revoke: RevokeController,
+        now: datetime,
+    ) -> None:
+        """The migration's release, once the copy is verified: the box's
+        first-start controllers are revoked and their codes forgotten, each
+        workspace's v1 controller goes back as its `controller_id`, and the box
+        starts. It enrols with a fresh code, and the enrolment moves the
+        owner's agents from that v1 controller, ids kept. Refused unless the
+        box is the person's, held stopped for the move. The caller holds the
+        locks and commits."""
+        if (
+            machine.owner_id != owner_id
+            or machine.backend != "box"
+            or machine.desired_state != "stopped"
+            or machine.state != "stopped"
+            or machine.stop_reason != "migration"
+        ):
+            raise CloudMachineConflict("The box isn't held for the move.")
+        await self._forget_controllers(factory, machine.id, owner_id, revoke)
+        await self._set_moving_from(factory, machine.id, hold=False)
+        machine.stop_reason = None
+        self.start(machine, now)
+        await session.flush()
+
+    async def _set_moving_from(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        machine_id: str,
+        *,
+        hold: bool,
+    ) -> None:
+        """`hold`: keep each workspace's current (v1) controller as the one the
+        agents stay on, so no enrolment moves them meanwhile. Otherwise put it
+        back as `controller_id`, so the next enrolment moves them from it."""
+        for tenant_id in await tenants_of_cloud_machine(factory, machine_id):
+            async with tenant_session(factory, tenant_id) as scoped:
+                row = await workspace_on(scoped, machine_id)
+                if row is None:
+                    continue
+                if hold:
+                    if row.moving_from_controller_id is None:
+                        row.moving_from_controller_id = row.controller_id
+                elif row.moving_from_controller_id is not None:
+                    row.controller_id = row.moving_from_controller_id
+                    row.moving_from_controller_id = None
+                await scoped.commit()
+
     def _add_workspace(
         self, session: AsyncSession, machine: CloudMachine, now: datetime
     ) -> MachineWorkspace:
@@ -485,6 +703,10 @@ class CloudMachineStore:
             raise CloudMachineConflict(MACHINE_PAUSED)
         if admin_stopped(machine):
             raise CloudMachineConflict(MACHINE_STOPPED_BY_ADMIN)
+        # Nor does anything start a machine frozen for the move to a box: only
+        # the migration itself clears that.
+        if machine.stop_reason == "migration":
+            raise CloudMachineConflict(MACHINE_MIGRATING)
         if machine.desired_state != "running":
             machine.desired_state = "running"
             machine.stop_reason = None
@@ -495,7 +717,7 @@ class CloudMachineStore:
     def stop(
         self,
         machine: CloudMachine,
-        reason: Literal["idle", "owner", "paused", "turned_off", "admin"],
+        reason: Literal["idle", "owner", "paused", "turned_off", "admin", "migration"],
         now: datetime,
     ) -> None:
         # Only an administrator's release lifts their stop, only an operator's
@@ -505,6 +727,14 @@ class CloudMachineStore:
         if admin_stopped(machine) and reason != "admin":
             return
         if machine.stop_reason == "paused" and reason not in ("paused", "admin"):
+            return
+        # A migration's freeze holds the same way: only a pause or an
+        # administrator's stop replaces it (and the move then refuses to carry on).
+        if machine.stop_reason == "migration" and reason not in (
+            "paused",
+            "admin",
+            "migration",
+        ):
             return
         if machine.stop_reason == "turned_off" and reason not in (
             "paused",
@@ -537,18 +767,27 @@ class CloudMachineStore:
             return
         self.stop(machine, "admin", now)
 
-    def admin_release(self, machine: CloudMachine, now: datetime) -> None:
+    def admin_release(
+        self, machine: CloudMachine, now: datetime, *, move_holds: bool
+    ) -> None:
         """Lift an administrator's stop: a stopped machine stays stopped, as
-        if its owner had stopped it, until its owner starts it again. A machine
-        in error is retried, since its error is usually the isolation the
-        administrator has just undone; if the cause remains, the hosted
-        controller reports the error again. The caller holds the machine lock
-        and commits."""
+        if its owner had stopped it, until its owner starts it again. When
+        `move_holds` (`move_holds()`: a move to a box holds this machine at its
+        current step), the move's hold comes back instead, so nothing but the
+        move starts it and the move can carry on. A machine in error is
+        retried, since its error is usually the isolation the administrator has
+        just undone; if the cause remains, the hosted controller reports the
+        error again. The caller holds the machine lock and commits."""
         if not admin_stopped(machine):
             raise CloudMachineConflict(
                 "The cloud machine was not stopped by an administrator."
             )
-        machine.stop_reason = "owner" if machine.desired_state == "stopped" else None
+        if move_holds:
+            machine.stop_reason = "migration"
+        else:
+            machine.stop_reason = (
+                "owner" if machine.desired_state == "stopped" else None
+            )
         machine.updated_at = now
         if machine.state == "error":
             self.retry(machine, now)
@@ -576,7 +815,9 @@ class CloudMachineStore:
             return False
         # A paused, turned-off or administrator-stopped machine stays as it was
         # left: clean-up never retains it, so its disk never expires.
-        if machine.stop_reason in ("paused", "turned_off", "admin"):
+        # Nor does a v1 machine frozen for the move: retaining would end its VM,
+        # which a rollback needs.
+        if machine.stop_reason in ("paused", "turned_off", "admin", "migration"):
             return False
         machine.desired_state = "retained"
         machine.stop_reason = None

@@ -60,6 +60,7 @@ switch-migrate = "switch_core.main:migrate"
 switch-link-workos = "switch_core.workos_linking:main"
 switch-purge-organization = "switch_core.purge_organization:main"
 switch-cloud-machine = "switch_core.cloud_machine_admin:main"
+switch-hosted-migration = "switch_core.hosted_migration_cli:main"
 
 [build-system]
 requires = ["hatchling"]
