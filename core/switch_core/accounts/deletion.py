@@ -133,6 +133,7 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("oidc_identities", "user_id"): "deleted",
     ("api_keys", "user_id"): "deleted",
     ("cloud_machines", "owner_id"): "refused",
+    ("hosted_migrations", "owner_id"): "database cascades",
     ("machine_workspaces", "owner_id"): "deleted",
     ("invitations", "created_by"): "handed over",
     ("tenant_join_domains", "created_by"): "handed over",

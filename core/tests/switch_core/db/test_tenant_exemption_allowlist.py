@@ -206,6 +206,12 @@ _ALLOWED_MODULES = {
     # in audit_log). Reached only from `require_operator` routes and the
     # operator worker's bearer.
     "switch_core.visibility.operator_actions",
+    # An operator's move of a person's v1 machine to a box acts for no
+    # tenant. `tenants_of_cloud_machine` names the workspaces the machine
+    # serves; each one's controllers and agents are then read and changed with
+    # that workspace bound (`tenant_session`). Reached only from the operator's
+    # command, run where switch-core runs.
+    "switch_core.visibility.hosted_migration",
 }
 
 # Every module allowed to open a session straight from the factory. Not short,
@@ -349,6 +355,11 @@ _RAW_SESSION_FACTORY_MODULES = {
     # box belongs to a person, not a workspace; the gates' per-workspace reads
     # go through the store's lookup and `tenant_session`.
     "switch_core.visibility.box_provision",
+    # The move of a v1 machine to a box: its unbound sessions touch only
+    # `cloud_machines`, `hosted_migrations` and `server_audit_events`, all
+    # tables with no tenant and no policy. Each workspace's part goes through
+    # the store's lookup and `tenant_session`.
+    "switch_core.visibility.hosted_migration",
     #
     # ── Factories handed in as `factory`. The check below only
     # saw calls named `session_factory` until it was widened to bare

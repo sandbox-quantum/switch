@@ -56,6 +56,10 @@ HOSTED_TURNED_OFF = "turned_off_by_admin"
 # controller is refused for now. Nothing about it is revoked: a box controller
 # keeps its identity and backs off, and carries on once v2 is on again.
 HOSTED_V2_OFF = "hosted_v2_off"
+# An operator is moving this machine from v1 to a v2 box: no login is given to
+# it until the move is done, so none is sealed to a box before its files and
+# agents are there.
+HOSTED_MIGRATING = "migration_in_progress"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -97,5 +101,6 @@ ALL_REASON_CODES = frozenset(
         HOSTED_PAUSED,
         HOSTED_TURNED_OFF,
         HOSTED_V2_OFF,
+        HOSTED_MIGRATING,
     }
 )

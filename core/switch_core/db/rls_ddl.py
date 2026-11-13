@@ -188,6 +188,7 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
+        "hosted_migrations",
         "users",
         "oidc_identities",
         "deployment_identity",

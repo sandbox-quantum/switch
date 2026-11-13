@@ -15,6 +15,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
+    MACHINE_MIGRATING,
     MACHINE_PAUSED,
     MACHINE_STOPPED_BY_ADMIN,
     MACHINE_TURNED_OFF,
@@ -189,6 +190,12 @@ async def machine_summary(
     state, error = workspace_state(machine, workspace, now)
     # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
     v2 = process_hosted_v2()
+    # While an operator moves the machine to a box, the agents stay on the v1
+    # controller until the copy is verified: the box isn't ready for them,
+    # whatever its first start reports.
+    held_on = workspace.moving_from_controller_id if v2 else None
+    if held_on is not None and state == "ready":
+        state = "provisioning"
     controller = (
         None
         if not v2 or workspace.controller_id is None
@@ -213,7 +220,9 @@ async def machine_summary(
         else machine.heartbeat_at.isoformat(),
         "disk": _usage(machine.heartbeat, "disk"),
         "memory": _usage(machine.heartbeat, "memory"),
-        "agents": await managed_agent_ids(session, workspace.controller_id),
+        "agents": await managed_agent_ids(
+            session, held_on if held_on is not None else workspace.controller_id
+        ),
         "controller_id": workspace.controller_id,
         # v1 or v2 (`vm` or `box`): Console shows v2's card and states only for
         # a box. With hosted agents v2 off, absent, as before v2.
@@ -230,12 +239,12 @@ async def machine_summary(
 def _wire_stop_reason(machine: CloudMachine, v2: bool) -> str | None:
     """`stop_reason` as Console reads it, which takes only `idle` or `owner`:
     an administrator's stop shows there as the owner's, for builds that predate
-    `stopped_by_admin`, and so do a pause and a turn-off: stopped, and a start
-    is refused with the block's own words. Why it's blocked comes from the stop
+    `stopped_by_admin`, and so do a pause, a turn-off and a move's hold:
+    stopped, and a start is refused with the block's own words. Why it's blocked comes from the stop
     reason codes."""
     if admin_stopped(machine):
         return "owner" if machine.desired_state == "stopped" else None
-    if v2 and machine.stop_reason in ("paused", "turned_off"):
+    if v2 and machine.stop_reason in ("paused", "turned_off", "migration"):
         return "owner"
     return machine.stop_reason
 
@@ -435,6 +444,10 @@ async def lifecycle(
         raise HTTPException(409, MACHINE_PAUSED)
     if blocked is StopReason.TURNED_OFF_BY_ADMIN:
         raise HTTPException(409, MACHINE_TURNED_OFF)
+    # Frozen for an operator's move to a v2 box: no owner action until the
+    # move goes on or is rolled back.
+    if machine.stop_reason == "migration":
+        raise HTTPException(409, MACHINE_MIGRATING)
     now = datetime.now(UTC)
     if body.action == "stop":
         if machine.desired_state != "stopped":
