@@ -71,9 +71,12 @@ version of their own to them without also giving them a release of their own.
   returns the browser, is told to connect from there instead.
   One whose sign-ins come back to Switch Console (Notion and Sentry always,
   Atlassian and Datadog unless `SERVICE_SIGN_IN_REDIRECT` names `core` for
-  them) still connects there, as does one that asks for a choice before
-  signing in, such as Datadog's site. `GET /service-connections` reports
-  `web_sign_in`, and
+  them) still signs in there, as does one that asks for a choice before
+  signing in. Datadog connects from the dashboard all the same: pick the
+  site, then paste a personal access token, or API and application keys
+  where the server allows keys that never expire; Datadog checks them before
+  anything is stored, and a refused token can be replaced from its page.
+  `GET /service-connections` reports `web_sign_in`, and
   `POST /service-connections/{service}/flows/web` and
   `POST /provider-connections/github/flows/web` start a sign-in.
 - **Workspace settings › API keys, Guardrails and Devices in the new

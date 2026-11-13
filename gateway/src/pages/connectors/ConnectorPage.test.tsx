@@ -8,7 +8,7 @@ import type {
   ServiceInWorkspace,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { serviceConnection } from "../../test/serviceConnection";
+import { pastedConnector, serviceConnection } from "../../test/serviceConnection";
 import ConnectorPage from "./ConnectorPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -563,5 +563,125 @@ describe("connecting from a connector's page", () => {
     renderPage("github", null, "?sign_in=flow-3");
 
     expect(await screen.findByText("Connected to GitHub as octocat.")).toBeTruthy();
+  });
+});
+
+describe("connecting by pasting a token in place of a sign-in", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("picks the site and pastes a token, checked before it is stored", async () => {
+    signedIn();
+    const calls = server(pastedConnector(), [], null, {
+      "PUT /service-connections/datadog/paste": { warning: null, external_identity: "ada@example.test" },
+    });
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    expect(screen.queryByText("Connect from Switch Console")).toBeNull();
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/To sign in with your account instead, connect it from Switch Console/)).toBeTruthy();
+    expect(within(dialog).getByText(/Expires on the date you set in Datadog\. Reaches what your token allows\./)).toBeTruthy();
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "Datadog site" }));
+    fireEvent.click(await screen.findByRole("option", { name: "datadoghq.eu" }));
+    const connect = within(dialog).getByRole("button", { name: "Connect" });
+    expect((connect as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), { target: { value: " ddpat_example " } });
+    fireEvent.click(connect);
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/datadog/paste",
+        body: { method: "token", fields: { pat: "ddpat_example" }, choices: { site: "datadoghq.eu" } },
+      }),
+    );
+    expect(await screen.findByText("Datadog is connected.")).toBeTruthy();
+  });
+
+  it("pastes keys instead where the server takes them", async () => {
+    signedIn();
+    const calls = server(pastedConnector(), [], null, {
+      "PUT /service-connections/datadog/paste": { warning: null, external_identity: "org" },
+    });
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "API and application keys" }));
+    expect(within(dialog).getByText(/Never expires; only Datadog can revoke it\./)).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "dd-api" } });
+    fireEvent.change(within(dialog).getByLabelText("Application key"), { target: { value: "dd-app" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/datadog/paste",
+        body: {
+          method: "keys",
+          fields: { api_key: "dd-api", application_key: "dd-app" },
+          choices: { site: "datadoghq.com" },
+        },
+      }),
+    );
+  });
+
+  it("says why the vendor refused what was pasted, in the dialog", async () => {
+    signedIn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+        if ((init?.method ?? "GET") === "PUT")
+          return new Response(JSON.stringify({ detail: "Datadog refused the token." }), { status: 400 });
+        if (path === "/service-connections") return new Response(JSON.stringify({ connections: [pastedConnector()] }));
+        return new Response(JSON.stringify([]));
+      }),
+    );
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), { target: { value: "bad" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    expect(await within(dialog).findByText("Datadog refused the token.")).toBeTruthy();
+  });
+
+  it("replaces a token the vendor refused, at the site it was for", async () => {
+    signedIn();
+    const calls = server(
+      pastedConnector({
+        status: "needs_reauthorization",
+        can_revoke: true,
+        method: "token",
+        choices: { site: "datadoghq.eu" },
+        external_identity: "ada@example.test",
+        access_note: "Reaches what your token allows.",
+        reconnect_code: "token_refused",
+        reconnect_reason: "Datadog refused your token. Paste a new one.",
+      }),
+      [],
+      null,
+      { "PUT /service-connections/datadog/paste": { warning: null, external_identity: "ada@example.test" } },
+    );
+    renderPage("datadog");
+
+    expect(await screen.findByText("Connected as ada@example.test · Reaches what your token allows.")).toBeTruthy();
+    expect(screen.getByText("Datadog refused your token. Paste a new one.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Replace token" }));
+    const dialog = await screen.findByRole("dialog", { name: "Replace your Datadog token" });
+    expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), { target: { value: "ddpat_new" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace token" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/datadog/paste",
+        body: { method: "token", fields: { pat: "ddpat_new" }, choices: { site: "datadoghq.eu" } },
+      }),
+    );
   });
 });

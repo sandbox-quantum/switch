@@ -3437,12 +3437,40 @@ export interface ServiceConnection {
   /** Whether a sign-in can start and finish here in the browser; false where
    * it returns only to Switch Console, and for a key. */
   web_sign_in: boolean;
+  /** What a person picks before signing in or pasting (a vendor's site),
+   * each from its fixed list; null where nothing is asked. */
+  sign_in_choices: ServiceKeyField[] | null;
+  /** What a person may paste in place of signing in (a token, or keys);
+   * empty where the service takes none here. */
+  paste: ServicePasteMethod[];
+  /** Why the connection must be reconnected, where it must: `token_refused`
+   * asks for a new pasted credential. */
+  reconnect_code: string | null;
+  reconnect_reason: string | null;
   /** The level the person allowed when connecting; null while not connected. */
   consent: "read" | "write" | null;
   /** The account connected, as the vendor names it. */
   external_identity: string | null;
   /** Whether the person may disconnect it: their own, while they have one. */
   can_revoke: boolean;
+  /** How the person connected, and what they picked (a site); null while
+   * not connected. */
+  method: "oauth" | "token" | "keys" | null;
+  choices: Record<string, string> | null;
+  /** What a pasted credential reaches, said in place of an access level;
+   * null for a sign-in. */
+  access_note: string | null;
+}
+
+/** A credential a person may paste in place of signing in: its fields, and
+ * whether it ends on a date the vendor holds or only when revoked. */
+export interface ServicePasteMethod {
+  method: "token" | "keys";
+  label: string;
+  fields: ServiceKeyField[];
+  help_url: string | null;
+  expires: "vendor" | "never";
+  access_note: string;
 }
 
 /** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
@@ -3876,6 +3904,15 @@ export async function fetchSignInOutcome(service: string, id: string): Promise<S
 /** Done with a sign-in's outcome: it is dropped rather than left to expire. */
 export async function dropSignIn(service: string, id: string): Promise<void> {
   return noContentRequest(`${signInFlows(service)}/${id}`, "DELETE");
+}
+
+/** Connect a service by pasting a token or keys in place of signing in, at
+ * the site picked, once its vendor accepts them; pasting again replaces them. */
+export async function connectServiceWithPaste(
+  service: string,
+  paste: { method: ServicePasteMethod["method"]; fields: Record<string, string>; choices: Record<string, string> },
+): Promise<{ warning: string | null; external_identity: string }> {
+  return jsonRequest(`/service-connections/${service}/paste`, "PUT", paste);
 }
 
 /** Connect a key-based connector, or replace its key, once the vendor accepts it. */

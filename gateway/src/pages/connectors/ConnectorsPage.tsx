@@ -25,6 +25,7 @@ import { type ServiceConnection, fetchServiceConnections, fetchWorkspaceServices
 import { useAuth } from "../../data/AuthContext";
 import { brokenLine, catalogueMeta, connectWay, isConnected, offNotice } from "./connectorProfile";
 import KeyDialog from "./KeyDialog";
+import PasteDialog from "./PasteDialog";
 import { useLeaveToSignIn } from "./signIn";
 
 type Tab = "yours" | "all";
@@ -84,7 +85,7 @@ function CardState({
       </Box>
     );
   const way = connectWay(connection);
-  if (way !== "web" && way !== "key") return null;
+  if (way !== "web" && way !== "key" && way !== "paste") return null;
   return (
     <IconButton
       aria-label={`Connect ${connection.name}`}
@@ -106,7 +107,8 @@ function CardState({
  * sees how many people here have connected each one.
  *
  * A card's plus connects where that can start here: a sign-in that returns
- * to this browser, or a key. Everything else, and every connected card, opens
+ * to this browser, a key, or a token pasted in place of a sign-in that only
+ * Switch Console can finish. Everything else, and every connected card, opens
  * the connector's page, which explains. One nobody can connect here (its app
  * isn't set up, say) says so on its card, as one the workspace has off does.
  */
@@ -124,6 +126,7 @@ export default function ConnectorsPage() {
   const [tab, setTab] = useState<Tab | null>(null);
   const [query, setQuery] = useState("");
   const [keyFor, setKeyFor] = useState<ServiceConnection | null>(null);
+  const [pasteFor, setPasteFor] = useState<ServiceConnection | null>(null);
   const { leaving, leave } = useLeaveToSignIn();
   const [toast, setToast] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -160,8 +163,13 @@ export default function ConnectorsPage() {
 
   const connect = (connection: ServiceConnection) => {
     setConnectError(null);
-    if (connectWay(connection) === "key") {
+    const way = connectWay(connection);
+    if (way === "key") {
       setKeyFor(connection);
+      return;
+    }
+    if (way === "paste") {
+      setPasteFor(connection);
       return;
     }
     leave(connection.slug).catch((err: unknown) =>
@@ -269,6 +277,19 @@ export default function ConnectorsPage() {
             setToast(`${keyFor.name} is connected.`);
             setNotice(warning);
             setKeyFor(null);
+            void load();
+          }}
+        />
+      )}
+      {pasteFor && (
+        <PasteDialog
+          connection={pasteFor}
+          replacing={false}
+          onClose={() => setPasteFor(null)}
+          onSaved={(warning) => {
+            setToast(`${pasteFor.name} is connected.`);
+            setNotice(warning);
+            setPasteFor(null);
             void load();
           }}
         />

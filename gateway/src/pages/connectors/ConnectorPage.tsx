@@ -42,6 +42,7 @@ import {
   CONSOLE_CONNECT_NOTE,
   accessLastsLabel,
   brokenLine,
+  isPasted,
   connectWay,
   connectedAsLine,
   isConnected,
@@ -52,6 +53,7 @@ import {
   signInOutcomeMessage,
 } from "./connectorProfile";
 import KeyDialog from "./KeyDialog";
+import PasteDialog from "./PasteDialog";
 import { useLeaveToSignIn } from "./signIn";
 
 /** Where the back button goes: the page that opened this one, when it said,
@@ -231,7 +233,8 @@ function ConnectedPeople({
  * with Revoke. Opened from the catalogue and from Settings; Back returns to
  * whichever opened it.
  *
- * A key is pasted here. A sign-in at the vendor that returns to Switch
+ * A key is pasted here, and so is a token (or keys) in place of a sign-in
+ * that only Switch Console can finish. A sign-in at the vendor that returns to Switch
  * leaves from here and comes back here with `?sign_in=<id>`, which the page
  * reads to say how it ended. One that can only return to Switch Console's
  * listener finishes there; the page says so rather than offering a button
@@ -261,6 +264,7 @@ export default function ConnectorPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [keyDialog, setKeyDialog] = useState<"add" | "replace" | null>(null);
+  const [pasteDialog, setPasteDialog] = useState<"add" | "replace" | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [revoking, setRevoking] = useState<ConnectedPerson | null>(null);
   const { leaving, leave } = useLeaveToSignIn();
@@ -441,6 +445,16 @@ export default function ConnectorPage() {
                 {connected ? "Reconnect" : "Connect"}
               </Button>
             )}
+            {!connected && way === "paste" && (
+              <Button variant="contained" onClick={() => setPasteDialog("add")}>
+                Connect
+              </Button>
+            )}
+            {connected && isPasted(connection) && connection.paste.length > 0 && (
+              <Button variant={broken ? "contained" : "outlined"} onClick={() => setPasteDialog("replace")}>
+                {connection.method === "token" ? "Replace token" : "Replace keys"}
+              </Button>
+            )}
             {!connected && way === "console" && (
               <Typography variant="body2" color="text.secondary" component="div">
                 Connect from Switch Console <InfoTip>{CONSOLE_CONNECT_NOTE}</InfoTip>
@@ -524,6 +538,17 @@ export default function ConnectorPage() {
           onSaved={(warning) => {
             setKeyDialog(null);
             changed(keyDialog === "replace" ? "Keys replaced." : `${connection.name} is connected.`, warning);
+          }}
+        />
+      )}
+      {pasteDialog && (
+        <PasteDialog
+          connection={connection}
+          replacing={pasteDialog === "replace"}
+          onClose={() => setPasteDialog(null)}
+          onSaved={(warning) => {
+            setPasteDialog(null);
+            changed(pasteDialog === "replace" ? "Replaced." : `${connection.name} is connected.`, warning);
           }}
         />
       )}

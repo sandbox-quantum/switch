@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServiceConnection } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { serviceConnection } from "../../test/serviceConnection";
+import { pastedConnector, serviceConnection } from "../../test/serviceConnection";
 import ConnectorsPage from "./ConnectorsPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -210,6 +210,17 @@ describe("the Connectors catalogue", () => {
     expect(screen.queryByRole("button", { name: "Connect Atlassian" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Connect Datadog" }));
     expect(within(await screen.findByRole("dialog")).getByLabelText("API key")).toBeTruthy();
+  });
+
+  it("takes a token pasted in place of a sign-in from the card's plus", async () => {
+    signedIn();
+    answer({ "GET /service-connections": { connections: [pastedConnector()] } });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Datadog" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect Datadog" });
+    expect(within(dialog).getByRole("combobox", { name: "Datadog site" })).toBeTruthy();
+    expect(within(dialog).getByLabelText("Personal access token")).toBeTruthy();
   });
 
   it("shows a connector the workspace has off, saying so, with no way to connect it", async () => {
