@@ -253,6 +253,7 @@ class TestResults:
             "github",
             "gitlab",
             "google-workspace",
+            "intercom",
             "linear",
             "notion",
             "sentry",

@@ -33,8 +33,9 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
-        "google-workspace",
         "gitlab",
+        "google-workspace",
+        "intercom",
         "notion",
         "sentry",
         "linear",
@@ -46,6 +47,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "gitlab",
         "google-workspace",
+        "intercom",
         "linear",
         "notion",
         "sentry",
@@ -57,6 +59,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
+    assert "SKILL.md" in CATALOG["intercom"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
@@ -1784,6 +1787,33 @@ def test_the_shipped_datadog_entry_signs_in_at_the_site_people_pick():
     assert (access.consent.read, access.consent.write) == ("mcp_read", "mcp_write")
     assert definition.tools is not None and definition.tools.mode == "pass_through"
     assert "SKILL.md" in CATALOG["datadog"].skill_files
+
+
+def test_the_shipped_intercom_entry_pastes_a_key_and_reaches_the_rest_api_and_the_mcp_server():
+    definition = CATALOG["intercom"].definition
+    assert definition.publisher == "Intercom"
+    assert definition.links is not None
+    assert definition.links.documentation == "https://developers.intercom.com/docs"
+    assert definition.links.support == "https://www.intercom.com/help"
+    assert definition.links.privacy == "https://www.intercom.com/legal/privacy"
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [("access_token", True)]
+    assert sign_in.identity.url == "https://api.intercom.io/me"
+    assert sign_in.identity.headers == {"Authorization": "Bearer {access_token}"}
+    assert (sign_in.identity.account_id, sign_in.identity.label) == ("id", "email")
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    # US-hosted workspaces only; EU (mcp.eu.intercom.com) and AU are not served.
+    assert server.url == "https://mcp.intercom.com/mcp"
+    assert server.headers == {"Authorization": "Bearer {access_token}"}
+    # A key never expires, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+    assert definition.access is None
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 def test_loads_an_api_key_entry(catalog_copy):
