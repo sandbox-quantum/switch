@@ -1,4 +1,5 @@
-import type { TelemetryConfig, TelemetryFlintEnv } from './config';
+import { randomUUID } from 'node:crypto';
+import type { TelemetryConfig, TelemetryEnv } from './config';
 import {
   TELEMETRY_EVENT_PROPERTIES,
   type TelemetryEventMap,
@@ -41,6 +42,25 @@ const USER_AGENT = SERVICE_NAME;
  */
 const EVENT_NAME_ATTRIBUTE = 'event.name';
 
+/**
+ * A random id for each record, fresh every time one is built.
+ *
+ * The relay derives Amplitude's `insert_id`, which Amplitude uses to drop a
+ * repeat, from a hash of the record's attributes and its millisecond. Two real
+ * events alike in every property and made in the same millisecond — the rooms
+ * of one template run, the sessions of an agent deleted at once — would hash
+ * the same and arrive as one. This keeps them apart. It is random, kept
+ * nowhere, and names the record and nothing else.
+ */
+const INSERT_ID_ATTRIBUTE = 'flint.insert_id';
+
+/**
+ * The session the event belongs to, for the relay to put where Amplitude reads
+ * a session: the time its first event happened in epoch milliseconds, or -1
+ * for an event nobody caused (`./session`).
+ */
+const SESSION_ID_ATTRIBUTE = 'flint.session_id';
+
 export type TelemetrySendErrorCode =
   | 'timeout'
   | 'network'
@@ -71,10 +91,12 @@ export type TelemetryContext = {
   osVersion: string;
   build: TelemetryConfig['build'];
   /** The Amplitude project the event belongs in, which the relay routes on. */
-  flintEnv: TelemetryFlintEnv;
+  telemetryEnv: TelemetryEnv;
   /** Whether the person is staff, from their account's email domain. */
   internal: TelemetryInternal;
   timeMs: number;
+  /** When the session began, in epoch milliseconds; -1 for an event nobody caused. */
+  sessionId: number;
 };
 
 /**
@@ -167,9 +189,9 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
           attributes: attributes({
             'service.name': SERVICE_NAME,
             'service.version': context.appVersion,
-            'flint.client_id': context.clientId,
-            flint_env: context.flintEnv,
-            flint_internal: context.internal,
+            'switch_trust.client_id': context.clientId,
+            'switch_trust.env': context.telemetryEnv,
+            'switch_trust.internal': context.internal,
             'os.type': context.osType,
             'os.version': context.osVersion,
           }),
@@ -193,6 +215,8 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
                   [EVENT_NAME_ATTRIBUTE]: eventName,
                   ...allowedProperties(name, properties),
                   build: context.build,
+                  [INSERT_ID_ATTRIBUTE]: randomUUID(),
+                  [SESSION_ID_ATTRIBUTE]: context.sessionId,
                 }),
               },
             ],

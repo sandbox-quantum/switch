@@ -39,8 +39,22 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   administersWorkspaceInScope: administers,
 }));
+const WORKSPACES = [
+  { id: 'ws-1', serverId: 'srv-1', name: 'Home', tenantId: 't-1' as string | null },
+  { id: 'ws-2', serverId: 'srv-1', name: 'Sales', tenantId: 't-2' as string | null },
+];
+const workspaces = vi.hoisted(() => ({
+  activeId: 'ws-1' as string | null,
+  list: [] as { id: string; serverId: string; name: string; tenantId: string | null }[],
+  idOnServerInScope: () => 'ws-1',
+  onServer: (serverId: string) => workspaces.list.filter((w) => w.serverId === serverId),
+  refresh: vi.fn(async () => {}),
+  setActive: vi.fn(async (id: string) => {
+    workspaces.activeId = id;
+  }),
+}));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { idOnServerInScope: () => 'ws-1' },
+  workspacesStore: workspaces,
 }));
 
 const { openConsoleLink } = await import('./open-console-link');
@@ -48,9 +62,68 @@ const { openConsoleLink } = await import('./open-console-link');
 beforeEach(() => {
   vi.clearAllMocks();
   servers.activeServerId = 'srv-1';
+  workspaces.activeId = 'ws-1';
+  workspaces.list = WORKSPACES.map((w) => ({ ...w }));
 });
 
 describe('openConsoleLink', () => {
+  it("opens a template's Use form in the workspace the link names", async () => {
+    await openConsoleLink(
+      'switchdash://open/template/tpl-1?server=http%3A%2F%2Flocalhost%3A8000&workspace=t-2&use=1'
+    );
+    expect(workspaces.setActive).toHaveBeenCalledWith('ws-2');
+    expect(navigate).toHaveBeenCalledWith('templateUse', {
+      serverId: 'srv-1',
+      templateId: 'tpl-1',
+    });
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('opens a template page without switching when the link names the workspace on screen', async () => {
+    await openConsoleLink('switchdash://open/template/official:switch-expert?workspace=t-1');
+    expect(workspaces.setActive).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith('templateDetail', {
+      serverId: 'srv-1',
+      templateId: 'official:switch-expert',
+    });
+  });
+
+  it('reads the workspaces again when the one named is not matched to the server yet', async () => {
+    workspaces.list[1]!.tenantId = null;
+    workspaces.refresh.mockImplementationOnce(async () => {
+      workspaces.list[1]!.tenantId = 't-2';
+    });
+
+    await openConsoleLink('switchdash://open/template/tpl-1?workspace=t-2&use=1');
+
+    expect(workspaces.setActive).toHaveBeenCalledWith('ws-2');
+    expect(navigate).toHaveBeenCalledWith('templateUse', {
+      serverId: 'srv-1',
+      templateId: 'tpl-1',
+    });
+  });
+
+  it('opens nothing, and says why, when the server it names cannot be switched to', async () => {
+    servers.setActive.mockImplementationOnce(async () => {});
+
+    await openConsoleLink(
+      'switchdash://open/template/tpl-1?server=https%3A%2F%2Fswitch.example.com&workspace=t-2'
+    );
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith('Could not open that link', {
+      description: 'Could not switch to that server.',
+    });
+  });
+
+  it('says so, and opens nothing, for a workspace the account is not in', async () => {
+    await openConsoleLink('switchdash://open/template/tpl-1?workspace=t-9&use=1');
+    expect(navigate).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith('Could not open that link', {
+      description: 'It is for a workspace this Switch Console is not signed in to.',
+    });
+  });
+
   it('opens a page on the server on screen', async () => {
     await openConsoleLink('switchdash://open/rooms');
     expect(navigate).toHaveBeenCalledWith('serverRooms', { serverId: 'srv-1' });

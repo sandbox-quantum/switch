@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Collection
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -26,10 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
 from switch_core.authz import (
+    VISIBILITIES,
     Principal,
     can,
     require_group_filing,
-    validate_visibility_pair,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
@@ -41,8 +42,10 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.chats import is_console_chat
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import (
+    Client,
     ExternalUser,
     ExternalUserClaim,
     Room,
@@ -52,6 +55,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
@@ -60,6 +64,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
+from switch_core.room_policy import FIXED_MEMBERSHIP, visibility_for_channel
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import (
@@ -78,6 +83,18 @@ if TYPE_CHECKING:
     from switch_core.transport.room_cache import RoomDeliveryCache
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RemovalMiss:
+    """Someone a removal did not take out: `not_in_room`, nobody in the room
+    goes by that name; `platform_refused`, the platform would not remove them
+    from its channel, so they stay in the room too, until someone removes
+    them there."""
+
+    name: str
+    reason: Literal["not_in_room", "platform_refused"]
+
 
 SYSTEM_CLIENT_TYPES = ("observe", "admin")
 
@@ -107,7 +124,7 @@ class RoomCreateConfig(BaseModel):
     # A subset of the selection — only these parents are expanded, not all.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: the identifiers (same space as agent_ids/agent_names)
-    # of selected agents that should receive `room_join` events in this room.
+    # of selected agents that should receive `room_join` and `room_leave` events in this room.
     # Agents not listed keep the default (off).
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
@@ -140,10 +157,12 @@ class RoomCreateConfig(BaseModel):
     # Authorization owner (the acting user, or an agent's owner for MCP-created
     # rooms). `created_by` is immutable audit; `owner_id` is what `can()` reads.
     owner_id: str | None = None
-    # Rooms are collaborative by default — public read & write. Set private to
-    # lock a room down to its owner (and admins).
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Who may see the room: "public" (everyone in the workspace) or "private"
+    # (those taking part, its owner and admins). Left unset, the room takes it
+    # from its channel: see `visibility_for_channel`. A room carries no write
+    # visibility of its own any more; changing a room is its owner's
+    # (`room_policy`), so every room is stored write-private.
+    read_visibility: str | None = None
     # Attachments applied after the room is provisioned. Reference/package
     # access is checked against ``acting_user_id`` using the same predicates
     # the gateway uses; ``acting_user_id`` is required when any of these are
@@ -193,10 +212,6 @@ class RoomCreateResult(BaseModel):
 ROOM_NAME_MAX = 200
 
 
-# The channel types whose members their platform fixes.
-FIXED_MEMBERSHIP = ("direct", "group")
-
-
 class MembershipFixed(ValueError):
     """Who is in a direct or group conversation is not changed from outside it."""
 
@@ -226,6 +241,9 @@ class RoomService:
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
     _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
+    _people_left_listeners: tuple[
+        Callable[[str, str, list[str]], Awaitable[None]], ...
+    ] = ()
 
     def __init__(
         self,
@@ -904,6 +922,12 @@ class RoomService:
         if channel_type is None:
             channel_type = "channel_public"
 
+        read_visibility = config.read_visibility or visibility_for_channel(channel_type)
+        if read_visibility not in VISIBILITIES:
+            raise ValueError(
+                f"Invalid read_visibility '{read_visibility}' (expected public|private)"
+            )
+
         is_dm = (
             channel_type == "direct"
             and collaboration_core is not None
@@ -990,8 +1014,8 @@ class RoomService:
                 kickoff_hash=config.kickoff_hash,
                 template_name=config.template_name,
                 owner_id=config.owner_id,
-                read_visibility=config.read_visibility,
-                write_visibility=config.write_visibility,
+                read_visibility=read_visibility,
+                write_visibility="private",
                 # Nothing else on the row can answer this afterwards.
                 metadata_={
                     "created_by_kind": config.created_by_kind,
@@ -1098,8 +1122,13 @@ class RoomService:
                 "has_instructions": config.instructions is not None,
                 "created_by_kind": config.created_by_kind,
                 "from_template": config.from_template,
+                "console_chat": config.chat_operation_id is not None,
             },
         )
+        for spec in config.roles or []:
+            emit_safely(
+                self._telemetry, "room_role_defined", {"exclusive": spec.exclusive}
+            )
 
         # Only a room a person made counts as activation. Guarded like the
         # emit above it: this runs ahead of the invite, the agent adds and the
@@ -1267,8 +1296,12 @@ class RoomService:
             for client_id in client_ids:
                 client = self._client_lifecycle.get(client_id)
                 if client:
+                    # Nobody is left to read a departure in a room about
+                    # to be deleted, and the delete takes its history anyway.
                     await self._provisioning.kick_user(
-                        room.transport_room_id, client.transport_user_id
+                        room.transport_room_id,
+                        client.transport_user_id,
+                        announce=False,
                     )
 
             channel: RetireOutcome | None = None
@@ -1313,6 +1346,7 @@ class RoomService:
                 "age_days": age_days(room.created_at),
                 "was_ever_active": was_ever_active,
                 "agent_count": agent_count,
+                "console_chat": is_console_chat(room),
             },
         )
         return channel
@@ -1457,7 +1491,15 @@ class RoomService:
         room_id: str,
         agent_ids: list[str],
         removed_by_kind: Literal["user", "agent", "system"] = "user",
+        *,
+        removed_by: str | None = None,
     ) -> None:
+        """Take agents out of a room.
+
+        `removed_by` is the name of whoever asked, written into the room's
+        history with each departure ("X was removed by Y"); None when nobody
+        in particular did.
+        """
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
@@ -1469,12 +1511,26 @@ class RoomService:
             # Both records of the membership before the wake-up. `kick_user`
             # takes `client_rooms`; `room_agents` is the one
             # `get_rooms_for_agent` reads, so a client reacting to the kick by
-            # re-reading its rooms must not still find this one.
+            # re-reading its rooms must not still find this one. The departure
+            # each removal announces goes in the same transaction, written by
+            # whichever call removed the `client_rooms` row.
+            departed: list[Callable[[], None]] = []
             async with self._session_factory() as session:
-                for client_id in agent_clients:
-                    await self._room_store.remove_client(session, client_id, room_id)
-                await self._room_store.remove_agents(session, room_id, agent_ids)
+                for transport_user_id in agent_clients.values():
+                    departed.append(
+                        await self._provisioning.record_leave(
+                            session,
+                            room.transport_room_id,
+                            transport_user_id,
+                            removed_by=removed_by,
+                        )
+                    )
+                removed = await self._room_store.remove_agents(
+                    session, room_id, agent_ids
+                )
                 await session.commit()
+            for announce in departed:
+                announce()
 
             for transport_user_id in agent_clients.values():
                 await self._provisioning.kick_user(
@@ -1485,11 +1541,12 @@ class RoomService:
         await self.room_agents_changed(room.tenant_id, room.id)
         self.room_changed(room.tenant_id, room.id)
 
-        emit_safely(
-            self._telemetry,
-            "room_agents_removed",
-            {"agent_count": len(agent_ids), "removed_by_kind": removed_by_kind},
-        )
+        if removed:
+            emit_safely(
+                self._telemetry,
+                "room_agents_removed",
+                {"agent_count": removed, "removed_by_kind": removed_by_kind},
+            )
 
     async def _load_room(self, room_id: str) -> Room:
         """A room row, read on the caller's session.
@@ -1524,8 +1581,11 @@ class RoomService:
         instructions: str | None = None,
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
-        write_visibility: str | None = None,
     ) -> None:
+        if read_visibility is not None and read_visibility not in VISIBILITIES:
+            raise ValueError(
+                f"Invalid read_visibility '{read_visibility}' (expected public|private)"
+            )
         if name is not None:
             name = name.strip()
             if not name or len(name) > ROOM_NAME_MAX:
@@ -1534,18 +1594,6 @@ class RoomService:
                 )
         tenant_id = await self._room_tenant(room_id)
         async with tenant_session(self._session_factory, tenant_id) as session:
-            if read_visibility is not None or write_visibility is not None:
-                room = await self._room_store.get(session, room_id)
-                if room is None:
-                    raise ValueError(f"Room not found: {room_id}")
-                validate_visibility_pair(
-                    read_visibility
-                    if read_visibility is not None
-                    else room.read_visibility,
-                    write_visibility
-                    if write_visibility is not None
-                    else room.write_visibility,
-                )
             await self._room_store.update_fields(
                 session,
                 room_id,
@@ -1554,7 +1602,6 @@ class RoomService:
                 instructions=instructions,
                 admin_mode=admin_mode,
                 read_visibility=read_visibility,
-                write_visibility=write_visibility,
             )
             await session.commit()
         self.room_changed(tenant_id, room_id)
@@ -1610,7 +1657,7 @@ class RoomService:
     async def set_join_event_listeners(
         self, room_id: str, settings: dict[str, bool]
     ) -> None:
-        """Set, per agent id, whether it receives `room_join` events in the
+        """Set, per agent id, whether it receives `room_join` and `room_leave` events in the
         room. `settings` maps agent id → on/off. Raises ValueError if the room
         does not exist or an agent is not a member of it."""
         if not settings:
@@ -1646,12 +1693,13 @@ class RoomService:
         """
         # The whole row: archiving reports its age and platform.
         room = await self._load_room(room_id)
+        was_archived = room.archived_at is not None
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.set_archived(session, room_id, archived)
             await session.commit()
         self.room_changed(room.tenant_id, room_id)
 
-        if not archived or self._telemetry is None:
+        if not archived or was_archived or self._telemetry is None:
             return
         emit_safely(
             self._telemetry,
@@ -1660,6 +1708,7 @@ class RoomService:
                 "bridge_platform": await self._bridge_platform(room.bridge_id),
                 "age_days": age_days(room.created_at),
                 "was_ever_active": await self._was_ever_active(room.tenant_id, room_id),
+                "console_chat": is_console_chat(room),
             },
         )
 
@@ -1745,13 +1794,181 @@ class RoomService:
                 room_id,
                 unresolved,
             )
-        emit_safely(
-            self._telemetry,
-            # Resolved, not requested: an unknown name adds nobody.
-            "room_users_added",
-            {"user_count": max(len(user_names) - len(unresolved), 0)},
-        )
+        # Resolved, not requested: an unknown name adds nobody.
+        if added := max(len(user_names) - len(unresolved), 0):
+            emit_safely(self._telemetry, "room_users_added", {"user_count": added})
         return unresolved
+
+    def on_people_left(
+        self, listener: Callable[[str, str, list[str]], Awaitable[None]]
+    ) -> None:
+        """Be told `(tenant_id, room_id, client_ids)` after people are taken
+        out of a room, whether they left on their platform or were removed
+        through Switch. For what a departure revokes on the server (a room
+        admin's standing, say), which must not depend on any agent hearing
+        about it. Only people: agents are removed through
+        `remove_agents_from_room`."""
+        self._people_left_listeners = (*self._people_left_listeners, listener)
+
+    async def remove_users_from_room(
+        self, room_id: str, user_names: list[str], *, removed_by: str
+    ) -> list[RemovalMiss]:
+        """Take people out of a bridged room by their names on its platform,
+        at someone's request: out of the platform channel first, and then
+        the room, so the two agree. Returns who did not go: a name nobody in
+        the room goes by, or someone the platform would not remove from its
+        channel (who stays in the room until they are removed there, when
+        Switch hears of it and follows).
+
+        Names are matched among the room's own members, so a removal never
+        has to ask the platform who someone is.
+        """
+        async with self._session_factory() as session:
+            room = await self._room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+            members = await ExternalUserStore().get_by_room(session, room_id)
+        if not room.bridge_id or not room.external_channel_id:
+            raise ValueError(f"Room {room_id} is not bridged")
+        by_name = {
+            name: member.external_user_id
+            for name, member in _members_by_name(room, members).items()
+        }
+        misses: list[RemovalMiss] = []
+        # Every name asked for, by the account it names: two names can name
+        # one person (`alice` and `U123`), and a refusal is reported under each.
+        names_of: dict[str, list[str]] = {}
+        for name in dict.fromkeys(user_names):
+            external_user_id = by_name.get(name.lstrip("@").lower())
+            if external_user_id is None:
+                misses.append(RemovalMiss(name=name, reason="not_in_room"))
+            else:
+                names_of.setdefault(external_user_id, []).append(name)
+        refused = await self.remove_people_from_room(
+            room_id,
+            list(names_of),
+            removed_by=removed_by,
+            removed_by_kind="user",
+            from_channel=True,
+        )
+        misses.extend(
+            RemovalMiss(name=name, reason="platform_refused")
+            for external_user_id in refused
+            for name in names_of.get(external_user_id, [external_user_id])
+        )
+        return misses
+
+    async def remove_people_from_room(
+        self,
+        room_id: str,
+        external_user_ids: list[str],
+        *,
+        removed_by: str | None = None,
+        removed_by_kind: Literal["user", "platform"] = "platform",
+        from_channel: bool = False,
+    ) -> list[str]:
+        """Take people out of a bridged room, by their account on its bridge.
+
+        `removed_by` is who asked, written into the room's history with each
+        departure; None when they left on their own. `from_channel` takes
+        them out of the platform channel first, for a removal asked for in
+        Switch rather than one the platform reported (where they are gone
+        already). Then the room follows the channel: someone the platform
+        would not remove (every one on Telegram; anyone in Slack's #general
+        or a standard Teams channel, whose members are its team's) stays in
+        the room too, since the channel is where membership lives and a room
+        that disagreed with it would be put back by the next sync.
+
+        Returns the ids the platform would not remove, who are therefore
+        still in the room. Someone Switch never saw in the room is nothing to
+        remove, and is not an error.
+        """
+        async with self._session_factory() as session:
+            room = await self._room_store.get(session, room_id)
+            if room is None:
+                raise ValueError(f"Room not found: {room_id}")
+        if not room.bridge_id or not room.external_channel_id:
+            raise ValueError(f"Room {room_id} is not bridged")
+        if not external_user_ids:
+            return []
+
+        refused: list[str] = []
+        if from_channel:
+            collaboration_core = self._collab_lifecycle.get(room.bridge_id)
+            if collaboration_core is None:
+                raise ValueError(
+                    "The room's messaging app isn't connected right now, so "
+                    "nobody can be removed. Try again shortly."
+                )
+            # The platform reports each removal back as a leave, which can
+            # arrive before this call takes them out of the room itself:
+            # whichever removes the row writes the departure, so the bridge
+            # is told who asked, to name them either way.
+            collaboration_core.expect_removals(
+                room.external_channel_id, external_user_ids, removed_by
+            )
+            try:
+                refused = await collaboration_core.adapter.remove_users_from_channel(
+                    room.external_channel_id, external_user_ids
+                )
+            except RuntimeError as e:
+                collaboration_core.forget_expected_removals(
+                    room.external_channel_id, external_user_ids
+                )
+                raise ValueError(
+                    "The room's messaging app isn't connected right now, so "
+                    "nobody can be removed. Try again shortly."
+                ) from e
+            collaboration_core.forget_expected_removals(
+                room.external_channel_id, refused
+            )
+            external_user_ids = [i for i in external_user_ids if i not in refused]
+
+        removed: list[str] = []
+        with tenant_scope(room.tenant_id):
+            async with tenant_session(self._session_factory, room.tenant_id) as session:
+                targets: list[tuple[str, str]] = []
+                for external_user_id in dict.fromkeys(external_user_ids):
+                    person = await ExternalUserStore().get_by_external_id(
+                        session, room.bridge_id, external_user_id
+                    )
+                    if person is None:
+                        continue
+                    client = await session.get(Client, person.client_id)
+                    if client is not None:
+                        targets.append((client.id, client.transport_user_id))
+            for client_id, transport_user_id in targets:
+                # Only a call that removed the membership counts: the same
+                # departure is often reported more than once (a socket per
+                # bot, two Slack events, a team's channels), and the rest
+                # have nothing to undo.
+                if (
+                    await self._provisioning.kick_user(
+                        room.transport_room_id, transport_user_id, removed_by=removed_by
+                    )
+                    is not False
+                ):
+                    removed.append(client_id)
+
+        if removed:
+            logger.info("Removed %d people from room %s", len(removed), room_id)
+            self.room_changed(room.tenant_id, room.id)
+            for listener in self._people_left_listeners:
+                try:
+                    await listener(room.tenant_id, room.id, removed)
+                except Exception:
+                    logger.exception(
+                        "A people-left listener failed for room %s", room_id
+                    )
+            emit_safely(
+                self._telemetry,
+                "room_users_removed",
+                {
+                    "user_count": len(removed),
+                    "removed_by_kind": removed_by_kind,
+                },
+            )
+        return refused
 
     async def link_bridge_to_room(
         self,
@@ -2256,7 +2473,9 @@ class RoomService:
             raise ValueError("the room's messaging app is not running")
         return await collaboration_core.resolve_external_user_id_map(names)
 
-    async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
+    async def ensure_client_in_room(
+        self, room_id: str, client_id: str, *, quiet: bool = False
+    ) -> None:
         """Invite a single running client to the room (it auto-joins) and record
         its membership. Idempotent — safe to call repeatedly, e.g. on every
         bridged message from an external user's human actor."""
@@ -2275,9 +2494,14 @@ class RoomService:
         # so it is bound here alongside the membership record below rather
         # than left to whatever tenant happened to already be ambient.
         with tenant_scope(room.tenant_id):
-            await self._provisioning.invite_to_room(
-                room.transport_room_id, client.transport_user_id
-            )
+            if quiet:
+                await self._provisioning.invite_to_room(
+                    room.transport_room_id, client.transport_user_id, quiet=True
+                )
+            else:
+                await self._provisioning.invite_to_room(
+                    room.transport_room_id, client.transport_user_id
+                )
 
             if not already_member:
                 async with self._session_factory() as session:
@@ -2292,3 +2516,43 @@ def _missing_clients(
     client is not among the room's `existing` client ids."""
     present = set(existing)
     return {cid: uid for cid, uid in expected.items() if cid not in present}
+
+
+def _members_by_name(
+    room: Room, members: list[ExternalUser]
+) -> dict[str, ExternalUser]:
+    """The room's platform members on its own bridge, by lowercased name and
+    by platform id, which is how a mention a platform escaped (Slack's
+    `<@U123>`) arrives. The first one wins a name two share."""
+    by_name: dict[str, ExternalUser] = {}
+    for member in members:
+        if member.bridge_id == room.bridge_id:
+            by_name.setdefault(member.external_username.lower(), member)
+            by_name.setdefault(member.external_user_id.lower(), member)
+    return by_name
+
+
+async def names_the_owner(
+    session: AsyncSession, room: Room, user_names: list[str]
+) -> bool:
+    """Whether any of `user_names`, matched as `remove_users_from_room`
+    matches them, is a platform account the room's owner has claimed:
+    removing them takes the owner tier (`remove_owner`)."""
+    if room.owner_id is None or not room.bridge_id:
+        return False
+    members = _members_by_name(
+        room, await ExternalUserStore().get_by_room(session, room.id)
+    )
+    named = [
+        members[n.lstrip("@").lower()]
+        for n in user_names
+        if n.lstrip("@").lower() in members
+    ]
+    if not named:
+        return False
+    claims = await ExternalUserStore().claims_for(session, [m.id for m in named])
+    return any(
+        claim.user_id == room.owner_id
+        for member in named
+        for claim in claims.get(member.id, [])
+    )

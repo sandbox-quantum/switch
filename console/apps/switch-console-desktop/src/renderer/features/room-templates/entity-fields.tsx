@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { User as UserIcon } from 'lucide-react';
+import { MessagesSquare, User as UserIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import {
@@ -8,12 +8,13 @@ import {
   ChosenAgentTile,
   agentProviderLabelFor,
 } from '@renderer/lib/components/agent-picker';
-import { BridgeTile, bridgeUnusableReason } from '@renderer/lib/components/bridge-tile';
+import { BridgeTile, ChoiceTile, bridgeUnusableReason } from '@renderer/lib/components/bridge-tile';
 import { ChosenTile } from '@renderer/lib/components/chosen-tile';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { ChosenRoomTile, type RoomPick, RoomPickerRow } from '@renderer/lib/components/room-picker';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { rpc } from '@renderer/lib/ipc';
+import { CONSOLE_ROOM } from '@shared/core/switch-servers/room-template-params';
 import type {
   LinkedIdentity,
   RemoteBridge,
@@ -31,6 +32,8 @@ export type EntityLists = {
   rooms: RoomPick[];
   roomsLoading: boolean;
   bridges: RemoteBridge[];
+  /** Whether the server offers Switch Console rooms (its `group_chats` flag). */
+  consoleOffered: boolean;
   /** Null while the signed-in user's linked accounts are unknown. */
   identities: LinkedIdentity[] | null;
   /** Platform users Switch has already seen in this workspace. */
@@ -206,11 +209,28 @@ export function BridgeField({
   onChange: (displayName: string) => void;
   lists: EntityLists;
 }) {
-  const unknown = value !== '' && !lists.bridges.some((b) => b.displayName === value);
+  const isConsole = value === CONSOLE_ROOM;
+  const unknown =
+    value !== '' &&
+    !(isConsole && lists.consoleOffered) &&
+    !lists.bridges.some((b) => b.displayName === value);
   return (
     <div className="flex flex-col gap-2">
-      {lists.bridges.length > 0 ? (
+      {lists.bridges.length > 0 || lists.consoleOffered ? (
         <div className="grid grid-cols-2 gap-2.5">
+          {lists.consoleOffered && (
+            <ChoiceTile
+              icon={<MessagesSquare className="size-5 text-foreground-muted" />}
+              title={CONSOLE_ROOM}
+              disabled={false}
+              selected={isConsole}
+              onSelect={() => onChange(CONSOLE_ROOM)}
+            >
+              <span className="truncate text-xs text-foreground-muted">
+                A room in your Console chats
+              </span>
+            </ChoiceTile>
+          )}
           {lists.bridges.map((bridge) => (
             <BridgeTile
               key={bridge.id}
@@ -230,8 +250,17 @@ export function BridgeField({
       )}
       {unknown && (
         <p className="text-xs text-amber-600 dark:text-amber-500">
-          The template names <strong>{value}</strong>, which is not a messaging app on this server.
-          Pick one above.
+          {isConsole ? (
+            <>
+              The template puts the room in <strong>{CONSOLE_ROOM}</strong>, which this server does
+              not offer. Pick a messaging app above.
+            </>
+          ) : (
+            <>
+              The template names <strong>{value}</strong>, which is not a messaging app on this
+              server. Pick one above.
+            </>
+          )}
         </p>
       )}
     </div>

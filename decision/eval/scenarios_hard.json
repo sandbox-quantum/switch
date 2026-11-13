@@ -39,7 +39,39 @@
     "sender": "sara",
     "text": "the CI pipeline has been queued for 40 minutes, can someone look?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "agreed",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "coffee machine is fixed btw",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "infra-db-disk",
@@ -52,7 +84,27 @@
     "sender": "lee",
     "text": "we're running out of disk on the analytics database, what are our options?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "let's discuss in the planning meeting",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "infra-cloud-cost",
@@ -65,7 +117,27 @@
     "sender": "priya",
     "text": "why did our cloud bill jump 30% last month?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "let's discuss in the planning meeting",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "billing-customer-invoice",
@@ -78,7 +150,27 @@
     "sender": "priya",
     "text": "acme says their October invoice charged them for 50 seats instead of 40",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "coffee machine is fixed btw",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "I'll be a few minutes late to the sync",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "support-escalation",
@@ -91,7 +183,33 @@
     "sender": "tom",
     "text": "a customer is threatening to churn because login has been broken for them since yesterday, who can pick this up?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "nice work on the demo yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "docs-release-notes",
@@ -104,7 +222,33 @@
     "sender": "sara",
     "text": "we need release notes for 4.2 before the deploy goes out",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "coffee machine is fixed btw",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "cloud-bill-not-customer-bill",
@@ -117,7 +261,39 @@
     "sender": "lee",
     "text": "can we get a breakdown of what we spend on Kubernetes versus RDS?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "I'm heads down this morning, ping me if urgent",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "customer-refund-not-cloud",
@@ -130,7 +306,27 @@
     "sender": "priya",
     "text": "can we refund the duplicate payment from globex?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "agreed",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "rollback-request",
@@ -143,7 +339,33 @@
     "sender": "tom",
     "text": "4.2 is throwing 500s on checkout, should we roll back?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "I'll be a few minutes late to the sync",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "queue-backlog",
@@ -156,7 +378,33 @@
     "sender": "lee",
     "text": "the email queue has 200k messages backed up",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "coffee machine is fixed btw",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "thread-continue-rerun",
@@ -184,7 +432,27 @@
     "sender": "sara",
     "text": "rerun it with the longer timeout please",
     "thread_id": "t1"
-   }
+   },
+   "background": [
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "I'm heads down this morning, ping me if urgent",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "thread-shift-to-docs",
@@ -212,7 +480,33 @@
     "sender": "sara",
     "text": "while that runs, can the changelog mention the new index?",
     "thread_id": "t1"
-   }
+   },
+   "background": [
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "thread-continue-index",
@@ -240,7 +534,27 @@
     "sender": "lee",
     "text": "add the index, and do it tonight",
     "thread_id": "t2"
-   }
+   },
+   "background": [
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "thread-shift-to-billing",
@@ -268,7 +582,27 @@
     "sender": "lee",
     "text": "unrelated, but did the refund for globex go through?",
     "thread_id": "t2"
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "agreed",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "thread-ack",
@@ -296,7 +630,33 @@
     "sender": "sara",
     "text": "ok cool, thanks",
     "thread_id": "t1"
-   }
+   },
+   "background": [
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "the wifi on the 3rd floor is flaky again",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "I'm heads down this morning, ping me if urgent",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "thread-person-to-person",
@@ -324,7 +684,39 @@
     "sender": "tom",
     "text": "sara are you around to watch it after lunch?",
     "thread_id": "t1"
-   }
+   },
+   "background": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "agreed",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "I'm heads down this morning, ping me if urgent",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "thread-pronoun-it",
@@ -358,7 +750,39 @@
     "sender": "sara",
     "text": "and let me know when it's done",
     "thread_id": "t1"
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "coffee machine is fixed btw",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "people-debating-rollback",
@@ -384,7 +808,39 @@
     "sender": "tom",
     "text": "fair, let's give it an hour",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "let's discuss in the planning meeting",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "nice work on the demo yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "people-planning-db",
@@ -410,7 +866,39 @@
     "sender": "lee",
     "text": "I'll write the design doc next week",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "I'll be a few minutes late to the sync",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "named-person-deploy",
@@ -423,7 +911,39 @@
     "sender": "tom",
     "text": "sara can you check why the deploy failed when you get a minute?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "nice work on the demo yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "the wifi on the 3rd floor is flaky again",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "named-person-invoice",
@@ -436,7 +956,39 @@
     "sender": "sara",
     "text": "priya, did you ever hear back from acme about the invoice?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "thanks for covering yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "opinion-not-question",
@@ -449,7 +1001,33 @@
     "sender": "lee",
     "text": "honestly our CI has been flaky all week",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "I'm heads down this morning, ping me if urgent",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "rhetorical",
@@ -462,7 +1040,33 @@
     "sender": "tom",
     "text": "who decided friday deploys were a good idea lol",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "the wifi on the 3rd floor is flaky again",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "social",
@@ -500,7 +1104,33 @@
     "sender": "priya",
     "text": "anyone want to grab lunch at 12?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "praise",
@@ -528,7 +1158,39 @@
     "sender": "sara",
     "text": "nice work everyone on the release",
     "thread_id": "t1"
-   }
+   },
+   "background": [
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "I'm heads down this morning, ping me if urgent",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "announcement",
@@ -541,7 +1203,27 @@
     "sender": "tom",
     "text": "reminder: the office is closed on monday",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "let's discuss in the planning meeting",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "ambiguous-db-migration-deploy",
@@ -555,7 +1237,33 @@
     "sender": "sara",
     "text": "the migration is locking the users table, what do we do?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "nice work on the demo yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "ambiguous-customer-billing-support",
@@ -569,7 +1277,27 @@
     "sender": "tom",
     "text": "a customer says they were charged after cancelling and they're angry",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "ambiguous-docs-support",
@@ -583,7 +1311,39 @@
     "sender": "priya",
     "text": "customers keep asking how to rotate their API keys",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "nice work on the demo yesterday",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "the wifi on the 3rd floor is flaky again",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "ambiguous-cost-or-billing",
@@ -597,7 +1357,39 @@
     "sender": "lee",
     "text": "why is the bill so high this month?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "the wifi on the 3rd floor is flaky again",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "agreed",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "on-call-escalation",
@@ -610,7 +1402,33 @@
     "sender": "tom",
     "text": "we have a sev2 from a customer, who's on call?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "let's discuss in the planning meeting",
+     "addressed": []
+    },
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "release-role",
@@ -623,7 +1441,33 @@
     "sender": "sara",
     "text": "who's handling the release today?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "let's discuss in the planning meeting",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "I'm heads down this morning, ping me if urgent",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "out-of-scope-hiring",
@@ -636,7 +1480,27 @@
     "sender": "priya",
     "text": "how many interviews do we have this week?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "lol",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "out-of-scope-design",
@@ -649,7 +1513,27 @@
     "sender": "sara",
     "text": "does anyone have the figma file for the new onboarding?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "vague",
@@ -662,7 +1546,39 @@
     "sender": "tom",
     "text": "hmm",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "coffee machine is fixed btw",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "I'll be a few minutes late to the sync",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "context-moved-on",
@@ -702,7 +1618,27 @@
     "sender": "priya",
     "text": "what do we need from them to resolve it?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "context-agent-already-helping",
@@ -730,7 +1666,27 @@
     "sender": "lee",
     "text": "how long will that take?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "anyone up for lunch at 12?",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "sounds good",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "the wifi on the 3rd floor is flaky again",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "context-two-agents-recent",
@@ -756,7 +1712,33 @@
     "sender": "sara",
     "text": "can you add the migration change to them?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "happy friday all",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "OOO tomorrow afternoon, dentist",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "context-person-reply-to-person",
@@ -782,7 +1764,33 @@
     "sender": "tom",
     "text": "thanks sara!",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "jon",
+     "sender_kind": "person",
+     "text": "reminder: retro at 4",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "agreed",
+     "addressed": []
+    },
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "who's going to the offsite in march?",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    }
+   ]
   },
   {
    "id": "question-to-room-after-chatter",
@@ -820,7 +1828,27 @@
     "sender": "lee",
     "text": "is anyone else seeing timeouts from the redis cluster?",
     "thread_id": null
-   }
+   },
+   "background": [
+    {
+     "sender": "rita",
+     "sender_kind": "person",
+     "text": "can we push the 1:1 to thursday?",
+     "addressed": []
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "back from leave, catching up on threads",
+     "addressed": []
+    },
+    {
+     "sender": "zoe",
+     "sender_kind": "person",
+     "text": "did the calendar invite go out for next week?",
+     "addressed": []
+    }
+   ]
   }
  ]
 }

@@ -789,6 +789,195 @@ HEALTH_CHECK = _spec(
     "check",
 )
 
+# ── Hosted agents ────────────────────────────────────────────────────────────
+# Read from what cloud machines' controllers already send Core (their status
+# reports) and from the hosted controller service's calls. Only cloud machines
+# count, never a laptop or an SSH host. No id of any kind is an attribute, and
+# every value is a word from a fixed set mapped in `observability/hosted.py`,
+# never a report's text. The gauges are reported by one process only, the one
+# holding the hosted metrics advisory lock, so several Core processes don't
+# each report every machine. `backend` is the kind of cloud machine: `vm` for
+# every machine this server makes today.
+HOSTED_AGENTS = _spec(
+    "switch.hosted.agents",
+    "gauge",
+    "{agent}",
+    "Agents on cloud machines, by the process state and session state each "
+    "machine last reported. Reports older than 3 minutes are left out. A v1 "
+    "machine reports no session state, so its `session` is always `none`.",
+    "process",
+    "session",
+    "backend",
+)
+HOSTED_AGENTS_STOPPED = _spec(
+    "switch.hosted.agents_stopped",
+    "gauge",
+    "{agent}",
+    "Agents on cloud machines that are crashed or failed, by reason: "
+    "`out_of_memory`, `crash_loop`, and any other reason `other`.",
+    "reason",
+    "backend",
+)
+HOSTED_SESSIONS = _spec(
+    "switch.hosted.sessions",
+    "gauge",
+    "{session}",
+    "Sessions on cloud machines: `running` now, and the `max` the machines "
+    "allow. Running over max is how full the machines are.",
+    "kind",
+    "backend",
+)
+HOSTED_BOX_MEMORY_USED = _spec(
+    "switch.hosted.box_memory_used",
+    "histogram",
+    "%",
+    "How full a cloud machine's memory was, per status report: 100 × (total − "
+    "available) ÷ total, once per machine report (a machine serving several "
+    "workspaces counts once). The max and p95 show the fullest machines.",
+    "backend",
+    bounds=(25.0, 50.0, 60.0, 70.0, 75.0, 80.0, 85.0, 90.0, 92.0, 95.0, 98.0),
+)
+HOSTED_BOXES_REPORTING = _spec(
+    "switch.hosted.boxes_reporting",
+    "gauge",
+    "{machine}",
+    "Cloud machines that should be running and sent a status report in the "
+    "last 3 minutes. Below switch.hosted.boxes_expected means a machine has "
+    "gone silent.",
+    "backend",
+)
+HOSTED_BOXES_EXPECTED = _spec(
+    "switch.hosted.boxes_expected",
+    "gauge",
+    "{machine}",
+    "Cloud machines that should be running: ready, and wanted running. A "
+    "machine stopped by its owner or for idleness is not expected.",
+    "backend",
+)
+HOSTED_MACHINE_EVENTS = _spec(
+    "switch.hosted.machine_events",
+    "sum",
+    "{event}",
+    "Cloud machine changes, as committed: `requested`, `ready`, `failed`, "
+    "`woken` and `stopped`, at the points where product telemetry reports "
+    "the same change. `reason` is a fixed word (the claim's change, the "
+    "failure, what woke it, why it stopped, or `new` and `restart` for "
+    "ready).",
+    "event",
+    "reason",
+    "backend",
+)
+HOSTED_RECONCILER_SILENCE = _spec(
+    "switch.hosted.reconciler_silence",
+    "gauge",
+    "s",
+    "Seconds since this Core process last heard from the hosted controller "
+    "service (its machine list poll or an observation), counted from the "
+    "process's start until it first hears. Each process reports its own: the "
+    "minimum over pods is how long the reconciler has been silent.",
+)
+HOSTED_PROVIDER_LOGIN_PROBLEMS = _spec(
+    "switch.hosted.provider_login_problems",
+    "gauge",
+    "{provider}",
+    "AI providers installed on cloud machines whose login is `missing` or "
+    "`expired`, by provider (a fixed list, otherwise `other`), so agents on "
+    "them can't run. Reports older than 3 minutes are left out.",
+    "provider",
+    "reason",
+    "backend",
+)
+HOSTED_PROVISION_SECONDS = _spec(
+    "switch.hosted.provision_seconds",
+    "histogram",
+    "s",
+    "How long a new cloud machine took from its claim to its first status "
+    "report. Starts after the first aren't timed.",
+    "backend",
+    bounds=(60.0, 120.0, 180.0, 240.0, 300.0, 420.0, 600.0, 900.0, 1200.0, 1800.0),
+)
+HOSTED_DISK_USED = _spec(
+    "switch.hosted.disk_used",
+    "histogram",
+    "%",
+    "How full a cloud machine's disk was, per status report (once per "
+    "machine): 100 × (total − free) ÷ total. The max and p95 show the fullest "
+    "machines.",
+    "backend",
+    bounds=(25.0, 50.0, 60.0, 70.0, 75.0, 80.0, 85.0, 90.0, 92.0, 95.0, 98.0),
+)
+OBSERVABILITY_SAMPLE_FAILURES = _spec(
+    "switch.observability.sample_failures",
+    "sum",
+    "{failure}",
+    "Samples a background metrics sampler couldn't take, by its fixed name. "
+    "Its own warning never reaches Datadog (the observability package's logs "
+    "are kept out of the export), so this is what shows a broken sampler.",
+    "sampler",
+)
+HOSTED_CLOUD_ERRORS = _spec(
+    "switch.hosted.cloud_errors",
+    "sum",
+    "{error}",
+    "Cloud calls the hosted controller service saw fail, by call "
+    "(`launch`, `start`, `stop`, `terminate`, `volume`, `describe` or `other`) "
+    "and kind (`capacity`, `throttled`, `permission` or `other`). Never the "
+    "cloud's own code or message.",
+    "call",
+    "kind",
+    "backend",
+)
+HOSTED_CONTROLLER_ERRORS = _spec(
+    "switch.hosted.controller_errors",
+    "sum",
+    "{error}",
+    "Errors the hosted controller service hit while it kept running, by kind "
+    "(`cloud`, `core_api`, `state` or `other`), as it reports them to Core.",
+    "kind",
+)
+HOSTED_CONTROLLER_RESTARTS = _spec(
+    "switch.hosted.controller_restarts",
+    "sum",
+    "{restart}",
+    "Agent controllers on cloud machines that restarted: a status report "
+    "naming a new start time for the same controller.",
+    "backend",
+)
+AUTH_SIGN_IN_FAILURES = _spec(
+    "switch.auth.sign_in_failures",
+    "sum",
+    "{failure}",
+    "Password sign-ins refused for a wrong password or an unknown email. No "
+    "attributes: never the email, the account or the caller's address.",
+)
+CONTROLLER_CREDENTIAL_REFUSALS = _spec(
+    "switch.controller.credential_refusals",
+    "sum",
+    "{refusal}",
+    "Controller credentials refused with a 401, by reason code and kind of "
+    "route (`agent`, `management`, `controller`, `hosted_controller` or "
+    "`other`), never the path or any part of the credential.",
+    "reason",
+    "route",
+)
+
+# ── Unhandled exceptions ────────────────────────────────────────────────────
+# Recorded by `switch_core.runtime_errors`. `component` is `http`, `websocket`
+# or `task`; `type` is a common exception class by name (a fixed list), or
+# `other`.
+RUNTIME_UNHANDLED_EXCEPTIONS = _spec(
+    "switch.runtime.unhandled_exceptions",
+    "sum",
+    "{exception}",
+    "Exceptions nothing in Core handled, by where they escaped (`http`, "
+    "`websocket` or a background `task`) and the nearest common exception "
+    "class, by name, from a fixed list (anything else `other`). Each "
+    "also writes one `runtime.unhandled_exception` log line beside the full "
+    "stack the server already logs.",
+    "component",
+    "type",
+)
+
 CATALOGUE: dict[str, MetricSpec] = {
     spec.name: spec
     for spec in (
@@ -857,5 +1046,23 @@ CATALOGUE: dict[str, MetricSpec] = {
         DECISION_PENDING_OLDEST_AGE,
         DECISION_NOTICES,
         HEALTH_CHECK,
+        HOSTED_AGENTS,
+        HOSTED_AGENTS_STOPPED,
+        HOSTED_SESSIONS,
+        HOSTED_BOX_MEMORY_USED,
+        HOSTED_BOXES_REPORTING,
+        HOSTED_BOXES_EXPECTED,
+        HOSTED_MACHINE_EVENTS,
+        HOSTED_RECONCILER_SILENCE,
+        HOSTED_PROVIDER_LOGIN_PROBLEMS,
+        HOSTED_PROVISION_SECONDS,
+        HOSTED_DISK_USED,
+        OBSERVABILITY_SAMPLE_FAILURES,
+        HOSTED_CLOUD_ERRORS,
+        HOSTED_CONTROLLER_ERRORS,
+        HOSTED_CONTROLLER_RESTARTS,
+        AUTH_SIGN_IN_FAILURES,
+        CONTROLLER_CREDENTIAL_REFUSALS,
+        RUNTIME_UNHANDLED_EXCEPTIONS,
     )
 }

@@ -1006,7 +1006,7 @@
           {
             "definition": {
               "type": "note",
-              "content": "**Start here when something is red above and you want the why.**\n\nThese panels read switch-core's own logs on pilot (`service:switch-core env:pilot`), errors and warnings only. Info is routine and left out.\n\n1. The bars say when errors happened and which part of the server wrote them.\n2. The pattern list folds the same message with different ids into one line, most frequent first. That is usually the fastest way to the cause.\n3. The stream at the bottom is the latest errors as they arrived.\n\nOpen [the same view in Logs](https://app.datadoghq.com/logs?query=service%3Aswitch-core%20env%3Apilot%20status%3A%28error%20OR%20warn%29&viz=pattern&agg_q=status%2C%40logger.name) to filter further, or [Error Tracking](https://app.datadoghq.com/error-tracking?query=service%3Aswitch-core%20env%3Apilot) for stack traces grouped by issue.\n\nPilot is `env:pilot`: logs carry no `pod_name`, and staging's pods share pilot's name but are tagged `env:prod` only.",
+              "content": "**Start here when something is red above and you want the why.**\n\nThese panels read switch-core's own logs on pilot (`service:switch-core`), errors and warnings only. Info is routine and left out.\n\n1. The bars say when errors happened and which part of the server wrote them.\n2. The pattern list folds the same message with different ids into one line, most frequent first. That is usually the fastest way to the cause.\n3. The stream at the bottom is the latest errors as they arrived.\n\nOpen [the same view in Logs](https://app.datadoghq.com/logs?query=service%3Aswitch-core%20status%3A%28error%20OR%20warn%29&viz=pattern&agg_q=status%2C%40logger.name) to filter further, or [Error Tracking](https://app.datadoghq.com/error-tracking?query=service%3Aswitch-core) for stack traces grouped by issue.\n\nThe `env` tag can't pick out pilot: the telemetry relay sets it. The only other `service:switch-core` logs are staging's product events, all at info.",
               "background_color": "white",
               "font_size": "14",
               "text_align": "left",
@@ -1047,7 +1047,7 @@
                         "*"
                       ],
                       "search": {
-                        "query": "service:switch-core env:pilot status:error"
+                        "query": "service:switch-core status:error"
                       },
                       "compute": {
                         "aggregation": "count"
@@ -1105,7 +1105,7 @@
                   ],
                   "query": {
                     "data_source": "logs_pattern_stream",
-                    "query_string": "service:switch-core env:pilot status:(error OR warn)",
+                    "query_string": "service:switch-core status:(error OR warn)",
                     "clustering_pattern_field_path": "message",
                     "indexes": [],
                     "group_by": [
@@ -1152,7 +1152,7 @@
                         "*"
                       ],
                       "search": {
-                        "query": "service:switch-core env:pilot status:warn"
+                        "query": "service:switch-core status:warn"
                       },
                       "compute": {
                         "aggregation": "count"
@@ -1206,7 +1206,7 @@
                   ],
                   "query": {
                     "data_source": "logs_stream",
-                    "query_string": "service:switch-core env:pilot status:error",
+                    "query_string": "service:switch-core status:error",
                     "indexes": [],
                     "sort": {
                       "column": "timestamp",

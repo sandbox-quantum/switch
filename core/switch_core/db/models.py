@@ -525,7 +525,7 @@ class ProviderConnection(TenantScoped, Base):
 
 
 class CloudMachine(Base):
-    """One user's Switch cloud VM, whichever workspaces it serves.
+    """One user's Switch Cloud VM, whichever workspaces it serves.
 
     Global, as the person who owns it is: one VM and one disk per user, with
     one lifecycle. What it runs in each workspace is that workspace's
@@ -576,6 +576,9 @@ class CloudMachine(Base):
     running_observed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    #: When the machine first became ready, at any revision. Telemetry tells a
+    #: new machine from one starting again by it.
+    first_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -1245,8 +1248,11 @@ class Room(TenantScoped, Base):
     read_visibility: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="public"
     )
+    # Grants nothing on a room (changing one is its owner's, `room_policy`);
+    # kept so a room answers the same `Owned` shape as the other resources,
+    # and always "private".
     write_visibility: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="public"
+        Text, nullable=False, server_default="private"
     )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
@@ -1601,6 +1607,12 @@ class Document(TenantScoped, Base):
     )
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Made by a room template's `docs:`: any agent in the room may change or
+    # delete it. A NULL `created_by_agent_id` alone does not say this, since
+    # deleting the agent that wrote a document NULLs it too.
+    from_template: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     write_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1779,6 +1791,57 @@ class TemplateInstallResource(TenantScoped, Base):
     # how it differs from it (``get_template_status``): a newer revision it
     # was not brought fully up to. Null when there is nothing to tell.
     notice: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TemplateRunRecord(TenantScoped, Base):
+    """One run of a template in this workspace, counted for the catalogue.
+
+    ``template_id`` is an ``official:`` id or a stored template's, so there is
+    no foreign key: an official template is not a row. A person's run is
+    reported by the client that ran it, once the whole run has succeeded; an
+    agent's is recorded by the operation that ran it. Nothing here says who
+    ran it, so the rows go with their template (``TemplateStore.delete``) or
+    their workspace, and erasing a person leaves nothing behind in them.
+    """
+
+    __tablename__ = "template_run_records"
+    __table_args__ = (
+        Index("ix_template_run_records_tenant_template", "tenant_id", "template_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class HiddenOfficialTemplate(Base):
+    """A template that comes with Switch which a workspace admin removed
+    from their workspace (see ``official_templates``): it is not listed,
+    read or run there. Other workspaces still have it.
+
+    ``tenant_id`` joins the primary key, as on ``tenant_join_domains``, so a
+    template is removed from a workspace once. ``hidden_by`` is cleared when
+    that admin's account goes; the template stays removed.
+    """
+
+    __tablename__ = "hidden_official_templates"
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("tenants.id", name="fk_hidden_official_templates_tenant"),
+        primary_key=True,
+        default=require_tenant_id,
+    )
+    # The slug, as in ``official:<slug>``.
+    slug: Mapped[str] = mapped_column(Text, primary_key=True)
+    hidden_by: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    hidden_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # ── Packages ──────────────────────────────────────────────────────────────────
@@ -2269,6 +2332,16 @@ class ExternalUser(TenantScoped, Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # How many link prompts this account has been sent since
+    # `link_prompt_window_started_at` (CHOO-4121), which `PROMPT_LIMIT` caps.
+    # On the account rather than on a request because a request is gone once
+    # it is answered or cancelled, and the limit must outlive both.
+    link_prompts_sent: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
+    link_prompt_window_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ExternalUserClaim(TenantScoped, Base):
@@ -2336,6 +2409,12 @@ class ExternalUserLinkRequest(TenantScoped, Base):
     __table_args__ = (
         Index("ix_external_user_link_requests_tenant_id", "tenant_id"),
         Index("ix_external_user_link_requests_user_id", "user_id"),
+        Index(
+            "uq_external_user_link_requests_prompt_token",
+            "prompt_token",
+            unique=True,
+            postgresql_where=text("prompt_token IS NOT NULL"),
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "external_user_id"],
             ["external_users.tenant_id", "external_users.id"],
@@ -2367,6 +2446,18 @@ class ExternalUserLinkRequest(TenantScoped, Base):
     code_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The prompt sent alongside the current code, if one was (CHOO-4121): what
+    # its buttons carry, the numbers it offered in order, and the one Switch
+    # Console showed. Replaced with the code, so a newer code retires the older
+    # prompt's buttons. The numbers are kept as they are rather than hashed:
+    # one of a few two-digit numbers hashes to nothing a reader could not undo.
+    # Where the message is showing is not kept: a press says which message it
+    # came from, and that is the only time the message needs changing.
+    prompt_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_choices: Mapped[list[int] | None] = mapped_column(
+        ARRAY(Integer), nullable=True
+    )
+    prompt_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2656,6 +2747,12 @@ class DeploymentIdentity(Base):
     `installed_at` is null where the identity was created against a database
     that already held content; milestones are suppressed for such a deployment
     rather than measured from a guess. The daily counts are unaffected.
+
+    `telemetry_enabled_since` is when reporting was last switched on: set at a
+    boot with telemetry on when it is null, and cleared at a boot with it off.
+    No period count or room activation is dated before it. The one exception
+    is `deployment_installed`, which states the install itself and is dated to
+    it (`TelemetryService.report_installed`).
     """
 
     __tablename__ = "deployment_identity"
@@ -2666,6 +2763,9 @@ class DeploymentIdentity(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     client_id: Mapped[str] = mapped_column(Text, nullable=False, default=_uuid)
     installed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    telemetry_enabled_since: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -3833,6 +3933,44 @@ class ChatOwnerGrant(TenantScoped, Base):
     )
 
 
+class RoomAdmin(TenantScoped, Base):
+    """A person the room's owner, or a workspace admin, made a room admin.
+
+    A room admin changes the room as its owner does, apart from what stays
+    with the owner and workspace admins: deleting it, handing it to someone
+    else, changing who can see it, and choosing its room admins
+    (`room_policy`). Only a person can be one, and only while they take part
+    in the room: leaving it, or being handed the room, takes them off.
+    """
+
+    __tablename__ = "room_admins"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "room_id", "user_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_admins_room",
+            ondelete="CASCADE",
+        ),
+        Index("ix_room_admins_user", "tenant_id", "user_id"),
+    )
+
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_room_admins_user"),
+        nullable=False,
+    )
+    granted_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_room_admins_granted_by"),
+        nullable=True,
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # `create_all` builds the schema for tests; the trigger has to come with it or
 # the delivery tests would exercise a table that announces nothing. Real
 # databases get the same DDL from a migration.
@@ -4591,7 +4729,7 @@ class AgentControllerEnrollmentCode(TenantScoped, Base):
         DateTime(timezone=True), nullable=True
     )
     controller_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Set for a code minted for a Switch cloud machine: what enrolls with it
+    # Set for a code minted for a Switch Cloud machine: what enrolls with it
     # is that machine's controller.
     machine_workspace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -4778,6 +4916,9 @@ class ServiceConnection(TenantScoped, Base):
         CheckConstraint(
             "consent IN ('read', 'write')", name="ck_service_connections_consent"
         ),
+        CheckConstraint(
+            "method IN ('oauth', 'token', 'keys')", name="ck_service_connections_method"
+        ),
     )
 
     user_id: Mapped[str] = mapped_column(
@@ -4796,6 +4937,19 @@ class ServiceConnection(TenantScoped, Base):
     # a client the operator has since replaced is known to need reconnecting.
     # Null for a key, and for a sign-in made before it was recorded.
     oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What the person picked from the catalog entry's fixed lists to connect
+    # (a vendor's site), by name: every URL called for the connection is the
+    # one for its choices. Empty for an entry that offers none. The secret
+    # holds a copy for `refresh` and `revoke_connection`; the two must not
+    # differ.
+    choices: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    # How the person connected: `oauth` (a sign-in), `token` (a pasted
+    # token) or `keys` (pasted keys).
+    method: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'oauth'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -4879,18 +5033,24 @@ class ServiceOAuthClient(Base):
     """The OAuth client Core registered for itself at a service's vendor.
 
     Dynamic client registration (RFC 7591), for a vendor that offers no other
-    way to have a client: one row per deployment and service, written on the
-    first connect. Deployment-wide, because the vendor sees one Switch, and
-    every workspace's connections sign in through it. `encrypted_secret` is
-    keyring-encrypted JSON of the vendor's registration answer, its
-    `client_secret` included where the vendor issued one;
-    `registration_endpoint` is where it was registered, so a vendor that moves
-    it gets a new registration rather than an unknown client.
+    way to have a client: one row per deployment, service and choice, written
+    on the first connect. Deployment-wide, because the vendor sees one Switch,
+    and every workspace's connections sign in through it. `choice` is the
+    catalog entry's choices as one string (`connections/loader.py`,
+    `choice_key`), empty for an entry that offers none: a vendor at several
+    sites is another authorization server at each, and registers a client at
+    each. `encrypted_secret` is keyring-encrypted JSON of the vendor's
+    registration answer, its `client_secret` included where the vendor issued
+    one; `registration_endpoint` is where it was registered, so a vendor that
+    moves it gets a new registration rather than an unknown client.
     """
 
     __tablename__ = "service_oauth_clients"
 
     service: Mapped[str] = mapped_column(Text, primary_key=True)
+    choice: Mapped[str] = mapped_column(
+        Text, primary_key=True, server_default=text("''")
+    )
     registration_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     oauth_client_id: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
@@ -5061,6 +5221,21 @@ class WorkspaceServiceSetting(TenantScoped, Base):
     )
 
 
+#: Above every revision a grant took before the sequence, which counted up
+#: from 1 per grant.
+SERVICE_GRANT_REVISION_FLOOR = 2**30
+
+service_grant_revision_sequence = Sequence(
+    "service_grant_revision",
+    metadata=Base.metadata,
+    data_type=Integer,
+    start=SERVICE_GRANT_REVISION_FLOOR,
+    minvalue=SERVICE_GRANT_REVISION_FLOOR,
+    maxvalue=2**31 - 1,
+    cycle=False,
+)
+
+
 class ServiceGrant(TenantScoped, Base):
     """An agent may use its owner's connection to a service.
 
@@ -5071,6 +5246,9 @@ class ServiceGrant(TenantScoped, Base):
     `tool_mode` `allow` means only `tools`; `deny` means every tool of the
     access level except `tools`. `revision` moves on every change to the grant,
     so a token being issued as it moves is taken back rather than recorded.
+    It comes from `service_grant_revision`, so a grant removed and made again
+    never takes a revision the removed one had: an agent host keeps a token
+    while the revision it reads is the one the token was issued under.
     """
 
     __tablename__ = "service_grants"
@@ -5113,7 +5291,9 @@ class ServiceGrant(TenantScoped, Base):
     resources: Mapped[dict] = mapped_column(JSONB, nullable=False)
     account_id: Mapped[str] = mapped_column(Text, nullable=False)
     revision: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("1")
+        Integer,
+        nullable=False,
+        server_default=service_grant_revision_sequence.next_value(),
     )
     created_by: Mapped[str] = mapped_column(
         Text, ForeignKey("users.id"), nullable=False

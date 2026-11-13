@@ -164,6 +164,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("chat_operations", "user_id"): "database cascades",
     ("chat_hidden", "user_id"): "database cascades",
     ("chat_owner_grants", "user_id"): "database cascades",
+    ("room_admins", "user_id"): "database cascades",
+    ("room_admins", "granted_by"): "database clears",
     ("chat_reads", "user_id"): "database cascades",
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
@@ -174,6 +176,7 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("organization_service_settings", "updated_by"): "database clears",
     ("tenant_retention_policies", "updated_by_user_id"): "database clears",
     ("person_erasures", "requested_by_user_id"): "database clears",
+    ("hidden_official_templates", "hidden_by"): "database clears",
 }
 
 

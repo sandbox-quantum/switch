@@ -97,6 +97,9 @@ class Journey:
         async with world.session_factory() as session:
             room = await RoomStore().get(session, world.room_id)
             assert room is not None
+            # alice is claimed by the room's owner, so her room commands are
+            # the owner's; bob is someone else in the room.
+            room.owner_id = world.owner_id
             self.room = room
             for name in (*world.agents, "alice", "bob", "admin"):
                 client = await ClientStore().get_by_transport_user_id(
@@ -464,7 +467,10 @@ class TestJourneys:
 
         assert "is no longer assigned" in unassigned
         assert await room.reached(question) == set()
-        assert refused.startswith("You can't assign")
+        # Assigning is a room setting, and bob is not the room's owner.
+        assert refused.startswith(
+            "Only the room's owner, a room admin or a workspace admin"
+        )
         assert await room.reached(after) == set()
 
 

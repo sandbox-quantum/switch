@@ -71,6 +71,44 @@ describe("a token's expiry", () => {
     }
   });
 
+  it('holds a pasted credential, which has no expiry, until Switch says to ask again', async () => {
+    // This machine runs an hour fast: Switch says 12:00, it thinks 13:00.
+    vi.useFakeTimers({ now: Date.parse('2026-11-02T13:00:00Z'), toFake: ['Date'] });
+    try {
+      const issued = await issueServiceToken(
+        { endpoint: 'https://switch.example.test/api', token: 'agent-key', agentId: 'agent' },
+        'example',
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                token: '{"public":{"site":"eu.example.test"},"secret":{"pat":"synthetic-pat"}}',
+                expires_at: null,
+                expires_in: null,
+                use_until: '2026-11-02T13:00:00Z',
+                grant_revision: 3,
+              }),
+              { status: 200, headers: { date: 'Mon, 02 Nov 2026 12:00:00 GMT' } }
+            )
+        ) as unknown as typeof fetch
+      );
+      expect(issued).toEqual({
+        token: '{"public":{"site":"eu.example.test"},"secret":{"pat":"synthetic-pat"}}',
+        expiresAt: Date.parse('2026-11-02T13:59:59Z'),
+        useUntil: Date.parse('2026-11-02T13:59:59Z'),
+        grantRevision: 3,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a token with no expiry that does not say when to ask again', async () => {
+    await expect(
+      answered({ token: 'synthetic-pasted', expires_at: null, expires_in: null })
+    ).rejects.toThrow('not one');
+  });
+
   it('refuses a use_until after the token expires', async () => {
     await expect(
       answered({

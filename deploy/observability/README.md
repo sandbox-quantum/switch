@@ -6,7 +6,10 @@ the panel reading it land in the same review.
 
 Nothing here contains an account, an API key, a team handle or a URL. The
 monitors carry `@REPLACE-WITH-NOTIFICATION-HANDLE` where a destination belongs;
-`apply.sh` fills it in from `NOTIFY` when importing.
+`apply.sh` fills it in from `NOTIFY` when importing. They also carry
+`REPLACE-WITH-SERVICE` in their scope and `REPLACE-WITH-ENV` in their name and
+tags, which `apply.sh` fills in from `SERVICE` and `ENV`: every monitor
+watches one deployment only (see "`service`" below).
 
 **Do not skip that.** Datadog does not validate notification handles: a monitor
 carrying the placeholder imports cleanly, shows as healthy in the UI, triggers
@@ -44,9 +47,10 @@ warnings only: errors over time by the logger that wrote them, the most
 frequent messages with their ids folded into one pattern (usually the fastest
 way to the cause), warnings by logger, and the latest errors as they arrived.
 Its note links the same view in Logs and Error Tracking. The log panels filter
-on `service:switch-core env:pilot`: logs carry no `pod_name`, staging's pods
-share pilot's name but are tagged `env:prod` only, and development reports as
-`switch-core-dev`.
+on `service:switch-core` alone: development reports as `switch-core-dev`, the
+only other `service:switch-core` logs are staging's product events, all at
+info, and `env` can't tell deployments apart because the telemetry relay sets
+it (hoot's `public_otel_proxy`).
 
 ## Alerts
 
@@ -72,7 +76,7 @@ than 10 `Could not publish` lines, so one message retrying briefly stays
 quiet), and a burst of more than 25 errors in 15 minutes. Before this change the
 worst 15 minutes of the first week of November held 54 errors, almost all the
 Slack identity error now logged as a warning; without it the worst was 7. Log alerts filter on
-`service:switch-core env:pilot`, for the reason the board's log panels do.
+`service:switch-core`, for the reason the board's log panels do.
 
 "Agent controllers keep reconnecting" watches `switch.controllers.connections`
 with `event:opened`, for the reconnect storm seen on pilot in November (about
@@ -127,11 +131,15 @@ uv run --no-project --with-requirements daily_report.py --with pytest pytest
 
 ## Importing
 
-`apply.sh` creates or updates the monitors and the Signal board, matching by
-name and title so a second run updates in place:
+`apply.sh` creates or updates the monitors, matching by name so a second run
+updates in place. It loads the Signal board too, but only for the deployment
+that keeps the default service (`SERVICE=switch-core` with
+`ALLOW_DEFAULT_SERVICE=1`): the board is shared, under one title, so a run
+for any other deployment leaves it alone.
 
 ```bash
-DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> ./apply.sh
+DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> \
+  SERVICE=<service> ENV=<env> ./apply.sh
 DRY_RUN=1 ...   # print what would change
 ```
 
@@ -139,14 +147,21 @@ The application key needs monitor and dashboard write access. `dashboard.json`
 and `multi-pod-dashboard.json` are not touched by it; import those by hand with
 `POST /api/v1/dashboard` if a deployment doesn't have them yet.
 
+`hosted-dashboard.json` is the hosted agents board for whoever is on call: the
+hosted alerts, then the main dashboard's hosted charts in reading order (a test
+keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
+dashboard JSON, then set `$service` and `$flint_env` to the deployment's, and
+replace `REPLACE-WITH-SERVICE` in the alerts panel's query with its service.
+
 ## Check these before you trust the dashboard
 
 **Histogram panels need two things, not one.** Request latency, delivery lag,
 database query duration, pool hold and wait time (`switch.db.pool.hold.duration`,
 `switch.db.pool.wait.duration`), platform call duration, rate-limit hold-backs,
 the agent buffer's scan length and duration, garbage-collection pauses
-(`switch.runtime.gc_pause`), and decision duration, model time, confidence and
-wait (`switch.decision.duration`, `switch.decision.model_time`,
+(`switch.runtime.gc_pause`), cloud machine memory (`switch.hosted.box_memory_used`),
+and decision duration, model time, confidence
+and wait (`switch.decision.duration`, `switch.decision.model_time`,
 `switch.decision.confidence`, `switch.decision.wait`) are OTLP histograms, and the
 `p95:`/`p99:` queries here assume the collector exports them to Datadog as
 *distributions*. Check the collector's
@@ -170,21 +185,44 @@ than a panel does: an alert over a percentile that is not enabled evaluates
 against no series and sits healthy for ever. Check them after enabling
 percentiles, not before.
 
-**`env` is a filter, not a grouping.** The dashboard's `$env` variable defaults
-to `*` and works whether or not anything sets it. The monitors deliberately do
-*not* group by `env`: the tag only exists when `ENVIRONMENT` is configured
-(it becomes OTLP's `deployment.environment`, which Datadog reads as `env`), and
-a monitor grouped by a tag no data carries returns no series and sits silently
-healthy for ever. If several deployments report into one Datadog org, set
-`ENVIRONMENT` on each and add `env:<name>` to the monitor scopes by hand.
+**Monitors are scoped by `service`, never by `env`.** The `env` tag Datadog
+shows on these metrics is set downstream of Core, not from the deployment's
+`ENVIRONMENT`: one deployment's points have
+been seen under several `env` values at once. So `env` can't separate
+deployments, and a monitor scoped by it could watch the wrong ones or nothing.
+`service` (the deployment's `SERVICE_NAME`, sent as OTLP's `service.name`) is
+the one tag Core sets that Datadog keeps, so every query filters on
+`service:REPLACE-WITH-SERVICE`, which `apply.sh` replaces with `SERVICE`.
+**Give every deployment its own `SERVICE_NAME`** (for example
+`switch-core-prod`, `switch-core-staging`); two deployments sharing one would
+share their alerts. `apply.sh` refuses the default `switch-core` unless
+`ALLOW_DEFAULT_SERVICE=1` is set, for the one deployment meant to keep it.
 
-**`service` is the one tag everything depends on.** Every monitor filters on
-`service:switch-core`. If a deployment changes `SERVICE_NAME`, every one of
-them goes silent at once.
+`ENV` still names each copy (`[Switch <env>] …`) and tags it, so each
+deployment imports its own set and they never overwrite each other. Without
+the scoping, any deployment reporting into the same org (a test slot,
+staging, a developer's server) could fire production's alerts: an ordinary
+restart of a test server reads as "switch-core has stopped reporting".
+
+**Monitors imported before this change** are named `[Switch] …` with no
+environment, so the first import with `ENV` creates new ones beside them
+rather than updating them. Delete the old ones by hand after that import, or
+both copies alert.
+
+**`service` is the tag everything depends on.** Import with the `SERVICE` the
+deployment really sends: a wrong one leaves every monitor silent at once,
+apart from the no-data canary, which fires and says so. The dashboard's
+`$flint_env` variable is a convenience filter only; pick by `$service`.
+
+**`flint_env`** is the deployment's `ENVIRONMENT`, when it's a short plain
+name (a lowercase letter or digit, then up to 31 more or `-`), and is left off
+otherwise. Core puts it on the resource of every metric and log batch, and a
+collector in front of Datadog keeps it as a tag. `service` still tells
+deployments apart.
 
 ## The odd-looking first monitor
 
-`[Switch] switch-core has stopped reporting` queries event-loop lag with a
+`[Switch <env>] switch-core has stopped reporting` queries event-loop lag with a
 threshold of `< 0`, which no real reading can satisfy. That is deliberate and
 is Datadog's idiom for a no-data monitor: the threshold never fires, and
 `notify_no_data` does the work. Event-loop lag is the metric used because it is
@@ -296,3 +334,101 @@ unsplit series.
 `dashboard.json` sums per-pod gauges (consumers, pool, memory) so
 its totals stay totals with several pods, and the pool-saturation monitor
 alerts per pod, since one pod can exhaust its pool while the others idle.
+
+## Hosted agents
+
+The `switch.hosted.*` metrics are reported only with the `hosted_agents` flag
+on, and come from what cloud machines already send Core: their controllers'
+status reports, and the hosted controller service's calls. Laptops and SSH
+hosts are never counted. No metric carries an id: every attribute is a word
+from a fixed set (`core/switch_core/observability/hosted.py`), and `backend`
+is the kind of machine (`vm` for every machine this server makes today).
+
+- The gauges come from one Core process, the one holding the hosted metrics
+  advisory lock, so several processes don't each report every machine. A
+  report older than 3 minutes is left out rather than reported as it was.
+- A v1 machine reports no session state, so `switch.hosted.agents` always has
+  `session:none` for it: chart it by `process`.
+- `switch.hosted.box_memory_used` is recorded once per machine report: a
+  machine serving several workspaces sends its memory in each workspace's
+  report, and only the first fresh one, by workspace id, is counted.
+- **A silent machine** is `switch.hosted.boxes_reporting` below
+  `switch.hosted.boxes_expected`. Machines stopped by their owner or for
+  idleness are not expected, so they don't set it off.
+- `switch.hosted.machine_events` counts cloud machine changes once committed,
+  at the points where product telemetry reports the same change, so it counts
+  whether or not product telemetry is on.
+  An idle machine with no agents left is released with its disk kept rather
+  than stopped, and counts as `event:stopped` with `reason:retained`.
+  A machine an operator holds stopped (`switch-cloud-machine stop`) counts as
+  `event:stopped` with `reason:admin`.
+- `switch.hosted.reconciler_silence` is per process, counted from the
+  process's start until it first hears from the hosted controller service, so
+  a reconciler that is down when Core restarts still shows as silent. Read the
+  minimum over pods.
+- `switch.hosted.machine_events` with `event:failed` says why a machine
+  failed: `not_scheduled`, `never_started`, `never_connected` (a first launch),
+  `wake_failed` (a wake or restart that didn't come back), `owner_left`,
+  `needs_attention`, `reported`, or `stop_failed` (an error while it was
+  wanted stopped). Each failure also writes one log line with the fixed field
+  `switch.event: hosted.machine_failed`, its reason and the machine id.
+- `switch.hosted.provider_login_problems` counts AI provider logins on cloud
+  machines that are `missing` or `expired`, by provider (a fixed list, else
+  `other`). The first time a machine reports one, Core writes one line with
+  `switch.event: hosted.provider_login_problem`.
+- `switch.hosted.provision_seconds` (from request to first report, new machines
+  only) and `switch.hosted.disk_used` are histograms, like memory.
+- `switch.observability.sample_failures` counts samples the hosted sampler
+  couldn't take: its own warnings never reach Datadog, since the observability
+  package's logs are kept out of the export.
+- `switch.hosted.cloud_errors` counts cloud calls the hosted controller
+  service saw fail, by `call` (`launch`, `start`, `stop`,
+  `terminate`, `volume`, `describe`, `other`) and `kind` (`capacity`,
+  `throttled`, `permission`, `other`), never the cloud's own code or message.
+  5 or more in 15 minutes pages, capacity aside; 5 or more capacity errors is
+  low urgency. The service sends its counts since it last reported with its
+  next observation that Core accepts.
+- `switch.hosted.controller_errors` counts the hosted controller service's own
+  errors by `kind` (`cloud`, `core_api`, `state`, `other`), sent with its next
+  observation that Core accepts. 10 or more in 15 minutes is low urgency.
+- `switch.hosted.controller_restarts` counts agent controllers on cloud
+  machines that report a new start time (`controller.started_at`, ISO-8601
+  with an offset). Other controllers send it too, and Core ignores it from
+  them. A dashboard panel only, no alert.
+- `switch.auth.sign_in_failures` counts password sign-ins refused for a wrong
+  password or an unknown email, with no attributes at all. Its alert fires
+  above 20 in 10 minutes, at low urgency.
+- `switch.runtime.unhandled_exceptions` counts exceptions nothing in Core
+  handled, by `component` (`http`, `websocket` or a background `task`) and
+  `type` (the nearest exception class from a fixed list, else `other`). Each
+  also writes one line with `switch.event: runtime.unhandled_exception`,
+  beside the full stack the server already logs. 10 or more in 10 minutes
+  is low urgency: the log alert on "Exception in ASGI application" is the one
+  that pages, since it carries the stack-trace sample.
+- **The hosted gauges are read with `max:`, not `sum:`.** Only one Core
+  process reports them (the one holding the lock), but a point can reach
+  Datadog as more than one series when a collector or relay in front of
+  Datadog stamps its own tags (such as `env`) on each copy. `sum:` would add
+  those copies together.
+- **Alert timings:** "machines expected but not reporting" fires about 10
+  minutes after a machine's last report (3 minutes to count as silent, held 7);
+  "hosted controller service silent" about 10 minutes after its last call
+  (held 1 minute). The rest are in `monitors.json`.
+- **Log fields:** fixed event names use the field `switch.event`, never
+  `event.name` or `event_type`, which some pipelines treat as product events
+  rather than logs.
+- `switch.controller.credential_refusals` counts refused controller
+  credentials by reason code and kind of route only, never the client's
+  address or any part of the credential.
+- Credential refusals have two alerts. **The paging one** watches the bearer
+  routes only (`agent`, `controller`, `hosted_controller`) for the reasons that
+  mean a token was guessed (`invalid_credential`, `missing_credential`,
+  `wrong`, `missing`), at more than 50 in 10 minutes. A revoked or expired
+  controller's own token is refused as `controller_revoked` or
+  `token_expired`, so it doesn't count there. **A low-urgency one** watches
+  token exchange and enrolment (`route:management`), at more than 30 in 10
+  minutes. There, a revoked controller's exchange looks the same as a guess,
+  but the standard agent controller stops after one refused exchange and its
+  service isn't restarted for that (exit codes 3 and 6), so each revoked
+  controller adds about one refusal: 30 is well above a normal day, and
+  reached only by a large revoke or by someone trying credentials.

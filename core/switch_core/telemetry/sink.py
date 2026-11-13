@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import uuid
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,12 @@ logger = logging.getLogger(__name__)
 
 # Fixed, so no operator-set text (service or environment name) reaches the relay.
 _RELAY_SERVICE_NAME = "switch-core"
+
+# A fresh UUID on every record. The relay derives Amplitude's dedup key from
+# the record's attributes, so without it two identical events from one
+# deployment in the same millisecond (a message addressed to two agents of the
+# same runtime, a template attaching two documents) arrive as one.
+INSERT_ID_ATTRIBUTE = "flint.insert_id"
 
 # OTLP's severity number for INFO. A product event is not a log line, but the
 # relay carries it as one, and a record with no severity is rendered by some
@@ -237,7 +244,11 @@ class OtlpRelaySink:
                         severity_text="INFO",
                         severity_number=_SEVERITY_INFO,
                         time_nanos=record.timestamp_ns,
-                        attributes={"event.name": record.name, **record.properties},
+                        attributes={
+                            "event.name": record.name,
+                            INSERT_ID_ATTRIBUTE: str(uuid.uuid4()),
+                            **record.properties,
+                        },
                     )
                     for record in records
                 ],
@@ -326,7 +337,7 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
         service_name=_RELAY_SERVICE_NAME,
         service_version=record.resource.get("service.version"),
         environment=None,
-        deployment_id=record.resource["flint.client_id"],
+        deployment_id=record.resource["switch_trust.client_id"],
         commit_sha=None,
         repository_url=None,
         instance_id=None,
@@ -334,12 +345,15 @@ def _resource_from(record: TelemetryRecord) -> OtlpResource:
 
 
 def _add_relay_context(payload: dict[str, Any], resource: Mapping[str, str]) -> None:
-    """Add `flint_env` and `flint_internal` to the resource, which the shared
-    encoder's resource has no fields for: it describes the process to an
-    operator's own collector, where they mean nothing. The relay sends each
-    event to the Amplitude project `flint_env` names, and drops one it cannot
-    place; `flint_internal` tells staff usage from adoption."""
-    context = {key: resource[key] for key in ("flint_env", "flint_internal")}
+    """Add `switch_trust.env` and `switch_trust.internal` to the resource,
+    which the shared encoder's resource has no fields for: it describes the
+    process to an operator's own collector, where they mean nothing. The relay
+    sends each event to the Amplitude project `switch_trust.env` names, and
+    drops one it cannot place; `switch_trust.internal` tells staff usage from
+    adoption."""
+    context = {
+        key: resource[key] for key in ("switch_trust.env", "switch_trust.internal")
+    }
     for resource_log in payload["resourceLogs"]:
         resource_log["resource"]["attributes"].extend(otlp_attributes(context))
 

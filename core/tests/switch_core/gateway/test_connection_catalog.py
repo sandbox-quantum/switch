@@ -69,6 +69,8 @@ async def link_github(session_factory, user_id):
                 json.dumps({"access_token": "SYNTHETIC"})
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 
@@ -89,9 +91,11 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("atlassian") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
+    assert result.pop("gitlab") == "not_connected"
     assert result.pop("notion") == "not_connected"
     assert result.pop("sentry") == "not_connected"
-    assert len(result) == 10
+    assert result.pop("linear") == "not_connected"
+    assert len(result) == 8
     assert set(result.values()) == {"coming_soon"}
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"

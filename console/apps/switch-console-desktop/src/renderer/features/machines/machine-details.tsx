@@ -357,7 +357,7 @@ function SoftwareCard({ machine }: { machine: MachineDetail }) {
 }
 
 /**
- * The Switch cloud machine's power and disk, and starting and stopping it, as
+ * The Switch Cloud machine's power and disk, and starting and stopping it, as
  * Your Agents shows them: the cloud machine as Switch runs it, beside the
  * controller on it that this page is about.
  */

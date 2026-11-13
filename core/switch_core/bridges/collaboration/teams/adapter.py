@@ -8,7 +8,7 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
+    ChannelMembers,
     ChannelType,
     CreatedChannel,
     DirectoryUser,
@@ -48,6 +49,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     PrivateNoticeDelivery,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -501,6 +503,15 @@ def _strip_leading_mention(text: str) -> str:
     ``@Bot !command``. Removing the leading bot mention lets the shared
     ``!``-command detection in ``_deliver`` see the ``!`` marker."""
     return _LEADING_MENTION_TAG.sub("", text, count=1)
+
+
+def _opens_with_mention(markup: str, self_mention_token: str | None) -> bool:
+    """Whether a message that @mentions the bot opens with a mention.
+
+    Teams delivers a channel message to the bot only when it is mentioned, so
+    the leading mention is the bot's in practice; the same assumption lets
+    ``_strip_leading_mention`` expose a ``!`` after it."""
+    return self_mention_token is not None and bool(_LEADING_MENTION_TAG.match(markup))
 
 
 def _aad_failure_message(exc: Exception) -> str:
@@ -2969,6 +2980,104 @@ class TeamsAdapter(PlatformAdapter):
                 failed.append(user_id)
         return failed
 
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
+        """A channel of a team Switch knows, as `list_channel_members` reads
+        one; not a chat, whose members Graph is not asked for. Decided by the
+        recorded type, so one of unrecorded type is not counted as listable."""
+        if not (self._team_of_channel.get(channel_id) or self._config.team_id):
+            return False
+        return channel_type in ("channel_public", "channel_private")
+
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
+        """The people in a channel, from Graph, by Entra object id: a standard
+        channel's are its team's. None for a chat, whose membership its
+        platform fixes, and for a channel whose team Switch does not know.
+        A failed read raises nothing and lists nobody, marked incomplete."""
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        if not team_id:
+            return None
+        try:
+            channel_type = await self.get_channel_type(channel_id)
+        except Exception:
+            logger.warning("Could not read Teams channel %s's type", channel_id)
+            return ChannelMembers(members={}, complete=False)
+        if channel_type not in ("channel_public", "channel_private"):
+            return None
+        try:
+            entries = await self._graph.list_channel_members(
+                team_id=team_id, channel_id=channel_id
+            )
+        except Exception:
+            logger.warning(
+                "Could not list the members of Teams channel %s",
+                channel_id,
+                exc_info=True,
+            )
+            return ChannelMembers(members={}, complete=False)
+        members: dict[str, str] = {}
+        for entry in entries:
+            user_id = str(entry.get("userId") or "")
+            if user_id:
+                members[user_id] = await self._sender_handle(
+                    user_id, str(entry.get("displayName") or "")
+                )
+        return ChannelMembers(members=members, complete=True)
+
+    async def remove_users_from_channel(
+        self, channel_id: str, user_external_ids: list[str]
+    ) -> list[str]:
+        """Take people out of a private or shared channel.
+
+        A standard channel's members are its team's, and taking someone out
+        of the team would take them out of every channel in it, so nobody is
+        removed from one: they come back failed, as on a chat, for the caller
+        to say so.
+        """
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        try:
+            channel_type = await self.get_channel_type(channel_id)
+        except Exception:
+            logger.exception("Could not read Teams channel %s's type", channel_id)
+            return list(user_external_ids)
+        if not team_id or channel_type != "channel_private":
+            return list(user_external_ids)
+        try:
+            entries = await self._graph.list_channel_members(
+                team_id=team_id, channel_id=channel_id
+            )
+        except Exception:
+            logger.exception("Could not list Teams channel %s's members", channel_id)
+            return list(user_external_ids)
+        membership = {
+            str(entry.get("userId") or ""): str(entry.get("id") or "")
+            for entry in entries
+        }
+        failed: list[str] = []
+        for user_id in user_external_ids:
+            membership_id = membership.get(user_id)
+            if not membership_id:
+                continue
+            try:
+                await self._graph.remove_channel_member(
+                    team_id=team_id, channel_id=channel_id, membership_id=membership_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to remove user %s from Teams channel %s",
+                    user_id,
+                    channel_id,
+                )
+                failed.append(user_id)
+        return failed
+
     # ── Agent identity ───────────────────────────────────────────────────────
 
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
@@ -3170,7 +3279,7 @@ class TeamsAdapter(PlatformAdapter):
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
         # Teams hands the bot a channel message only when it is mentioned, and
-        # a bare command name counts once it is.
+        # a bare command name straight after that mention counts.
         return (
             "From that account, @mention the Switch app in a channel or chat it "
             f"is in and add `link-account {code}`."
@@ -3748,7 +3857,8 @@ class TeamsAdapter(PlatformAdapter):
             channel_name=channel_name,
             self_mention_token=self_mention_token,
             command_text=command_text,
-            is_targeted=bool((activity.get("recipient") or {}).get("isTargeted")),
+            addressed=bool((activity.get("recipient") or {}).get("isTargeted"))
+            or _opens_with_mention(raw_text, self_mention_token),
         )
 
     async def _dispatch_card_action(
@@ -3913,7 +4023,7 @@ class TeamsAdapter(PlatformAdapter):
             return
         await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
-    def _command_in(self, probe: str, *, is_targeted: bool) -> str | None:
+    def _command_in(self, probe: str, *, addressed: bool) -> str | None:
         """The command this message runs, or None if it is ordinary text.
 
         Two ways a command arrives, and both need a name Switch knows.
@@ -3923,12 +4033,15 @@ class TeamsAdapter(PlatformAdapter):
         path and you got "unknown command" instead of your message. Telegram
         already guards against that; this is the same guard.
 
-        **Bare, on a targeted message** — Teams' `/` picker prepends the slash
-        itself and inserts the command's bare name, so `activity.text` is
-        `help`, not `/help`. That is why the slash-triggered list in the shipped
-        manifest declares titles without one, matching Microsoft's own samples.
-        A bare name is only read as a command when the message was targeted at
-        this bot: outside that, "help" in a channel is somebody talking.
+        **Bare, on a message addressed to this bot** — Teams' `/` picker
+        prepends the slash itself and inserts the command's bare name, so
+        `activity.text` is `help`, not `/help`, on a message Teams marks as
+        targeted. That is why the slash-triggered list in the shipped manifest
+        declares titles without one, matching Microsoft's own samples. A message
+        that opens by @mentioning the app is addressed to it just as plainly,
+        and it is how the link instructions tell people to send
+        `link-account CODE`. Outside those two, "help" in a channel is somebody
+        talking.
         """
         if not probe:
             return None
@@ -3937,7 +4050,7 @@ class TeamsAdapter(PlatformAdapter):
         if name in COMMANDS_BY_NAME:
             # Known, however it was written: `!help`, `/help`, or the bare
             # `help` the picker inserts.
-            return name if first[:1] in _COMMAND_PREFIXES or is_targeted else None
+            return name if first[:1] in _COMMAND_PREFIXES or addressed else None
         # Unknown. Whether that is worth answering depends on which prefix was
         # used, because the two mean different things to a person.
         #
@@ -3964,7 +4077,7 @@ class TeamsAdapter(PlatformAdapter):
         channel_name: str | None,
         self_mention_token: str | None = None,
         command_text: str | None = None,
-        is_targeted: bool = False,
+        addressed: bool,
     ) -> None:
         """Route a parsed inbound message to the command or message callback.
 
@@ -3974,7 +4087,10 @@ class TeamsAdapter(PlatformAdapter):
         ``command_text`` is the message with a leading bot @mention removed; it is
         used only to detect and parse ``!``-commands (a channel command arrives as
         ``@Bot !cmd``), while ``text`` — mention intact — is what a plain message
-        is bridged as. Defaults to ``text`` when the caller has nothing to strip."""
+        is bridged as. Defaults to ``text`` when the caller has nothing to strip.
+
+        ``addressed`` says the message was aimed at this bot, so a bare command
+        name in it is a command; see ``_command_in``."""
         # The post this message sits in — itself, when it opened the post.
         # Remembered so an untied reply lands under the question rather than
         # starting a conversation of its own; see _post_to_answer_in.
@@ -3985,7 +4101,7 @@ class TeamsAdapter(PlatformAdapter):
             is_channel=channel_type in ("channel_public", "channel_private"),
         )
         command_probe = (command_text if command_text is not None else text).strip()
-        command = self._command_in(command_probe, is_targeted=is_targeted)
+        command = self._command_in(command_probe, addressed=addressed)
         if command is not None and self._on_command is not None:
             parts = command_probe.split(None, 1)
             await self._on_command(
@@ -4022,9 +4138,12 @@ class TeamsAdapter(PlatformAdapter):
         self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
     ) -> None:
         await self._report_rename(activity, channel_id, chat_type)
+        members_removed = activity.get("membersRemoved") or []
+        if members_removed:
+            await self._dispatch_members_removed(activity, channel_id, members_removed)
         members_added = activity.get("membersAdded") or []
         if not members_added:
-            # Deletions, renames and departures don't need the type; skip the read.
+            # Deletions and renames don't need the type; skip the read.
             return
         channel_type = await self._inbound_channel_type(channel_id, chat_type)
         recipient = activity.get("recipient") or {}
@@ -4043,11 +4162,16 @@ class TeamsAdapter(PlatformAdapter):
                 if channel_type in ("channel_public", "channel_private"):
                     await self._ensure_channel_subscription(channel_id)
                 if self._on_app_joined is not None:
+                    # Who added the bot, keyed as Teams people are elsewhere
+                    # (their Entra object id).
+                    actor = activity.get("from") or {}
+                    added_by = str(actor.get("aadObjectId") or "") or None
                     await self._on_app_joined(
                         InboundAppJoin(
                             channel_id=channel_id,
                             channel_type=channel_type,
                             channel_name=channel_name,
+                            added_by_external_user_id=added_by,
                         )
                     )
             elif self._on_user_joined is not None:
@@ -4111,6 +4235,57 @@ class TeamsAdapter(PlatformAdapter):
         self._channel_names[renamed_id] = new_name
         if self._on_channel_named is not None:
             await self._on_channel_named(renamed_id, old_name, new_name)
+
+    async def _dispatch_members_removed(
+        self,
+        activity: dict[str, Any],
+        channel_id: str,
+        members_removed: list[dict[str, Any]],
+    ) -> None:
+        """People left a chat, a channel or a team, or were taken out of it.
+
+        A chat or a private or shared channel names its own conversation.
+        Leaving a team (`teamMemberRemoved`) takes someone out of every
+        channel in it, while the activity names only the team's own
+        conversation, so each channel known to be in that team is told too;
+        one the person was never in is nothing to the core.
+
+        The bot itself being removed is the app leaving, handled as an
+        installation change, not a person leaving. `from` is whoever did it,
+        named as the remover only when it is someone else.
+        """
+        recipient = activity.get("recipient") or {}
+        bot_id = str(recipient.get("id", ""))
+        channel_data = activity.get("channelData") or {}
+        channels = [channel_id]
+        if channel_data.get("eventType") == "teamMemberRemoved":
+            team_id = self._known_team(channel_id)
+            if team_id:
+                channels.extend(
+                    other
+                    for other, team in self._team_of_channel.items()
+                    if team == team_id and other != channel_id
+                )
+        actor = activity.get("from") or {}
+        actor_id = str(actor.get("aadObjectId") or actor.get("id") or "")
+        for member in members_removed:
+            member_id = str(member.get("id", ""))
+            if not member_id or member_id == bot_id:
+                continue
+            person_id = str(member.get("aadObjectId") or member_id)
+            removed_by = (
+                str(actor.get("name") or "") or None
+                if actor_id and actor_id not in (person_id, member_id)
+                else None
+            )
+            for channel in channels:
+                await self._user_left(
+                    InboundUserLeave(
+                        channel_id=channel,
+                        external_user_id=person_id,
+                        removed_by_name=removed_by,
+                    )
+                )
 
     @staticmethod
     def _channel_name(activity: dict[str, Any]) -> str | None:
@@ -4719,6 +4894,7 @@ class TeamsAdapter(PlatformAdapter):
             channel_name=None,
             self_mention_token=self_mention_token,
             command_text=command_text,
+            addressed=_opens_with_mention(raw_content, self_mention_token),
         )
 
     def _graph_self_mention_token(self, chat_message: dict[str, Any]) -> str | None:

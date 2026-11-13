@@ -77,6 +77,7 @@ jobs:
       decision: ${{ steps.filter.outputs.decision }}
       observability: ${{ steps.filter.outputs.observability }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      e2e_browser: ${{ steps.filter.outputs.e2e_browser }}
       local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
     steps:
       - name: Checkout
@@ -141,6 +142,18 @@ jobs:
             # The server, the stack the fast lane stands up, and the harness.
             e2e:
               - *shared
+              - 'core/**'
+              - 'console/tooling-e2e/**'
+              - 'console/pnpm-lock.yaml'
+              - 'deploy/local/**'
+              - '.env.example'
+              - '.github/workflows/e2e.yml'
+            # The gateway's pages, which the browser lane opens as each role, the
+            # server whose answers decide what each role is shown, and the
+            # harness and stack it runs on.
+            e2e_browser:
+              - *shared
+              - 'gateway/**'
               - 'core/**'
               - 'console/tooling-e2e/**'
               - 'console/pnpm-lock.yaml'
@@ -531,6 +544,23 @@ jobs:
     with:
       lane: fast
       agent_type: claude-code
+
+  # The gateway as each role, in both layouts: the role matrix
+  # (gateway/src/routes/roleMatrix.ts) checked against what a real account in
+  # each role is shown. Not a required check yet.
+  e2e-browser:
+    name: E2E browser lane (${{ matrix.gateway_layout }} layout)
+    needs: changes
+    if: ${{ needs.changes.outputs.e2e_browser == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        gateway_layout: [current, v2]
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: browser
+      agent_type: claude-code
+      gateway_layout: ${{ matrix.gateway_layout }}
 
   migration-heads-on-merge:
     name: Migration heads on merge
