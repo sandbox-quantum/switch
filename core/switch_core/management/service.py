@@ -507,7 +507,12 @@ class ManagementService:
         owner_id = controller.owner_id
         if stored and controller.kind == "ec2":
             await record_controller_status(
-                session, controller.id, report.machine.model_dump(mode="json")
+                session,
+                controller.id,
+                report.machine.model_dump(mode="json"),
+                new_status.get("agents", []),
+                new_status.get("providers", []),
+                report.controller.started_at,
             )
         await session.commit()
         if stored and _status_signature(new_status) != before:

@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import signal
+import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -26,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.accounts.organization_purge import OrganizationPurge
 from switch_core.announcer import Announcer
@@ -231,6 +233,7 @@ from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_schedules import own_room_schedules
 from switch_core.room_service import RoomService
+from switch_core.runtime_errors import install_task_exception_counter
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     own_maintenance as own_session_activity_maintenance,
@@ -740,7 +743,10 @@ async def _audit_history_sessions(
     return owner_engine, create_session_factory(owner_engine)
 
 
-async def run(config: SwitchConfig, process_id: str) -> None:
+async def run(config: SwitchConfig, process_id: str) -> bool:
+    """Serve until shutdown. Returns whether the server started: False when the
+    app's startup failed, which uvicorn logs and then returns from `serve()`
+    normally rather than raising."""
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
     # Switch's boot-time advisory lock, before this coroutine was ever started
@@ -1613,6 +1619,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     async def lifespan(app: object) -> AsyncIterator[None]:
         nonlocal observability
         async with original_lifespan(app):  # type: ignore[arg-type]
+            # A background task's exception nobody retrieved is counted
+            # before asyncio logs it as it always has.
+            install_task_exception_counter(asyncio.get_running_loop())
             observability = start_observability(
                 config=config,
                 version=switch_core_version(),
@@ -1893,6 +1902,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # uvicorn returns once its own part is done, while `_shutdown` is still
     # stopping the rest; returning here would end the loop under it.
     await _begin_shutdown.finish()
+    return server.started
 
 
 def _freeze_boot_objects() -> None:
@@ -2705,7 +2715,14 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config, process_id), loop_factory=_event_loop_factory())
+    if not asyncio.run(run(config, process_id), loop_factory=_event_loop_factory()):
+        # The startup error is already logged (uvicorn: "Application startup
+        # failed"). Exiting 0 here would read as a clean stop to anything
+        # watching the exit status (`restart: on-failure`, Kubernetes, a
+        # process supervisor), so a Core that never served would stay down
+        # unnoticed. `STARTUP_FAILURE` (3) is what `uvicorn.run` exits with.
+        logger.error("switch-core did not start; exiting %d", STARTUP_FAILURE)
+        sys.exit(STARTUP_FAILURE)
 
 
 if __name__ == "__main__":

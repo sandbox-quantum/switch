@@ -702,6 +702,61 @@ async def test_uploads_are_idempotent_and_media_is_scoped_to_the_room(
     assert stranger.status_code == 403
 
 
+@pytest.mark.parametrize(
+    ("name", "content_type", "data", "disposition"),
+    [
+        (
+            "report.html",
+            "text/html",
+            b"<html><script>alert(document.cookie)</script></html>",
+            "attachment",
+        ),
+        (
+            "logo.svg",
+            "image/svg+xml",
+            b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+            "attachment",
+        ),
+        ("shot.png", "image/png", b"\x89PNG\r\n\x1a\n", "inline"),
+    ],
+)
+async def test_chat_files_are_served_so_they_cannot_run_as_switch_web(
+    chats: _Harness, name: str, content_type: str, data: bytes, disposition: str
+) -> None:
+    """A file in a chat is on Switch's own origin. HTML and SVG are downloads,
+    never rendered inline; only safe images show inline. Every file gets
+    `nosniff` and a CSP with no script or origin. The bytes and declared type
+    are unchanged, because Console reads both."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    staged = await chats.client.post(
+        f"/chats/{room_id}/attachments",
+        data={"uploadId": "u1"},
+        files={"file": (name, data, content_type)},
+        headers=chats.as_user(chats.alice),
+    )
+    assert staged.status_code == 200, staged.text
+    uri = staged.json()["uri"]
+    assert (
+        await chats.send(chats.alice, room_id, "s1", "", uploadIds=["u1"])
+    ).status_code == 200
+
+    media = await chats.client.get(
+        f"/chats/{room_id}/media",
+        params={"uri": uri},
+        headers=chats.as_user(chats.alice),
+    )
+    assert media.status_code == 200
+    assert media.content == data
+    assert media.headers["content-type"].startswith(content_type)
+    assert media.headers["content-disposition"].startswith(
+        f'{disposition}; filename="{name}";'
+    )
+    assert media.headers["x-content-type-options"] == "nosniff"
+    assert media.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert media.headers["cache-control"] == "private, no-store"
+
+
 async def test_a_member_removed_after_a_failed_send_cannot_retry_it(
     chats: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:

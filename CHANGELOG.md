@@ -53,6 +53,29 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Monitoring for hosted agents' cloud machines.** With `OTLP_ENDPOINT` set,
+  Core reports hosted machine metrics to Datadog: machines expected against
+  machines reporting, agents and sessions, memory and disk peaks, how long a
+  new machine takes to start, and each machine requested, ready, stopped,
+  woken or failed, with a fixed reason. It also counts failed cloud provider
+  calls by call and kind, the hosted controller service's own errors, agent
+  controller restarts on cloud machines, refused controller credentials, and
+  password sign-in failures. Every metric and log batch carries `flint_env`
+  from `ENVIRONMENT`. Counts and fixed words only: no names, emails, message
+  text or secrets.
+- **Alerts and a dashboard section for hosted machines** in
+  `deploy/observability/`, each scoped to one deployment's `service`.
+  `apply.sh` needs `SERVICE` and `ENV`, refuses the default `switch-core`
+  unless `ALLOW_DEFAULT_SERVICE=1`, and uploads the shared signal board only
+  for the default service.
+- **A hosted agents dashboard to import**, `hosted-dashboard.json`: the
+  hosted alerts and charts in the order whoever is on call reads them, the
+  same charts as the main dashboard's hosted section.
+- **The hosted controller service reports what goes wrong.** It counts failed
+  cloud calls by call and kind and its own errors by kind, and sends the
+  counts with its next observation, which Core counts once the observation is
+  saved. Against an older Core that refuses the counts, it sends the
+  observation without them and leaves them off for an hour. Deploy Core first.
 - **Usage telemetry counts Switch Console chat.** Messages people post in a
   Switch Console chat were stored without being counted, so desktop chat was
   invisible to the message events and the period counts. Each post is now a
@@ -482,6 +505,15 @@ version of their own to them without also giving them a release of their own.
   while no bridge is chosen.
 
 #### Security
+- **Cookie-signed changes must come from Switch's own origins.** Every POST,
+  PUT, PATCH and DELETE that carries the sign-in cookie, sign-in itself and the
+  change socket are checked against `GATEWAY_PUBLIC_URL`, `FRONTEND_BASE_URL`
+  and the sign-in host, or are refused with a 403. Set `GATEWAY_PUBLIC_URL`
+  (or `FRONTEND_BASE_URL`, when the web UI is served from another origin)
+  before upgrading.
+- **Uploaded files are served with headers that stop a browser running
+  them**, and Switch web's pages can't be framed by other sites.
+- **A failed start exits with code 3**, so a supervisor sees the failure.
 - **The OpenCode server-side connector is gone, and with it its blanket
   approval.** It answered every permission request an OpenCode agent made with
   `always`, so whatever the agent asked to do was allowed. Agents now connect
@@ -5695,6 +5727,9 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Reports when its process started.** Each status report carries
+  `controller.started_at`, so Core can count a cloud machine's controller
+  restarting. An older Core ignores it.
 - **Tells Switch Console when a session started.** Once Switch has taken a
   session host's start report, the controller Console runs on its own
   computer passes the session's provider and how it started to Console over

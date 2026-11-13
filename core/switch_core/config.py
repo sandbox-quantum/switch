@@ -656,6 +656,22 @@ class SwitchConfig(BaseSettings):
     # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
 
+    # Extra origins Switch web's cookie requests may come from, beyond
+    # GATEWAY_PUBLIC_URL, FRONTEND_BASE_URL and the sign-in host: for local
+    # development only (the Vite dev server, `["http://localhost:5173"]`), a
+    # JSON list. Each is scheme://host[:port]; plain http:// only for a
+    # loopback host. Any entry is warned about at start (`origin_check`).
+    gateway_extra_origins: list[str] = []
+
+    @field_validator("gateway_extra_origins")
+    @classmethod
+    def _check_extra_origins(cls, value: list[str]) -> list[str]:
+        from switch_core.gateway.origin_check import check_extra_origin
+
+        if len(value) > 20:
+            raise ValueError("GATEWAY_EXTRA_ORIGINS holds at most 20 origins")
+        return [check_extra_origin(entry) for entry in value]
+
     # The operator dashboard's build output (the `dist/` that `npm run build`
     # writes in gateway/). Set, and switch-core serves the dashboard on its own
     # port beside the API, so the server has one address; the image sets it.
