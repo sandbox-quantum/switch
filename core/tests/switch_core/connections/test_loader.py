@@ -15,6 +15,7 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
+    "clickup",
     "bitbucket",
     "microsoft-365",
     "new-relic",
@@ -1053,6 +1054,33 @@ def test_placeholders_keep_their_short_form():
         assert definition.cli is None
         assert definition.publisher is None
         assert definition.links is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("refresh: rotating", "refresh: none", "rotating or reusable"),
+        ("max_lifetime: 3600", "max_lifetime: null", "name its max_lifetime"),
+    ],
+    ids=["no refresh grant", "no expiry"],
+)
+def test_the_shipped_clickup_entry_waits_for_a_token_switch_can_take_back(
+    catalog_copy, old, new, message
+):
+    definition = CATALOG["clickup"].definition
+    assert (definition.name, definition.category) == ("ClickUp", "Project management")
+    assert not definition.enabled
+    assert not CATALOG["clickup"].skill_files
+    # ClickUp's access tokens do not expire and it issues no refresh token, so
+    # an entry for its MCP server would need `refresh: none` and no
+    # `max_lifetime`, and the oauth adapter refuses each. Enabling ClickUp
+    # waits on ClickUp expiring its tokens, or on a policy for ones that don't.
+    entry = OAUTH_ENTRY.replace(
+        "https://mcp.example.test/v1/mcp", "https://mcp.clickup.com/mcp"
+    ).replace(old, new)
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
 
 
 CLI_RELEASE = (

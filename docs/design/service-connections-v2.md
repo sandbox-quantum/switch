@@ -810,6 +810,34 @@ To connect: Settings, Connections in Switch Console, then Sentry. Nothing
 needs configuring on the server. To roll back, add `sentry` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## ClickUp
+
+Listed as a placeholder (`enabled: false`), with its logo and brand colour, so
+the Connections grid shows it as coming soon. ClickUp has an official remote MCP
+server, `https://mcp.clickup.com/mcp`, which signs in with OAuth 2.1 and
+advertises dynamic registration, PKCE S256 and read and write scopes, so it
+fits the first shape in "Adding a connector". What stops it being enabled is the
+token's lifecycle, as reported by probes and ClickUp's documentation in
+issue #836 (not re-measured here):
+
+- The authorization server's metadata lists only the `authorization_code`
+  grant, and a `refresh_token` request is answered `unsupported_grant_type`.
+- ClickUp's documentation says access tokens do not expire and no refresh token
+  is issued.
+
+The `oauth` adapter needs a refresh grant (`auth.refresh` is `rotating` or
+`reusable`) and a `max_lifetime`, because Switch hands an agent only a
+credential it can take back or wait out (see "Tokens"). A token that never
+expires and cannot be revoked per agent fits neither, and a `rotating` entry
+would fail at the first refresh. The loader's tests keep that refusal in place
+for a ClickUp-shaped entry.
+
+To enable it, either ClickUp starts expiring its tokens and issues refresh
+tokens, or Switch decides how to treat a non-expiring OAuth token (hourly grant
+checks, with `refresh: none`, and the revocation ClickUp offers); that is a
+change to the adapter and to "Tokens" above, not to the catalog. Until then,
+the entry has no skill, as a placeholder must not ship one.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
