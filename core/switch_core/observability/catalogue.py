@@ -86,6 +86,19 @@ HTTP_REQUEST_DURATION = _spec(
     "route",
     "method",
 )
+# A gateway request answered at once, without being served, because its caller
+# (`caller`, 429) or the process (`process`, 503) had as many requests running
+# as it may for longer than the request could wait (`gateway/admission.py`).
+GATEWAY_TURNED_AWAY = _spec(
+    "switch.http.gateway_turned_away",
+    "sum",
+    "{request}",
+    "Gateway requests answered at once without being served, because their "
+    "caller (`caller`) or the process (`process`) had as many running as it "
+    "may for longer than they could wait.",
+    "reason",
+)
+
 # A caller that kept repeating a refused request, answered 429 from memory
 # (`refusal_breaker.py`). `route` is the template of the route that refused it.
 HTTP_REFUSALS_THROTTLED = _spec(
@@ -984,6 +997,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         HTTP_REQUESTS,
         HTTP_REQUEST_DURATION,
         HTTP_REFUSALS_THROTTLED,
+        GATEWAY_TURNED_AWAY,
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,

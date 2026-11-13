@@ -242,6 +242,20 @@ def _session_key(token: str, keyring: Keyring) -> bytes | str:
         raise jwt.InvalidTokenError(str(exc)) from exc
 
 
+def session_subject(token: str, keyring: Keyring) -> str | None:
+    """The user a session token names, if its signature checks out and it has
+    not expired; None otherwise. Reads nothing: whether the session was ended
+    since, or the user is still there, is for authentication to ask."""
+    try:
+        payload = jwt.decode(
+            token, _session_key(token, keyring), algorithms=[JWT_ALGORITHM]
+        )
+    except jwt.InvalidTokenError:
+        return None
+    subject = payload.get("sub")
+    return subject if isinstance(subject, str) else None
+
+
 def decode_jwt(token: str, keyring: Keyring) -> dict:
     try:
         return jwt.decode(
