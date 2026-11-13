@@ -15,7 +15,6 @@ export const PERMISSION_COPY = {
     description: 'Safe actions run on their own; risky ones ask you first.',
     overridden: 'Bypass permissions is on and overrides it.',
     infoLabel: 'More info about auto mode',
-    info: "The agent's provider reviews each action before it runs: Claude, Codex, OpenCode, Cursor and Junie use their own automatic review, Antigravity and Pi approve edits and ask before commands, and DeepSeek Harness, which has no reviewer of its own, asks before every tool except those that only read or search files. Applies to every session, including ones started automatically.",
     info: "The agent's provider reviews each action before it runs: Claude, Codex, OpenCode and Cursor use their own automatic review, Antigravity and Pi approve edits and ask before commands, Kimi Code runs routine edits and commands and asks before sensitive ones, and DeepSeek Harness, which has no reviewer of its own, asks before every tool except those that only read or search files. Applies to every session, including ones started automatically.",
   },
   autoApprove: {
