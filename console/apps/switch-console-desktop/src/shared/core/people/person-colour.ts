@@ -7,10 +7,21 @@
  * they change their name. A messaging-app username no one has linked has no
  * id; its name is the seed then.
  *
- * The hues are spread round the wheel and drawn at one lightness that white
- * initials read on, in light mode and dark alike.
+ * Ten colours picked to tell apart at a glance (no two neighbouring hues),
+ * each dark enough for white initials, in light mode and dark alike.
  */
-const HUES = [4, 28, 45, 95, 145, 172, 195, 215, 240, 265, 290, 325] as const;
+const COLOURS = [
+  '#c2410c', // orange
+  '#b91c1c', // red
+  '#be185d', // rose
+  '#a21caf', // fuchsia
+  '#6d28d9', // violet
+  '#1d4ed8', // blue
+  '#0e7490', // cyan
+  '#0f766e', // teal
+  '#15803d', // green
+  '#a16207', // ochre
+] as const;
 
 export function personColour(seed: string): { backgroundColor: string; color: string } {
   // FNV-1a: small, stable across platforms, and spreads near-identical ids.
@@ -19,6 +30,5 @@ export function personColour(seed: string): { backgroundColor: string; color: st
     hash ^= seed.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
-  const hue = HUES[(hash >>> 0) % HUES.length];
-  return { backgroundColor: `hsl(${hue} 42% 44%)`, color: 'white' };
+  return { backgroundColor: COLOURS[(hash >>> 0) % COLOURS.length], color: 'white' };
 }

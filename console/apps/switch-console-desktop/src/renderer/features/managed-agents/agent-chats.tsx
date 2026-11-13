@@ -32,6 +32,7 @@ import type { ChatSummary } from '@shared/core/chats/chats';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
 import { AgentProfile, managedAgentMachineLine } from './agent-profile';
+import { AgentProfileActions } from './agent-profile-actions';
 import {
   type AgentSection,
   agentSections,
@@ -249,6 +250,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               ? () => navigate('machine', { serverId, machineId: machine.id, name: machine.name })
               : null
           }
+          actions={<AgentProfileActions agent={agent} />}
         />
         <Section title="Direct chats" addLabel="New chat" onAdd={newChat} addChoices={null}>
           {ownServer && chatsStore.listError && (
