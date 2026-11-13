@@ -6,7 +6,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, require
+from switch_core import room_policy
+from switch_core.authz import Principal
 from switch_core.db.models import RoomGroup, User
 from switch_core.db.stores.room_group_store import (
     RoomGroupNameTaken,
@@ -31,8 +32,9 @@ from switch_core.gateway.schemas import (
     RoomGroupDetail,
     RoomGroupUpdateRequest,
 )
+from switch_core.room_policy import RoomCaller
 from switch_core.telemetry import emit_safely
-from switch_core.telemetry.ages import UNKNOWN_AGE, age_days
+from switch_core.telemetry.ages import age_days
 
 router = APIRouter()
 
@@ -174,9 +176,9 @@ async def assign_rooms_to_group(
         room = await room_store.get(session, room_id)
         if room is None:
             continue  # skip unknown ids rather than failing the whole batch
-        try:
-            require(principal, "write", room)
-        except PermissionError:
+        if not room_policy.allows(
+            RoomCaller(principal, in_room=False), room, "configure"
+        ):
             forbidden.append(room_id)
             continue
         allowed.append(room_id)
@@ -208,11 +210,11 @@ async def delete_room_group(
     # group and dismantling a working one.
     group = await room_group_store.get(session, group_id)
     room_count = (await room_group_store.get_room_counts(session)).get(group_id, 0)
-    # `UNKNOWN_AGE`, not `0.0`: a group that could not be read has no age, and
-    # zero is one a real group can have. Unreachable today — the delete below
-    # 404s on a missing group before the event is built — but the sentinel is
-    # what makes that stay true if the order ever changes.
-    age = age_days(group.created_at) if group else UNKNOWN_AGE
+    # None, not `0.0`: a group that could not be read has no age, and zero is
+    # one a real group can have. Unreachable today — the delete below 404s on
+    # a missing group before the event is built — but leaving it out is what
+    # keeps that true if the order ever changes.
+    age = age_days(group.created_at) if group else None
 
     try:
         removed = await room_group_store.delete(session, group_id)

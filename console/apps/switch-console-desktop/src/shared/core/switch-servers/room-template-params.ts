@@ -7,6 +7,12 @@
  * form offers a picker over the matching list, and the server checks the
  * value before provisioning. Mirrors `ENTITY_PARAM_TYPES` in core. */
 export const ENTITY_PARAM_TYPES = ['agent', 'bridge', 'room', 'user'] as const;
+
+/** The `bridge` value that puts a template's room in Switch Console rather
+ * than on a messaging app, with the person running it as a member. Offered
+ * only on a server with `group_chats`; `$first` never picks it. Mirrors
+ * `CONSOLE_ROOM` in core's `rooms_yaml`. */
+export const CONSOLE_ROOM = 'Switch Console';
 export type EntityParamType = (typeof ENTITY_PARAM_TYPES)[number];
 
 /** Param types that say how an agent the template creates runs, left out of

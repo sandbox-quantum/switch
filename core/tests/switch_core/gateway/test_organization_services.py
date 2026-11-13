@@ -9,11 +9,12 @@ workspace, as a workspace admin's switch does.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.app_credentials import ConnectorApps
@@ -27,8 +28,10 @@ from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    Organization,
     OrganizationAuditEvent,
     OrganizationMember,
+    ServiceConnection,
     Tenant,
     User,
     require_tenant_id,
@@ -36,6 +39,10 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
+)
+from switch_core.db.stores.organization_service_store import (
+    OrganizationServiceStore,
+    hold_setting,
 )
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.gateway import dependencies as gw_deps
@@ -204,9 +211,22 @@ class TestLocked:
             harness, workspace_admin, "PUT", f"{WORKSPACE}/github", {"enabled": True}
         )
         organization = await _call(harness, admin, "GET", ORGANIZATION)
+        catalogue = await _call(harness, ada, "GET", "/gateway/service-connections")
 
         assert locked.status_code == 200, locked.text
         assert locked.json()["warning"] is None
+        # A member's own catalogue says it is off, and whose say that is.
+        assert catalogue.status_code == 200, catalogue.text
+        [github_mine] = [
+            entry
+            for entry in catalogue.json()["connections"]
+            if entry["slug"] == "github"
+        ]
+        assert (
+            github_mine["workspace_enabled"],
+            github_mine["organization_locked"],
+            github_mine["decided_by"],
+        ) == (False, True, "organization_locked")
         assert sorted(vendor.revoked) == ["ghs_elsewhere", "ghs_here"]
         assert (await _issuances(session_factory, SIBLING))[
             "ghs_elsewhere"
@@ -381,6 +401,8 @@ async def _connected_in(session_factory, user: User, tenant_id: str) -> None:
             external_identity=user.name,
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 
@@ -476,6 +498,16 @@ class TestWithdrawingSafely:
 
 
 class TestWhatThePagesSay:
+    async def test_each_service_comes_with_what_its_card_shows(
+        self, harness: Harness, session_factory
+    ) -> None:
+        admin = await _org_admin(session_factory)
+        github = _by_slug(await _call(harness, admin, "GET", ORGANIZATION))["github"]
+        assert (github["category"], github["description"]) == (
+            "Source control",
+            "Clone, branch, push and open pull requests in the repository you grant.",
+        )
+
     async def test_a_person_connected_in_two_workspaces_is_one_person(
         self, harness: Harness, session_factory
     ) -> None:
@@ -483,6 +515,27 @@ class TestWhatThePagesSay:
         ada = await add_member(session_factory, "ada")
         await _connected_in(session_factory, ada, TENANT_ZERO_ID)
         await _connected_in(session_factory, ada, SIBLING)
+        organization = _by_slug(await _call(harness, admin, "GET", ORGANIZATION))
+        assert organization["github"]["connected_members"] == 1
+
+    async def test_a_connection_that_needs_reconnecting_is_not_counted(
+        self, harness: Harness, vendor: FakeVendor, session_factory
+    ) -> None:
+        """Counted as the workspace page counts: one made through an app since
+        replaced reaches nothing until reconnected."""
+        admin = await _org_admin(session_factory)
+        ada = await add_member(session_factory, "ada")
+        bob = await add_member(session_factory, "bob")
+        await _connected_in(session_factory, ada, TENANT_ZERO_ID)
+        await _connected_in(session_factory, bob, SIBLING)
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == ada.id)
+                .values(oauth_client_id="old-client")
+            )
+            await session.commit()
+        vendor.client_id = "new-client"
         organization = _by_slug(await _call(harness, admin, "GET", ORGANIZATION))
         assert organization["github"]["connected_members"] == 1
 
@@ -556,3 +609,221 @@ class TestWhatThePagesSay:
         assert dropped.json()["enabled"] is True
         assert after["github"]["enabled"] is True
         assert after["github"]["workspace_set"] is False
+
+
+class TestTheWorkspacesList:
+    """What the workspace's own list says of its organization's say: which
+    setting decides each service, who made it, and what may change here."""
+
+    async def test_names_the_organization(
+        self, harness: Harness, session_factory
+    ) -> None:
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        async with session_factory() as session:
+            name = await session.scalar(
+                select(Organization.name).where(Organization.id == TENANT_ZERO_ID)
+            )
+        assert name is not None
+        listed = await _call(harness, workspace_admin, "GET", WORKSPACE)
+        assert listed.json()["organization_name"] == name
+
+    async def test_an_unlocked_default_is_named_and_credited_to_the_organization(
+        self, harness: Harness, session_factory
+    ) -> None:
+        admin = await _org_admin(session_factory)
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": True, "locked": False},
+        )
+        github = _by_slug(await _call(harness, workspace_admin, "GET", WORKSPACE))[
+            "github"
+        ]
+        assert {
+            key: github[key]
+            for key in (
+                "enabled",
+                "decided_by",
+                "organization_default",
+                "updated_by_name",
+                "can_change",
+            )
+        } == {
+            "enabled": True,
+            "decided_by": "organization_default",
+            "organization_default": True,
+            "updated_by_name": "org-admin",
+            "can_change": True,
+        }
+        assert github["updated_at"] is not None
+
+    async def test_the_workspaces_own_choice_keeps_the_default_to_go_back_to(
+        self, harness: Harness, session_factory
+    ) -> None:
+        admin = await _org_admin(session_factory)
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": True, "locked": False},
+        )
+        await _call(
+            harness, workspace_admin, "PUT", f"{WORKSPACE}/github", {"enabled": False}
+        )
+        github = _by_slug(await _call(harness, workspace_admin, "GET", WORKSPACE))[
+            "github"
+        ]
+        assert (
+            github["enabled"],
+            github["decided_by"],
+            github["organization_default"],
+            github["updated_by_name"],
+        ) == (False, "workspace", True, "workspace-admin")
+
+    async def test_locked_may_be_changed_here_by_nobody(
+        self, harness: Harness, session_factory
+    ) -> None:
+        admin = await _org_admin(session_factory)
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": True, "locked": True},
+        )
+        for caller in (workspace_admin, admin):
+            listed = await _call(harness, caller, "GET", WORKSPACE)
+            github = _by_slug(listed)["github"]
+            assert listed.json()["can_change"] is True
+            assert (
+                github["decided_by"],
+                github["organization_default"],
+                github["can_change"],
+            ) == ("organization_locked", None, False)
+            switched = await _call(
+                harness, caller, "PUT", f"{WORKSPACE}/github", {"enabled": False}
+            )
+            assert switched.status_code == 409, switched.text
+
+    async def test_clearing_the_workspaces_own_is_refused_while_locked(
+        self, harness: Harness, session_factory
+    ) -> None:
+        admin = await _org_admin(session_factory)
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        await _call(
+            harness, workspace_admin, "PUT", f"{WORKSPACE}/github", {"enabled": True}
+        )
+        await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": False, "locked": True},
+        )
+        cleared = await _call(harness, workspace_admin, "DELETE", f"{WORKSPACE}/github")
+        github = _by_slug(await _call(harness, workspace_admin, "GET", WORKSPACE))[
+            "github"
+        ]
+
+        assert cleared.status_code == 409, cleared.text
+        assert cleared.json()["detail"] == organization_locked("GitHub", enabled=False)
+        # Kept for when the organization unlocks it.
+        assert github["workspace_set"] is True
+
+    async def test_clearing_what_the_workspace_never_set_is_not_found_locked_or_not(
+        self, harness: Harness, session_factory
+    ) -> None:
+        admin = await _org_admin(session_factory)
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": False, "locked": True},
+        )
+        cleared = await _call(harness, workspace_admin, "DELETE", f"{WORKSPACE}/github")
+        assert cleared.status_code == 404, cleared.text
+        assert cleared.json()["detail"] == (
+            "This workspace has no switch of its own for GitHub."
+        )
+
+    @pytest.mark.parametrize(
+        ("method", "body"), [("PUT", {"enabled": False}), ("DELETE", None)]
+    )
+    async def test_a_lock_made_while_a_switch_is_under_way_is_the_one_it_meets(
+        self, harness: Harness, session_factory, method: str, body
+    ) -> None:
+        """The organization locking it waits for no read: the switch waits
+        for the organization, and then meets its lock."""
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        org_admin = await _person(session_factory, "org-admin", member_role=None)
+        await _call(
+            harness, workspace_admin, "PUT", f"{WORKSPACE}/github", {"enabled": True}
+        )
+        async with session_factory() as locking:
+            await hold_setting(locking, TENANT_ZERO_ID, "github")
+            switching = asyncio.create_task(
+                _call(harness, workspace_admin, method, f"{WORKSPACE}/github", body)
+            )
+            await asyncio.sleep(0.5)
+            assert not switching.done()
+            await OrganizationServiceStore().set(
+                locking,
+                TENANT_ZERO_ID,
+                "github",
+                enabled=True,
+                locked=True,
+                updated_by=org_admin.id,
+            )
+            await locking.commit()
+        answered = await asyncio.wait_for(switching, timeout=10)
+        github = _by_slug(await _call(harness, workspace_admin, "GET", WORKSPACE))[
+            "github"
+        ]
+
+        assert answered.status_code == 409, answered.text
+        assert (github["workspace_set"], github["decided_by"]) == (
+            True,
+            "organization_locked",
+        )
+
+    async def test_a_service_off_on_the_server_says_so_whatever_its_switch(
+        self, harness: Harness, session_factory
+    ) -> None:
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        await _call(
+            harness, workspace_admin, "PUT", f"{WORKSPACE}/github", {"enabled": True}
+        )
+        broker: ServiceBroker = harness.gateway_app.state.service_broker
+        broker._disabled["github"] = "GitHub is switched off on this server."
+        github = _by_slug(await _call(harness, workspace_admin, "GET", WORKSPACE))[
+            "github"
+        ]
+        assert (
+            github["enabled"],
+            github["unavailable_code"],
+            github["unavailable_reason"],
+        ) == (True, "switched_off", "GitHub is switched off on this server.")

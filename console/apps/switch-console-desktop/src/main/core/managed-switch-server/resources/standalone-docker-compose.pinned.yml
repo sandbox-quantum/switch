@@ -240,10 +240,13 @@ services:
       AGENT_MANAGEMENT_ENABLED: ${AGENT_MANAGEMENT_ENABLED:-false}
       CONTROLLER_TOKEN_SECRET: ${CONTROLLER_TOKEN_SECRET:-}
       FEATURE_FLAGS_ENABLED: ${FEATURE_FLAGS_ENABLED:-}
-      # JSON objects, so bare keys for the reason given under LOG_FORMAT
-      # below: `${VAR:-}` would hand them an empty string, which fails boot.
+      # JSON objects and a true/false flag, so bare keys for the reason given
+      # under LOG_FORMAT below: `${VAR:-}` would hand them an empty string,
+      # which fails boot.
       DISABLED_SERVICES:
       SERVICE_ACCESS_PROFILES:
+      SERVICE_SIGN_IN_REDIRECT:
+      ALLOW_NON_EXPIRING_KEYS:
       GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
       GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
@@ -302,8 +305,9 @@ services:
       # brought up by hand, an operator sets it here the same way.
       TELEMETRY_ENABLED:
       TELEMETRY_ENDPOINT:
-      # Which Amplitude project the usage lands in. Unset is prod; Switch
-      # Console writes its own build's environment here for a server it runs.
+      # Which Amplitude project the usage lands in. Unset is prod for a
+      # release and dev for a development build; Switch Console writes its
+      # own build's environment here for a server it runs.
       TELEMETRY_ENVIRONMENT:
       # Whether this is one of the company's own deployments. Switch Console
       # writes its own answer here for a server it runs.

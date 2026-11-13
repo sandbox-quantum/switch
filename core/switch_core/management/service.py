@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.agent_icon import (
     InvalidIconUrl,
     drop_third_party_avatar,
-    generated_icon_url,
+    new_icon_url,
     normalise_icon_url,
 )
 from switch_core.bridges.agent.auth import ControllerPrincipal
@@ -116,8 +116,8 @@ OPERATION_LIST_LIMIT = 200
 
 V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
 
-# What a Switch cloud machine's controller is called, whatever enrolled it.
-CLOUD_MACHINE_NAME = "Switch cloud"
+# What a Switch Cloud machine's controller is called, whatever enrolled it.
+CLOUD_MACHINE_NAME = "Switch Cloud"
 
 
 @dataclass(frozen=True)
@@ -265,7 +265,7 @@ class ManagementService:
     async def machine_enrollment_code(
         self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
     ) -> str:
-        """A code for a Switch cloud machine's controller in the bound workspace
+        """A code for a Switch Cloud machine's controller in the bound workspace
         to enroll with: the owner's, valid long enough for the machine to boot,
         and binding what enrolls with it to the workspace's row on the machine.
         The caller commits."""
@@ -339,7 +339,7 @@ class ManagementService:
             owner_id=consumed.owner_id,
             name=CLOUD_MACHINE_NAME if machine is not None else description.name,
             description=description.description,
-            # A Switch cloud machine's controller is the cloud's, whatever the
+            # A Switch Cloud machine's controller is the cloud's, whatever the
             # program that enrolled says it is.
             kind="ec2" if machine is not None else description.kind,
             platform=description.platform.model_dump(),
@@ -507,7 +507,12 @@ class ManagementService:
         owner_id = controller.owner_id
         if stored and controller.kind == "ec2":
             await record_controller_status(
-                session, controller.id, report.machine.model_dump(mode="json")
+                session,
+                controller.id,
+                report.machine.model_dump(mode="json"),
+                new_status.get("agents", []),
+                new_status.get("providers", []),
+                report.controller.started_at,
             )
         await session.commit()
         if stored and _status_signature(new_status) != before:
@@ -1233,7 +1238,7 @@ class ManagementService:
             session, tenant_id, owner_id, controller_id
         )
         if check_placement:
-            # Placing an agent on a sleeping Switch cloud machine wakes it.
+            # Placing an agent on a sleeping Switch Cloud machine wakes it.
             machine = (
                 await wake_controller_machine(
                     session, controller.id, self.now(), "agent_placed"
@@ -1330,7 +1335,7 @@ class ManagementService:
                 third_party_avatars=self.settings.third_party_avatars,
             )
             if icon_url is None and self.settings.third_party_avatars:
-                icon_url = generated_icon_url(request.name)
+                icon_url = new_icon_url(request.name)
         except InvalidIconUrl as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)

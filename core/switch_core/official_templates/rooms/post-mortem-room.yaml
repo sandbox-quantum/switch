@@ -1,0 +1,162 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  incident:
+    type: string
+    label: Incident
+    description: The incident identifier or title being reviewed
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  postmortem_facilitator:
+    type: agent
+    display_name: "{incident} Post-Mortem Facilitator"
+    description: Guides the team through a structured blameless review and drafts the post-mortem document
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{postmortem_facilitator.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [retro_room]}
+    instructions: |-
+      You are the post-mortem facilitator for the {incident} review. You help the team run a structured, blameless post-mortem.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the discussion since you last looked.
+
+      Guide the discussion through these sections in order:
+      1. Timeline review - walk through what happened, fill in gaps, correct errors
+      2. Root cause - identify the underlying cause that, if fixed, would have prevented this
+      3. Contributing factors - things that made it worse or slower to resolve
+      4. What went well - what worked in the response (this section matters, don't skip it)
+      5. Action items - what we change, who owns it, when it's due
+
+      Keep the discussion blameless:
+      - If someone says 'Person X should have...' redirect to 'What process or system could have caught this?'
+      - If someone says 'I made a mistake when...' acknowledge the courage in sharing and redirect to what would prevent it: 'What would help someone in that situation make a different choice?'
+      - Focus on systems, processes, and tooling rather than individual judgment
+
+      As the discussion progresses:
+      - Update the Post-Mortem Report document with findings
+      - Summarize each section before moving to the next
+      - Make sure every contributing factor has at least one action item
+      - If the discussion gets stuck on root cause, suggest the '5 whys' technique: ask why repeatedly until you reach a systemic cause
+  action_tracker:
+    type: agent
+    display_name: "{incident} Action Tracker"
+    description: Extracts action items from discussion, assigns owners, and tracks completion
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{action_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [retro_room]}
+    instructions: |-
+      You are the action tracker for the {incident} post-mortem. You make sure every identified gap produces a concrete, trackable action item.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the discussion since you last looked.
+
+      In the discussion you catch up on:
+      - Look for anything that sounds like 'we should...' or 'next time we need to...' or 'if we had...' - these are potential action items
+      - For each one, capture: what needs to happen, who owns it, when it's due
+      - If an action item is vague ('improve monitoring'), push for specifics ('add an alert on p99 latency exceeding 500ms on the /checkout endpoint, owned by [name], by [date]')
+      - If an action item has no owner, flag it. An unowned action item will not get done.
+
+      After the discussion:
+      - Compile all action items into the Post-Mortem Report document
+      - Verify each one has: specific description, owner, due date
+      - Flag any contributing factors that don't have corresponding action items
+      - Ask the facilitator to confirm the list is complete
+
+      Quality check for action items:
+      - Is it specific enough that someone could start working on it tomorrow?
+      - Is the owner someone who can actually do the work or authorize it?
+      - Is the due date realistic given the team's current workload?
+      - Will this action actually prevent the same failure, or just detect it faster?
+  retro_room:
+    type: room
+    name: "Retro - {incident}"
+    description: "Post-mortem review for {incident}. Blameless analysis of what happened and how to prevent recurrence."
+    bridge: "{bridge}"
+    agents: [postmortem_facilitator, action_tracker]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room is for a blameless post-mortem of {incident}. The goal is to understand what happened, why, and what we change to prevent it from happening again.
+
+      Ground rules:
+      - Blameless means blameless. Focus on systems and processes, not individuals. 'The deploy pipeline didn't catch it' not 'Person X broke it.'
+      - Assume everyone involved made the best decision they could with the information they had at the time.
+      - Be specific and factual. Reference the incident timeline.
+      - Every identified gap should produce a concrete, assignable action item.
+      - Action items without owners don't count.
+
+      The agents only see messages that mention them by name: mention {postmortem_facilitator.name} to move the discussion on or update the report, and {action_tracker.name} to capture and check action items.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Post-Mortem Report (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: facilitator
+        exclusive: true
+        instructions: |-
+          You run this post-mortem. Your responsibilities:
+          - Guide the discussion through each section: timeline review, root cause, contributing factors, what went well, action items
+          - Keep the discussion blameless - redirect any language that assigns personal blame
+          - Make sure quieter participants have a chance to contribute
+          - Extract concrete action items with owners and due dates
+          - Write the final post-mortem document
+
+          Discussion sequence:
+          1. Walk through the timeline - fill in gaps, correct errors
+          2. Identify root cause - the thing that, if fixed, would have prevented this
+          3. Identify contributing factors - things that made it worse or slower to resolve
+          4. What went well - what worked in the response
+          5. Action items - what we change, who owns it, when it's due
+    docs:
+      - name: Post-Mortem Report
+        description: The structured post-mortem document
+        instructions: Fill this in as the review progresses. This becomes the permanent record.
+        content: |
+          # Post-Mortem: {incident}
+
+          **Date of incident:** 
+          **Date of review:** {$date}
+          **Severity:** 
+          **Duration:** 
+          **Impact:** 
+
+          ## Summary
+          [2-3 sentences on what happened]
+
+          ## Timeline
+          [Copy from incident timeline, add corrections from review]
+
+          ## Root Cause
+          [The underlying cause that, if fixed, would have prevented this]
+
+          ## Contributing Factors
+          - 
+
+          ## What Went Well
+          - 
+
+          ## Action Items
+
+          | Action | Owner | Due date | Status |
+          |--------|-------|----------|--------|
+          | | | | |
+    kickoff: "Post-mortem session for {incident}. @{postmortem_facilitator.name} will guide the discussion. @{action_tracker.name} will capture action items. Let's start by walking through the timeline. The agents only see messages that mention them by name."

@@ -33,12 +33,14 @@ import {
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
+import AgentListPage from "../pages/agents/AgentListPage";
 import AgentsPage from "../pages/agents/AgentsPage";
 import CollaborationsPage from "../pages/collaborations/CollaborationsPage";
 import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "../pages/ecosystem/EcosystemGraphPage";
 import MachinesPage from "../pages/machines/MachinesPage";
 import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
+import ConnectorPage from "../pages/connectors/ConnectorPage";
 import OrganizationPage, {
   OrganizationAuditLogPage,
   OrganizationConnectorsPage,
@@ -62,6 +64,7 @@ import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import UsagePage from "../pages/usage/UsagePage";
 import UsersPage from "../pages/users/UsersPage";
+import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspacePage, { WorkspaceGeneralPage } from "../pages/workspace/WorkspacePage";
 import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
 import { PlannedPage } from "./StatusPages";
@@ -187,7 +190,8 @@ export const ROUTES: readonly AppRoute[] = [
   page("/templates/:id", V2, everyone, <TemplateDetailPage />),
   redirect("/templates/:id", CURRENT, "/resources/templates/:id"),
 
-  page("/agents", BOTH, everyone, <AgentsPage />),
+  page("/agents", CURRENT, everyone, <AgentsPage />),
+  page("/agents", V2, everyone, <AgentListPage />),
   page("/agents/:agentId", BOTH, everyone, <AgentDetailPage />),
 
   // Today `/connectors` is the operator's server-wide connector apps. In the
@@ -195,7 +199,7 @@ export const ROUTES: readonly AppRoute[] = [
   // moves to the Platform area.
   page("/connectors", CURRENT, operators, <ConnectorAppsPage />),
   page("/connectors", V2, serviceConnections, <PlannedPage title="Connectors" />),
-  page("/connectors/:connectorId", V2, serviceConnections, <PlannedPage title="Connector" />),
+  page("/connectors/:connectorId", V2, serviceConnections, <ConnectorPage />),
 
   page("/machines", CURRENT, agentManagement, <MachinesPage />),
   redirect("/machines", V2, "/settings/devices"),
@@ -234,7 +238,7 @@ export const ROUTES: readonly AppRoute[] = [
     "workspace",
     "Connectors",
     serviceConnections,
-    <PlannedPage title="Connectors" />,
+    <WorkspaceConnectorsPage />,
   ),
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <RegistrationKeysPage />),
   redirect("/settings/api-keys", CURRENT, "/registration-keys"),

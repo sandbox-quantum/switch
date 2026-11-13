@@ -24,35 +24,30 @@ import {
   type RemoteRoomRole,
   type RoomAccess,
   roomAccessOf,
-  visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
 import { useArchiveRoomConfirm } from './archive-room-confirm';
 import { roomDetailKey } from './room-participants';
 
 /**
- * The room's read and write access as people read them. Write access is who
- * may change the room in Switch — its settings, who is in it, its resources —
- * not who may post: posting in a bridged room is up to its channel. A room
- * nobody else may read is still readable by whoever takes part in it.
+ * The room's access as people read it: who may see it. Changing a room in
+ * Switch is its owner's and admins' and adding to it is for whoever takes
+ * part, whichever it is.
  */
 export const ACCESS_LABELS: Record<RoomAccess, string> = {
-  public: 'Public — read & write',
-  read_only: 'Public — read only',
+  public: 'Public',
   private: 'Private',
 };
 
 /** What each access setting means, in full: shown under the choice and on
  * hover, in the same words as the gateway's room pages. */
 export const ACCESS_HELPERS: Record<RoomAccess, string> = {
-  public:
-    'Everyone in the workspace can see and change it. Only its owner and admins can change its access.',
-  read_only: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
+  public: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
   private:
     'Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.',
 };
 
 /** The access settings in the order they are offered, most open first. */
-export const ACCESS_ORDER: RoomAccess[] = ['public', 'read_only', 'private'];
+export const ACCESS_ORDER: RoomAccess[] = ['public', 'private'];
 const NO_GROUP = '__none__';
 
 /** One write's progress, for a control that saves the moment it changes. */
@@ -110,7 +105,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
         ? 'Could not take the room out of its group.'
         : 'Could not change the room’s group.'
     );
-  const access = roomAccessOf(room.readVisibility, room.writeVisibility);
+  const access = roomAccessOf(room.readVisibility);
 
   async function write(
     setState: (state: WriteState) => void,
@@ -142,7 +137,7 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
                   rpc.workspaces.updateRoom({
                     workspaceId,
                     roomId: room.id,
-                    ...visibilityForAccess(next as RoomAccess),
+                    readVisibility: next as RoomAccess,
                   }),
                 'Could not change who can see this room.'
               )
@@ -162,7 +157,12 @@ export const AccessAndGroupFields = observer(function AccessAndGroupFields({
         ) : (
           <span className="text-sm text-foreground">{ACCESS_LABELS[access]}</span>
         )}
-        <span className="text-xs text-foreground-muted">{ACCESS_HELPERS[access]}</span>
+        <span className="text-xs text-foreground-muted">
+          {ACCESS_HELPERS[access]}
+          {permissions.canManage && room.bridgeId
+            ? ' Changing it here leaves the channel as it is.'
+            : ''}
+        </span>
         {accessState.phase !== 'idle' && <WriteStatus state={accessState} />}
       </div>
 

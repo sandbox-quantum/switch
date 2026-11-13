@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
 import httpx
@@ -20,6 +21,11 @@ from switch_core.bridges.collaboration.adapter import (
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
+)
+from switch_core.bridges.collaboration.link_prompts import (
+    PendingPrompt,
+    deliver_prompt,
+    prepare_prompt,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
@@ -75,7 +81,9 @@ from switch_core.gateway.schemas import (
     DirectoryUserSummary,
     ExternalUserSummary,
     IdentityClaimant,
+    IssueLinkCodeRequest,
     LinkCode,
+    LinkPromptSummary,
     LinkRequestSummary,
     RequireConfirmationRequest,
     RequireConfirmationResult,
@@ -902,6 +910,13 @@ async def claim_bridge_identity(
     # session holds, the caller included, and an expired row cannot be
     # reloaded from synchronous attribute access.
     caller_id = user.id
+    # A prompt only for a client that can show its number: one from before
+    # confirmation is answered with the code in a 409 and nothing else.
+    requester = (
+        _Requester(user.name, user.email)
+        if payload.wants_prompt and payload.expects_confirmation
+        else None
+    )
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
@@ -926,6 +941,7 @@ async def claim_bridge_identity(
         raise HTTPException(status_code=404, detail="Switch user not found")
 
     bridge_type, connection_config = bridge.type, bridge.connection_config or {}
+    platform = bridge.display_name
     # Not held across asking the platform.
     await session.commit()
     await _refuse_unlinkable(collab_lifecycle, bridge_id, payload.external_user_id)
@@ -1016,14 +1032,17 @@ async def claim_bridge_identity(
             None,
             Principal(caller_id, is_admin),
         )
-    code = (
+    issued = (
         await _issue_code(
             session,
             external_user_store,
             collab_lifecycle,
             request,
+            account=external_user,
             bridge_type=bridge_type,
+            platform=platform,
             connection_config=connection_config,
+            requester=requester,
         )
         if target_user_id == caller_id
         else None
@@ -1038,6 +1057,13 @@ async def claim_bridge_identity(
         details={"bridge_id": bridge_id, "user_id": target_user_id},
     )
     await session.commit()
+    code = (
+        None
+        if issued is None
+        else await _send_prompt(
+            issued, collab_lifecycle, bridge_id, payload.external_user_id
+        )
+    )
     if code is not None and not payload.expects_confirmation:
         raise HTTPException(status_code=409, detail=_code_as_refusal_text(code))
 
@@ -1081,23 +1107,86 @@ def _code_as_refusal_text(code: LinkCode) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _Requester:
+    """Who is asking for a prompt, read before anything can expire the row."""
+
+    name: str
+    email: str
+
+
+@dataclass(frozen=True)
+class _IssuedCode:
+    """A code issued in the caller's transaction, and the prompt to send with
+    it once that transaction has committed."""
+
+    code: LinkCode
+    prompt: PendingPrompt | None
+
+
 async def _issue_code(
     session: AsyncSession,
     external_user_store: ExternalUserStore,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     request: ExternalUserLinkRequest,
     *,
+    account: ExternalUser,
     bridge_type: str,
+    platform: str,
     connection_config: dict[str, object],
-) -> LinkCode:
+    requester: _Requester | None,
+) -> _IssuedCode:
+    """A fresh code for `request`, and a prompt recorded beside it when
+    `requester` asked for one (CHOO-4121)."""
     code, expires_at = await external_user_store.issue_link_code(session, request)
-    return LinkCode(
+    link_code = LinkCode(
         code=code,
         expires_at=expires_at,
         expires_in_seconds=int(LINK_CODE_TTL.total_seconds()),
         instructions=collab_lifecycle.link_code_instructions(
             bridge_type, connection_config, code
         ),
+    )
+    if requester is None:
+        return _IssuedCode(code=link_code, prompt=None)
+    prompt = await prepare_prompt(
+        session,
+        external_user_store=external_user_store,
+        request=request,
+        account=account,
+        requester_name=requester.name,
+        requester_email=requester.email,
+        platform=platform,
+        adapter=collab_lifecycle.get_adapter(account.bridge_id),
+    )
+    return _IssuedCode(code=link_code, prompt=prompt)
+
+
+async def _send_prompt(
+    issued: _IssuedCode,
+    collab_lifecycle: CollaborationBridgeLifecycleService,
+    bridge_id: str,
+    external_account_id: str,
+) -> LinkCode:
+    """Send the prompt issued with a code, now its transaction has committed,
+    and say on the code how that went. Holds no connection: it waits on the
+    platform."""
+    if issued.prompt is None:
+        return issued.code
+    outcome = await deliver_prompt(
+        issued.prompt,
+        adapter=collab_lifecycle.get_adapter(bridge_id),
+        account_external_id=external_account_id,
+    )
+    return issued.code.model_copy(
+        update={
+            "prompt": LinkPromptSummary(
+                number=outcome.number,
+                sent=outcome.sent,
+                unavailable_reason=outcome.unavailable_reason,
+                link=outcome.link,
+            )
+        }
     )
 
 
@@ -1198,15 +1287,22 @@ async def issue_identity_link_code(
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     user: Annotated[User, Depends(get_current_user)],
+    payload: IssueLinkCodeRequest | None = None,
 ) -> LinkCode:
     """A fresh code that confirms the caller's link to this account
-    (CHOO-3881), replacing any code issued before.
+    (CHOO-3881), replacing any code issued before, with a prompt sent beside
+    it when the caller asks for one (CHOO-4121).
 
     For a link the caller started, one an admin started for them, or one made
     before links needed confirming, which keeps working meanwhile. Only ever
     for the caller: the code is the Switch half of the proof.
     """
     caller_id = user.id
+    requester = (
+        _Requester(user.name, user.email)
+        if payload is not None and payload.wants_prompt
+        else None
+    )
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
@@ -1214,6 +1310,7 @@ async def issue_identity_link_code(
         session, external_user_store, bridge_id, external_user_row_id
     )
     bridge_type, connection_config = bridge.type, bridge.connection_config or {}
+    platform = bridge.display_name
     external_account_id = external_user.external_user_id
     # Not held across asking the platform.
     await session.commit()
@@ -1261,16 +1358,19 @@ async def issue_identity_link_code(
             target_id=external_user.id,
             details={"bridge_id": bridge_id, "user_id": caller_id},
         )
-    code = await _issue_code(
+    issued = await _issue_code(
         session,
         external_user_store,
         collab_lifecycle,
         request,
+        account=external_user,
         bridge_type=bridge_type,
+        platform=platform,
         connection_config=connection_config,
+        requester=requester,
     )
     await session.commit()
-    return code
+    return await _send_prompt(issued, collab_lifecycle, bridge_id, external_account_id)
 
 
 async def _drop_older_link(

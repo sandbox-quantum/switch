@@ -112,17 +112,17 @@ class TestRoomAccessPermissionAuthz:
                 await _patch(
                     session,
                     room_id=room.id,
-                    req=RoomUpdateRequest(write_visibility="private"),
+                    req=RoomUpdateRequest(read_visibility="private"),
                     user=other,
                 )
 
             assert exc.value.status_code == 403
 
-    async def test_non_owner_may_still_edit_other_fields_on_public_write_room(
+    async def test_public_write_no_longer_lets_a_non_owner_edit_the_room(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # The fix must not over-block: a public-write room is still editable by
-        # a non-owner as long as the access permission is left alone.
+        # Changing a room is its owner's and admins' (`room_policy`), whatever
+        # its write visibility says.
         async with session_factory() as session:
             owner = await _add_user(session, name="owner")
             other = await _add_user(session, name="other")
@@ -134,13 +134,14 @@ class TestRoomAccessPermissionAuthz:
                 write_visibility="public",
             )
 
-            with pytest.raises(_GatePassed):
+            with pytest.raises(HTTPException) as exc:
                 await _patch(
                     session,
                     room_id=room.id,
                     req=RoomUpdateRequest(name="renamed"),
                     user=other,
                 )
+            assert exc.value.status_code == 403
 
     async def test_owner_can_change_visibility(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -153,7 +154,7 @@ class TestRoomAccessPermissionAuthz:
                 await _patch(
                     session,
                     room_id=room.id,
-                    req=RoomUpdateRequest(write_visibility="public"),
+                    req=RoomUpdateRequest(read_visibility="private"),
                     user=owner,
                 )
 

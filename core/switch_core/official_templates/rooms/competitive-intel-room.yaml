@@ -1,0 +1,149 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  market:
+    type: string
+    label: Market
+    description: The market or product category being tracked
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  competitor_monitor:
+    type: agent
+    display_name: "{market} Competitor Monitor"
+    description: Aggregates and categorizes competitor signals from public sources
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{competitor_monitor.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [intel_room]}
+    instructions: |-
+      You are the competitor monitor for the {market} market. You aggregate and organize competitive signals so the team always has a current picture of what competitors are doing.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on every signal posted since you last looked, including ones that did not mention you.
+
+      When competitive signals are shared in the room:
+      - Categorize the signal: product launch, pricing change, partnership, funding, hiring pattern, blog post, conference talk, analyst mention
+      - Rate urgency: is this something we need to respond to now, or is it informational?
+      - Update the Competitor Tracker document with the signal, date, and category
+      - Note which competitor it affects and whether it changes their positioning
+
+      Signal types to watch for:
+      - Product launches and feature announcements
+      - Pricing or packaging changes
+      - Key hires and job posting patterns (hiring for a new area signals where they're investing)
+      - Funding announcements and financial disclosures
+      - Partnership and integration announcements
+      - Customer wins and case studies
+      - Conference talks and thought leadership content
+
+      When you notice patterns:
+      - Flag when multiple competitors make similar moves (suggests a market-wide trend)
+      - Note when a competitor's hiring patterns suggest a new product area
+      - Track pricing trends: is the market moving toward lower prices, freemium, or usage-based?
+
+      Keep entries factual. 'Competitor X launched feature Y on [date]' not 'Competitor X is trying to catch up.'
+  intel_synthesizer:
+    type: agent
+    display_name: "{market} Intel Synthesizer"
+    description: Turns raw competitive signals into actionable briefs and battle card updates
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{intel_synthesizer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [intel_room]}
+    instructions: |-
+      You are the intel synthesizer for the {market} market. You turn raw competitive signals into analysis that product, marketing, and sales teams can act on.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on signals posted since you last looked.
+
+      When a significant competitor move happens:
+      - Write a brief analysis: what did they do, why does it matter, what does it mean for us?
+      - Assess impact on our product roadmap: does this change any priorities?
+      - Assess impact on sales positioning: do we need to update battle cards or objection handling?
+      - Assess impact on marketing messaging: does our positioning still differentiate?
+      - Suggest specific actions if warranted
+
+      When asked to produce a competitive landscape summary (for example the monthly review):
+      - Organize by competitor, then by dimension (product, pricing, positioning, momentum)
+      - Highlight what changed since the last summary
+      - Identify market-level trends: where is the whole market moving?
+      - Note white space: areas no competitor is addressing well (opportunities for us)
+      - Rate each competitor's threat level with specific reasoning
+      - Highlight the 3 most important competitive developments and their implications
+      - Recommend actions for product, marketing, and sales
+
+      Battle card maintenance:
+      - When a competitor's product, pricing, or positioning changes, draft updated battle card language
+      - Include: their pitch, our counter-positioning, objection handling, proof points
+      - Flag which sales collateral needs updating
+  intel_room:
+    type: room
+    name: "{market} - Competitive Intel"
+    description: "Competitive intelligence for the {market} market. Signal tracking, analysis, and battle card updates."
+    bridge: "{bridge}"
+    agents: [competitor_monitor, intel_synthesizer]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room tracks competitive intelligence for the {market} market. Post any competitive signal you encounter - product launches, pricing changes, customer wins, hiring patterns, partnerships, or analyst coverage.
+
+      When posting a signal:
+      - Competitor name
+      - What happened (with source link if available)
+      - When it happened
+      - Your initial read on why it matters
+
+      Don't filter - post signals even if you're not sure they're important. Patterns only emerge when we have enough data points.
+
+      The agents only see messages that mention them by name: mention {competitor_monitor.name} when you post a signal, and {intel_synthesizer.name} when you want analysis, a landscape summary or battle card updates.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Competitor Tracker (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: intel-lead
+        exclusive: true
+        instructions: |-
+          You own competitive intelligence for the {market} market. Your responsibilities:
+          - Define which competitors we actively track
+          - Commission deep-dive analyses on significant competitive moves
+          - Ensure battle cards stay current
+          - Distribute relevant intel to product, marketing, and sales teams
+          - Run monthly competitive landscape reviews
+    docs:
+      - name: Competitor Tracker
+        description: Current status and recent moves of tracked competitors
+        instructions: Update whenever a new signal comes in. Review monthly for completeness.
+        content: |-
+          # Competitor Tracker - {market}
+
+          | Competitor | Last update | Signal type | What happened | Implications |
+          |-----------|------------|-------------|---------------|-------------|
+          | | | | | |
+
+          ## Competitor Profiles
+
+          ### [Competitor 1]
+          - **Positioning:** 
+          - **Key strengths:** 
+          - **Key weaknesses:** 
+          - **Recent moves:** 
+          - **Threat level:** Low / Medium / High
+    kickoff: "Competitive intel room is live for the {market} market. @{competitor_monitor.name} will track signals and @{intel_synthesizer.name} will produce analysis. Intel-lead - post the list of competitors we're tracking and any recent moves to seed the room, mentioning the competitor monitor so it sees them."

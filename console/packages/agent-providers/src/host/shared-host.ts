@@ -1199,6 +1199,7 @@ export async function hostSessionProcess(input: {
       grants,
       ask: parent.ask,
       redactions,
+      notices: serviceNotices,
       listTimeoutMs: LIST_TIMEOUT_MS,
       callTimeoutMs: CALL_TIMEOUT_MS,
       fetch,

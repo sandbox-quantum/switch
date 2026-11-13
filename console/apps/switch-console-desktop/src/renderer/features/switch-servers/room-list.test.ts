@@ -52,7 +52,7 @@ describe('a room as the Rooms page shows it', () => {
       appKey: 'b-acme',
       appLabel: 'Acme Slack',
       groupName: 'Design',
-      access: 'read_only',
+      access: 'public',
       agentCount: 1,
       peopleCount: 6,
       privateChannel: false,

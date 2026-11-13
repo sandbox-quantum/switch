@@ -156,7 +156,7 @@ export default function InvitationsSection({
           columns={columns}
           emptyState={
             <TableEmptyState title="No invitations">
-              Invite someone to send them a link to this workspace.
+              Invite someone to give them a link to join with.
             </TableEmptyState>
           }
           height={Math.min(520, 108 + Math.max(1, invitations?.length ?? 0) * 52)}

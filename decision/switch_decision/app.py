@@ -9,6 +9,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -17,6 +18,7 @@ from fastapi.responses import JSONResponse
 from switch_decision.backends import (
     ErrorKind,
     InvalidChoiceError,
+    ModelAnswer,
     ModelServerError,
     ask,
     check,
@@ -33,7 +35,7 @@ from switch_decision.logging_setup import (
 )
 from switch_decision.models import DecideRequest, DecideResponse
 from switch_decision.otlp_logs import load_otlp_settings, start_log_shipping
-from switch_decision.prompt import NONE
+from switch_decision.prompt import NONE, conversation_state
 
 logger = logging.getLogger("switch_decision")
 
@@ -174,6 +176,7 @@ async def health() -> dict:
         "model_server": model_server(settings),
         "model_server_status": server,
         "confidence_threshold": settings.confidence_threshold,
+        "min_lead": settings.min_lead,
         "backends_available": backends_available(settings),
     }
 
@@ -231,13 +234,11 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
         )
         raise DecideFailed(str(exc), exc.kind) from exc
     latency_ms = int((time.monotonic() - started) * 1000)
-    picked = (
-        None
-        if answer.choice == NONE or answer.confidence < threshold
-        else answer.choice
-    )
+    min_lead = None if req.confidence_threshold is not None else used.min_lead
+    picked, rule, lead = pick(answer, threshold, min_lead)
     logger.info(
-        "decide backend=%s model=%s candidates=%d choice=%s confidence=%.2f threshold=%.2f picked=%s latency_ms=%d",
+        "decide backend=%s model=%s candidates=%d choice=%s confidence=%.2f threshold=%.2f picked=%s latency_ms=%d "
+        "rule=%s lead=%s context=%s",
         used.backend,
         used.model,
         candidates,
@@ -246,14 +247,54 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
         threshold,
         picked,
         latency_ms,
+        rule,
+        "-" if lead is None else f"{lead:.2f}",
+        "exchange" if conversation_state(req, used.history_limit) else "none",
     )
     return DecideResponse(
         agent=picked,
         model_choice=answer.choice,
         confidence=answer.confidence,
         threshold=threshold,
+        rule=rule,
+        min_lead=min_lead if rule == "lead" else None,
+        lead=lead,
         reason=answer.reason,
         model=used.model,
         backend=used.backend,
         latency_ms=latency_ms,
+    )
+
+
+# Probabilities arrive as floats: 0.48 - 0.43 can come out a hair under 0.05.
+_LEAD_EPSILON = 1e-9
+
+
+def pick(
+    answer: ModelAnswer, threshold: float, min_lead: float | None
+) -> tuple[str | None, Literal["threshold", "lead"], float | None]:
+    """Who the answer delivers to, by which rule, and the chosen option's lead
+    over the next one (None when the backend gave a single confidence).
+
+    With min_lead set and a backend that scores every option, the top option
+    wins when it leads the next one, another agent or "none", by at least
+    min_lead; "none" on top picks nobody. Otherwise the chosen agent needs a
+    confidence of at least threshold."""
+    lead = None if answer.runner_up is None else answer.confidence - answer.runner_up
+    if answer.choice == NONE:
+        return (
+            None,
+            ("lead" if min_lead is not None and lead is not None else "threshold"),
+            lead,
+        )
+    if min_lead is not None and lead is not None:
+        return (
+            answer.choice if lead >= min_lead - _LEAD_EPSILON else None,
+            "lead",
+            lead,
+        )
+    return (
+        answer.choice if answer.confidence >= threshold else None,
+        "threshold",
+        lead,
     )

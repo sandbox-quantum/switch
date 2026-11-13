@@ -3,6 +3,11 @@ name: Sentry
 category: Observability
 description: Look up Sentry issues, events, stack traces and releases, and change issues, projects and teams, as you, for up to an hour after each sign-in.
 enabled: true
+publisher: Sentry
+links:
+  documentation: https://docs.sentry.io/product/sentry-mcp/
+  support: https://sentry.io/support/
+  privacy: https://sentry.io/privacy/
 adapter: oauth
 auth:
   type: oauth

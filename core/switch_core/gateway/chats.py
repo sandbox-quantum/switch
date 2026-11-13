@@ -50,6 +50,7 @@ from switch_core.chats.views import (
     chat_messages,
     chat_summaries,
 )
+from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import (
     AgentSessionActivityItem,
     Room,
@@ -588,7 +589,10 @@ async def get_media(
     return Response(
         content=blob.data,
         media_type=blob.content_type or "application/octet-stream",
-        headers={"Cache-Control": "private, no-store"},
+        headers={
+            "Cache-Control": "private, no-store",
+            **untrusted_file_headers(blob.filename, blob.content_type, "attachment"),
+        },
     )
 
 
