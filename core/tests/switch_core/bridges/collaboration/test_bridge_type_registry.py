@@ -9,6 +9,7 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.irc.adapter import IRCAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -140,10 +141,12 @@ def test_get_config_schema_unknown_type_raises() -> None:
 # ── Channel-creation capability ──────────────────────────────────────────────
 
 
-def test_only_telegram_cannot_create_channels() -> None:
+def test_only_telegram_and_irc_cannot_create_channels() -> None:
     # A platform fact, not a preference. Telegram's Bot API has no call to make
-    # a chat; every other platform Switch bridges to does.
+    # a chat; IRC channels are joined, not provisioned; every other platform
+    # Switch bridges to does.
     assert TelegramAdapter.supports_channel_creation is False
+    assert IRCAdapter.supports_channel_creation is False
     for adapter in (SlackAdapter, MattermostAdapter, DiscordAdapter, TeamsAdapter):
         assert adapter.supports_channel_creation is True
 
