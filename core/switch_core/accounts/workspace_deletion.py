@@ -131,6 +131,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "service_grants": "deleted",
     "service_token_issuances": "deleted",
     "session_activity_items": "deleted",
+    "steered_message_marks": "deleted",
     "tasks": "deleted",
     "template_install_resources": "deleted",
     "tools": "deleted",
