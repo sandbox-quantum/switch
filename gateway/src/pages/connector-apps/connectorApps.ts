@@ -55,6 +55,7 @@ export interface SecretField {
 const GOOGLE = "google-workspace";
 const AIRTABLE = "airtable";
 const GITLAB = "gitlab";
+const CANVA = "canva";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
   if (app.kind === "github_app") return "GitHub";
@@ -368,6 +369,34 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === CANVA)
+    return [
+      {
+        text: "In Canva's Developer Portal, create an app. Use a Canva account your organization owns: whoever owns the app can delete it, and that stops every connection.",
+        copy: [],
+        link: { label: "Open Developer Portal", href: "https://www.canva.com/developers/apps" },
+        items: [],
+      },
+      {
+        text: "Under Outside Canva, choose Start integrating, then turn on Canva MCP under Configuration, Integration methods.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep("Under Outside Canva, Redirect URLs, add these:", app.redirect_uris),
+      {
+        text: "Under Scopes, tick exactly these:",
+        copy: [],
+        link: null,
+        items: scopeRows(app.scopes),
+      },
+      {
+        text: "Copy the Client ID, then generate a secret and copy it. Canva shows the secret only once.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === GOOGLE)
     return [
       {
@@ -515,6 +544,7 @@ const HELM_VALUES: Record<string, string> = {
   [GOOGLE]: "switchCore.googleWorkspaceClientSecret",
   [AIRTABLE]: "switchCore.airtableClientSecret",
   [GITLAB]: "switchCore.gitlabClientSecret",
+  [CANVA]: "switchCore.canvaClientSecret",
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */

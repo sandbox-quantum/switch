@@ -1,7 +1,78 @@
 slug: canva
 name: Canva
 category: Design
-description: Create and export Canva designs.
-enabled: false
+description: Create, edit and export Canva designs, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Each refresh returns a new refresh token. Using an old one ends the whole
+  # sign-in (measured).
+  refresh: rotating
+  oauth:
+    # Each server's operator creates a Canva Developer Portal app and turns on
+    # Canva MCP for it. The authorization server behind this MCP URL advertises
+    # no registration endpoint.
+    registration: static
+    client_settings: CANVA
+    # Back to Switch Console, so the server needs no public address. Each port
+    # is listed under the app's redirect URLs.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Not in the authorization server's metadata. Tool calls with the access
+    # token are refused at once after this revokes the sign-in (measured).
+    revocation_url: https://api.canva.com/rest/v1/oauth/revoke
+    # Canva answers the check's made-up code alike whatever the redirect.
+    unchecked: >-
+      Switch can't check the redirect URLs, the app's scopes, or that Canva
+      MCP is turned on for it. Connect once to confirm.
+  identity:
+    # Answers with ids alone, so the connection is named by the user id. The
+    # token from an MCP sign-in works here (measured).
+    url: https://api.canva.com/rest/v1/users/me
+    account_id: team_user.user_id
+    label: team_user.user_id
+# Canva's access tokens live 4 hours (measured).
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    - { name: canva, url: "https://api.canva.com/connect/v1/mcp" }
+access:
+  # Canva's approval page has nothing to untick, so connecting always gets the
+  # write level. The read level was measured with a sign-in that asked for its
+  # scopes alone.
+  # A sign-in with the other read scopes but not profile:read gets a 500 from
+  # the MCP server (measured). Every tool is listed at both levels; at the read
+  # level Canva refuses a write with "Missing scopes" (measured with
+  # comment-on-design). Not asked for: brandtemplate:content:write, which
+  # creates and publishes brand templates for a whole team, or
+  # help:answers:write.
+  read:
+    scopes:
+      - profile:read
+      - design:meta:read
+      - design:content:read
+      - folder:read
+      - comment:read
+      - asset:read
+      - brandtemplate:meta:read
+      - brandtemplate:content:read
+      - brandkit:read
+      - help:answers:read
+  write:
+    scopes:
+      - profile:read
+      - design:meta:read
+      - design:content:read
+      - design:content:write
+      - folder:read
+      - folder:write
+      - comment:read
+      - comment:write
+      - asset:read
+      - asset:write
+      - brandtemplate:meta:read
+      - brandtemplate:content:read
+      - brandkit:read
+      - help:answers:read
+tools: { mode: pass_through }

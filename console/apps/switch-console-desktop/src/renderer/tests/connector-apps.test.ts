@@ -409,6 +409,25 @@ describe('Airtable, and an app that sends people back to Switch Console', () => 
     );
   });
 
+  it("walks Canva's Developer Portal, with its redirects to paste and the scopes to tick", () => {
+    const canva = app({
+      ...LOOPBACK,
+      slug: 'canva',
+      name: 'Canva',
+      scopes: ['folder:read', 'folder:write'],
+    });
+    const steps = setupInstructions(canva, 'internal', null);
+    expect(steps[0]!.link).toEqual({
+      label: 'Open Developer Portal',
+      href: 'https://www.canva.com/developers/apps',
+    });
+    expect(steps[1]!.text).toMatch(/turn on Canva MCP/);
+    expect(steps.flatMap((s) => s.copy)).toEqual(LOOPBACK_REDIRECTS);
+    expect(steps.find((s) => s.text === 'Under Scopes, tick exactly these:')?.items).toEqual([
+      'folder:read, folder:write',
+    ]);
+  });
+
   it('an app that sends people back to Switch Console needs no public URL, and raises no banner', () => {
     expect(changeBlocked(LOOPBACK, null)).toBe(false);
     expect(changeBlocked(NONE, null)).toBe(true);
@@ -445,6 +464,18 @@ describe('Airtable, and an app that sends people back to Switch Console', () => 
     });
     expect(moveChecklist(gitlab)[1]!.text).toBe(
       "Remove GITLAB_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.gitlabClientSecret."
+    );
+  });
+
+  it("names Canva's Helm value when moving off configuration", () => {
+    const canva = app({
+      ...LOOPBACK,
+      slug: 'canva',
+      source: 'configuration',
+      configuration_variables: ['CANVA_CLIENT_CONFIG_PATH'],
+    });
+    expect(moveChecklist(canva)[1]!.text).toBe(
+      "Remove CANVA_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.canvaClientSecret."
     );
   });
 
