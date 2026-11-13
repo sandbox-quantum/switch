@@ -51,6 +51,7 @@ from switch_core.organization_directory import (
     DirectoryUnavailable,
     MemberChange,
 )
+from switch_core.outbound import OutboundHostUnresolved, OutboundURLRefused
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,16 @@ class WorkOSDirectory:
         except httpx.HTTPError as error:
             raise DirectoryUnavailable(
                 f"WorkOS could not be reached ({type(error).__name__})."
+            ) from error
+        except OutboundHostUnresolved as error:
+            logger.error("WorkOS's host does not resolve: %s", error)
+            raise DirectoryUnavailable(
+                "WorkOS could not be reached (its host does not resolve)."
+            ) from error
+        except OutboundURLRefused as error:
+            logger.error("WorkOS is refused as a destination: %s", error)
+            raise DirectoryUnavailable(
+                "WorkOS could not be reached (its address is refused)."
             ) from error
         if response.status_code != 200:
             detail = _refusal_detail(response)
@@ -425,6 +436,8 @@ def _token_of(change: MemberChange) -> str:
 def _workos_time(moment: datetime) -> str:
     """`moment` as WorkOS reads a time: UTC, to the millisecond, ending in
     `Z`. It refuses an offset such as `+00:00` as not ISO 8601."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError(f"{moment!r} has no timezone, so it names no moment")
     return (
         moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     )

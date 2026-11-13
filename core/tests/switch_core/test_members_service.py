@@ -15,7 +15,7 @@ from switch_core.organization_directory import (
     DirectorySignInRequired,
     DirectoryUnavailable,
 )
-from switch_core.outbound import OutboundURLRefused
+from switch_core.outbound import OutboundHostUnresolved, OutboundURLRefused
 
 URL = "https://members.example.test"
 TOKEN = "token-of-the-admin"
@@ -126,3 +126,12 @@ class TestRefusals:
             r.levelname == "ERROR" and "not a public address" in r.getMessage()
             for r in caplog.records
         )
+
+    async def test_a_host_that_does_not_resolve_is_unavailable_and_says_so(
+        self,
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise OutboundHostUnresolved("members.example.test does not resolve")
+
+        with pytest.raises(DirectoryUnavailable, match="its host does not resolve"):
+            await _service(handler).remove(TOKEN, "om_1")

@@ -20,6 +20,7 @@ from switch_core.organization_directory import (
     DirectoryUnavailable,
     MemberChange,
 )
+from switch_core.outbound import OutboundHostUnresolved, OutboundURLRefused
 from switch_core.workos_directory import (
     EventCursorRejected,
     WorkOSDirectory,
@@ -434,6 +435,30 @@ class TestChangesThroughTheMembersService:
             await directory.join(LINKED, "bob", "member")  # type: ignore[arg-type]
 
 
+class TestReachingWorkOS:
+    @pytest.mark.parametrize(
+        ("refusal", "said"),
+        [
+            (
+                OutboundHostUnresolved("api.example.test does not resolve"),
+                "its host does not resolve",
+            ),
+            (
+                OutboundURLRefused("api.example.test resolves to 10.0.0.1"),
+                "its address is refused",
+            ),
+        ],
+    )
+    async def test_an_address_switch_will_not_reach_is_unavailable(
+        self, refusal: OutboundURLRefused, said: str
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise refusal
+
+        with pytest.raises(DirectoryUnavailable, match=said):
+            await _directory(handler).organization("org_1")
+
+
 class TestWhatTheMirrorReads:
     async def test_events_are_asked_for_by_type_from_the_cursor_oldest_first(
         self,
@@ -474,6 +499,21 @@ class TestWhatTheMirrorReads:
         assert "after" not in seen[0].url.params
         assert seen[1].url.params["after"] == "event_1"
         assert "range_start" not in seen[1].url.params
+
+    async def test_a_time_with_no_timezone_is_refused_before_asking(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"data": [], "list_metadata": {}})
+
+        with pytest.raises(ValueError, match="no timezone"):
+            await _directory(handler).events(
+                ("organization.deleted",),
+                after=None,
+                range_start=datetime(2026, 11, 2),
+            )
+        assert seen == []
 
     async def test_a_page_switch_cannot_read_is_unavailable(self) -> None:
         directory = _directory(

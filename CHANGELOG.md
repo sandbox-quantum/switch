@@ -591,7 +591,9 @@ version of their own to them without also giving them a release of their own.
   a server error.** With `ORGANIZATION_DIRECTORY=workos`, an Org Admin's role
   change or removal whose members-service URL resolves to a private address
   (one not allowed by `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) answered 500. It now
-  says the members service could not be reached, and logs why at `error`.
+  says the members service could not be reached, and why: its host does not
+  resolve, or its address is refused, logged at `error`. A WorkOS API address
+  refused the same way is reported the same way.
 - **A GitLab disconnect or reconnect no longer says agents keep their
   access.** Revoking the sign-in at GitLab also ends the access tokens agents
   hold, so neither warns any more that they may keep working until they
