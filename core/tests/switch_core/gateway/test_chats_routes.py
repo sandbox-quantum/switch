@@ -2466,3 +2466,21 @@ async def test_a_message_that_only_starts_with_a_bang_stays_a_message(
     assert sent.status_code == 200, sent.text
     [row] = await chats.message_rows(room_id)
     assert row.body == "!important: read this"
+
+
+async def test_a_person_added_after_the_room_exists_finds_it_in_their_list(
+    chats: _Harness,
+) -> None:
+    """Someone added to a room already under way sees it among their chats,
+    which is the list Switch Console's sidebar is built from."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.send(chats.alice, room_id, "s1", "hello")).status_code == 200
+
+    before = await chats.client.get("/chats", headers=chats.as_user(chats.bob))
+    assert room_id not in {c["roomId"] for c in before.json()["chats"]}
+
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    after = await chats.client.get("/chats", headers=chats.as_user(chats.bob))
+    assert room_id in {c["roomId"] for c in after.json()["chats"]}
