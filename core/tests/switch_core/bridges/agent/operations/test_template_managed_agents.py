@@ -918,9 +918,7 @@ async def test_an_agent_is_opened_to_its_room_before_the_kickoff_is_posted(manag
     assert policies_at_kickoff
     for _room, policy in policies_at_kickoff:
         assert policy is not None
-        assert any(
-            rule.get("rooms") == [result["room_id"]] for rule in policy["rules"]
-        )
+        assert any(rule.get("rooms") == [result["room_id"]] for rule in policy["rules"])
 
 
 @pytest.mark.asyncio
