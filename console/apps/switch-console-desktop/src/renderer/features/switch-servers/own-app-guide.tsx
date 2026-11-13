@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { CircleCheck, CircleX, ExternalLink } from 'lucide-react';
+import { Check, CircleCheck, CircleX, Copy, ExternalLink } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import appLevelTokensShot from '@/assets/images/slack-setup/app-level-tokens.png';
 import installAppShot from '@/assets/images/slack-setup/install-app.png';
@@ -142,6 +142,62 @@ function useSettled<T>(value: T): T {
   return settled;
 }
 
+/**
+ * For when Slack's create page does not take the app from the link: its newer
+ * "Create new app" screen sometimes opens on its list of choices, and its
+ * Create button can do nothing until the page is reloaded without the link's
+ * query. Pasting the manifest by hand makes the same app.
+ */
+function ManifestFallback({ manifestJson }: { manifestJson: string }) {
+  const [copied, setCopied] = useState<'yes' | 'failed' | null>(null);
+  useEffect(() => {
+    if (copied !== 'yes') return;
+    const timer = setTimeout(() => setCopied(null), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <div className="space-y-1.5 rounded-lg bg-background-2 p-2.5 text-xs text-foreground-muted">
+      <p>
+        If Slack shows <b>Create new app</b> with a list of choices instead, or its button does
+        nothing: go to{' '}
+        <button
+          type="button"
+          className="underline underline-offset-2 hover:text-foreground"
+          onClick={() => void openExternalUrl('https://api.slack.com/apps', 'Could not open Slack')}
+        >
+          api.slack.com/apps
+        </button>
+        , click <b>Create New App</b>, choose <b>Paste a manifest</b>, pick your workspace, and
+        paste this app&apos;s manifest.
+      </p>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() =>
+          void navigator.clipboard.writeText(manifestJson).then(
+            () => setCopied('yes'),
+            () => setCopied('failed')
+          )
+        }
+      >
+        {copied === 'yes' ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        {copied === 'yes' ? 'Copied' : 'Copy the manifest'}
+      </Button>
+      {copied === 'failed' && (
+        <Status ok={false}>Could not copy. Copy it from the box below instead.</Status>
+      )}
+      {copied === 'failed' && (
+        <textarea
+          readOnly
+          className="h-32 w-full rounded border border-border bg-background p-2 font-mono text-[11px]"
+          value={manifestJson}
+          onFocus={(e) => e.target.select()}
+        />
+      )}
+    </div>
+  );
+}
+
 /** One of the tokens, asked for where the step says to copy it from. */
 function TokenField({
   fieldKey,
@@ -231,6 +287,7 @@ function SlackGuide({ workspaceId, config, fields, setField, setInput }: Props) 
           <p className="text-xs text-foreground-muted">
             Pick your workspace, click <b>Next</b>, then <b>Create</b>.
           </p>
+          {setup.data?.manifestJson && <ManifestFallback manifestJson={setup.data.manifestJson} />}
           {setup.isError && (
             <Status ok={false}>
               {failureText(setup.error, 'Could not prepare the Slack app.')}

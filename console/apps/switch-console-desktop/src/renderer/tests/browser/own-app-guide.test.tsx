@@ -54,6 +54,11 @@ const FIELDS: BridgeConfigField[] = [
   },
 ];
 
+const SETUP = {
+  createUrl: 'https://api.slack.com/apps?x',
+  manifestJson: '{\n  "display_information": { "name": "Agent Switch" }\n}',
+};
+
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -102,7 +107,7 @@ function button(name: string): HTMLButtonElement {
 
 describe('the Slack guide', () => {
   it('opens Slack with the app filled in', async () => {
-    workspaces.slackOwnAppSetup.mockResolvedValue({ createUrl: 'https://api.slack.com/apps?x' });
+    workspaces.slackOwnAppSetup.mockResolvedValue(SETUP);
     await render('slack', {}, () => {});
     await settle();
     await act(async () => button('Create the Slack app').click());
@@ -113,7 +118,7 @@ describe('the Slack guide', () => {
   });
 
   it('fills in the workspace once both tokens work', async () => {
-    workspaces.slackOwnAppSetup.mockResolvedValue({ createUrl: 'https://api.slack.com/apps?x' });
+    workspaces.slackOwnAppSetup.mockResolvedValue(SETUP);
     workspaces.checkSlackTokens.mockResolvedValue({
       workspaceId: 'T123',
       workspaceName: 'Acme',
@@ -133,7 +138,7 @@ describe('the Slack guide', () => {
   });
 
   it('asks for each token in the step that says where to find it', async () => {
-    workspaces.slackOwnAppSetup.mockResolvedValue({ createUrl: 'https://api.slack.com/apps?x' });
+    workspaces.slackOwnAppSetup.mockResolvedValue(SETUP);
     const setInput = vi.fn();
     await render('slack', {}, () => {}, setInput);
     await settle();
@@ -166,7 +171,7 @@ describe('the Slack guide', () => {
   });
 
   it('ticks every step once Slack says both tokens work', async () => {
-    workspaces.slackOwnAppSetup.mockResolvedValue({ createUrl: 'https://api.slack.com/apps?x' });
+    workspaces.slackOwnAppSetup.mockResolvedValue(SETUP);
     workspaces.checkSlackTokens.mockResolvedValue({
       workspaceId: 'T123',
       workspaceName: 'Acme',
@@ -180,6 +185,37 @@ describe('the Slack guide', () => {
     await waitForImages();
     await page.viewport(720, 1200);
     await page.screenshot({ path: `${SHOTS}/slack-setup-done.png`, element: container! });
+  });
+});
+
+describe('when Slack does not take the app from the link', () => {
+  it('copies the manifest for pasting into Slack by hand', async () => {
+    workspaces.slackOwnAppSetup.mockResolvedValue(SETUP);
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    await render('slack', {}, () => {});
+    await settle();
+
+    expect(document.body.textContent).toContain('Paste a manifest');
+    await act(async () => button('Copy the manifest').click());
+    expect(writeText).toHaveBeenCalledWith(SETUP.manifestJson);
+    expect(button('Copied')).toBeTruthy();
+  });
+
+  it('opens Slack’s app list to start from', async () => {
+    workspaces.slackOwnAppSetup.mockResolvedValue(SETUP);
+    await render('slack', {}, () => {});
+    await settle();
+
+    await act(async () => button('api.slack.com/apps').click());
+    expect(openExternalUrl).toHaveBeenCalledWith('https://api.slack.com/apps', expect.any(String));
+  });
+
+  it('offers nothing to copy from a server that sends no manifest', async () => {
+    workspaces.slackOwnAppSetup.mockResolvedValue({ ...SETUP, manifestJson: null });
+    await render('slack', {}, () => {});
+    await settle();
+
+    expect(document.body.textContent).not.toContain('Copy the manifest');
   });
 });
 
