@@ -54,6 +54,7 @@ def test_every_platform_declares_what_deleting_a_room_does() -> None:
         "matrix": "left",
         "rocketchat": "archived",
         "webex": "left",
+        "email": "kept",
     }
 
 
