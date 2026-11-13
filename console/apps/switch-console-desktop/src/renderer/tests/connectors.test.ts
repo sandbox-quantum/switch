@@ -275,6 +275,14 @@ describe('what each person is told about a connector that cannot be used', () =>
     }
   });
 
+  it('treats a service the organization locked on as on', () => {
+    const locked = entry({ workspace_enabled: true, organization_locked: true });
+    expect(workspaceOffNotice(locked, true)).toBeNull();
+    const state = connectorCardState(locked, ADMIN);
+    expect(state.fix).not.toBe('turn_on');
+    expect(state.kind).not.toBe('workspace_off');
+  });
+
   it('puts the fix on the card in place of Connect, and nothing where there is none', () => {
     const quick = (item: ConnectionCatalogEntry, viewer: ConnectorViewer) =>
       cardQuickAction(item, connectorCardState(item, viewer));

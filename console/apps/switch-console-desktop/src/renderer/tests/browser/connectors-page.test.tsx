@@ -384,14 +384,18 @@ it('opens connector apps at the path a gateway in the current layout serves', as
   admin.operator = true;
   server.servesGateway = true;
   const page = await discover([NOT_SET_UP]);
+  const connectorApps = { serverId: 'server', url: 'https://switch.example.com/connectors' };
 
   await act(async () =>
     page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
   );
-  expect(switchServers.openGatewayPage).toHaveBeenCalledWith({
-    serverId: 'server',
-    url: 'https://switch.example.com/connectors',
-  });
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith(connectorApps);
+
+  navigation.navigate('connectors', { connector: 'example' });
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  await act(async () => button(/^Set up$/, page)!.click());
+  expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
+  expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
 });
 
 it('tells anyone else who sets the app up, with no button to press', async () => {
