@@ -250,6 +250,7 @@ class TestResults:
             "github",
             "gitlab",
             "google-workspace",
+            "linear",
             "notion",
             "sentry",
         }

@@ -400,6 +400,7 @@ class TestOnlyTheOperator:
         ]
         assert [entry["slug"] for entry in body["registered"]] == [
             "atlassian",
+            "linear",
             "notion",
             "sentry",
         ]
