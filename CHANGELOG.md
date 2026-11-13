@@ -3383,8 +3383,8 @@ version of their own to them without also giving them a release of their own.
   AI provider until switch-buddy has one, then a box to ask switch-buddy
   anything, with up to three suggestions picked from what the workspace still
   lacks: a messaging app (for admins), a first agent, a room for the team.
-  Sending, or clicking a suggestion, opens switch-buddy's chat with the message
-  sent. The identity card, the count tiles and the messaging apps moved off the
+  Sending, or clicking a suggestion, starts a new chat with switch-buddy with
+  the message sent, named from it. The identity card, the count tiles and the messaging apps moved off the
   page; they are in Settings and Admin.
 - **`home_action` usage event.** Which suggestion on Home was clicked,
   Connect to AI pressed, or a message sent to switch-buddy from Home. The

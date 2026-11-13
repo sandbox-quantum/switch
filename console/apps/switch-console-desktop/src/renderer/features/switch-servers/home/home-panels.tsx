@@ -18,7 +18,6 @@ import { rpc } from '@renderer/lib/ipc';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { report } from '@renderer/lib/telemetry/report';
 import { Button } from '@renderer/lib/ui/button';
-import { ONBOARDING_BACKDROP } from '@renderer/lib/ui/wizard-frame';
 import { log } from '@renderer/utils/logger';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
@@ -35,6 +34,9 @@ import { administersWorkspaceInScope } from '../workspace-admin';
 import { HOME_CHIP_TEXT, type HomeChipId, homeChips } from './home-chips';
 
 const card = 'rounded-lg border border-border bg-card p-4';
+
+const CONNECT_AI_BACKGROUND =
+  'radial-gradient(ellipse 668.5px 123.5px at 8.5% 74%, rgba(161, 201, 210, 0.2) 0%, rgba(255, 137, 94, 0.2) 100%)';
 
 /** How long the suggestions wait on the lists they are picked from before going by what is known. */
 const SUGGESTIONS_TIMEOUT_MS = 8_000;
@@ -117,8 +119,8 @@ export function ConnectAiPanel({
     <div className="flex w-full max-w-[560px] flex-col items-center gap-8">
       <Heading />
       <div
-        className="flex w-full items-center justify-between gap-4 rounded-2xl bg-background-secondary-2 px-5 py-4"
-        style={{ backgroundImage: ONBOARDING_BACKDROP }}
+        className="flex w-full items-center justify-between gap-4 rounded-2xl px-5 py-4"
+        style={{ background: CONNECT_AI_BACKGROUND }}
       >
         <p className="text-sm text-foreground">Connect to an AI provider to get started</p>
         {/* The title sits on a wrapper: a disabled button shows no tooltip. */}
@@ -252,13 +254,14 @@ export function AskBuddyPanel({
     <div className="flex w-full max-w-[720px] flex-col items-center gap-6">
       <Heading />
       <div className="relative w-full">
+        {/* Peeks out from behind the box, tilted. */}
         <BuddyAvatar
-          size={72}
+          size={78}
           shape="tile"
-          className="absolute -top-14 -left-12 -rotate-6 shadow-sm"
+          className="absolute -top-[57px] -left-[54px] -rotate-[8deg]"
         />
         <form
-          className="flex w-full items-center gap-2 rounded-2xl border border-border bg-background px-5 py-3 shadow-sm focus-within:border-foreground-muted"
+          className="relative flex w-full items-center gap-2 rounded-2xl border border-border bg-background px-5 py-3 shadow-sm focus-within:border-foreground-muted"
           onSubmit={(event) => {
             event.preventDefault();
             void ask(draft, null);

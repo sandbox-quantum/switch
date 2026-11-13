@@ -100,13 +100,14 @@ export async function openBuddyChat(
 }
 
 /**
- * Opens the buddy's chat with `text` sent in it, as if typed there. The
- * message goes through the chat's own timeline, which holds it until the
- * server takes it: it shows there as sending, and a send that fails stays in
- * the chat with Retry, as one typed there would. A buddy that is starting or
- * offline reads it when it is up.
+ * Starts a new chat with the buddy, `text` its first message, as if typed
+ * there, and opens it. The chat is named from that message. The message goes
+ * through the chat's own timeline, which holds it until the server takes it:
+ * it shows there as sending, and a send that fails stays in the chat with
+ * Retry, as one typed there would. A buddy that is starting or offline reads
+ * it when it is up.
  *
- * Raises when the chat cannot be had, before anything is sent or opened, so
+ * Raises when the chat cannot be made, before anything is sent or opened, so
  * the caller can keep the text rather than lose it.
  */
 export async function askBuddy(
@@ -114,7 +115,16 @@ export async function askBuddy(
   agent: { agentId: string; name: string },
   text: string
 ): Promise<void> {
-  const { roomId } = await buddyChat(serverId, agent);
+  const chat = await rpc.chats.create({
+    serverId,
+    agentIds: [agent.agentId],
+    name: null,
+    requestId: crypto.randomUUID(),
+    greeting: null,
+  });
+  chatsStore.add(serverId, chat);
+  chatTitler.created(chat, false);
+  const roomId = chat.roomId;
   chatsStore.timelines.get(serverId, roomId).send({
     body: text,
     threadRootId: null,
@@ -124,6 +134,7 @@ export async function askBuddy(
     files: [],
     requestId: null,
   });
+  void chatTitler.sent(serverId, roomId, text);
   focusComposerWhenOpened(roomId);
   appState.navigation.navigate('managedAgent', {
     serverId,
