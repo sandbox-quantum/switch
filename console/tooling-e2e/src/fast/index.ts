@@ -1,5 +1,6 @@
 import { accountLifecycle } from "./account-lifecycle.ts";
 import { agentIdentity } from "./agent-identity.ts";
+import { agentRooms } from "./agent-rooms.ts";
 import { attachmentNames } from "./attachments.ts";
 import { clientMistakes } from "./client-mistakes.ts";
 import { endSessions, memberErasure, retentionWindow } from "./data-protection.ts";
@@ -25,6 +26,7 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   mattermostRoundtrip,
   agentIdentity,
   roomGroupPaths,
+  agentRooms,
   attachmentNames,
   clientMistakes,
   roomCapture,

@@ -148,6 +148,7 @@ passed or not. A teardown that leaves something behind fails the scenario.
 | `mattermost-roundtrip` | A room on the Mattermost bridge: an addressed post from the human reaches the agent, and the agent's reply appears as its bot. | Mattermost |
 | `agent-identity` | The human links their chat account by posting the code the gateway issued, and a replaced code confirms nothing; renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
 | `room-group-paths` | The same subgroup name under two parents: a bare name both share is refused naming each path, the path picks one, and a second group of that name under one parent is refused whatever its case. | — |
+| `agent-rooms` | Two agents in a shared room, one also in its own: one request for both agents' rooms lists each once, in the order asked, with those rooms as its own detail lists them, and leaves out an id with no agent. | — |
 | `attachment-names` | A file whose name is not latin-1 is posted, listed by `read_context` and downloaded under its own name (`filename*` in `Content-Disposition`). | — |
 | `client-mistakes` | An outsider reading a room gets a 403, and a history timestamp that is not ISO 8601 a 400 naming the parameter; never a 500. | — |
 | `room-capture` | A room built from a document keeps the package it names, and the room captured back as a document builds a second room with the same package; both rooms delete. | — |

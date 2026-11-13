@@ -1538,6 +1538,24 @@ export async function agentExistsOnServer(server: SwitchServer, agentId: string)
   }
 }
 
+type AgentRoomJson = {
+  room_id: string;
+  room_name: string;
+  archived: boolean;
+  status: string;
+  room_role: string | null;
+};
+
+function toRemoteAgentRoom(r: AgentRoomJson): RemoteAgentRoom {
+  return {
+    roomId: r.room_id,
+    roomName: r.room_name,
+    archived: r.archived,
+    status: r.status,
+    roomRole: r.room_role,
+  };
+}
+
 export async function fetchAgentRooms(
   server: SwitchServer,
   agentId: string
@@ -1545,22 +1563,42 @@ export async function fetchAgentRooms(
   const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
     authenticated: true,
   });
-  const json = (await res.json()) as {
-    rooms?: Array<{
-      room_id: string;
-      room_name: string;
-      archived: boolean;
-      status: string;
-      room_role: string | null;
-    }>;
-  };
-  return (json.rooms ?? []).map((r) => ({
-    roomId: r.room_id,
-    roomName: r.room_name,
-    archived: r.archived,
-    status: r.status,
-    roomRole: r.room_role,
-  }));
+  const json = (await res.json()) as { rooms?: AgentRoomJson[] };
+  return (json.rooms ?? []).map(toRemoteAgentRoom);
+}
+
+/** The most agents one `GET /agents/rooms` answers for; the server refuses more. */
+export const AGENT_ROOMS_PER_REQUEST = 100;
+
+/**
+ * Many agents' rooms, keyed by agent id, each as {@link fetchAgentRooms} reads
+ * one, asked {@link AGENT_ROOMS_PER_REQUEST} agents to a request
+ * (`GET /agents/rooms`). An agent the server does not have is left out.
+ *
+ * Null is a server from before the route, which answers for one agent at a
+ * time: on it a 404 says the route is missing, not that an agent is. Every
+ * other refusal is raised.
+ */
+export async function fetchRoomsOfAgents(
+  server: SwitchServer,
+  agentIds: readonly string[]
+): Promise<Record<string, RemoteAgentRoom[]> | null> {
+  const rooms: Record<string, RemoteAgentRoom[]> = {};
+  for (let start = 0; start < agentIds.length; start += AGENT_ROOMS_PER_REQUEST) {
+    const query = new URLSearchParams(
+      agentIds.slice(start, start + AGENT_ROOMS_PER_REQUEST).map((id) => ['agent_id', id])
+    );
+    let res: Response;
+    try {
+      res = await gatewayFetch(server, `/agents/rooms?${query}`, { authenticated: true });
+    } catch (cause) {
+      if (cause instanceof GatewayError && cause.status === 404) return null;
+      throw cause;
+    }
+    const json = (await res.json()) as { agent_id: string; rooms: AgentRoomJson[] }[];
+    for (const entry of json) rooms[entry.agent_id] = entry.rooms.map(toRemoteAgentRoom);
+  }
+  return rooms;
 }
 
 /**

@@ -78,6 +78,35 @@ export interface AgentSummary {
   createdAt: string;
 }
 
+/** A room an agent is a member of, as the gateway lists an agent's rooms. */
+export interface AgentRoomMembership {
+  roomId: string;
+  roomName: string;
+  archived: boolean;
+  status: string;
+  roomRole: string | null;
+}
+
+interface RawAgentRoomMembership {
+  room_id: string;
+  room_name: string;
+  archived: boolean;
+  status: string;
+  room_role: string | null;
+}
+
+function toAgentRoomMembership(
+  row: RawAgentRoomMembership,
+): AgentRoomMembership {
+  return {
+    roomId: row.room_id,
+    roomName: row.room_name,
+    archived: row.archived,
+    status: row.status,
+    roomRole: row.room_role,
+  };
+}
+
 /**
  * One event off the agent-facing notification stream.
  *
@@ -1226,6 +1255,29 @@ export class SwitchClient {
       `/collaborations/${bridgeId}/identities/${identityId}/code`,
     );
     return body.code;
+  }
+
+  /** `GET /gateway/agents/{agent_id}`: the rooms the agent's detail lists. */
+  async agentDetailRooms(agentId: string): Promise<AgentRoomMembership[]> {
+    const detail = await this.gateway<{ rooms: RawAgentRoomMembership[] }>(
+      "GET",
+      `/agents/${encodeURIComponent(agentId)}`,
+    );
+    return detail.rooms.map(toAgentRoomMembership);
+  }
+
+  /** `GET /gateway/agents/rooms`: several agents' rooms in one request, keyed by agent id. */
+  async roomsOfAgents(
+    agentIds: string[],
+  ): Promise<{ agentId: string; rooms: AgentRoomMembership[] }[]> {
+    const query = new URLSearchParams(agentIds.map((id) => ["agent_id", id]));
+    const rows = await this.gateway<
+      { agent_id: string; rooms: RawAgentRoomMembership[] }[]
+    >("GET", `/agents/rooms?${query}`);
+    return rows.map((row) => ({
+      agentId: row.agent_id,
+      rooms: row.rooms.map(toAgentRoomMembership),
+    }));
   }
 
   async listAgents(): Promise<AgentSummary[]> {

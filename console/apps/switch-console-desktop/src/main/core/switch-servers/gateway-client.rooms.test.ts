@@ -16,6 +16,7 @@ vi.mock('./auth', () => ({
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 
 const {
+  AGENT_ROOMS_PER_REQUEST,
   addLinkedRoom,
   addRoomUsers,
   fetchLibrary,
@@ -29,6 +30,7 @@ const {
   fetchArchivedRooms,
   fetchRoomAgentCandidates,
   fetchRoomDetail,
+  fetchRoomsOfAgents,
   setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
@@ -554,5 +556,70 @@ describe('the agents a person may bring in', () => {
         }) as unknown as Response
     );
     expect(await fetchRoomAgentCandidates(SERVER, null)).toBeNull();
+  });
+});
+
+describe('many agents’ rooms in one read', () => {
+  const membership = {
+    room_id: 'room-1',
+    room_name: 'design-review',
+    archived: false,
+    status: 'live',
+    room_role: 'reviewer',
+  };
+
+  it('asks for every agent in one request and keys the rooms by agent', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([
+        { agent_id: 'a-1', rooms: [membership] },
+        { agent_id: 'a-2', rooms: [] },
+      ])
+    );
+
+    expect(await fetchRoomsOfAgents(SERVER, ['a-1', 'a-2'])).toEqual({
+      'a-1': [
+        {
+          roomId: 'room-1',
+          roomName: 'design-review',
+          archived: false,
+          status: 'live',
+          roomRole: 'reviewer',
+        },
+      ],
+      'a-2': [],
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(lastCall().url).toMatch(/\/agents\/rooms\?agent_id=a-1&agent_id=a-2$/);
+  });
+
+  it('asks no more agents to a request than the server takes', async () => {
+    const ids = Array.from({ length: AGENT_ROOMS_PER_REQUEST + 1 }, (_, i) => `a-${i}`);
+    fetchMock.mockImplementation(async (url: string) =>
+      jsonResponse(
+        new URL(url).searchParams.getAll('agent_id').map((id) => ({ agent_id: id, rooms: [] }))
+      )
+    );
+
+    const rooms = await fetchRoomsOfAgents(SERVER, ids);
+
+    const asked = fetchMock.mock.calls.map(
+      ([url]) => new URL(url).searchParams.getAll('agent_id').length
+    );
+    expect(asked).toEqual([AGENT_ROOMS_PER_REQUEST, 1]);
+    expect(Object.keys(rooms ?? {})).toEqual(ids);
+  });
+
+  it('answers null from a server from before the read, which answers an agent at a time', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          status: 404,
+          ok: false,
+          json: async () => ({ detail: 'Agent not found: rooms' }),
+          headers: { get: () => null, getSetCookie: () => [] },
+          text: async () => JSON.stringify({ detail: 'Agent not found: rooms' }),
+        }) as unknown as Response
+    );
+    expect(await fetchRoomsOfAgents(SERVER, ['a-1'])).toBeNull();
   });
 });

@@ -166,6 +166,8 @@ class _Seed:
         self._n = 0
         self.bridges: list[CollaborationBridge] = []
         self.subject: Agent | None = None
+        # The ids of the agents `rooms` put in its rooms, in order.
+        self.members: list[str] = []
 
     def _next(self, prefix: str) -> str:
         self._n += 1
@@ -283,6 +285,7 @@ class _Seed:
                     await session.execute(
                         insert(room_agents).values(room_id=room.id, agent_id=agent.id)
                     )
+                    self.members.append(agent.id)
                 if bridge is not None:
                     person = await self._client(session, "external")
                     session.add(
@@ -559,3 +562,135 @@ class TestAgentDetail:
             (c["tool_count"], c["model_count"]) == (1, 1) and c["owner_name"]
             for c in many_detail["children"]
         )
+
+    async def test_reads_no_room_the_agent_is_not_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        # An admin may read every room, which is what the detail used to read
+        # in full to learn which of the agent's rooms to name.
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+        subject = await seed.subject_agent(2)
+        path = f"/agents/{subject.id}"
+
+        async with _client(app, user) as client:
+            await seed.rooms(2)
+            await _count(client, statement_counts, path)
+            few = statement_counts.last(f"GET {path}").rows
+            await seed.rooms(20)
+            _, detail = await _count(client, statement_counts, path)
+            many = statement_counts.last(f"GET {path}").rows
+
+        assert len(detail["rooms"]) == 2
+        assert few == many
+
+
+def _rooms_of(agent_ids: list[str]) -> list[tuple[str, str]]:
+    return [("agent_id", agent_id) for agent_id in agent_ids]
+
+
+async def _agent_rooms(
+    client: httpx.AsyncClient, counts: StatementCounts, agent_ids: list[str]
+) -> tuple[int, list[dict[str, Any]]]:
+    response = await client.get("/agents/rooms", params=_rooms_of(agent_ids))
+    assert response.status_code == 200, response.text
+    return counts.last("GET /agents/rooms").count, response.json()
+
+
+def _by_room(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rooms, key=lambda room: room["room_id"])
+
+
+class TestAgentRooms:
+    async def test_the_same_statements_for_one_agent_and_many(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+
+        async with _client(app, user) as client:
+            await seed.rooms(1)
+            subject = await seed.subject_agent(1)
+            few, few_rooms = await _agent_rooms(client, statement_counts, [subject.id])
+            await seed.rooms(8)
+            await seed.subject_agent(5)
+            asked = [subject.id, *seed.members]
+            many, many_rooms = await _agent_rooms(client, statement_counts, asked)
+
+        assert few == many, statement_counts.last("GET /agents/rooms").statements
+        assert len(few_rooms[0]["rooms"]) == 1
+        assert [entry["agent_id"] for entry in many_rooms] == asked
+        assert len(many_rooms[0]["rooms"]) == 6
+        assert {r["status"] for r in many_rooms[0]["rooms"]} == {"live"}
+        assert all(len(entry["rooms"]) == 1 for entry in many_rooms[1:])
+
+    async def test_each_agent_has_the_rooms_its_detail_lists(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+        await seed.rooms(3)
+        subject = await seed.subject_agent(3)
+        asked = [subject.id, *seed.members]
+
+        async with _client(app, user) as client:
+            _, listed = await _agent_rooms(client, statement_counts, asked)
+            details = {
+                agent_id: (await client.get(f"/agents/{agent_id}")).json()["rooms"]
+                for agent_id in asked
+            }
+
+        assert {e["agent_id"]: _by_room(e["rooms"]) for e in listed} == {
+            agent_id: _by_room(rooms) for agent_id, rooms in details.items()
+        }
+
+    async def test_an_id_with_no_agent_is_left_out_and_a_repeat_listed_once(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+        await seed.rooms(1)
+        first, second = seed.members
+
+        async with _client(app, user) as client:
+            _, listed = await _agent_rooms(
+                client, statement_counts, [second, "no-such-agent", first, second]
+            )
+
+        assert [entry["agent_id"] for entry in listed] == [second, first]
+
+    @pytest.mark.parametrize("count", [0, 101])
+    async def test_refuses_no_agents_and_more_than_a_batch(
+        self,
+        count: int,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+
+        async with _client(app, user) as client:
+            response = await client.get(
+                "/agents/rooms",
+                params=_rooms_of([f"agent-{i}" for i in range(count)]),
+            )
+
+        assert response.status_code == 422, response.text

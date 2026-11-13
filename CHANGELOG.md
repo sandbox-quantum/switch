@@ -53,6 +53,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **`GET /gateway/agents/rooms` lists the rooms of up to 100 agents in one
+  request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
+  lists them, in the same few statements however many agents are asked
+  about. An id with no agent behind it is left out.
 - **People connect their own connectors from the dashboard.** Behind
   `gateway_v2`, Connectors is a catalogue of every connector, with Yours and
   All tabs and a search. Each card shows its category, whether you have
@@ -643,6 +647,13 @@ version of their own to them without also giving them a release of their own.
   expire. The warning stays when the revocation fails, when a grant is
   removed, and for other pass-through services. A catalog entry sets this
   with `revocation_ends_tokens`.
+- **Reading an agent no longer reads every room in the workspace.**
+  `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
+  learn which of the agent's rooms to name, and held a database connection
+  while it did. Switch Console reads each of its agents this way on every
+  refresh of its sidebar, so one open window with a few dozen agents could
+  take every connection in the pool for a moment. It now asks only about the
+  agent's own rooms, and the agent tools that describe an agent do the same.
 - **Deleting an agent from the dashboard says why when it is refused**,
   rather than only that it could not.
 - **A workspace's connector list credits an organization's default to the
@@ -4244,6 +4255,10 @@ version of their own to them without also giving them a release of their own.
   shows its own error page and never sends the browser back. After a minute,
   the connect step now says what to check. GitHub's step does too, and names
   the GitHub App's Callback URL.
+- **The sidebar reads a workspace's agents' rooms in one request**, rather
+  than one request per agent on every refresh (every 20 seconds while the
+  window is open, and whenever it is focused). On a server from before that
+  request it still asks for one agent at a time.
 - **Usage data recognises Switch Cloud the way the app shows it**, by its
   address's origin, and adding the Cloud by its address reports it as `cloud`
   rather than `external`. A Switch Cloud address that cannot be read is logged,

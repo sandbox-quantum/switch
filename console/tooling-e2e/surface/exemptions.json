@@ -158,7 +158,6 @@
     "GET /gateway/agents/avatar-settings",
     "GET /gateway/agents/icon-choices",
     "GET /gateway/agents/known-types",
-    "GET /gateway/agents/{agent_id}",
     "GET /gateway/agents/{agent_id}/service-grants",
     "GET /gateway/api-keys/{key_id}/reveal",
     "GET /gateway/auth/me",

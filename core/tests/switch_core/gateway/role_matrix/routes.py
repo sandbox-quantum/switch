@@ -87,6 +87,12 @@ ROUTES: dict[str, Case] = {
         f"{G}/agents/icon-choices", anyone(), name="matrix"
     ),
     "GET /gateway/agents/{agent_id}": get(f"{G}/agents/{{agent}}", anyone()),
+    "GET /gateway/agents/rooms": get(
+        f"{G}/agents/rooms",
+        anyone(),
+        "Each agent's rooms as its detail lists them, which anyone may read.",
+        agent_id="{agent}",
+    ),
     "DELETE /gateway/agents/{agent_id}": delete(
         f"{G}/agents/{{agent}}", owner_or_admins()
     ),

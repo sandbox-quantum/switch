@@ -28,6 +28,7 @@ from switch_core.bridges.agent.protocol.agent_core import (
 )
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
+    agent_room_memberships,
     apply_agent_options,
     assemble_agent_detail,
     build_agent_summary,
@@ -45,13 +46,9 @@ from switch_core.db.stores.agent_definition_store import (
     PlacedDevice,
 )
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import (
-    get_current_user,
-    get_tenant_is_admin,
-    readable_room_ids,
-)
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.chats import get_chat_service
 from switch_core.gateway.dependencies import (
     get_agent_store,
@@ -66,6 +63,7 @@ from switch_core.gateway.schemas import (
     AgentCapabilities,
     AgentDetail,
     AgentDevice,
+    AgentRooms,
     AgentSummary,
     AvatarSettingsResponse,
     BulkRegisterResult,
@@ -98,6 +96,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _DEFINITIONS = AgentDefinitionStore()
+
+# The most agents `GET /agents/rooms` takes at once, which keeps the request
+# line well inside what proxies accept. Switch Console asks in batches of this
+# size.
+AGENT_ROOMS_PER_REQUEST = 100
 
 
 def _has_known_spec(summary: AgentSummary) -> bool:
@@ -257,6 +260,38 @@ async def list_agents(
             device=_device_for(devices.get(agent.id), user, is_admin, device_owners),
         )
         for agent in agents
+    ]
+
+
+@router.get("/rooms")
+async def list_agent_rooms(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    agent_id: Annotated[
+        list[str], Query(min_length=1, max_length=AGENT_ROOMS_PER_REQUEST)
+    ],
+) -> list[AgentRooms]:
+    """The rooms of every agent in `agent_id`, as `GET /agents/{agent_id}`
+    lists them, in one request and the same few statements however many
+    agents are asked about. An id with no agent behind it is left out."""
+    agents = await agent_store.get_many(session, agent_id)
+    memberships = await agent_room_memberships(
+        session,
+        agents=agents,
+        visible=readable_by(user.id, is_admin=is_admin),
+        room_store=room_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
+    )
+    return [
+        AgentRooms(agent_id=asked, rooms=memberships[asked])
+        for asked in dict.fromkeys(agent_id)
+        if asked in memberships
     ]
 
 
@@ -955,7 +990,7 @@ async def update_addressing_policy(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
-        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -1010,7 +1045,7 @@ async def update_can_manage_agents(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
-        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
@@ -1042,7 +1077,7 @@ async def get_agent_detail(
     detail = await assemble_agent_detail(
         session,
         agent=agent,
-        visible_room_ids=await readable_room_ids(session, room_store, user, is_admin),
+        visible=readable_by(user.id, is_admin=is_admin),
         agent_store=agent_store,
         room_store=room_store,
         user_store=user_store,
