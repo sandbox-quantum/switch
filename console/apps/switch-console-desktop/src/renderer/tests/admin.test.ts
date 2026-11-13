@@ -17,6 +17,8 @@ function service(overrides: Partial<WorkspaceService> = {}): WorkspaceService {
     granted_agents: 0,
     unavailable_code: null,
     unavailable_reason: null,
+    can_change: true,
+    organization_locked: false,
     ...overrides,
   };
 }

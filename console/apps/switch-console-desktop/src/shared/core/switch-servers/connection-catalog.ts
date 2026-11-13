@@ -183,6 +183,10 @@ export const workspaceServiceSchema = z.object({
    */
   unavailable_code: z.string().nullable().default(null),
   unavailable_reason: z.string().nullable().default(null),
+  /** Whether the caller may switch it: an admin, on a service the organization has not locked. */
+  can_change: z.boolean().default(true),
+  /** Whether the workspace's organization locked it, out of the workspace admin's reach. */
+  organization_locked: z.boolean().default(false),
 });
 export type WorkspaceService = z.infer<typeof workspaceServiceSchema>;
 
