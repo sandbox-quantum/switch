@@ -51,6 +51,7 @@ from switch_core.db.stores.hosted_machine_store import (
     lock_machine,
     workspaces_on,
 )
+from switch_core.observability.hosted import record_machine_event
 from switch_core.providers.hosted import HostedControllerSettings, tenant_allowed
 from switch_core.tenant_context import no_tenant
 from switch_core.visibility.alerts import Condition, Verdict, apply_alert
@@ -500,7 +501,12 @@ async def record_provision_result(
         elif machine is not None and machine.state != "deleted":
             # A box that couldn't be made isn't asked for again on every sweep:
             # the machine goes to error, which the existing retry
-            # and clean-up handle. A retry asks again.
+            # and clean-up handle. A retry asks again. It counts as a launch
+            # refused, which "launches failing" pages on, once per failure.
+            if machine.state != "error":
+                record_machine_event(
+                    session, "failed", "launch_refused", machine.backend
+                )
             machine.state = "error"
             machine.error_code = BOX_NOT_MADE
             machine.error = BOX_NOT_MADE_MESSAGE
