@@ -1058,6 +1058,11 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The dashboard says when a GitHub App can only read.** On Connectors
+  (Platform → Connectors in the new layout), a GitHub App without write
+  permissions reads "Agents can read only", naming what it lacks. On an
+  agent's Service access, a write grant on such an App shows why it gets
+  nothing, and granting GitHub offers Read and push disabled with the reason.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A
