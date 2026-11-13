@@ -18,16 +18,19 @@ PLACEHOLDERS = {
     "bitbucket",
     "microsoft-365",
     "new-relic",
-    "linear",
     "salesforce",
     "box",
     "canva",
     "vercel",
 }
 
+DRAFTS = {
+    "linear",
+}
+
 
 def test_shipped_catalog_enables_its_live_connectors():
-    assert set(CATALOG) == PLACEHOLDERS | {
+    assert set(CATALOG) == PLACEHOLDERS | DRAFTS | {
         "github",
         "airtable",
         "atlassian",
@@ -47,7 +50,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "notion",
         "sentry",
     ]
-    assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
+    assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS | DRAFTS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
@@ -63,6 +66,32 @@ def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages
         if definition.enabled:
             assert definition.publisher, slug
             assert definition.links is not None, slug
+
+
+def test_the_shipped_linear_entry_loads_and_stays_disabled_until_whoami_is_read_only():
+    entry = CATALOG["linear"]
+    definition = entry.definition
+    assert definition.enabled is False
+    assert definition.adapter == "oauth"
+    assert definition.auth.refresh == "rotating"
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.registration, oauth.redirect) == ("dynamic", ["loopback"])
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool) == (None, "whoami")
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    assert definition.token is not None and definition.token.max_lifetime == 86400
+    assert definition.access is not None
+    assert definition.access.read.scopes == ["read"]
+    assert definition.access.write.scopes == ["read", "write"]
+    assert entry.skill_files == {}
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
