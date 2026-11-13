@@ -272,6 +272,13 @@ version of their own to them without also giving them a release of their own.
   each connector's `category` and `description`.
 
 #### Changed
+- **New generated agent icons no longer carry the agent's name.** A managed
+  agent created without an icon, and every choice the icon picker offers, is
+  now a DiceBear face seeded with the first 32 hex digits of the name's
+  SHA-256 (`agent_icon.new_icon_url`) rather than the name, so the name does
+  not go to api.dicebear.com. Icons agents already have are unchanged, and an
+  agent with no icon stored is still drawn from its name, so no existing
+  agent changes face.
 - **Usage telemetry tells Switch Console chats apart.** The period events
   add `console_account_active`, the active accounts that used Console chat,
   and `console_only_account_active`, those that used nothing else, so Console
@@ -3881,6 +3888,10 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **New agents' generated avatars no longer carry the name.** A new agent
+  created without a chosen icon gets the same digest-seeded DiceBear face the
+  server generates, and the picker's choices are drawn the same way. Existing
+  agents keep the face they have.
 - **Usage data tells what the app did by itself from what a person did.**
   Sessions the app found running on a host are sent as `session_discovered`
   rather than `session_started`. A session the app set up again by itself is

@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.agent_icon import (
     InvalidIconUrl,
     drop_third_party_avatar,
-    generated_icon_url,
+    new_icon_url,
     normalise_icon_url,
 )
 from switch_core.bridges.agent.auth import ControllerPrincipal
@@ -1335,7 +1335,7 @@ class ManagementService:
                 third_party_avatars=self.settings.third_party_avatars,
             )
             if icon_url is None and self.settings.third_party_avatars:
-                icon_url = generated_icon_url(request.name)
+                icon_url = new_icon_url(request.name)
         except InvalidIconUrl as exc:
             raise ManagementError(422, reason_codes.VALIDATION_ERROR, str(exc)) from exc
         spec, options, metadata = _known_agent_registration(definition, None)
