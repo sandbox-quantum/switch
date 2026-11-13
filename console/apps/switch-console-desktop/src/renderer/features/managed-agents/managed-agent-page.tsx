@@ -24,6 +24,7 @@ import {
   summariseValues,
 } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import { MidTurnDeliveryRow } from '@renderer/features/locations/components/settings-view/sections/mid-turn-delivery-section';
 import {
   AutoApproveRow,
   AutoModeRow,
@@ -345,6 +346,7 @@ function ManagedAgentPageContent({
                 agentId={agent.agentId}
                 agentName={null}
               />
+              <MidTurnDeliveryRow workspaceId={agent.workspaceId} agentId={agent.agentId} />
               <AddressingPolicyRow
                 workspaceId={agent.workspaceId}
                 serverId={agent.serverId}

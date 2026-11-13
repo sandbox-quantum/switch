@@ -96,6 +96,11 @@ ROUTES: dict[str, Case] = {
     "PATCH /gateway/agents/{agent_id}/options": patch(
         f"{G}/agents/{{console_agent}}/options", owner_or_admins(), json={"options": {}}
     ),
+    "PUT /gateway/agents/{agent_id}/mid-turn-delivery": put(
+        f"{G}/agents/{{agent}}/mid-turn-delivery",
+        owner_or_admins(),
+        json={"mid_turn_delivery": "queue"},
+    ),
     "PUT /gateway/agents/{agent_id}/icon": put(
         f"{G}/agents/{{agent}}/icon", owner_or_admins(), json={"icon_url": None}
     ),
@@ -228,6 +233,20 @@ ROUTES: dict[str, Case] = {
         why="Deleting messages can't be undone: its admins by their own membership.",
     ),
     "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
+        f"{W}/private-channel-rooms", admins()
+    ),
+    "GET /gateway/tenants/{tenant_id}/private-channel-rooms/count": get(
+        f"{W}/private-channel-rooms/count", admins()
+    ),
+    "POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform": post(
+        f"{W}/private-channel-rooms/ask-platform", admins(), json={}
+    ),
+    "POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private": post(
+        f"{W}/private-channel-rooms/make-private",
+        admins(),
+        json={"room_ids": ["no-such-room"]},
+    ),
     "GET /gateway/tenants/{tenant_id}/people": get(
         f"{W}/people",
         admin_by_membership(),
@@ -497,6 +516,19 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/rooms/{room_id}/unarchive": post(
         f"{G}/rooms/{{room}}/unarchive", owner_or_admins()
+    ),
+    "GET /gateway/rooms/{room_id}/admins": get(
+        f"{G}/rooms/{{room}}/admins", owner_or_admins()
+    ),
+    "PUT /gateway/rooms/{room_id}/admins/{target_user_id}": put(
+        f"{G}/rooms/{{room}}/admins/{{member_target}}",
+        owner_or_admins(ok=400),
+        why="Let through, then refused: the person isn't in the room.",
+    ),
+    "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}": delete(
+        f"{G}/rooms/{{room}}/admins/{{member_target}}",
+        owner_or_admins(),
+        why="Taking off someone who isn't a room admin changes nothing.",
     ),
     "POST /gateway/rooms/{room_id}/sync-name": post(
         f"{G}/rooms/{{room}}/sync-name",

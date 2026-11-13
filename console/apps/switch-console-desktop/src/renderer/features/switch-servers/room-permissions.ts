@@ -3,16 +3,18 @@ import type { RoomVisibility } from '@shared/core/switch-servers/switch-servers'
 /**
  * What someone may do with a room, as the server's room policy decides it.
  * `canManage` (the room's owner or a workspace admin): deleting the room,
- * changing who may see it, naming it after its channel. `canWrite` (the same,
- * on a current server): its description and instructions, its roles, its
- * group, archiving it. `canInviteAgents`, `canAddPeople` and `canAttach`
- * (anyone in the room): bringing agents in, adding people, attaching
- * resources; each agent's own "who can address me" setting can still refuse
- * one. `canRemoveMembers` (owner or admin): taking agents out. No membership
+ * changing who may see it, naming it after its channel. `canManageAdmins`
+ * (the same): choosing its room admins. `canWrite` (the owner, a room admin
+ * or a workspace admin, on a current server): its description and
+ * instructions, its roles, its group. `canArchive` (the same): archiving it.
+ * `canInviteAgents`, `canAddPeople` and `canAttach` (anyone in the room):
+ * bringing agents in, adding people, attaching resources; each agent's own
+ * "who can address me" setting can still refuse one. `canRemoveMembers`
+ * (owner, room admin or workspace admin): taking agents out. No membership
  * flag is set in a direct or group conversation, whose platform fixes who is
- * in it. `canUnlink` (owner or admin): detaching what is attached to it.
- * `canChangeMembers` is what an older server said for adding and removing
- * together.
+ * in it. `canUnlink` (owner, room admin or workspace admin): detaching what
+ * is attached to it. `canChangeMembers` is what an older server said for
+ * adding and removing together.
  */
 export type RoomPermissions = {
   canWrite: boolean;
@@ -22,6 +24,8 @@ export type RoomPermissions = {
   canAttach: boolean;
   canRemoveMembers: boolean;
   canManage: boolean;
+  canArchive: boolean;
+  canManageAdmins: boolean;
   canUnlink: boolean;
 };
 
@@ -51,6 +55,8 @@ export function roomPermissionsFor(
       canAttach: false,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     };
   }
@@ -64,6 +70,9 @@ export function roomPermissionsFor(
     canAttach: canWrite,
     canRemoveMembers: canWrite,
     canManage,
+    canArchive: canManage,
+    // A server that does not send its flags predates room admins.
+    canManageAdmins: false,
     canUnlink: canWrite,
   };
 }

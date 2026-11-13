@@ -199,6 +199,18 @@ CHECKS: dict[str, Check] = {
                     _act("DELETE", f"{G}/rooms/{{{room}}}"),
                 ),
                 Check(
+                    "can_archive",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("POST", f"{G}/rooms/{{{room}}}/archive"),
+                ),
+                Check(
+                    "can_manage_admins",
+                    _get(f"{G}/rooms/{{{room}}}"),
+                    _act("PUT", f"{G}/rooms/{{{room}}}/admins/{{member_target}}"),
+                    # The target isn't in the room: allowed to ask, refused for them.
+                    later=frozenset({400}),
+                ),
+                Check(
                     "can_transfer",
                     _get(f"{G}/rooms/{{{room}}}"),
                     _transfer("room", f"{{{room}}}"),
@@ -234,6 +246,7 @@ CHECKS: dict[str, Check] = {
             for who, room in (
                 ("everyone reads it", "readable_room"),
                 ("the member is in it", "joined_room"),
+                ("the member is a room admin", "administered_room"),
             )
         },
         "a direct conversation": [

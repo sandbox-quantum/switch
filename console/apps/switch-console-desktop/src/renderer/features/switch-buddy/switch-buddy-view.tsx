@@ -11,6 +11,7 @@ import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
+import { Button } from '@renderer/lib/ui/button';
 import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import { expectedBuddyName, findBuddy, firstNameOf } from './buddy-identity';
 import { buddyPerson } from './buddy-person';
@@ -113,15 +114,22 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
             />
           </div>
         </div>
+        {/* In place of the message box, and plainly not one: the welcome
+            above asks a question the person cannot answer until the buddy
+            has an AI provider, so this says why and is the one thing to do. */}
         <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
-          <button
-            type="button"
-            onClick={connect}
-            disabled={workspaceId === null}
-            className="w-full rounded-full border border-border bg-background px-5 py-3 text-left text-sm text-foreground shadow-sm hover:bg-[var(--sel-soft)] disabled:opacity-60"
+          <div
+            data-testid="buddy-needs-provider"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3 shadow-sm"
           >
-            Connect an AI provider to chat with {expectedBuddyName(person)}
-          </button>
+            <p className="min-w-0 flex-1 text-sm text-foreground-muted">
+              {expectedBuddyName(person)} needs an AI provider before it can reply. Connect one and
+              carry on here.
+            </p>
+            <Button onClick={connect} disabled={workspaceId === null}>
+              Connect an AI provider
+            </Button>
+          </div>
           {workspaceId === null && (
             <p className="mt-2 text-xs text-foreground-muted">
               Open a workspace on this server first.

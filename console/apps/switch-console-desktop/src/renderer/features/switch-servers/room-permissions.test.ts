@@ -13,6 +13,8 @@ describe('roomPermissionsFor', () => {
       canAttach: true,
       canRemoveMembers: true,
       canManage: true,
+      canArchive: true,
+      canManageAdmins: false,
       canUnlink: true,
     });
   });
@@ -31,6 +33,8 @@ describe('roomPermissionsFor', () => {
       canAttach: true,
       canRemoveMembers: true,
       canManage: true,
+      canArchive: true,
+      canManageAdmins: false,
       canUnlink: true,
     });
   });
@@ -44,6 +48,8 @@ describe('roomPermissionsFor', () => {
       canAttach: true,
       canRemoveMembers: true,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: true,
     });
   });
@@ -57,6 +63,8 @@ describe('roomPermissionsFor', () => {
       canAttach: false,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     });
   });
@@ -76,6 +84,8 @@ describe('roomPermissionsFor', () => {
       canAttach: false,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     });
     expect(roomPermissionsFor({ ownerId: 'u-1' }, ME).canWrite).toBe(true);
@@ -91,6 +101,8 @@ describe('roomPermissionsFor', () => {
       canAttach: false,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     };
     expect(
@@ -111,6 +123,8 @@ describe('roomPermissionsFor', () => {
       canAttach: true,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: true,
     };
     expect(
@@ -135,6 +149,8 @@ describe('roomPermissionsFor', () => {
       canAttach: false,
       canRemoveMembers: false,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     });
   });

@@ -53,6 +53,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Messages sent while an agent works can steer its running turn.** Each
+  agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
+  kept on the agent so re-registering leaves it alone, changed on the agent's
+  page in the dashboard, with `PUT /gateway/agents/{id}/mid-turn-delivery`, or
+  with `update_agent_detail`, and sent with every message. Activity cards on
+  every platform say how many messages were steered into a turn, with a line
+  for each in its sender's words; a turn waiting behind another says so; and
+  a steered message carries the working reaction while its turn runs (#801).
 - **Monitoring for hosted agents' cloud machines.** With `OTLP_ENDPOINT` set,
   Core reports hosted machine metrics to Datadog: machines expected against
   machines reporting, agents and sessions, memory and disk peaks, how long a
@@ -2054,6 +2062,13 @@ version of their own to them without also giving them a release of their own.
   by default, so an upgraded server behaves as before.
 
 #### Changed
+- **Telemetry attributes use `switch_trust.*` names.** `flint.client_id`,
+  `flint_env` and `flint_internal` are now `switch_trust.client_id`,
+  `switch_trust.env` and `switch_trust.internal` on usage events. The
+  operational OTLP export to your own collector carries
+  `switch_trust.client_id` in place of `flint.client_id` too, so update any
+  collector rule or query that matches the old name. What is sent is otherwise
+  unchanged.
 - **Upgrading from 0.30 or earlier: two things now work the other way round.**
   - **switch-core can run as multiple replicas.** Before 0.31.0 the chart
     refused any `switchCore.replicaCount` above 1. Now any replica can serve
@@ -3824,6 +3839,18 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
+- **A message sent while an agent works reaches the running turn.** On
+  Claude Code, Codex and OpenCode, any message that reaches the agent while it
+  is working is delivered into the running turn instead of waiting for it to
+  end: from anyone who can talk to the agent, in any thread or room, or typed
+  in the session's own view. The agent reads it at its next step (Claude Code
+  after the tool call or answer in progress). A steer the turn can no longer
+  take runs as the next turn, with a notice; nothing is lost or sent twice,
+  and a retry always queues. The transcript and chat work log label each
+  mid-turn message steered or queued, and the agent settings and
+  managed-agent page have the **Steer messages sent while it works** setting
+  (on by default) to keep room messages queueing instead. Built on #1445 by
+  Xuefeng-Zhu, with parts of #1494, #1465, #1499, #1565 and #1055 (#801).
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -4270,6 +4297,10 @@ version of their own to them without also giving them a release of their own.
   before. Older versions of Console load those images whatever the server says.
 
 #### Changed
+- **Usage data attributes use `switch_trust.*` names.** `flint.client_id`,
+  `flint_env` and `flint_internal` are now `switch_trust.client_id`,
+  `switch_trust.env` and `switch_trust.internal`. Only the names change; what
+  is sent, and the opt-out, do not.
 - **Link your account right after adding a messaging app.** Every way into
   connecting an app, including a Console link from switch-buddy, now ends by
   offering to link your own account on it (Telegram explains how instead).

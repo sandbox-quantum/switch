@@ -19,6 +19,24 @@ const definition = {
 };
 
 describe('buildWatcherTemplate', () => {
+  it.each([
+    ['claude', 'steer'],
+    ['codex', 'steer'],
+    ['opencode', 'steer'],
+    ['cursor', 'queue'],
+    ['antigravity', 'queue'],
+  ] as const)('advertises what %s does with a message sent mid-turn', (provider, input) => {
+    const template = buildWatcherTemplate({
+      agentId: 'agent-1',
+      provider,
+      definition,
+      cwd: '/work/scout',
+      credentialsPath: '/data/agents/agent-1/credentials.json',
+      binaryPath: `/usr/bin/${provider}`,
+    });
+    expect(template.session.capabilities.input).toBe(input);
+  });
+
   it.each(PROVIDERS)('builds a configuration the shared host accepts for %s', (provider) => {
     const template = buildWatcherTemplate({
       agentId: 'agent-1',
