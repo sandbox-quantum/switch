@@ -23,6 +23,7 @@ import {
   resolveWindowsCommandPath,
 } from '@switch-console/shared/windows-spawn';
 import type {
+  AgentLaunchDefinition,
   ConversationHistoryTurn,
   ModelSelection,
   ProviderAdapter,
@@ -347,6 +348,35 @@ function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined 
 }
 
 /**
+ * An agent definition's denies, split by where Claude Code honours them.
+ *
+ * The definition's own `disallowedTools` takes only tool names: Claude Code
+ * reads `Bash(curl:*)` there as `Bash` and removes the whole tool. A rule with
+ * content is a permission rule, so it goes to the session's `disallowedTools`
+ * (the CLI's `--disallowedTools`), where it denies only the calls it matches.
+ */
+export function splitAgentDenies(definition: AgentLaunchDefinition): {
+  definition: AgentLaunchDefinition;
+  denyRules: string[];
+} {
+  const denies = definition.disallowedTools;
+  if (!denies) return { definition, denyRules: [] };
+  const denyRules = denies.filter(isPermissionRule);
+  if (denyRules.length === 0) return { definition, denyRules };
+  const { disallowedTools: _denies, ...rest } = definition;
+  const toolNames = denies.filter((entry) => !isPermissionRule(entry));
+  return {
+    definition: toolNames.length > 0 ? { ...rest, disallowedTools: toolNames } : rest,
+    denyRules,
+  };
+}
+
+/** `Tool(content)`: a rule that matches some of a tool's calls, not the tool. */
+function isPermissionRule(entry: string): boolean {
+  return /^[^()\s]+\(.*\)$/s.test(entry.trim());
+}
+
+/**
  * The tool-name prefixes covering the tools of the MCP servers the caller
  * registered. Claude Code names an MCP tool `mcp__<server>__<tool>`, folding
  * anything outside `[A-Za-z0-9_-]` in the server name to `_`.
@@ -493,6 +523,9 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     filterShadowedWarningOnce();
 
+    const agent =
+      input.agentName && input.agentDefinition ? splitAgentDenies(input.agentDefinition) : null;
+
     const options: Options = {
       cwd: input.cwd,
       env: input.env,
@@ -512,9 +545,8 @@ export class ClaudeAdapter implements ProviderAdapter {
           }
         : {}),
       ...(input.agentName ? { agent: input.agentName } : {}),
-      ...(input.agentName && input.agentDefinition
-        ? { agents: { [input.agentName]: input.agentDefinition } }
-        : {}),
+      ...(input.agentName && agent ? { agents: { [input.agentName]: agent.definition } } : {}),
+      ...(agent && agent.denyRules.length > 0 ? { disallowedTools: agent.denyRules } : {}),
       ...(input.model ? { model: input.model.id } : {}),
       ...(effort ? { effort } : {}),
       ...(input.resume ? { resume: nativeSessionId } : { sessionId: nativeSessionId }),

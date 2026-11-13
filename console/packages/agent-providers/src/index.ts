@@ -106,17 +106,7 @@ export {
   type ProviderRecheckReply,
   type ProviderRecheckRequest,
 } from './host/provider-recheck';
-export {
-  hostStartSources,
-  type HostStartSource,
-  type OwedSessionStart,
-} from './host/session-start';
-export {
-  isSessionStartedNotice,
-  reportedStartSource,
-  SESSION_STARTED_KIND,
-  type SessionStartedNotice,
-} from './host/session-started';
+export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
   type AgentStreamDeps,

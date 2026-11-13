@@ -9,6 +9,7 @@ import { sourceKey } from '@shared/core/providers/agent-payload';
 import {
   buildSourceRows,
   findInstallation,
+  overrideProblem,
   refFromUsed,
   toSelection,
 } from './installation-sources';
@@ -369,5 +370,32 @@ describe('seedSource (initial selectedSource seeding)', () => {
 
   it('returns auto when installOptions is empty', () => {
     expect(seedSource(undefined, 'missing', [])).toEqual({ kind: 'auto' });
+  });
+});
+
+describe('overrideProblem', () => {
+  const official = 'C:\\Users\\USER\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe';
+
+  it('says nothing when the picked executable can be used', () => {
+    const found = makeInstall({ id: 'path', realpath: official, version: '0.167.0' });
+    expect(overrideProblem('path', official, found)).toBeNull();
+  });
+
+  it('names a picked path that was not found, and that it was not saved', () => {
+    const missing = makeInstall({ id: 'path', realpath: official, status: 'missing' });
+    expect(overrideProblem('path', ` ${official} `, missing)).toBe(
+      `No executable was found at ${official} on this machine. It was not saved.`
+    );
+  });
+
+  it('says a CLI name was not on PATH', () => {
+    expect(overrideProblem('cli', 'codex', null)).toMatch(
+      /codex was not found on this machine's PATH/
+    );
+  });
+
+  it('says a file that was found but did not answer --version was not saved', () => {
+    const broken = { ...makeInstall({ id: 'path', realpath: official }), status: 'error' as const };
+    expect(overrideProblem('path', official, broken)).toMatch(/did not answer --version/);
   });
 });

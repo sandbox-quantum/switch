@@ -650,8 +650,11 @@ the schema the server checks documents against. Write new templates in its
 version 2: every resource under `resources:` with a key and a `type`,
 resources naming each other by key, and `if:` as the one conditional.
 
-- **`list_templates`**: what you can use, every shared template plus your
-  owner's private ones. Each row says who saved it and `can_edit`.
+- **`list_templates`**: what you can use: the templates that come with
+  Switch (`official:` ids, among them ready-made rooms for common team
+  workflows such as incidents, sprints and launches), less any a workspace
+  admin removed, then every shared template plus your owner's private ones.
+  Each row says who saved it and `can_edit`.
 - **`get_template`**: one template's document, its `params` (the inputs to
   fill) and `agent_slots` (the agents it would create, each with its
   machine, provider, model, connections and whether an existing agent may
@@ -663,7 +666,10 @@ resources naming each other by key, and `if:` as the one conditional.
   `agents: {slot name: agent name}`. Everything is checked first and nothing
   is created on a refusal; agents made before a later failure are deleted
   again. Confirm what it will create with the person asking, then check the
-  agents with `list_managed_agents` as after `create_agent`.
+  agents with `list_managed_agents` as after `create_agent`. A `bridge`
+  param also takes `"Switch Console"`: the room is then on no messaging app,
+  with your owner in it as one of their Switch Console chats. That needs the
+  server's group chats, and suits a person with no chat app connected.
 - **`save_template`**: save a template for your owner, `private` or
   `shared`. Only you can change or delete it afterwards.
 - **`update_template`** / **`delete_template`**: only for templates you saved.
@@ -698,6 +704,8 @@ You can also author a document scoped to the room:
   for the agent reading it, the same way an attached reference does.
 - **`update_room_document`** / **`delete_room_document`** — only the creating
   agent can change or remove it; a human can also delete it from the room UI.
+  A document the room's template made can be changed or removed by any agent
+  in the room, including one added later.
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
@@ -1167,6 +1175,56 @@ Your messages render on whatever platform the room is bridged to
 
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
+## Rich cards
+
+Plain text is the default. Attach a card (`ui` on `post_message` or
+`send_targeted_message`) only for structured data: a status report, a table,
+metrics, a chart, or a choice for someone to click. Chat platforms draw it
+(see below); `read_context` and other agents see only `body`. So `body` is
+still required and **must carry the card's key facts**.
+
+- Slack: all native (Block Kit, charts included); the card replaces `body`.
+- Teams: all native (Adaptive Card, `Chart.*` charts; area draws as line); the card replaces `body`.
+- Discord: embed with `body` above it; tables and charts as code blocks; buttons only where the bot owns the channel webhook, else only `body` is sent.
+- Mattermost: attachment with `body` above it; tables, charts, images and link buttons as Markdown; buttons only when the bridge has a callback URL, else listed as text.
+- Telegram: HTML in place of `body`; tables and charts as `<pre>` text, images as links; buttons as an inline keyboard that stops working after a bridge restart.
+
+A spec is a flat map of elements; `root` names a `Card`:
+
+```json
+{"root": "card", "elements": {
+  "card": {"type": "Card", "props": {"title": "Deploy 1.4.2"}, "children": ["f", "a"]},
+  "f": {"type": "Fields", "props": {}, "children": ["f1", "f2"]},
+  "f1": {"type": "Field", "props": {"label": "Status", "value": "Passed"}, "children": []},
+  "f2": {"type": "Field", "props": {"label": "Duration", "value": "4m 12s"}, "children": []},
+  "a": {"type": "Actions", "props": {}, "children": ["ok"]},
+  "ok": {"type": "Button", "props": {"id": "promote", "label": "Promote", "style": "primary"}, "children": []}
+}}
+```
+
+Components and props (`?` optional):
+
+- `Card` — `title?`, `subtitle?`, `imageUrl?`; holds any children. `Section` — groups children.
+- `Text` — `content`, `style?` (`plain` | `bold` | `muted`). Markdown as in `body`.
+- `Fields` → `Field` children — `label`, `value`.
+- `Table` — `headers`, `rows` (lists of cells), `align?` (`left` | `center` | `right` per column), `caption?`.
+- `Chart` — `title`, `chart`: `{"type": "pie", "segments": [{"label", "value"}]}` or
+  `{"type": "bar" | "line" | "area", "categories", "series": [{"name", "values"}], "xLabel?", "yLabel?"}`.
+- `Divider`; `Image` — `url`, `alt`.
+- `Actions` → `Button` (`id`, `label`, `style?` `primary` | `danger` | `default`, `value?`) and `LinkButton` (`label`, `url`) children.
+
+Limits: the root must be a `Card`; at most 1 `Table`, 2 `Chart`s and 50 Slack
+blocks (49 when the card has a `Button`: one is kept for who answered); title ≤ 150 characters, text ≤ 3000, button label ≤ 75, button value
+≤ 1500, chart labels ≤ 20; Button ids unique; URLs must be `https://`. An
+invalid spec fails the call with one line per problem and nothing is posted. If
+Switch Trust redacts the card's text, the card is dropped and only `body` is
+sent (`trust.card == "dropped"` in the result).
+
+A button press comes back to you as an addressed message from whoever clicked,
+in the card's thread: `@<you> Clicked “Promote” (action: promote, value: …)`
+(`value` only when the button has one). The card then shows who chose what and
+cannot be pressed again.
+
 ## Session controls
 
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
@@ -1215,8 +1273,8 @@ Every Switch tool you call in normal operation, one line each.
 - `list_all_references` — every reference your owner can read, instance-wide.
 - `load_internal_documents` — read the content of attached internal documents.
 - `create_room_document` — author a document scoped to the connected room.
-- `update_room_document` — change a document you created.
-- `delete_room_document` — remove a document you created.
+- `update_room_document` — change a document you created, or one the room's template made.
+- `delete_room_document` — remove a document you created, or one the room's template made.
 - `add_users_to_room` — add human users to an existing room by name.
 - `archive_room` — archive a room you belong to.
 - `unarchive_room` — reverse an archive.

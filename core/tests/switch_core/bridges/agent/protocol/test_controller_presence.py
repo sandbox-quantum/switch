@@ -504,7 +504,9 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="stopped", revision=4, owner_stopped=False),
+            CloudMachineState(
+                state="stopped", revision=4, owner_stopped=False, admin_stopped=False
+            ),
         )
 
         first = await client._reply_when_unavailable_here(object(), agent, meta, "u")
@@ -525,7 +527,9 @@ class TestTheAgentClientsReplies:
         client = _client(
             registry,
             "auto",
-            CloudMachineState(state="stopped", revision=4, owner_stopped=True),
+            CloudMachineState(
+                state="stopped", revision=4, owner_stopped=True, admin_stopped=False
+            ),
         )
         reply = await client._reply_when_unavailable_here(
             object(), _agent("auto", "auto_session"), meta, "u"
@@ -533,6 +537,27 @@ class TestTheAgentClientsReplies:
         assert reply == (
             "My device, **machine**, is stopped, so I can't answer. My owner "
             "(@owner) can start it again in Switch Console."
+        )
+
+    async def test_a_cloud_machine_an_administrator_stopped_names_them(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        client = _client(
+            registry,
+            "auto",
+            CloudMachineState(
+                state="error", revision=4, owner_stopped=False, admin_stopped=True
+            ),
+        )
+        reply = await client._reply_when_unavailable_here(
+            object(), _agent("auto", "auto_session"), meta, "u"
+        )
+        assert reply == (
+            "My device, **machine**, was stopped by a server administrator, so "
+            "I can't answer until they release it."
         )
 
     async def test_an_offline_or_removed_machine_is_named_not_console(

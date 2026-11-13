@@ -70,6 +70,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
+    agent_access_note: null,
     loopback_ports: null,
     key: null,
     external_identity: null,
@@ -730,6 +731,12 @@ describe('the disconnect dialog', () => {
 
 describe('an admin switching a service off', () => {
   const service = { name: 'Example', connected_members: 0, granted_agents: 0 };
+
+  it('does not ask when the server keeps who it reaches to admins, and will refuse', () => {
+    expect(
+      switchOffConfirmation({ ...service, connected_members: null, granted_agents: null })
+    ).toBeNull();
+  });
 
   it('asks first when anyone is connected or any agent uses it, naming both counts', () => {
     expect(switchOffConfirmation({ ...service, connected_members: 3, granted_agents: 5 })).toEqual({

@@ -89,7 +89,8 @@ describe('sessionLaunchConfig', () => {
     expect(launch.codexConfig).toContain('model_reasoning_effort = "high"');
     expect(launch.codexConfig).toContain('model_verbosity = "low"');
     expect(launch.codexConfig).toContain('model_reasoning_summary = "concise"');
-    expect(launch.codexConfig).toContain('web_search = false');
+    expect(launch.codexConfig).toContain('web_search = "disabled"');
+    expect(launch.codexConfig).not.toContain('[tools]');
     expect(launch.codexConfig).toContain('developer_instructions = "Review pull requests."');
     expect(launch.context).toBe(`${SWITCH_SKILL_CONTEXT}\n\nReview pull requests.`);
   });

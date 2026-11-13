@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from switch_core.accounts.organization_purge import OrganizationPurge
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -197,6 +198,7 @@ from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
+from switch_core.management.signals import REVOKED_SIGNAL
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
 from switch_core.members_service import MembersService
@@ -1342,6 +1344,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
         trust_client=trust_client,
+        message_observer=message_telemetry,
+        telemetry=telemetry,
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
@@ -1349,7 +1353,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
-    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
+    protocol.set_member_adder(
+        chat_service.add_member,
+        chat_service.require_can_join,
+        group_chats_enabled=chat_service.group_chats_enabled,
+    )
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
     room_service.on_room_changed(chat_service.room_changed)
 
@@ -1363,7 +1371,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
     )
-    connector_apps = _connector_apps(
+    connector_apps = build_connector_apps(
         config,
         session_factory=session_factory,
         http=service_http,
@@ -1408,7 +1416,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         trust_settings_changed=trust_signals.changed,
     )
 
-    register_platforms(collab_lifecycle)
+    register_platforms(collab_lifecycle, config.feature_flags)
 
     # Liveness, and cheap on purpose: the gateway Deployment and the setup Job
     # wait on it at boot, so anything it checked would become a boot-ordering
@@ -1514,7 +1522,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         if config.organization_connector_apps_enabled
         else None
     )
-    service_broker = _service_broker(
+    service_broker = build_service_broker(
         config,
         connector_apps,
         organization_apps,
@@ -1524,6 +1532,25 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # A bus skips signals carrying its own process id, as acted on locally
+    # already; the purge acts on nothing here, so it signals under its own id
+    # for this process to hear too, as the CLI does.
+    purge_signals = SignalBus(
+        session_factory,
+        lambda: create_unpooled_engine(config),
+        process_id=f"{process_id}-purge",
+        announcer=announcer,
+    )
+    # What resetting a test account deletes with (`accounts/account_reset.py`).
+    gateway_app.state.organization_purge = OrganizationPurge(
+        session_factory=session_factory,
+        broker=service_broker,
+        installers=installers,
+        keyring=config.keyring,
+        signals=purge_signals,
+        controller_removed=controller_removal_publisher(purge_signals),
+        admin_email=config.gateway_admin_email,
+    )
     gateway_app.state.organization_apps = organization_apps
     if config.members_service_url:
         # Checked set together, under the WorkOS directory
@@ -1815,8 +1842,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # which can report a milestone this settles.
     await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
-    # The funnel's first step, and only for a deployment with an install date.
-    await telemetry.emit_milestone("deployment_installed")
+    # The funnel's first step, dated to the install, and only for a
+    # deployment with an install date.
+    await telemetry.report_installed()
 
     server_config = uvicorn.Config(
         agent_bridge_app,
@@ -2365,7 +2393,7 @@ async def _bootstrap_key_tenant(
     return TENANT_ZERO_ID
 
 
-def _connector_apps(
+def build_connector_apps(
     config: SwitchConfig,
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -2385,7 +2413,18 @@ def _connector_apps(
     )
 
 
-def _service_broker(
+def controller_removal_publisher(signals: SignalBus) -> Callable[[str], None]:
+    """Tells every process a machine's controller is gone, as revoking it
+    does, for a process that runs no agent management of its own: the
+    operator's organization purge (`purge_organization.py`)."""
+
+    def publish(controller_id: str) -> None:
+        signals.publish(REVOKED_SIGNAL, controller_id=controller_id)
+
+    return publish
+
+
+def build_service_broker(
     config: SwitchConfig,
     connector_apps: ConnectorApps,
     organization_apps: OrganizationApps | None,

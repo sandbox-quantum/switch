@@ -444,6 +444,12 @@ class SwitchConfig(BaseSettings):
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
 
+    # Test and canary servers only. Lets a person wipe their own account
+    # through `POST /auth/me/reset-test-account`: the messaging apps, rooms,
+    # agents, machines, workspaces and organization they alone are in, and
+    # the account itself. Irreversible. Off everywhere else.
+    gateway_allow_test_account_reset: bool = False
+
     # Who keeps the record of organizations and their members
     # (`organization_directory.py`). "local": this server, in its own tables.
     # "workos": the WorkOS environment behind the gateway's OIDC sign-in, read
@@ -590,11 +596,14 @@ class SwitchConfig(BaseSettings):
     # Which Amplitude project this deployment's usage lands in, sent as
     # `flint_env`. The relay keeps one project per environment and files an
     # event naming none, or `prod`, under production — which is what every
-    # customer's deployment is, and why it is the default. Our own non-customer
-    # servers say so here: `dev` for the development deployment, `local` for a
-    # developer's machine (`just init-env` writes it), so their usage never
-    # reads as adoption. Any other value is refused at startup, because the
-    # relay drops an event naming an environment it has no project for.
+    # customer's deployment is, and why it is the default for a release. A
+    # build that is not a release (a `.dev` version) reports as `dev` unless
+    # this is set (`telemetry.setup.telemetry_environment`). Our own
+    # non-customer servers say so here: `dev` for the development deployment,
+    # `local` for a developer's machine (`just init-env` writes it), so their
+    # usage never reads as adoption. Any other value is refused at startup,
+    # because the relay drops an event naming an environment it has no project
+    # for.
     telemetry_environment: Literal["prod", "staging", "dev", "local"] = "prod"
 
     # Whether this deployment is one of the company's own, sent as

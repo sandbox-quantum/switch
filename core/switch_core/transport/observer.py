@@ -23,7 +23,9 @@ class ParticipantMessage:
     tenant_id: str
     room_id: str
     sender_client_id: str
-    #: The writer's `ActorRole`: `human`, `agent`, `system` or `bridge`.
+    #: The writer's `ActorRole`: `human`, `agent`, `system` or `bridge`; or
+    #: `member`, a person posting from Switch Console, which the chat service
+    #: reports rather than a transport.
     sender_role: str
     #: The bridge marked the post as an integration's, not a person's
     #: (`SENDER_IS_APP_MARKER`). Only ever true for a `human` writer.

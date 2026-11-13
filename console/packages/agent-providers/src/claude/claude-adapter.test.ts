@@ -277,6 +277,50 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(named.options().agents).toBeUndefined();
   });
 
+  it('denies a command pattern as a permission rule, keeping the tool it names', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const definition = {
+      description: 'Reviews diffs',
+      prompt: 'Be careful.',
+      tools: ['Bash', 'Read', 'mcp__switch'],
+      disallowedTools: ['Bash(curl:*)', 'Write', 'mcp__other'],
+    };
+    await adapter.startSession(startInput({ agentName: 'reviewer', agentDefinition: definition }));
+    expect(sdk.options().agents).toEqual({
+      reviewer: { ...definition, disallowedTools: ['Write', 'mcp__other'] },
+    });
+    expect(sdk.options().disallowedTools).toEqual(['Bash(curl:*)']);
+
+    const onlyRules = createFakeSdk();
+    await new ClaudeAdapter({
+      query: onlyRules.query,
+      claudeExecutablePath: '/bin/claude',
+    }).startSession(
+      startInput({
+        agentName: 'reviewer',
+        agentDefinition: {
+          description: 'Reviews diffs',
+          prompt: 'Be careful.',
+          tools: ['Bash', 'Read'],
+          disallowedTools: ['Bash(curl:*)', 'Read(./.env)'],
+        },
+      })
+    );
+    expect(onlyRules.options().agents?.reviewer).not.toHaveProperty('disallowedTools');
+    expect(onlyRules.options().agents?.reviewer?.tools).toEqual(['Bash', 'Read']);
+    expect(onlyRules.options().disallowedTools).toEqual(['Bash(curl:*)', 'Read(./.env)']);
+  });
+
+  it('leaves the session without deny rules when the definition names only tools', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const definition = { description: 'd', prompt: 'p', disallowedTools: ['Write'] };
+    await adapter.startSession(startInput({ agentName: 'reviewer', agentDefinition: definition }));
+    expect(sdk.options().agents).toEqual({ reviewer: definition });
+    expect(sdk.options().disallowedTools).toBeUndefined();
+  });
+
   it('forwards the model and its reasoning effort, ignoring an effort it does not know', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });

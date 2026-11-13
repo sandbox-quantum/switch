@@ -101,6 +101,7 @@ import {
   createRegistrationKey,
   deleteApiKey,
   deleteMyAccount,
+  resetMyTestAccount,
   fetchMyApiKeys,
   revealApiKey,
   updateMyName,
@@ -348,14 +349,14 @@ export const switchServersController = createRPCController({
       server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', {
-        server_kind: 'external',
+        server_kind: serverKindOf({ managed: false, managementKind: null, url: params.url }),
         outcome: 'failure',
         failure_reason: serverAddFailureOf(error),
       });
       throw error;
     }
     trackEvent('server_added', {
-      server_kind: 'external',
+      server_kind: serverKindOf(server),
       outcome: 'success',
       failure_reason: 'none',
     });
@@ -774,6 +775,13 @@ export const switchServersController = createRPCController({
   deleteAccount: async (params: { serverId: string; email: string }): Promise<void> => {
     const server = await requireReachableServer(params.serverId);
     await deleteMyAccount(server, params.email);
+    await forgetSession(params.serverId);
+  },
+
+  /** Wipe the signed-in test account on the server, then forget its session here. */
+  resetTestAccount: async (params: { serverId: string; email: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await resetMyTestAccount(server, params.email);
     await forgetSession(params.serverId);
   },
 
