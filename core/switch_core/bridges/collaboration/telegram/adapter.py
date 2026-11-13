@@ -3278,7 +3278,7 @@ class TelegramAdapter(PlatformAdapter):
                     exc_info=True,
                 )
                 continue
-            if getattr(member, "status", None) in ("left", "kicked"):
+            if _no_longer_a_member(member):
                 gone.add(external_user_id)
         return gone
 
@@ -4072,3 +4072,14 @@ class TelegramAdapter(PlatformAdapter):
                 "Failed to send message to Telegram chat %s: %s", channel_id, e
             )
             return None
+
+
+def _no_longer_a_member(member: Any) -> bool:
+    """Whether Telegram's answer for one person says they are out of the
+    group: they left, were removed, or are restricted and no longer in it.
+    A restricted person keeps the status `restricted` after leaving, and
+    only `is_member` says they went (Bot API, ChatMemberRestricted)."""
+    status = getattr(member, "status", None)
+    if status in ("left", "kicked"):
+        return True
+    return status == "restricted" and getattr(member, "is_member", True) is False

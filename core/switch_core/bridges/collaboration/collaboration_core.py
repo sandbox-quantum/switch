@@ -1075,13 +1075,11 @@ class CollaborationCore:
         if room_ids is None:
             return
         room_id, transport_room_id = room_ids
-        listing = await self._adapter.list_channel_members(
-            channel_id, known_people=self._human_actors.keys()
-        )
         tenant_id = await self._room_tenant(room_id)
-        if listing is None:
-            await self._sync_by_asking(channel_id, room_id, tenant_id)
-            return
+        # Who the room holds is read before the platform is asked: someone who
+        # joins while the listing runs (Slack pages slowly) is added to the
+        # room by their join, and is missing from the listing. Read after it,
+        # they would be taken for gone and removed while still in the channel.
         with tenant_scope(tenant_id):
             async with tenant_session(self._session_factory, tenant_id) as session:
                 present = {
@@ -1091,6 +1089,13 @@ class CollaborationCore:
                     )
                     if person.bridge_id == self._bridge_id
                 }
+        listing = await self._adapter.list_channel_members(
+            channel_id, known_people=self._human_actors.keys()
+        )
+        if listing is None:
+            await self._sync_by_asking(channel_id, room_id, tenant_id)
+            return
+        with tenant_scope(tenant_id):
             joining = [
                 (external_user_id, name)
                 for external_user_id, name in listing.members.items()

@@ -1842,22 +1842,26 @@ class RoomService:
                     member.external_user_id.lower(), member.external_user_id
                 )
         misses: list[RemovalMiss] = []
-        ids: dict[str, str] = {}
+        # Every name asked for, by the account it names: two names can name
+        # one person (`alice` and `U123`), and a refusal is reported under each.
+        names_of: dict[str, list[str]] = {}
         for name in dict.fromkeys(user_names):
             external_user_id = by_name.get(name.lstrip("@").lower())
             if external_user_id is None:
                 misses.append(RemovalMiss(name=name, reason="not_in_room"))
             else:
-                ids[external_user_id] = name
+                names_of.setdefault(external_user_id, []).append(name)
         refused = await self.remove_people_from_room(
             room_id,
-            list(ids),
+            list(names_of),
             removed_by=removed_by,
             removed_by_kind="user",
             from_channel=True,
         )
         misses.extend(
-            RemovalMiss(name=ids.get(i, i), reason="platform_refused") for i in refused
+            RemovalMiss(name=name, reason="platform_refused")
+            for external_user_id in refused
+            for name in names_of.get(external_user_id, [external_user_id])
         )
         return misses
 

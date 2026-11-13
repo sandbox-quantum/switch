@@ -260,6 +260,27 @@ async def test_removing_by_name_reports_a_refusal(
     assert await _is_member(session_factory, seeded)
 
 
+async def test_a_refusal_is_reported_under_every_name_for_that_person(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`bob` and `U-BOB` name one person: both are reported, neither as
+    removed."""
+    adapter = _Adapter(refuses={"U-BOB"})
+    service, _ = _service(session_factory, adapter)
+    seeded = await _seed(session_factory)
+    await _put_bob_in(service, seeded)
+
+    misses = await service.remove_users_from_room(
+        seeded["room_id"], ["bob", "U-BOB"], removed_by="Rita"
+    )
+
+    assert [(m.name, m.reason) for m in misses] == [
+        ("bob", "platform_refused"),
+        ("U-BOB", "platform_refused"),
+    ]
+    assert adapter.removed == [("C1", ["U-BOB"])]
+
+
 async def test_someone_never_in_the_room_is_nothing_to_remove(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

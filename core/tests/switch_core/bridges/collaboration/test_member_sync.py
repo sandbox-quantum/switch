@@ -348,3 +348,30 @@ def test_slack_skips_known_people_and_reads_the_workspace_for_many() -> None:
     assert listing.members["UKNOWN"] == ""
     assert len(listing.members) == 61
     assert (client.info_calls, client.list_calls) == (0, 1)
+
+
+async def test_someone_joining_while_the_channel_is_listed_stays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Their join adds them to the room while the platform is still paging
+    the members, so the listing misses them. The room's own members are read
+    before the listing, so they aren't taken for gone."""
+    present = ["U1"]
+    core = _core(
+        monkeypatch,
+        ChannelMembers(members={"U1": "alice"}, complete=True),
+        present=present,
+    )
+    listing = core._adapter.list_channel_members
+
+    async def list_while_someone_joins(
+        channel_id: str, **kw: Any
+    ) -> ChannelMembers | None:
+        present.append("U9")
+        return await listing(channel_id, **kw)
+
+    core._adapter.list_channel_members = list_while_someone_joins
+
+    await _sync(core)
+
+    assert core._room_service.removed == []

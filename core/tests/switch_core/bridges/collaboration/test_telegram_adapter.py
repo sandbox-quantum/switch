@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -2854,3 +2855,20 @@ def test_members_gone_names_those_who_left_and_trusts_no_refusal() -> None:
     gone = _run(adapter.members_gone(str(CHAT_ID), ["1", "2", "3", "4"]))
 
     assert gone == {"2", "4"}
+
+
+def test_a_restricted_person_who_left_is_gone_and_one_still_in_stays() -> None:
+    """A restricted person keeps the status `restricted` after leaving; only
+    `is_member` says they went."""
+    adapter = _adapter()
+    adapter._MEMBER_CHECK_PAUSE = 0  # type: ignore[misc]
+
+    class _Bot:
+        async def get_chat_member(self, *, chat_id: int, user_id: int) -> Any:
+            return SimpleNamespace(status="restricted", is_member=user_id == 1)
+
+    adapter._bot = _Bot()  # type: ignore[assignment]
+
+    gone = _run(adapter.members_gone(str(CHAT_ID), ["1", "2"]))
+
+    assert gone == {"2"}

@@ -178,7 +178,7 @@ The connection id header is optional and binds the call to a room: it is what th
 
 | Group | Operations |
 |---|---|
-| **Rooms** | `list_rooms`, `list_all_rooms`, `get_room_detail`, `connect_to_room`, `create_room`, `update_room`, `archive_room`, `unarchive_room`, `list_participants`, `invite_agent_to_room`, `add_users_to_room`, `remove_users_from_room` |
+| **Rooms** | `list_rooms`, `list_all_rooms`, `get_room_detail`, `connect_to_room`, `create_room`, `update_room`, `archive_room`, `unarchive_room`, `list_participants`, `invite_agent_to_room`, `add_users_to_room` |
 | **Messaging** | `post_message`, `send_targeted_message`, `read_context` |
 | **Resources** | `list_references`, `list_reference_types`, `create_reference`, `attach_reference_to_room`, `load_internal_documents`, `create_room_document`, `update_room_document`, `delete_room_document` |
 | **Roles** | `list_roles`, `get_role_detail`, `define_role`, `edit_role`, `delete_role`, `assume_role`, `release_role` |
