@@ -66,6 +66,7 @@ from switch_core.gateway.auth import (
     get_authenticated_user_id,
     get_current_user,
     organization_candidates,
+    organization_workspaces,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
     rebind_if_left,
@@ -507,6 +508,9 @@ async def create_organization_workspace(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
+    await _refuse_a_name_taken(
+        session, session_factory, organization_id, user.id, req.name
+    )
     allowance = (
         None
         if user.role == "admin"
@@ -537,6 +541,33 @@ async def create_organization_workspace(
         organization_id=organization_id,
         archived_at=None,
     )
+
+
+async def _refuse_a_name_taken(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_id: str,
+    admin_id: str,
+    name: str,
+) -> None:
+    """409 when the organization already has a workspace called `name`, in any
+    case: two of the same name could not be told apart in the switcher. A
+    check before creating, not a constraint, so two made at the same moment
+    could still share one, which nothing breaks."""
+    wanted = name.strip().casefold()
+    taken = [
+        tenant.name
+        for tenant in await organization_workspaces(
+            session_factory, admin_id, organization_id
+        )
+        if tenant.name.strip().casefold() == wanted
+    ]
+    if taken:
+        organization = await _organization(session, organization_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"{organization.name} already has a workspace called “{taken[0]}”.",
+        )
 
 
 def made_from(access: OrganizationAccess) -> dict[str, object]:

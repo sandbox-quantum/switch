@@ -142,6 +142,25 @@ class TestRenamingTheOrganization:
         assert (blank.status_code, broken.status_code) == (422, 422)
 
 
+class TestCreatingAWorkspace:
+    async def test_a_name_the_organization_already_has_is_refused_in_any_case(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        app = _app(session_factory)
+        _with_archive(app)
+        org = await _organization(session_factory, app)
+
+        async with _client(app, org.ada, org.first) as client:
+            refused = await client.post(WORKSPACES, json={"name": "  second "})
+            listed = await client.get(WORKSPACES)
+
+        assert refused.status_code == 409
+        assert (
+            refused.json()["detail"] == "Acme already has a workspace called “Second”."
+        )
+        assert len(listed.json()) == 2
+
+
 class TestAnotherWorkspace:
     async def test_an_org_admin_renames_another_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
