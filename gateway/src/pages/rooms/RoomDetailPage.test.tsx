@@ -14,8 +14,8 @@ vi.mock("react-router", () => ({
 vi.mock("../../data/AuthContext", () => ({
   useAuth: () => ({
     canAdminTenant: false,
-    capabilities: { administersOrganization: false },
-    session: { user: { id: "u-me" } },
+    capabilities: { administersOrganization: false, isOperator: false },
+    session: { user: { id: "u-me" }, tenant: null, tenants: [] },
   }),
 }));
 

@@ -16,7 +16,7 @@ const room = {
   can_add_people: false,
 };
 
-const me = { id: "u-me", administersOrganization: false };
+const me = { id: "u-me", administersOrganization: false, isOperator: false, adminMember: false };
 
 const inRoom = {
   ...room,
@@ -31,11 +31,15 @@ describe("roomStanding", () => {
     expect(roomStanding({ ...room, owner_id: "u-me", can_manage: true }, me)).toBe("owner");
   });
 
-  it("takes anyone else the server lets delete the room for an admin, of the workspace or its organization", () => {
-    expect(roomStanding({ ...inRoom, can_manage: true }, me)).toBe("workspace_admin");
-    expect(
-      roomStanding({ ...room, can_manage: true }, { ...me, administersOrganization: true }),
-    ).toBe("org_admin");
+  it("takes anyone else the server lets delete the room for an admin, and says of what", () => {
+    const manages = { ...room, can_manage: true };
+    expect(roomStanding(manages, { ...me, adminMember: true })).toBe("workspace_admin");
+    expect(roomStanding(manages, { ...me, administersOrganization: true })).toBe("org_admin");
+    // The operator bit alone makes an admin of a workspace they aren't in.
+    expect(roomStanding(manages, { ...me, isOperator: true })).toBe("operator");
+    expect(roomStanding(manages, { ...me, isOperator: true, adminMember: true })).toBe(
+      "workspace_admin",
+    );
   });
 
   it("puts a room admin above taking part", () => {

@@ -150,7 +150,14 @@ export default function RoomDetailPage() {
       <Stack spacing={4}>
         <RoomInfoSection
           room={room}
-          viewer={{ id: viewerId, administersOrganization: capabilities.administersOrganization }}
+          viewer={{
+            id: viewerId,
+            administersOrganization: capabilities.administersOrganization,
+            isOperator: capabilities.isOperator,
+            adminMember:
+              session?.tenants.some((t) => t.id === session.tenant?.id && t.role === "admin") ??
+              false,
+          }}
         />
         <Divider />
         <RoomGroupSection
@@ -287,7 +294,11 @@ function RoomInfoSection({ room, viewer }: { room: RoomDetail; viewer: RoomViewe
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
         <RoomAccessChip room={room} />
-        <InfoChip label="Owner" value={ownerLabel(room)} />
+        <InfoChip
+          label="Owner"
+          value={ownerLabel(room)}
+          mono={room.owner_id !== null && room.owner_name === null}
+        />
         {room.channel_type && (
           <InfoChip
             label="Channel type"
