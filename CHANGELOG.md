@@ -1086,6 +1086,9 @@ version of their own to them without also giving them a release of their own.
 - **Pi is a provider.** Agent definitions, the gateway's provider list and
   advanced configuration accept `pi`, whose owner is told to sign it in by
   running `pi`.
+- **Kimi Code is a provider.** Agent definitions, the gateway's provider list
+  and advanced configuration accept `kimi`, whose owner is told to sign it in
+  by running `kimi login`.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -3998,6 +4001,12 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
+- **Kimi Code as an agent provider.** Agents can run on Kimi Code CLI
+  (`kimi acp`, 2.5.0) through the generic ACP adapter, on the models Kimi is
+  set up with (`kimi login`, or a provider with an API key), with the model
+  chosen in Switch. Its sign-in check reads `kimi provider list --json` and
+  starts nothing. Auto mode and full access run in Kimi's Ask When Needed
+  mode, and Kimi's questions reach the room as questions.
 - **A message sent while an agent works reaches the running turn.** On
   Claude Code, Codex and OpenCode, any message that reaches the agent while it
   is working is delivered into the running turn instead of waiting for it to

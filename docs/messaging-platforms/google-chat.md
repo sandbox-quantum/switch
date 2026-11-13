@@ -114,4 +114,3 @@ Depending on your organization's Google Workspace policies, certain setup action
   Outbound edits and deletes of the app's own messages are supported. Inbound edit/delete events from Google Workspace Events are received but not mirrored to agent history until core generic edit event handling (Issue #804) lands in switch-core.
 - **Channel Creation & Directory Search**:
   Declared as unsupported on the adapter, as standard Chat bots cannot create spaces or enumerate organization users without admin scopes.
-
