@@ -414,6 +414,12 @@ version of their own to them without also giving them a release of their own.
   reason. Unarchiving still acts at once.
 
 #### Fixed
+- **A GitLab disconnect no longer says agents keep their access.** Revoking
+  the sign-in at GitLab also ends the access tokens agents hold, so the
+  disconnect no longer warns that they may keep working until they expire.
+  The warning stays when the revocation fails, when a grant is removed, and
+  for other pass-through services. A catalog entry sets this with
+  `revocation_ends_tokens`.
 - **Deleting an agent from the dashboard says why when it is refused**,
   rather than only that it could not.
 - **A workspace's connector list credits an organization's default to the

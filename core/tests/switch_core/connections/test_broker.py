@@ -946,6 +946,16 @@ def pass_through_catalog(
     return load_catalog(root)
 
 
+# `example` with a vendor whose revocation of a sign-in also ends the access
+# tokens it issued.
+ENDS_TOKENS = OAUTH_ENTRY.replace(
+    "    remove_access: Remove Switch under Connected apps in Example.\n",
+    "    revocation_url: https://auth.example.test/revoke\n"
+    "    revocation_ends_tokens: true\n",
+)
+assert ENDS_TOKENS != OAUTH_ENTRY
+
+
 class PassThrough:
     def __init__(self, broker: ServiceBroker, vendor: FakeVendor, world: World) -> None:
         self.broker = broker
@@ -1014,6 +1024,86 @@ async def _pass_through(
         )
         await session.commit()
     return PassThrough(broker, vendor, World(owner, agent, grant))
+
+
+# A second pass-through vendor, whose revocation does not end the tokens.
+OTHER_ENTRY = (
+    OAUTH_ENTRY.replace("slug: example", "slug: other")
+    .replace("name: Example", "name: Other")
+    .replace("{ name: example,", "{ name: other,")
+)
+
+
+async def _two_pass_through(
+    session_factory: async_sessionmaker[AsyncSession], root: Path
+) -> tuple[ServiceBroker, dict[str, FakeVendor], User]:
+    """`example`, whose revocation ends its tokens, and `other`, whose does
+    not; Ada holds both, granted to `planner`, and each issued a token."""
+    shutil.copytree(CATALOG_ROOT, root)
+    _write_example(root, OTHER_ENTRY)
+    (root / "example").rename(root / "other")
+    (root / "other" / "skill" / "SKILL.md").write_text(
+        "---\nname: other\ndescription: Work with Other items.\n---\n\nUse the tools.\n"
+    )
+    _write_example(root, ENDS_TOKENS)
+    vendors = {}
+    for slug in ("example", "other"):
+        vendor = FakeVendor()
+        vendor.pass_through = True
+        vendor.revocable = False
+        vendors[slug] = vendor
+    broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=load_catalog(root),
+        adapters=dict(vendors),
+        organization_apps=None,
+        disabled={},
+        store=STORE,
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=None,
+    )
+    async with session_factory() as session:
+        owner = await _user(session, "ada")
+        agent = await add_agent(session, name="planner", owner_id=owner.id)
+        for slug in ("example", "other"):
+            await STORE.save_connection(
+                session,
+                user_id=owner.id,
+                service=slug,
+                consent="write",
+                granted_scopes=["read:items", "write:items"],
+                account_id="acct-1",
+                external_identity="ada@example.test",
+                encrypted_secret=TEST_KEYRING.encrypt(
+                    json.dumps(
+                        {
+                            "access_token": f"{slug}_access_0",
+                            "expires_at": time.time() + 50 * 60,
+                            "refresh_token": f"{slug}_refresh_0",
+                        }
+                    )
+                ),
+                oauth_client_id=None,
+            )
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=owner.id,
+                service=slug,
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="acct-1",
+                created_by=owner.id,
+            )
+        await session.commit()
+    for slug in ("example", "other"):
+        await _issue(broker, session_factory, agent.id, service=slug)
+    return broker, vendors, owner
 
 
 class TestPassThrough:
@@ -1341,6 +1431,113 @@ class TestPassThrough:
         assert warning is not None
         assert "unset is not set up here" in warning
         assert "Example access" not in warning
+
+    async def test_a_disconnect_names_the_pass_through_tokens_it_could_not_end(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is not None
+        assert "Example access already given to agents cannot be taken back" in warning
+
+    async def test_a_disconnect_that_ends_the_tokens_does_not_say_they_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        # The vendor's revocation of the sign-in also ended the token the
+        # agent holds, so nothing given out lives on.
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is None
+
+    async def test_a_failed_revocation_still_says_the_tokens_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        pt.vendor.revoke_connection_error = RuntimeError("vendor down")
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert warning is not None
+        assert "Example could not revoke the sign-in" in warning
+        assert "Example access already given to agents cannot be taken back" in warning
+
+    async def test_a_disconnect_that_sent_no_token_still_says_the_tokens_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            # A kept secret with no token: the adapter has nothing to revoke.
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == pt.world.owner.id)
+                .values(encrypted_secret=TEST_KEYRING.encrypt(json.dumps({})))
+            )
+            await session.commit()
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert warning is not None
+        assert "Example access already given to agents cannot be taken back" in warning
+
+    async def test_an_admin_revoking_the_connection_does_not_say_the_tokens_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            admin = await _user(session, "grace")
+            await session.commit()
+            warning = await pt.broker.revoke_connection(
+                session, admin.id, pt.world.owner.id, "example"
+            )
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is None
+
+    async def test_removing_a_member_names_only_the_tokens_not_ended(
+        self, session_factory, tmp_path
+    ) -> None:
+        broker, vendors, owner = await _two_pass_through(
+            session_factory, tmp_path / "c"
+        )
+        async with session_factory() as session:
+            removed = await broker.remove_connections(session, owner.id)
+            await session.commit()
+            warning = await broker.finish_disconnect(session, owner.id, removed)
+        assert sorted(service for service, _ in removed) == ["example", "other"]
+        assert len(vendors["example"].connections_revoked) == 1
+        assert len(vendors["other"].connections_revoked) == 1
+        assert warning is not None
+        assert "Other access already given to agents cannot be taken back" in warning
+        assert "Example" not in warning
+
+    async def test_removing_the_grant_still_says_the_tokens_live_on(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=ENDS_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            grant = await STORE.get_grant(session, pt.world.agent.id, "example")
+            assert grant is not None
+            warning = await pt.broker.revoke_grant(session, grant, pt.world.owner.id)
+        # Removing a grant revokes no sign-in, so the owner's token lives on.
+        assert pt.vendor.connections_revoked == []
+        assert warning is not None
+        assert "Example access already given to agents cannot be taken back" in warning
 
 
 def _workspace_refusal(name: str) -> str:

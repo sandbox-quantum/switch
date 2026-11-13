@@ -355,6 +355,15 @@ class CheckedKey:
     secret: ConnectionSecret = field(repr=False)
 
 
+def _holds_token(secret: ConnectionSecret) -> bool:
+    """Whether `secret` holds a token for the vendor to revoke: one without
+    gives the revocation nothing to send, so it ends nothing."""
+    refresh_token = secret.values.get("refresh_token")
+    return bool(secret.access_token) or (
+        isinstance(refresh_token, str) and bool(refresh_token)
+    )
+
+
 def _passes_through(entry: Connection) -> bool:
     """Whether `entry` hands its agents the owner's own token."""
     token = entry.definition.token
@@ -1301,6 +1310,11 @@ class ServiceBroker:
             and revoked[1] in (None, held[1])
         )
 
+    def _revocation_ends_tokens(self, service: str) -> bool:
+        entry = self._catalog.get(service)
+        oauth = None if entry is None else entry.definition.auth.oauth
+        return oauth is not None and oauth.revocation_ends_tokens
+
     def _revocation_ends_grant(self, service: str) -> bool:
         entry = self._catalog.get(service)
         oauth = None if entry is None else entry.definition.auth.oauth
@@ -2242,6 +2256,8 @@ class ServiceBroker:
         """After the removal has committed: revoke each sign-in at its vendor,
         and the tokens issued on it. A warning names what could not be."""
         warnings = []
+        # Services whose revocation here also ended the tokens agents hold.
+        ended: set[str] = set()
         for service, signed_in in removed:
             entry = self._catalog.get(service)
             name = service if entry is None else entry.definition.name
@@ -2256,6 +2272,10 @@ class ServiceBroker:
             try:
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(signed_in.secret)
+                if self._revocation_ends_tokens(service) and _holds_token(
+                    signed_in.secret
+                ):
+                    ended.add(service)
             except ConnectionNotRevocable as error:
                 warnings.append(str(error))
             except Exception as error:
@@ -2277,6 +2297,7 @@ class ServiceBroker:
                         [service for service, _ in removed]
                     ),
                 ),
+                ended=frozenset(ended),
             )
             if withdrawn is not None:
                 warnings.append(withdrawn)
@@ -2285,7 +2306,11 @@ class ServiceBroker:
     # ── Revocation and retention ─────────────────────────────────────────────
 
     async def revoke_withdrawn(
-        self, session: AsyncSession, conditions: tuple[Any, ...]
+        self,
+        session: AsyncSession,
+        conditions: tuple[Any, ...],
+        *,
+        ended: frozenset[str] = frozenset(),
     ) -> str | None:
         """After an access change has committed: revoke what it withdrew, and
         say what could not be taken back.
@@ -2293,12 +2318,18 @@ class ServiceBroker:
         A token its vendor can revoke that is still pending is retried by the
         periodic tick, and lives an hour at most. One no vendor can revoke
         alone (the owner's own, passed through) stays valid until it expires;
-        the warning names the service and when.
+        the warning names the service and when. `ended` names the services
+        whose sign-in was just revoked at a vendor whose revocation also ends
+        those tokens: they are not named. Neither are tokens of an earlier
+        sign-in of the same service that a reconnect failed to revoke; that
+        reconnect already said so.
         """
         pending = await self.revoke_pending(session, conditions)
         warnings = [ACCESS_WARNING] if pending else []
         unrevocable = sorted(
-            slug for slug, entry in self._catalog.items() if _passes_through(entry)
+            slug
+            for slug, entry in self._catalog.items()
+            if _passes_through(entry) and slug not in ended
         )
         try:
             async with tenant_session(
