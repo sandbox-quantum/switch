@@ -109,7 +109,8 @@ def _dashboard_routes() -> set[str]:
             routes.add(_template(path))
     table = _ROUTE_TABLE.read_text()
     for path in re.findall(
-        r'\b(?:page|settingsPage|areaIndex|redirect)\(\s*"([^"]+)"', table
+        r'\b(?:page|settingsPage|personalSettingsPage|areaIndex|redirect)\(\s*"([^"]+)"',
+        table,
     ):
         routes.add(_template(path))
     return routes
