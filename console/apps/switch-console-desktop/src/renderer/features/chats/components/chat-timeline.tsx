@@ -7,7 +7,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
 import type { ChatApproval } from '@shared/core/chats/activity';
-import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
+import type { ChatAgent, ChatKickoff, ChatMessage } from '@shared/core/chats/chats';
 import {
   chatAgentLabel,
   isSessionStartingNotice,
@@ -233,6 +233,13 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     ])
   );
   const liveNotices = liveSessionStartingNotices(timeline.messages, turnAgents);
+  // A kickoff's one-line headline ("Kickoff from …") says what its request
+  // row already shows, so the request alone stands for both.
+  const kickoffHeadlines = new Set(
+    timeline.messages.flatMap((message) =>
+      message.kickoff && message.threadRootId ? [message.threadRootId] : []
+    )
+  );
   const stopRows = hiddenStopRows(timeline.messages);
   // Open requests whose turn shows under no loaded message still need an answer.
   const shownRequests = new Set(
@@ -293,6 +300,8 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const notice = isSessionStartingNotice(message);
         if (notice && !liveNotices.has(message.messageId)) return null;
         if (foldedNotices.has(message.messageId) || stopRows.has(message.messageId)) return null;
+        if (message.sender.kind === 'system' && kickoffHeadlines.has(message.messageId))
+          return null;
         const ended = turnEndNotice(message);
         const sentAt = new Date(message.sentAt);
         // The conversation's first message gets no separator above it; a later group does.
@@ -314,6 +323,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         };
         const agentRow = notice || ended !== null || message.sender.kind === 'agent';
         const head = startsBlock(agentRow ? message.sender.agentId : null);
+        const kickoff = message.sender.kind === 'system' ? message.kickoff : null;
         return (
           <Fragment key={message.messageId}>
             {separator}
@@ -394,6 +404,15 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 </div>
                 <ReplyButton onReply={() => onReply(message)} />
               </div>
+            ) : kickoff ? (
+              <KickoffRow
+                id={messageAnchorId(message.messageId)}
+                className={spacing()}
+                kickoff={kickoff}
+                body={message.body}
+                agent={agentOf(kickoff.agentId)}
+                serverId={serverId}
+              />
             ) : message.sender.kind === 'agent' ? (
               <AgentRow
                 id={messageAnchorId(message.messageId)}
@@ -552,3 +571,66 @@ const PendingBubble = observer(function PendingBubble({
     </div>
   );
 });
+
+/**
+ * A template's kickoff, shown as the request of whoever ran the template
+ * rather than as one of Switch's own centred notices: it is a full request,
+ * often several paragraphs, and drawn as a notice it was hard to read. The run
+ * history Switch appends for the agents folds away under it.
+ */
+function KickoffRow({
+  kickoff,
+  body,
+  agent,
+  serverId,
+  ...props
+}: {
+  kickoff: ChatKickoff;
+  body: string;
+  agent: ChatAgent | null;
+  serverId: string;
+  id: string;
+  className: string;
+}) {
+  const content = (
+    <div className="flex flex-col gap-1">
+      <span className="self-start rounded bg-background-1 px-1.5 py-px text-[10px] text-foreground-passive">
+        Kickoff
+      </span>
+      <div className="text-sm leading-relaxed">
+        <ChatMarkdown>{body}</ChatMarkdown>
+      </div>
+      {kickoff.agentNote && (
+        <details className="text-xs text-foreground-muted">
+          <summary className="cursor-pointer">Details for agents</summary>
+          <div className="mt-1">
+            <ChatMarkdown>{kickoff.agentNote}</ChatMarkdown>
+          </div>
+        </details>
+      )}
+    </div>
+  );
+  if (kickoff.agentId === null)
+    return (
+      <div {...props} className={cn('flex gap-3', props.className)}>
+        <PersonAvatar name={kickoff.name} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="mb-1 text-xs font-medium text-foreground-muted">{kickoff.name}</span>
+          {content}
+        </div>
+      </div>
+    );
+  return (
+    <AgentRow
+      {...props}
+      agent={{
+        name: agent ? chatAgentLabel(agent) : kickoff.name,
+        iconUrl: agent?.iconUrl ?? null,
+      }}
+      serverId={serverId}
+      head
+    >
+      {content}
+    </AgentRow>
+  );
+}
