@@ -589,6 +589,9 @@ export class CodexAdapter implements ProviderAdapter {
       if (steered) {
         return { turnId: input.turnId, steeredInto: state.turnIdByNative.get(steered) ?? steered };
       }
+      // A steer is for one turn only: the host queues it rather than have
+      // Codex start it as a turn the host is not tracking.
+      if (input.expectedTurnId) throw new SteerNotSentError('Codex refused to steer the turn.');
     }
 
     state.unboundTurnIds.push(input.turnId);
