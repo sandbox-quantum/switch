@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import uuid
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,12 @@ logger = logging.getLogger(__name__)
 
 # Fixed, so no operator-set text (service or environment name) reaches the relay.
 _RELAY_SERVICE_NAME = "switch-core"
+
+# A fresh UUID on every record. The relay derives Amplitude's dedup key from
+# the record's attributes, so without it two identical events from one
+# deployment in the same millisecond (a message addressed to two agents of the
+# same runtime, a template attaching two documents) arrive as one.
+INSERT_ID_ATTRIBUTE = "flint.insert_id"
 
 # OTLP's severity number for INFO. A product event is not a log line, but the
 # relay carries it as one, and a record with no severity is rendered by some
@@ -237,7 +244,11 @@ class OtlpRelaySink:
                         severity_text="INFO",
                         severity_number=_SEVERITY_INFO,
                         time_nanos=record.timestamp_ns,
-                        attributes={"event.name": record.name, **record.properties},
+                        attributes={
+                            "event.name": record.name,
+                            INSERT_ID_ATTRIBUTE: str(uuid.uuid4()),
+                            **record.properties,
+                        },
                     )
                     for record in records
                 ],

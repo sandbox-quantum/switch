@@ -85,7 +85,7 @@ artifacts:
     # move `pins` to it; drop the canary pin back to it too unless a newer
     # pre-release is being tried.
     canary_pins:
-      switch-core: 0.32.0-rc.3
+      switch-core: 0.32.0-rc.4
 
   agent-runtime:
     description: >-

@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * The two buses are kept apart here on purpose.
  *
  * `sessionService` and `sessionHooks` both carry an event called
- * `session:deleted`, and they fire on different paths — the second is how a
- * session pruned from its remote host is reported. Collapsing them into one map
+ * `session:deleted`, and they fire on different paths — the second is how the
+ * sessions of a removed agent are reported. Collapsing them into one map
  * of handlers, as an obvious test double would, makes a subscription to only
  * one of them look identical to a subscription to both.
  */
@@ -31,13 +31,13 @@ vi.mock('@main/core/sessions/session-hooks', () => ({
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: vi.fn() }));
 vi.mock('@main/core/locations/store', () => ({ getLocationById: vi.fn() }));
 vi.mock('@main/core/sessions/operations/getSession', () => ({ getSession: vi.fn() }));
-vi.mock('./telemetry-service', () => ({ trackEvent: vi.fn() }));
+vi.mock('./telemetry-service', () => ({ trackEvent: vi.fn(), trackBackgroundEvent: vi.fn() }));
 
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getLocationById } from '@main/core/locations/store';
 import { getSession } from '@main/core/sessions/operations/getSession';
 import { registerTelemetryListeners } from './telemetry-listeners';
-import { trackEvent } from './telemetry-service';
+import { trackBackgroundEvent, trackEvent } from './telemetry-service';
 
 type Bus = keyof typeof buses;
 
@@ -84,13 +84,20 @@ registerTelemetryListeners();
 
 beforeEach(() => {
   vi.mocked(trackEvent).mockClear();
+  vi.mocked(trackBackgroundEvent).mockClear();
 });
 
 describe('agent_created', () => {
   it('reports where the agent runs', async () => {
     onLocation('remote');
 
-    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'loc' }, 'sidebar');
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'codex', locationId: 'loc' },
+      'sidebar',
+      'created'
+    );
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
@@ -104,7 +111,13 @@ describe('agent_created', () => {
   it('says unknown rather than guessing when the location has gone', async () => {
     onLocation('missing');
 
-    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'gone' }, 'sidebar');
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'codex', locationId: 'gone' },
+      'sidebar',
+      'created'
+    );
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
@@ -124,7 +137,8 @@ describe('agent_created', () => {
       'agents',
       'agent:created',
       { providerId: '/Users/someone/custom-agent', locationId: 'loc' },
-      'sidebar'
+      'sidebar',
+      'created'
     );
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
@@ -134,6 +148,32 @@ describe('agent_created', () => {
       failure_reason: 'none',
       entry_point: 'sidebar',
     });
+  });
+});
+
+describe('an agent that was not created here', () => {
+  it('is reported as attached, or as an adopted subagent, never as created', async () => {
+    onLocation('remote');
+
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'codex', locationId: 'loc' },
+      'unknown',
+      'attached'
+    );
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'claude', locationId: 'loc' },
+      'unknown',
+      'adopted'
+    );
+
+    expect(vi.mocked(trackEvent).mock.calls).toEqual([
+      ['agent_attached', { agent_type: 'codex', location: 'remote' }],
+      ['subagent_adopted', { agent_type: 'claude', location: 'remote' }],
+    ]);
   });
 });
 
@@ -166,6 +206,26 @@ describe('a session started in a room', () => {
       connected_to_room: true,
     });
     expect(JSON.stringify(vi.mocked(trackEvent).mock.calls)).not.toContain('alpha');
+  });
+});
+
+describe('a session the app adopted rather than started', () => {
+  it('is reported as discovered, never as a start, and still ends', async () => {
+    onLocation('remote');
+    vi.mocked(getAgentById).mockResolvedValue({ id: 'agent', locationId: 'loc' } as never);
+
+    await emit(
+      'sessionService',
+      'session:created',
+      { id: 's-adopted', agentId: 'agent', providerId: 'codex' },
+      { id: 's-adopted', agentId: 'agent', title: 'Shared session', startSource: 'adopted' }
+    );
+    await emit('sessionService', 'session:deleted', 's-adopted');
+
+    expect(vi.mocked(trackEvent).mock.calls).toEqual([
+      ['session_discovered', { agent_type: 'codex', location: 'remote' }],
+      ['session_ended', { agent_type: 'codex', location: 'remote', outcome: 'normal' }],
+    ]);
   });
 });
 
@@ -221,21 +281,39 @@ describe('a session ending', () => {
     });
   });
 
-  it('reports one pruned from its remote host, which arrives on the other bus', async () => {
-    // The reconciler deletes the row itself when a session has gone from the
-    // VM, or was terminated from another client. Subscribing only to the
-    // session service leaves those reporting a start and never an end.
+  it('reports one whose agent a person removed, which arrives on the other bus', async () => {
+    // Removing an agent deletes its sessions' rows with it, outside the
+    // session service. Subscribing only to the service leaves those reporting
+    // a start and never an end.
     onLocation('remote');
-    await startSession('s-pruned');
+    await startSession('s-removed');
     vi.mocked(trackEvent).mockClear();
 
-    await emit('sessionHooks', 'session:deleted', 's-pruned');
+    await emit('sessionHooks', 'session:deleted', 's-removed', 'person');
 
     expect(trackEvent).toHaveBeenCalledWith('session_ended', {
       agent_type: 'claude',
       location: 'remote',
       outcome: 'normal',
     });
+    expect(trackBackgroundEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports one the app pruned with its agent as nobody using the app', async () => {
+    // A pass removing an agent its server no longer has runs every minute
+    // whether anyone is there or not, so its ends must not start a session.
+    onLocation('remote');
+    await startSession('s-pruned');
+    vi.mocked(trackEvent).mockClear();
+
+    await emit('sessionHooks', 'session:deleted', 's-pruned', 'app');
+
+    expect(trackBackgroundEvent).toHaveBeenCalledWith('session_ended', {
+      agent_type: 'claude',
+      location: 'remote',
+      outcome: 'normal',
+    });
+    expect(trackEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -334,9 +412,10 @@ describe('a session that dies before we know what it was', () => {
     await emit('sessionService', 'session:archived', 's-double');
     vi.mocked(trackEvent).mockClear();
 
-    await emit('sessionHooks', 'session:deleted', 's-double');
+    await emit('sessionHooks', 'session:deleted', 's-double', 'app');
 
     expect(trackEvent).not.toHaveBeenCalled();
+    expect(trackBackgroundEvent).not.toHaveBeenCalled();
   });
 });
 
