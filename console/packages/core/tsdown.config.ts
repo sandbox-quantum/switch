@@ -9,6 +9,7 @@ export default defineConfig({
     lib: 'src/lib/index.ts',
     'agents-plugins': 'src/agents/plugins/index.ts',
     'agents-plugins-helpers': 'src/agents/plugins/helpers/index.ts',
+    'agents-provider-setup': 'src/agents/provider-setup/index.ts',
   },
   format: ['esm'],
   dts: true,

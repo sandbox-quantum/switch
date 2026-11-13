@@ -419,9 +419,15 @@ importers:
 
   packages/plugins:
     dependencies:
+      '@switch-console/agent-providers':
+        specifier: workspace:*
+        version: link:../agent-providers
       '@switch-console/core':
         specifier: workspace:*
         version: link:../core
+      '@switch-console/shared':
+        specifier: workspace:*
+        version: link:../shared
       smol-toml:
         specifier: ^1.8.0
         version: 1.8.0
