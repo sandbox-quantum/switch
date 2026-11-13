@@ -88,6 +88,9 @@ class RoomSummary(BaseModel):
     read_visibility: str = "public"
     write_visibility: str = "public"
     created_at: str
+    # When the room last had a message, from any platform, as ISO 8601; null
+    # when it has had none. Switch Console orders its room lists by it.
+    last_message_at: str | None = None
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
     # The caller owns the room, is in it (in Switch Console or through a

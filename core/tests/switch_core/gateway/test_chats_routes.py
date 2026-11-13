@@ -16,6 +16,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ from sqlalchemy import delete, func, select, update
 
 from switch_core.addressing import owner_only_policy
 from switch_core.agent_runs import TRACE_OPENING
+from switch_core.clients.consumer import Consumer
 from switch_core.db.models import (
     Agent,
     AgentEventRow,
@@ -44,6 +46,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.events import CommandEvent
 from switch_core.gateway import chats as chats_module
 from switch_core.gateway.auth import session_is_current
 from switch_core.gateway.chats import (
@@ -52,7 +55,9 @@ from switch_core.gateway.chats import (
 )
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.session_activity.listener import Change
+from switch_core.transport import RoomRef
 from switch_core.transport.observer import ParticipantMessage
+from switch_core.transport.stored import to_inbound
 from tests.switch_core.gateway.conftest import _Harness, _Process
 from tests.telemetry_records import recording_telemetry
 
@@ -2440,7 +2445,9 @@ async def test_a_typed_room_command_is_run_as_one(chats: _Harness) -> None:
     sent = await chats.send(chats.alice, room_id, "s1", "  !set-alias @helper @h ")
     assert sent.status_code == 200, sent.text
     [shown] = sent.json()["messages"]
-    assert shown["sender"]["kind"] == "system"
+    # Shown as the person's, as on the platform they could have typed it on.
+    assert shown["sender"]["kind"] == "human"
+    assert shown["sender"]["name"] == "alice"
     assert shown["body"] == "!set-alias @helper @h"
 
     assert await chats.message_rows(room_id) == []
@@ -2451,9 +2458,33 @@ async def test_a_typed_room_command_is_run_as_one(chats: _Harness) -> None:
             )
         ).scalar_one()
     assert row.event_type == "com.switch.command"
-    assert row.content["command"] == "set-alias"
-    assert row.content["args"] == "@helper @h"
-    assert row.content["user_name"] == "alice"
+
+    # What a room's command handling receives from that row: the command and
+    # its arguments, from alice, the same event a bridge's typed one makes.
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+    assert room is not None
+    received: list[CommandEvent] = []
+
+    async def on_command(_room: RoomRef, event: CommandEvent) -> None:
+        received.append(event)
+
+    consumer = SimpleNamespace(
+        _EVENT_DISPATCH=Consumer._EVENT_DISPATCH,
+        _should_ignore=lambda _room, _event: False,
+        on_command=on_command,
+    )
+    await Consumer._handle_custom_event(
+        consumer,  # type: ignore[arg-type]
+        RoomRef(room.transport_room_id),
+        to_inbound(row, [], transport_room_id=room.transport_room_id),
+    )
+    [event] = received
+    assert (event.command, event.args, event.user_name) == (
+        "set-alias",
+        "@helper @h",
+        "alice",
+    )
 
 
 async def test_a_message_that_only_starts_with_a_bang_stays_a_message(
