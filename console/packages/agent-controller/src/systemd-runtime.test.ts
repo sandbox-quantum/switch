@@ -163,6 +163,7 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
       ...env,
       COPILOT_GITHUB_TOKEN: 'token-placeholder',
       COPILOT_HOME: '/home/controller/.copilot',
+      KIMI_CODE_HOME: '/home/controller/.kimi-code',
     };
     runtime = makeRuntime();
     await start('agent-1');

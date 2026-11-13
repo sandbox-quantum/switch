@@ -24,7 +24,7 @@ export type ParsedAgentTemplate = {
   sources: AgentTemplateSource[];
   /** The room the agent is put in once it exists, when the template declares one. */
   room: { name: string | null; kickoff: string | null } | null;
-  /** A provider id (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, `deepseek-harness`, `pi`, `copilot`, `junie`) or a `{param}` whose value is one. Null when the template has no `provider` field. */
+  /** A provider id (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, `deepseek-harness`, `pi`, `copilot`, `junie`, `kimi`) or a `{param}` whose value is one. Null when the template has no `provider` field. */
   provider: string | null;
   warnings: string[];
 };

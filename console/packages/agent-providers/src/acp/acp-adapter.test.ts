@@ -473,6 +473,28 @@ const askFor = (id: number, toolCallId: string) => ({
     ],
   },
 });
+it('shows the words a permission request carries as the approval detail, and no diff', async () => {
+  const { adapter, events, server } = await start(dummy);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await server.waitFor('session/prompt');
+  const request = (id: number, content: unknown[]) => ({
+    ...askFor(id, `call-${id}`),
+    params: { ...askFor(id, `call-${id}`).params, toolCall: { toolCallId: `call-${id}`, content } },
+  });
+  // How Kimi Code asks: a diff for an edit, then what it asks to do in words.
+  server.send(
+    request(80, [
+      { type: 'diff', path: 'a.txt', oldText: 'a', newText: 'b' },
+      { type: 'content', content: { type: 'text', text: 'Requesting approval to edit a.txt' } },
+    ])
+  );
+  server.send(request(81, []));
+  await flush();
+  const opened = events.filter((e) => e.type === 'request.opened');
+  expect(opened).toMatchObject([{ detail: 'Requesting approval to edit a.txt' }, {}]);
+  expect(opened[1]).not.toHaveProperty('detail');
+});
+
 const typed: AcpProviderHooks = {
   ...dummy,
   itemType: (call) =>

@@ -834,6 +834,9 @@ version of their own to them without also giving them a release of their own.
   owner to run `kiro-cli login`. A chat now names the provider of any agent
   registered through a provider's known-agent spec, read from the provider
   table rather than a list of its own.
+- **Kimi Code is a provider.** Definitions, the gateway's provider list and
+  known-agent registration accept `kimi`, and an offline Kimi Code agent tells
+  its owner to run `kimi login`. It has no advanced settings.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -3489,6 +3492,16 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
+- **Kimi Code is an agent provider.** Agents can run on Kimi Code CLI
+  (`kimi acp`, ACP), in Console or on a headless agent controller: talking in
+  rooms, asking before each tool from the chat, asking all of an
+  AskUserQuestion's questions as form cards, and resuming after a restart.
+  Console says whether Kimi is installed and signed in without starting a
+  sign-in, and tells you to run `kimi login`. A machine can run Kimi on its own
+  model and key through `KIMI_MODEL_*`. An ACP agent's approval card now shows
+  the words its request carries, such as "Requesting approval to run ls", and a
+  provider can be stopped by closing its input (`exitsOnClosedInput`), which
+  Kimi needs to save its last turn.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

@@ -650,6 +650,10 @@ export class AcpAdapter implements ProviderAdapter {
     }
     options.push({ decision: 'cancel', label: 'Cancel', response: ACP_CANCELLED });
     const mcp = server !== undefined && state.mcpNames.has(server);
+    // What the agent says it asks to do, where the request says it in words.
+    const detail = (Array.isArray(toolCall.content) ? toolCall.content : [])
+      .flatMap((part) => (part.type === 'content' && part.content?.text ? [part.content.text] : []))
+      .join('\n');
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
@@ -663,6 +667,7 @@ export class AcpAdapter implements ProviderAdapter {
         toolCall.title ??
         announced?.title ??
         `${this.hooks.label} needs permission`,
+      ...(detail ? { detail } : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
