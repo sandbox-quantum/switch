@@ -469,6 +469,14 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                 {failureText(agentsQuery.error ?? allowedQuery.error, 'Could not load the agents.')}
               </p>
             )}
+            {selectedBridge && invitableQuery.isError && (
+              <p className="text-xs text-destructive">
+                {failureText(
+                  invitableQuery.error,
+                  'Could not work out which agents you can invite.'
+                )}
+              </p>
+            )}
             {(selectedBridge ? peopleQuery.isError : rosterQuery.isError) && (
               <p className="text-xs text-destructive">
                 {failureText(

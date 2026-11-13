@@ -25,13 +25,17 @@ export function useRoomAgentCandidates(workspaceId: string | null, roomId: strin
 
 /**
  * Of `agents`, the ones a picker may offer, given what
- * `useRoomAgentCandidates` answered: all of them when the server cannot say.
+ * `useRoomAgentCandidates` answered: all of them when the server cannot say
+ * (`null`, an older server), and none while the answer is still loading or
+ * could not be read (`undefined`), so nobody picks an agent the invite then
+ * refuses. Callers show the loading state or the error.
  */
 export function invitableAgents<T extends { id: string }>(
   agents: readonly T[],
   candidateIds: readonly string[] | null | undefined
 ): T[] {
-  if (candidateIds === null || candidateIds === undefined) return [...agents];
+  if (candidateIds === undefined) return [];
+  if (candidateIds === null) return [...agents];
   const allowed = new Set(candidateIds);
   return agents.filter((agent) => allowed.has(agent.id));
 }

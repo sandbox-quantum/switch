@@ -81,6 +81,7 @@ vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
 
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
 import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
+import { rpc } from '@renderer/lib/ipc';
 
 const ROOM = {
   id: 'room-1',
@@ -409,6 +410,17 @@ describe('room settings for someone who may only read the room', () => {
     expect(el.textContent).toContain('reviewer-bot');
     expect(el.querySelector('[aria-label="Add agents"]')).toBeNull();
     expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
+  });
+
+  it('says when it cannot tell which agents may be invited, and offers none', async () => {
+    vi.mocked(rpc.workspaces.roomAgentCandidates).mockRejectedValueOnce(
+      new Error('Switch gateway returned 500')
+    );
+    const el = await renderPanel('side');
+    await click(el.querySelector<HTMLElement>('[aria-label="Add agents"]')!);
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(document.body.textContent).toContain('Switch gateway returned 500');
+    expect(document.body.textContent).not.toContain('already in this room');
   });
 
   it('still offers adding agents to someone in the room, and nothing else', async () => {

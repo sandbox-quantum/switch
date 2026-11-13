@@ -17,6 +17,9 @@ describe('invitableAgents', () => {
 
   it('offers every agent when the server cannot say', () => {
     expect(invitableAgents(AGENTS, null)).toEqual(AGENTS);
-    expect(invitableAgents(AGENTS, undefined)).toEqual(AGENTS);
+  });
+
+  it('offers none while the answer is loading or could not be read', () => {
+    expect(invitableAgents(AGENTS, undefined)).toEqual([]);
   });
 });

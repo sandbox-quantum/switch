@@ -450,7 +450,11 @@ export const AddAgentPanel = observer(function AddAgentPanel({
       }
       loading={remoteAgents.isPending || candidates.isPending}
       loadError={
-        remoteAgents.isError ? failureText(remoteAgents.error, 'Could not list the agents.') : null
+        remoteAgents.isError
+          ? failureText(remoteAgents.error, 'Could not list the agents.')
+          : candidates.isError
+            ? failureText(candidates.error, 'Could not work out which agents you can invite.')
+            : null
       }
       candidates={invitableAgents(remoteAgents.data ?? [], candidates.data)
         .filter((agent) => !members.has(agent.id))
