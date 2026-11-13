@@ -540,6 +540,8 @@ version of their own to them without also giving them a release of their own.
   nothing when Switch didn't answer, and a failed sign-out of this browser
   looked signed out until the next reload signed it back in. The dashboard
   now stays signed in and shows what went wrong.
+- **The operator's Users and All workspaces pages say why they could not
+  load**, rather than showing an empty list.
 - **Messaging apps says when a change is refused or the list fails to load.**
   Turning agent greetings or channel creation on or off said nothing when
   Switch refused it, and a list that failed to load showed "No messaging apps
@@ -927,6 +929,19 @@ version of their own to them without also giving them a release of their own.
   polls) and its `device` with whose device it is, which is named to the
   device's owner and to workspace admins.
 - **An agent's page says when you can see the agent but not change it.**
+- **The new layout's Platform area is a place of its own.** Its pages span
+  every workspace, so, as in Organization settings, the rail gives way to
+  the area's menu and the top bar leads back to the workspace. Each of its
+  pages refuses anyone but the operator by itself, not only through the
+  area.
+- **The operator can sign someone out of all their devices.** The Users
+  page offers "Sign out of all devices" on every account but your own, for
+  a lost device or an account that looks taken over: every session it holds
+  ends, Switch Console's included, and the audit log records it. Delete
+  account moves into the same row menu.
+- **The operator's Users and All workspaces lists can be searched and
+  filtered**, by name and email, or by name, slug and organization, with a
+  Role or Organization dropdown and a count, in alphabetical order.
 - **The new layout's Workspace › Connectors chooses which connectors the
   workspace may use.** Each connector says whether it is enabled here and
   what decided that: the organization's lock ("Set by" the organization, with

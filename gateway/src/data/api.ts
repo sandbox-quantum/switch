@@ -2329,8 +2329,8 @@ export async function changePassword(
   });
 }
 
-export async function fetchUsers(): Promise<ListedUser[] | null> {
-  return fetchJson<ListedUser[]>("/users");
+export async function fetchUsers(): Promise<ListedUser[]> {
+  return jsonRequest<ListedUser[]>("/users", "GET");
 }
 
 // The roles `POST /users` accepts; `admin` makes a deployment operator.
@@ -2343,6 +2343,12 @@ export async function createUser(
   role: UserRole,
 ): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
+}
+
+// Deployment operator only. Ends every session the account holds, as the
+// person's own "Sign out of all devices" would; recorded in the audit log.
+export async function endUserSessions(userId: string): Promise<void> {
+  await jsonRequest(`/users/${encodeURIComponent(userId)}/sessions/revoke`, "POST");
 }
 
 // Deployment operator only. Deletes the whole account, as the person
