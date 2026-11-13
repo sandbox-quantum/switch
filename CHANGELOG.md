@@ -1958,6 +1958,19 @@ version of their own to them without also giving them a release of their own.
   Removing a member leaves what they own in that workspace, and deleting their
   account afterwards failed on it. Those rows are now deleted or handed over as
   they are in the workspaces you are still in.
+- **The server-side connectors' table, and the keys they left behind.**
+  Upgrading drops `server_connectors` and its tenant lookup, a release after
+  the connectors themselves were removed. Each registration key a connector
+  made, including those of connectors removed earlier, and the key of each
+  agent one registered, is retired: it no longer authenticates and is listed
+  under **Retired keys** on the gateway's API keys page, where it can be
+  deleted once no agent holds it. The agents stay: the upgrade log names each
+  as `workspace/agent`, and the gateway shows them with the type
+  `server-side:opencode`. Delete them from the gateway; they can also be
+  transferred to another owner now, and no longer stop a workspace being
+  deleted. Dropping the table
+  briefly locks `api_keys` and `tenants`, for at most
+  `DB_MIGRATION_LOCK_TIMEOUT`, so upgrade at a quiet time.
 
 ### [0.31.0] - 2026-10-20
 

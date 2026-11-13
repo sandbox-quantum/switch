@@ -1012,8 +1012,8 @@ only when there was something to detach or remove.
 | `package_deleted` | `age_days` (number) |
 | `reference_type_created` | none |
 | `reference_type_deleted` | `age_days` (number) |
-| `api_key_created` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`) |
-| `api_key_revoked` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `other`); `age_days` (number) |
+| `api_key_created` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `retired` \| `other`) |
+| `api_key_revoked` | `key_type` (`agent` \| `registration` \| `bootstrap` \| `retired` \| `other`); `age_days` (number) |
 | `room_group_created` | `has_parent` (boolean) |
 | `room_group_deleted` | `room_count` (number); `age_days` (number) |
 | `template_created` | `template_kind` (`room` \| `group` \| `agent` \| `other`) |

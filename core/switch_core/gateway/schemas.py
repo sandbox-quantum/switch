@@ -758,7 +758,7 @@ class ApiKeyDetail(BaseModel):
     created_at: str
     expires_at: datetime | None
     # What the caller may do with it: reveal and copy it, their own only; and
-    # delete it, their own unless an agent still signs in with it
+    # delete it, their own unless an agent still holds it
     # (`authz.can_delete_api_key`).
     can_reveal: bool
     can_delete: bool

@@ -137,6 +137,21 @@ class AgentStore:
             )
         ) or 0
 
+    async def keys_held(
+        self, session: AsyncSession, key_ids: Collection[str]
+    ) -> set[str]:
+        """Which of `key_ids` an agent's row points at, whatever the key's type:
+        an agent's own key, which it signs in with, or one retired while the
+        agent stays. Either goes with its agent, and deleting it first would
+        fail on the row's reference."""
+        if not key_ids:
+            return set()
+        return set(
+            await session.scalars(
+                select(Agent.api_key_id).where(Agent.api_key_id.in_(list(key_ids)))
+            )
+        )
+
     async def get_by_owner(self, session: AsyncSession, owner_id: str) -> list[Agent]:
         """Every agent `owner_id` owns in the bound tenant.
 

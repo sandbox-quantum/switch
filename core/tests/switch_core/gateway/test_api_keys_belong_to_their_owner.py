@@ -125,3 +125,64 @@ async def test_an_agents_key_says_it_cannot_go_while_the_agent_signs_in_with_it(
     assert refused.status_code == 409, refused.text
     assert flags(listed_after) == {"helper": (True, True), "mine": (True, True)}
     assert deleted.status_code == 200, deleted.text
+
+
+async def test_a_retired_key_offers_nothing_to_copy_and_goes_after_its_agent(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retired key authenticates as nothing, so it is never revealed. One an
+    agent still holds can't be deleted under it, and the refusal says so; once
+    the agent is gone it can go."""
+    monkeypatch.setitem(
+        gw_deps._state,
+        "protocol",
+        SimpleNamespace(
+            api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
+        ),
+    )
+    owner = await add_member(session_factory, "retired-owner")
+    async with session_factory() as session:
+        agent = await add_agent(session, name="stranded", owner_id=owner.id)
+        await session.execute(
+            update(ApiKey).where(ApiKey.id == agent.api_key_id).values(type="retired")
+        )
+        orphan = ApiKey(
+            user_id=owner.id,
+            key_hash="retired-registration-key",
+            encrypted_key=TEST_KEYRING.encrypt("secret"),
+            label="server-connector:gone",
+            type="retired",
+        )
+        session.add(orphan)
+        await session.commit()
+        agent_id, agent_key_id = agent.id, agent.api_key_id
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(session_factory)),
+        base_url="http://test",
+        cookies=cookies_for(owner),
+    ) as client:
+        listed = await client.get("/api-keys")
+        revealed = await client.get(f"/api-keys/{orphan.id}/reveal")
+        refused = await client.delete(f"/api-keys/{agent_key_id}")
+        async with session_factory() as session:
+            await AgentStore().delete(session, agent_id)
+            await session.commit()
+        listed_after = await client.get("/api-keys")
+        deleted = await client.delete(f"/api-keys/{agent_key_id}")
+
+    def flags(response: httpx.Response) -> dict[str, tuple[bool, bool]]:
+        assert response.status_code == 200, response.text
+        return {k["label"]: (k["can_reveal"], k["can_delete"]) for k in response.json()}
+
+    assert flags(listed) == {
+        "stranded": (False, False),
+        "server-connector:gone": (False, True),
+    }
+    assert revealed.status_code == 409, revealed.text
+    assert "secret" not in revealed.text
+    assert refused.status_code == 409, refused.text
+    assert "belongs to an agent" in refused.json()["detail"]
+    assert flags(listed_after)["stranded"] == (False, True)
+    assert deleted.status_code == 200, deleted.text

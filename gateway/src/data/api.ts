@@ -917,11 +917,15 @@ export interface ApiKeyDetail {
   created_at: string;
   /** `null` for a key that never expires. */
   expires_at: string | null;
-  // Copying the key, and deleting it: never a key an agent still signs in
-  // with, though one a deleted agent left behind can go.
+  // Copying the key, and deleting it: never a key an agent still holds,
+  // though one a deleted agent left behind can go. A retired key is never
+  // copied.
   can_reveal: boolean;
   can_delete: boolean;
 }
+
+/** A key that no longer authenticates, kept for a person to see and remove. */
+export const RETIRED_KEY_TYPE = "retired";
 
 export interface CreateApiKeyResult {
   id: string;
