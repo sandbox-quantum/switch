@@ -1,6 +1,7 @@
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { ControllerApiError } from './api';
 import { errorMessage } from './log';
+import { notice, plain, type OutputStyle } from './output';
 import { PROVIDERS, type Provider } from './schemas';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import type { ServiceState } from './service';
@@ -43,7 +44,7 @@ function nodeCheck(nodeVersion: string): Check {
     status: ok ? 'ok' : 'fail',
     detail: ok
       ? nodeVersion
-      : `${nodeVersion}; the controller needs ${MIN_NODE.join('.')} or later.`,
+      : `${nodeVersion}; install Node ${MIN_NODE.join('.')} or later, then run doctor again.`,
   };
 }
 
@@ -74,7 +75,7 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
     checks.push({
       name: 'Credential',
       status: 'fail',
-      detail: `Cannot read it from ${inputs.secrets.description}: ${errorMessage(error)}`,
+      detail: `Cannot read it from ${inputs.secrets.description}: ${errorMessage(error)}. Unlock the secret store and check this user can access it, then run doctor again.`,
     });
     return checks;
   }
@@ -99,8 +100,8 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
       error instanceof ControllerApiError
         ? error.code === 'invalid_response' || error.code === 'unexpected_response'
           ? `${identity.server} answered, but not as the Switch API (${error.message}). If Switch runs behind a proxy or ingress, it must send /v1 to switch-core.`
-          : `${error.code}: ${error.message}`
-        : `${identity.server} cannot be reached: ${errorMessage(error)}`;
+          : `${error.code}: ${error.message}. Check the controller on the Machines page; if it was revoked or its credential replaced, enroll it again.`
+        : `${identity.server} cannot be reached: ${errorMessage(error)}. Check the server URL, network and proxy configuration, then run doctor again.`;
     checks.push({ name: 'Server', status: 'fail', detail });
   }
   return checks;
@@ -117,7 +118,7 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
       checks.push({
         name: provider,
         status: 'warn',
-        detail: `Installed${version}; sign-in not checked without the shared-host bundle.`,
+        detail: `Installed${version}; sign-in not checked without the shared-host bundle. Reinstall the controller or pass --shared-host-bundle <path>, then run doctor again.`,
       });
       continue;
     }
@@ -127,13 +128,13 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
       checks.push({
         name: provider,
         status: readiness.status === 'authenticated' ? 'ok' : 'warn',
-        detail: `Installed${version}, ${readiness.status}${readiness.message ? `: ${readiness.message}` : ''}`,
+        detail: `Installed${version}, ${readiness.status}${readiness.message ? `: ${readiness.message}` : ''}${readiness.status === 'authenticated' ? '' : '; sign in with this provider as the controller user, or configure its API key in the --env-file the service runs with.'}`,
       });
     } catch (error) {
       checks.push({
         name: provider,
         status: 'warn',
-        detail: `Installed${version}; its sign-in could not be checked: ${errorMessage(error)}`,
+        detail: `Installed${version}; its sign-in could not be checked: ${errorMessage(error)}. Check the provider CLI runs as the controller user, then run doctor again.`,
       });
     }
   }
@@ -164,7 +165,11 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
     bundle = inputs.bundle();
     checks.push({ name: 'Shared host', status: 'ok', detail: bundle });
   } catch (error) {
-    checks.push({ name: 'Shared host', status: 'fail', detail: errorMessage(error) });
+    checks.push({
+      name: 'Shared host',
+      status: 'fail',
+      detail: `${errorMessage(error)}\nReinstall the controller or pass --shared-host-bundle <path>.`,
+    });
   }
   if (inputs.separateUsers)
     checks.push({
@@ -194,7 +199,7 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
               status: 'warn',
               detail: unit
                 ? `${unit} is not running: sudo systemctl start ${unit}`
-                : 'Installed, but not running',
+                : 'Installed, but not running; start the existing service with your service manager, keeping its configured data directory and environment.',
             }
           : service === 'not-installed'
             ? {
@@ -203,7 +208,11 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
                 detail:
                   'Not installed; run: switch-agent-controller install-service (or keep `run` going yourself)',
               }
-            : { name: 'Service', status: 'warn', detail: `Cannot tell: ${service}` }
+            : {
+                name: 'Service',
+                status: 'warn',
+                detail: `Cannot tell: ${service}. Check the user service manager and its logs, then run doctor again.`,
+              }
   );
   try {
     const latest = await inputs.latest();
@@ -226,17 +235,22 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
     checks.push({
       name: 'Version',
       status: 'warn',
-      detail: `${inputs.version}; could not check for a newer one: ${errorMessage(error)}`,
+      detail: `${inputs.version}; could not check for a newer one: ${errorMessage(error)}. Check access to the release repository, then retry switch-agent-controller update --check.`,
     });
   }
   return checks;
 }
 
-const MARK: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
-
-export function formatChecks(checks: Check[]): string {
-  const width = Math.max(...checks.map((check) => check.name.length));
+export function formatChecks(checks: Check[], style: OutputStyle = { color: false }): string {
+  const names = checks.map((check) => plain(check.name).replace(/\n/g, ' '));
+  const width = Math.max(0, ...names.map((name) => name.length));
   return checks
-    .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
+    .map((check, index) => {
+      const markWidth = { ok: 4, warn: 6, fail: 7 }[check.status];
+      const padding = ' '.repeat(7 - markWidth);
+      const detailIndent = ' '.repeat(padding.length + width + 2);
+      const detail = plain(check.detail).replace(/\n/g, `\n${detailIndent}`);
+      return notice(check.status, `${padding}${names[index].padEnd(width)}  ${detail}`, style);
+    })
     .join('\n');
 }
