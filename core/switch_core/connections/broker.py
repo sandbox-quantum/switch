@@ -2326,9 +2326,10 @@ class ServiceBroker:
         alone (the owner's own, passed through) stays valid until it expires;
         the warning names the service and when. `ended` names the services
         whose sign-in was just revoked at a vendor whose revocation also ends
-        those tokens: they are not named. Neither are tokens of an earlier
-        sign-in of the same service that a reconnect failed to revoke; that
-        reconnect already said so.
+        those tokens: the warning leaves those services out. It then also
+        leaves out a token of an earlier sign-in of the same service that a
+        reconnect failed to revoke, which can still be valid; that reconnect
+        already warned about it.
         """
         pending = await self.revoke_pending(session, conditions)
         warnings = [ACCESS_WARNING] if pending else []
