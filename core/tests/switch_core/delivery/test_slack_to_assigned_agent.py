@@ -10,6 +10,7 @@ written. The assertion is the same: the agent's own event for the message.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -98,6 +99,7 @@ class SlackRoom:
             _repair_placeholder_username=_nothing,
             _maybe_guide_self_mention=_nothing,
             _trust_client=NullTrustClient(),
+            _room_tenant=AsyncMock(return_value="tenant-1"),
         )
         return core
 

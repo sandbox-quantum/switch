@@ -426,6 +426,8 @@ def _service_with_existing(
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)
+    # Asked whether the bridge's workspace is archived: it is not.
+    session.scalar = AsyncMock(return_value=None)
     store = MagicMock()
     store.get_all = AsyncMock(return_value=existing)
     service = CollaborationBridgeLifecycleService(
@@ -599,6 +601,8 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)
+    # Asked whether the bridge's workspace is archived: it is not.
+    session.scalar = AsyncMock(return_value=None)
     session.commit = AsyncMock(return_value=None)
     store = MagicMock()
     store.get_all = AsyncMock(side_effect=lambda _s: list(stored))
@@ -686,6 +690,8 @@ async def test_start_refuses_a_second_bridge_already_holding_the_port(
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)
+    # Asked whether the bridge's workspace is archived: it is not.
+    session.scalar = AsyncMock(return_value=None)
 
     stored = await _stored_bridge(id="second-id")
     store = MagicMock()

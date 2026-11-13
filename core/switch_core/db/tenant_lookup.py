@@ -346,7 +346,10 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         name="tenants_bindable_by_user",
         arguments=("user_id",),
         query=(
-            "SELECT tenant_id FROM tenant_members WHERE user_id = p_user_id "
+            "SELECT tenant_members.tenant_id FROM tenant_members "
+            "JOIN tenants ON tenants.id = tenant_members.tenant_id "
+            "WHERE tenant_members.user_id = p_user_id "
+            "AND tenants.archived_at IS NULL "
             "UNION SELECT tenants.id FROM tenants "
             "JOIN organization_members "
             "ON organization_members.organization_id = tenants.organization_id "
@@ -355,9 +358,10 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
         purpose=(
             "Which tenants a gateway login may bind: those it holds a "
-            "membership row in, and those it administers as its "
-            "organization's `org_admin`. Read before a tenant is bound, for "
-            "the same reason as `tenants_of_user`, and once per request."
+            "membership row in, unless the workspace is archived, and those it "
+            "administers as its organization's `org_admin`, archived or not. "
+            "Read before a tenant is bound, for the same reason as "
+            "`tenants_of_user`, and once per request."
         ),
     ),
     TenantLookup(

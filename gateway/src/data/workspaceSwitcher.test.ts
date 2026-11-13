@@ -16,6 +16,7 @@ function workspace(id: string, name: string, organizationId: string | null): Ten
     role: "member",
     organization_role: organizationId === null ? null : "member",
     organization_id: organizationId,
+    archived_at: null,
   };
 }
 

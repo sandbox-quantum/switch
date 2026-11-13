@@ -5,6 +5,7 @@ and nothing when it let it through untouched."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -29,8 +30,18 @@ from switch_core.ui_spec import UI_CONTENT_KEY, UISpecError, parse_ui_spec
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
 
 
+@pytest.fixture(autouse=True)
+def _bound_workspace() -> Iterator[None]:
+    """A workspace bound, as agent authentication binds one before any send:
+    each check names the workspace whose organization's policy applies."""
+    with tenant_scope("tenant-a"):
+        yield
+
+
 class _ContentTrustClient:
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         if "forbidden" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)
         if "nothing-to-cut" in content:

@@ -10,21 +10,40 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.config import ControllerRelease
-from switch_core.db.models import AgentController, AgentControllerEnrollmentCode, ApiKey
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    AgentController,
+    AgentControllerEnrollmentCode,
+    ApiKey,
+)
+from switch_core.db.models import AgentDefinition as AgentDefinitionRow
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.management.bindings import load_bindings
+from switch_core.management.bindings import (
+    TenantPlacements,
+    binding_of,
+    load_bindings,
+    reconcile_bindings,
+)
 from switch_core.management.controller_routes import ASSIGNMENT_FORMAT
+from switch_core.management.errors import ManagementError
+from switch_core.management.schemas import (
+    ControllerDescription,
+    CreateManagedAgentRequest,
+)
 from tests.switch_core.management.harness import (
     SERVER_URL,
     EnrolledController,
     Harness,
     add_member,
+    archive_changed,
     bearer,
     build_harness,
     cookies_for,
@@ -34,8 +53,10 @@ from tests.switch_core.management.harness import (
     enroll_daemon,
     ensure_connected,
     fixture,
+    platform,
     provider,
     report_status,
+    set_archived,
     status_report,
 )
 
@@ -1003,6 +1024,160 @@ class TestPlacementBindsTheAgentInCore:
         binding = restarted.binding(agent_id)
         assert binding is not None and binding.controller_name == "workstation"
         assert restarted.is_revoked(controller.controller_id)
+
+
+def _desired_states(assignment: httpx.Response) -> dict[str, str]:
+    assert assignment.status_code == 200, assignment.text
+    return {
+        entry["agent_id"]: entry["desired_state"]
+        for entry in assignment.json()["agents"]
+    }
+
+
+class TestAnArchivedWorkspace:
+    async def test_every_agent_is_assigned_stopped_until_it_is_restored(
+        self, harness: Harness
+    ) -> None:
+        """Kept in the assignment rather than left out, which would have the
+        controller remove it; and the owner's own state back on Restore."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            running = await create_managed_agent(
+                client, owner, name="runner", controller_id=controller.controller_id
+            )
+            stopped = await create_managed_agent(
+                client,
+                owner,
+                name="idler",
+                controller_id=controller.controller_id,
+                desired_state="stopped",
+            )
+            path = f"/v1/management/controllers/{controller.controller_id}/assignment"
+            before = await client.get(path, headers=controller.headers)
+            await set_archived(harness, archived=True)
+            await archive_changed(harness)
+            archived = await client.get(path, headers=controller.headers)
+            await set_archived(harness, archived=False)
+            await archive_changed(harness)
+            restored = await client.get(path, headers=controller.headers)
+
+        assert running.status_code == 201, running.text
+        assert stopped.status_code == 201, stopped.text
+        runner, idler = running.json()["agent_id"], stopped.json()["agent_id"]
+        assert _desired_states(before) == {runner: "running", idler: "stopped"}
+        assert _desired_states(archived) == {runner: "stopped", idler: "stopped"}
+        assert _desired_states(restored) == {runner: "running", idler: "stopped"}
+        revision = before.json()["revision"]
+        assert archived.json()["revision"] == revision + 1
+        assert restored.json()["revision"] == revision + 2
+
+    async def test_the_binding_stops_here_and_after_a_restart_until_restored(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        presence = harness.protocol.connections.controllers
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+        await set_archived(harness, archived=True)
+        await archive_changed(harness)
+        archived = presence.binding(agent_id)
+        presence.unbind(agent_id, "unassigned")
+        await harness.management.load_bindings()
+        reloaded = presence.binding(agent_id)
+        await set_archived(harness, archived=False)
+        await archive_changed(harness)
+        restored = presence.binding(agent_id)
+
+        assert archived is not None and archived.running is False
+        assert reloaded is not None and reloaded.running is False
+        assert restored is not None and restored.running is True
+
+    async def test_a_process_not_told_finds_the_archive_on_its_next_recheck(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        presence = harness.protocol.connections.controllers
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await _placed_agent(harness, client, controller)
+        fingerprints: dict[str, TenantPlacements] = {}
+
+        async def recheck() -> None:
+            await reconcile_bindings(
+                session_factory=harness.session_factory,
+                definitions=harness.management.service.definitions,
+                presence=presence,
+                fingerprints=fingerprints,
+            )
+
+        await recheck()
+        before = presence.binding(agent_id)
+
+        await set_archived(harness, archived=True)
+        await recheck()
+        after = presence.binding(agent_id)
+
+        assert before is not None and before.running is True
+        assert after is not None and after.running is False
+
+    async def test_nothing_new_is_set_up_in_it(self, harness: Harness) -> None:
+        """No enrollment code, controller or managed agent: none would ever
+        run there. Asked of the service, since nobody but an org admin could
+        reach these routes in an archived workspace at all."""
+        owner = await add_member(harness.session_factory, "ada")
+        await set_archived(harness, archived=True)
+        service = harness.management.service
+        description = ControllerDescription.model_validate(
+            {
+                "name": "laptop",
+                "kind": "console",
+                "platform": platform(),
+                "version": "1",
+            }
+        )
+        request = CreateManagedAgentRequest.model_validate(
+            {
+                "name": "runner",
+                "description": "",
+                "controller_id": None,
+                "desired_state": "running",
+                "definition": definition(),
+            }
+        )
+        refusals = []
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            for attempt in (
+                lambda: service.issue_enrollment_code(session, owner_id=owner.id),
+                lambda: service.create_controller(
+                    session,
+                    owner_id=owner.id,
+                    description=description,
+                    public_key=None,
+                ),
+                lambda: service.check_new_managed_agent(
+                    session, TENANT_ZERO_ID, owner.id, request
+                ),
+            ):
+                with pytest.raises(ManagementError) as refused:
+                    await attempt()
+                refusals.append((refused.value.status_code, refused.value.code))
+
+        assert refusals == [(409, "workspace_archived")] * 3
+
+    def test_a_binding_in_an_archived_workspace_is_not_running(self) -> None:
+        controller = AgentController(id="c-1", name="laptop")
+        row = AgentDefinitionRow(
+            agent_id="a-1", controller_id="c-1", desired_state="running"
+        )
+
+        archived = binding_of("t-1", row, controller, workspace_archived=True)
+        live = binding_of("t-1", row, controller, workspace_archived=False)
+
+        assert archived.running is False
+        assert live.running is True
 
 
 class TestTheControllersOwnInfo:

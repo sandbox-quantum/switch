@@ -255,6 +255,7 @@ from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
@@ -262,6 +263,7 @@ from switch_core.version import switch_core_version
 from switch_core.workos_directory import WorkOSDirectory
 from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
 from switch_core.workos_sign_in import WorkOSOrganizationSignIn
+from switch_core.workspace_archive import WorkspaceArchive
 
 logger = logging.getLogger(__name__)
 
@@ -1425,6 +1427,9 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         connector_apps=connector_apps,
         config=config,
         trust_settings_changed=trust_signals.changed,
+        trust_connection_check=TrustConnectionCheck(
+            client=trust_http, timeout_seconds=config.switch_trust_timeout_seconds
+        ),
     )
 
     register_platforms(collab_lifecycle, config.feature_flags)
@@ -1491,6 +1496,16 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         # And which controllers the other processes hold, so their agents do
         # not read offline here until the signal bus has connected.
         await management.load_connections()
+
+    # What archiving or restoring a workspace sets going once it commits
+    # (`gateway/organizations.py`).
+    gateway_app.state.workspace_archive = WorkspaceArchive(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        bridges=collab_lifecycle,
+        management=management.service if management is not None else None,
+    )
 
     # Before the bridge serves, so the first presence question already knows
     # the agents connected to the other processes.

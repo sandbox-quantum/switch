@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.tenant_context import tenant_scope
 from switch_core.trust.client import (
     GuardrailBlockedError,
     TrustCheckResult,
@@ -23,15 +25,25 @@ _BROKEN_PDF = b"%PDF-1.4\x00garbage"
 _FINDING = (TrustFinding(category="secrets", detector_name="s", severity="high"),)
 
 
+@pytest.fixture(autouse=True)
+def _bound_workspace() -> Iterator[None]:
+    """A workspace bound, as agent authentication binds one before any send:
+    each check names the workspace whose organization's policy applies."""
+    with tenant_scope("tenant-a"):
+        yield
+
+
 class _ContentTrustClient:
     def __init__(self, *, active: bool = True) -> None:
         self._active = active
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return self._active
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         if "FORBIDDEN" in content:
             return TrustCheckResult("blocked", "p", "policy", _FINDING)

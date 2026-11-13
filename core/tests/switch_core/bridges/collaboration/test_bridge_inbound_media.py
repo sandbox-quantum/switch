@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
@@ -114,6 +115,7 @@ def _fake_bridge() -> SimpleNamespace:
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _trust_client=NullTrustClient(),
+        _room_tenant=AsyncMock(return_value="tenant-1"),
         human_actor=human_actor,
         recorded=recorded,
     )

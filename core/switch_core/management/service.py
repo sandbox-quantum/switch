@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
@@ -35,6 +36,7 @@ from switch_core.agent_icon import (
     new_icon_url,
     normalise_icon_url,
 )
+from switch_core.archived_workspace import WORKSPACE_ARCHIVED, is_archived
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.controller_presence import (
@@ -58,6 +60,7 @@ from switch_core.db.models import (
     AgentControllerOperation,
     ApiKey,
     MachineWorkspace,
+    require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -213,6 +216,7 @@ class ManagementService:
         public_key: PublicKey | None,
     ) -> tuple[AgentController, str]:
         """Create a controller and its credential, and commit. Returns both."""
+        await self._refuse_archived(session, require_tenant_id())
         key, credential = await self._new_hash_only_key(
             session,
             owner_id=owner_id,
@@ -245,6 +249,7 @@ class ManagementService:
     async def issue_enrollment_code(
         self, session: AsyncSession, *, owner_id: str
     ) -> tuple[str, datetime]:
+        await self._refuse_archived(session, require_tenant_id())
         key, code = await self._new_hash_only_key(
             session,
             owner_id=owner_id,
@@ -455,9 +460,13 @@ class ManagementService:
         rows = await self.definitions.list_for_controller(
             session, principal.tenant_id, controller.id
         )
+        archived = await is_archived(session, principal.tenant_id)
         return {
             "revision": controller.assignment_revision,
-            "agents": [assignment_entry(row, agent) for row, agent in rows],
+            "agents": [
+                assignment_entry(row, agent, workspace_archived=archived)
+                for row, agent in rows
+            ],
         }
 
     async def assignment_revision(
@@ -1369,7 +1378,47 @@ class ManagementService:
                 f"agent {row.agent_id} is placed on controller {row.controller_id}, "
                 "which does not exist"
             )
-        self.presence.bind(binding_of(tenant_id, row, controller))
+        self.presence.bind(
+            binding_of(
+                tenant_id,
+                row,
+                controller,
+                workspace_archived=await is_archived(session, tenant_id),
+            )
+        )
+
+    async def _refuse_archived(self, session: AsyncSession, tenant_id: str) -> None:
+        """Refuse setting up a new device or managed agent in an archived
+        workspace, which would never run there. A Switch cloud machine that
+        already serves it is left to its own flow (`machine_enrollment_code`):
+        refusing it would put the machine in an error state its owner's other
+        workspaces share, while its agents are assigned stopped regardless."""
+        if await is_archived(session, tenant_id):
+            raise ManagementError(
+                409, reason_codes.WORKSPACE_ARCHIVED, WORKSPACE_ARCHIVED
+            )
+
+    async def workspace_archive_changed(
+        self, session: AsyncSession, tenant_id: str
+    ) -> None:
+        """The workspace was archived or restored, and that has committed:
+        each of its controllers fetches its assignment again, which now has
+        every agent stopped or as its owner set it (`assignment_entry`), and
+        Core's bindings follow, here and in every other process."""
+        controller_ids: set[str | None] = set(
+            await session.scalars(
+                select(AgentController.id).where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.revoked_at.is_(None),
+                )
+            )
+        )
+        revisions = await self._bump_and_collect(session, tenant_id, controller_ids)
+        placed = await self.definitions.list_placed(session, tenant_id)
+        await session.commit()
+        for row in placed:
+            await self._bind(session, tenant_id, row)
+        self._nudge(tenant_id, revisions)
 
     async def check_new_managed_agent(
         self,
@@ -1380,6 +1429,7 @@ class ManagementService:
     ) -> None:
         """The checks `create_managed_agent` makes before it registers
         anything, raising as it would, with nothing created."""
+        await self._refuse_archived(session, tenant_id)
         await self._check_target(
             session,
             tenant_id,
@@ -1404,6 +1454,7 @@ class ManagementService:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
         refusal leaves nothing behind."""
+        await self._refuse_archived(session, tenant_id)
         controller = await self._check_target(
             session,
             tenant_id,

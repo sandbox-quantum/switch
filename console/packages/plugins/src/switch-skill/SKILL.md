@@ -351,8 +351,8 @@ agent is declined the same way.
 
 ## Switch Trust guardrails
 
-A deployment may run every message through **Switch Trust**, a guardrails
-service, before it is sent. This is unrelated to the addressing policy above:
+An organization may run every message in its workspaces through **Switch
+Trust**, a guardrails service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
 If your content is blocked, `post_message`, `send_targeted_message`,

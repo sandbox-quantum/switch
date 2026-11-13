@@ -67,7 +67,7 @@ def _managed_agent(view: dict[str, Any]) -> dict[str, Any]:
     return {**view, "can_edit": True, "can_delete": True}
 
 
-async def _revoke_controller_tokens(
+async def revoke_controller_tokens(
     session: AsyncSession, broker: ServiceBroker, *conditions: Any
 ) -> None:
     """Revoke, now, the service tokens a controller change left orphaned.
@@ -188,7 +188,7 @@ async def revoke_controller(
         controller_id,
         owner_id=None if is_admin else user.id,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.controller_id == controller_id
     )
     return {"ok": True}
@@ -292,7 +292,7 @@ async def put_managed_agent(
         placement_from(body.controller_id, body.desired_state, body.definition),
         protocol,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
     return _managed_agent(view)
@@ -320,7 +320,7 @@ async def patch_managed_agent(
         protocol=protocol,
         expected_revision=None,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
     return _managed_agent(view)
@@ -342,7 +342,7 @@ async def delete_managed_agent(
         agent_id,
         owner_id=None if is_admin else user.id,
     )
-    await _revoke_controller_tokens(
+    await revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
     return {"ok": True}

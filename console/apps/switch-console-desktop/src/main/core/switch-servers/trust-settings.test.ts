@@ -116,6 +116,16 @@ describe('fetchTrustSettingsFromServer', () => {
 
     await expect(fetchTrustSettingsFromServer(SERVER)).rejects.toMatchObject({ status: 500 });
   });
+
+  it('passes on where a server that sets guardrails per organization says they went', async () => {
+    const detail = 'Guardrails are set for each organization now.';
+    fetchMock.mockResolvedValue(response(410, { detail }));
+
+    await expect(fetchTrustSettingsFromServer(SERVER)).resolves.toEqual({
+      kind: 'moved',
+      message: detail,
+    });
+  });
 });
 
 describe('updateTrustSettingsOnServer', () => {

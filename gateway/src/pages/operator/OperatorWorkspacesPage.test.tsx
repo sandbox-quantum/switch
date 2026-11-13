@@ -14,6 +14,7 @@ const acme: OperatorWorkspace = {
   name: "Acme",
   organization_id: "o1",
   organization_name: "Acme Group",
+  archived_at: null,
 };
 
 const loose: OperatorWorkspace = {
@@ -22,6 +23,7 @@ const loose: OperatorWorkspace = {
   name: "Loose",
   organization_id: null,
   organization_name: null,
+  archived_at: null,
 };
 
 function answer(status: number, body: unknown) {
@@ -55,6 +57,15 @@ describe("OperatorWorkspacesPage", () => {
     const other = screen.getByTestId("row-t2");
     expect(other.textContent).toContain("None");
     expect(other.textContent).toContain("Enter");
+  });
+
+  it("says which workspaces are archived", async () => {
+    inWorkspace("t1");
+    answer(200, [acme, { ...loose, archived_at: "2026-11-01T00:00:00Z" }]);
+    render(<OperatorWorkspacesPage />);
+
+    expect((await screen.findByTestId("row-t2")).textContent).toContain("Loose (archived)");
+    expect(screen.getByTestId("row-t1").textContent).not.toContain("(archived)");
   });
 
   it("shows why the list failed to load, not an empty list", async () => {

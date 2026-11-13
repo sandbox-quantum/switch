@@ -12,21 +12,13 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
-import { useAuth } from "../../data/AuthContext";
-import {
-  type OrganizationMember,
-  type OrganizationRole,
-  fetchOrganizationMembers,
-  needsOrganizationSignIn,
-  organizationSignInUrl,
-  removeOrganizationMember,
-  signInAfterAccessEnded,
-  updateOrganizationRole,
-} from "../../data/api";
+import { type OrganizationMember, type OrganizationRole, fetchOrganizationMembers } from "../../data/api";
 import { formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
+import { useMemberChanges } from "./memberChanges";
+import OrganizationUsersNotices from "./OrganizationUsersNotices";
 
 type MemberRow = OrganizationMember & { id: string };
 
@@ -34,46 +26,6 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   org_admin: "Org admin",
   member: "Member",
 };
-
-/** A change kept across the sign-in to the organization's WorkOS account it
- * waited on, made again once, on coming back: only in the organization it was
- * made in, and only while the sign-in it waited on could still be coming back
- * (the server keeps a started sign-in for ten minutes). */
-type MemberChange = { userId: string; role: OrganizationRole } | { userId: string; remove: true };
-type PendingChange = { change: MemberChange; organizationId: string; savedAt: number };
-const PENDING_CHANGE_KEY = "switch.pendingOrganizationMemberChange";
-const PENDING_CHANGE_TTL_MS = 10 * 60 * 1000;
-
-function make(change: MemberChange): Promise<{ warning: string | null }> {
-  return "remove" in change
-    ? removeOrganizationMember(change.userId)
-    : updateOrganizationRole(change.userId, change.role);
-}
-
-function signInThenMake(change: MemberChange, organizationId: string): void {
-  const pending: PendingChange = { change, organizationId, savedAt: Date.now() };
-  window.sessionStorage.setItem(PENDING_CHANGE_KEY, JSON.stringify(pending));
-  window.location.href = organizationSignInUrl(window.location.pathname);
-}
-
-function takePendingChange(organizationId: string): MemberChange | null {
-  const kept = window.sessionStorage.getItem(PENDING_CHANGE_KEY);
-  window.sessionStorage.removeItem(PENDING_CHANGE_KEY);
-  if (kept === null) return null;
-  try {
-    const pending = JSON.parse(kept) as PendingChange;
-    if (
-      pending.organizationId !== organizationId ||
-      typeof pending.savedAt !== "number" ||
-      Date.now() - pending.savedAt > PENDING_CHANGE_TTL_MS
-    ) {
-      return null;
-    }
-    return pending.change;
-  } catch {
-    return null;
-  }
-}
 
 /** Everyone in the organization, across its workspaces, and their role in it.
  * Each row offers what the server says the caller may do with it: never their
@@ -116,59 +68,8 @@ export default function OrganizationMembersSection({
     [lockedOut],
   );
   const { data: members, error, errorStatus, loading, refetch } = useLoad(load);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [actionWarning, setActionWarning] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  // A change that ended someone's workspace access and then asked for a
-  // sign-in, for the admin to finish knowingly.
-  const [toFinish, setToFinish] = useState<MemberChange | null>(null);
-  const { refresh } = useAuth();
-
-  const act = useCallback(
-    async (change: MemberChange, replayed = false) => {
-      setBusy(change.userId);
-      setActionError(null);
-      setActionWarning(null);
-      setToFinish(null);
-      try {
-        const { warning } = await make(change);
-        setActionWarning(warning);
-        onChanged();
-        if (change.userId === selfId) {
-          // Your own role decides what this page offers you. Stepping down or
-          // leaving takes away reading these members at all, and may move the
-          // session to another workspace; the page follows it.
-          await refresh();
-          if ("remove" in change || change.role !== "org_admin") return;
-        }
-        await refetch();
-      } catch (err) {
-        // Once only: a change made again after the sign-in that still asks
-        // for one is shown as the failure it is, not sent round again. The
-        // operator is no member there and has nothing to sign in as.
-        // A change that already took something away says so first.
-        if (needsOrganizationSignIn(err) && !replayed && !asOperator) {
-          if (!signInAfterAccessEnded(err)) {
-            signInThenMake(change, organizationId);
-            return;
-          }
-          setToFinish(change);
-        }
-        setActionError(err instanceof Error ? err.message : "The change failed");
-      } finally {
-        setBusy(null);
-      }
-    },
-    [asOperator, onChanged, organizationId, refetch, refresh, selfId],
-  );
-
-  const replayed = useRef(false);
-  useEffect(() => {
-    if (replayed.current) return;
-    replayed.current = true;
-    const pending = takePendingChange(organizationId);
-    if (pending !== null) void act(pending, true);
-  }, [act, organizationId]);
+  const { act, busy, actionError, actionWarning, toFinish, finish, dismissError, dismissWarning } =
+    useMemberChanges({ organizationId, selfId, asOperator, onChanged, reload: refetch });
 
   const columns = useMemo<GridColDef<MemberRow>[]>(
     () => [
@@ -266,54 +167,21 @@ export default function OrganizationMembersSection({
         Organization admins administer every workspace in the organization. Someone is removed
         from each workspace before they can be removed from the organization.
       </Typography>
-      {lockedOut || (asOperator && errorStatus === 403) ? (
-        <Alert severity="info">
-          As platform operator you can manage this organization's users only while it has no
-          admin, to make someone one.
-        </Alert>
-      ) : (
-        error && <Alert severity="error">{error}</Alert>
-      )}
-      {asOperator && !lockedOut && !error && !loading && (
-        <Alert severity="warning">
-          {fromDirectory
-            ? "This organization has no admin. Its admins come from its account settings, so " +
-              "someone has to be made an organization admin there."
-            : "This organization has no admin. As platform operator you can make one of its " +
-              "users an admin; the change is recorded in its audit log, marked as yours."}
-        </Alert>
-      )}
-      {fromDirectory && directoryTakesChanges && !asOperator && (
-        <Alert severity="info">
-          This organization's users, and who is its admin, come from your organization's
-          account settings. Changes you make here are made there too; you may be asked to
-          confirm your sign-in there first. New people can't be added from here yet: add them
-          there.
-        </Alert>
-      )}
-      {fromDirectory && !directoryTakesChanges && !asOperator && (
-        <Alert severity="info">
-          This organization's users, and who is its admin, come from your organization's
-          account settings. Add people and make someone an organization admin there; the change
-          shows here shortly. Removing someone here, or making an admin a member, takes effect at
-          once but lasts only while the account settings agree: they are read again at the
-          person's next sign-in and once a day. Make the same change there to keep it.
-        </Alert>
-      )}
+      <OrganizationUsersNotices
+        asOperator={asOperator}
+        lockedOut={lockedOut || (asOperator && errorStatus === 403)}
+        error={error}
+        loaded={!loading && !error}
+        fromDirectory={fromDirectory}
+        directoryTakesChanges={directoryTakesChanges}
+      />
       {actionError && (
         <Alert
           severity="error"
-          onClose={() => {
-            setActionError(null);
-            setToFinish(null);
-          }}
+          onClose={dismissError}
           action={
             toFinish && (
-              <Button
-                color="inherit"
-                size="small"
-                onClick={() => signInThenMake(toFinish, organizationId)}
-              >
+              <Button color="inherit" size="small" onClick={finish}>
                 Confirm sign-in to finish
               </Button>
             )
@@ -323,7 +191,7 @@ export default function OrganizationMembersSection({
         </Alert>
       )}
       {actionWarning && (
-        <Alert severity="warning" onClose={() => setActionWarning(null)}>
+        <Alert severity="warning" onClose={dismissWarning}>
           {actionWarning}
         </Alert>
       )}

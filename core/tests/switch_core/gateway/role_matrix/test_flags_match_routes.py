@@ -458,6 +458,11 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/organizations/current"),
                 _get(f"{G}/organizations/current/audit-events"),
             ),
+            Check(
+                "administers",
+                _get(f"{G}/organizations/current"),
+                _act("PATCH", f"{G}/organizations/current", {"name": "{tag}-org"}),
+            ),
         ],
         "an organization member": [
             Check(
@@ -611,6 +616,30 @@ CHECKS: dict[str, Check] = {
                 "can_delete",
                 _get(f"{G}/management/workspace"),
                 _act("DELETE", f"{G}/management/agents/{{managed_agent}}"),
+                match=("agent_id", "managed_agent"),
+                within="managed_agents",
+            ),
+        ],
+        "a device, among the organization's": [
+            Check(
+                "can_remove",
+                _get(f"{G}/organizations/current/devices"),
+                _act(
+                    "DELETE",
+                    f"{G}/organizations/current/workspaces/{{tenant}}/devices/{{controller}}",
+                ),
+                match=("id", "controller"),
+                within="devices",
+            ),
+        ],
+        "a managed agent, among the organization's": [
+            Check(
+                "can_delete",
+                _get(f"{G}/organizations/current/devices"),
+                _act(
+                    "DELETE",
+                    f"{G}/organizations/current/workspaces/{{tenant}}/managed-agents/{{managed_agent}}",
+                ),
                 match=("agent_id", "managed_agent"),
                 within="managed_agents",
             ),

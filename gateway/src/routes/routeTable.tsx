@@ -49,6 +49,8 @@ import OrganizationPage, {
   OrganizationAuditLogPage,
   OrganizationConnectorsPage,
   OrganizationGeneralPage,
+  OrganizationDevicesPage,
+  OrganizationGuardrailsPage,
   OrganizationUsersPage,
   OrganizationWorkspacesPage,
 } from "../pages/organization/OrganizationPage";
@@ -74,7 +76,6 @@ import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage"
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspacePage, { WorkspaceGeneralPage } from "../pages/workspace/WorkspacePage";
 import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
-import { PlannedPage } from "./StatusPages";
 
 /** Every page the signed-in dashboard has, in one table: its URL, who may
  * open it, and which layout it belongs to. The routes, their guards, the
@@ -323,15 +324,17 @@ export const ROUTES: readonly AppRoute[] = [
     "organization",
     "Guardrails",
     organizationAdminsOnly,
-    <PlannedPage title="Guardrails" />,
+    <OrganizationGuardrailsPage />,
   ),
+  redirect("/settings/org/guardrails", CURRENT, "/organization"),
   settingsPage(
     "/settings/org/devices",
     "organization",
     "Devices",
-    organizationAdminsOnly,
-    <PlannedPage title="Devices" />,
+    allOf(organizationAdminsOnly, agentManagement),
+    <OrganizationDevicesPage />,
   ),
+  redirect("/settings/org/devices", CURRENT, "/organization"),
   settingsPage(
     "/settings/org/audit-log",
     "organization",

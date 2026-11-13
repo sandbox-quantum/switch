@@ -80,6 +80,14 @@ class WebhookBridgeStopped(RuntimeError):
     """
 
 
+class WebhookBridgeArchived(RuntimeError):
+    """The bridge is stopped because its workspace is archived, and stays so
+    until it is restored. Its events are dropped with a 200, as a shared
+    app's are for an archived workspace (`install_routes.py`): a retry would
+    find it the same, and a platform counts refusals against the app.
+    """
+
+
 @dataclass(frozen=True)
 class BridgeWebhookTarget:
     """The running bridge a webhook address belongs to."""
@@ -103,8 +111,8 @@ class BridgeWebhookService:
         self._receipts = receipts
 
     async def resolve(self, bridge_id: str) -> BridgeWebhookTarget:
-        """The running bridge behind this address. Raises `WebhookBridgeUnknown`
-        or `WebhookBridgeStopped`."""
+        """The running bridge behind this address. Raises `WebhookBridgeUnknown`,
+        `WebhookBridgeArchived` or `WebhookBridgeStopped`."""
         return await self._lifecycle.webhook_target(bridge_id)
 
     async def authenticate(
@@ -193,6 +201,9 @@ def create_bridge_webhook_router(service: BridgeWebhookService) -> APIRouter:
             target = await service.resolve(bridge_id)
         except WebhookBridgeUnknown:
             return Response(status_code=404)
+        except WebhookBridgeArchived as failure:
+            logger.info("Dropped a webhook: %s", failure)
+            return Response(status_code=200)
         except WebhookBridgeStopped as failure:
             logger.error("Could not deliver a webhook: %s", failure)
             return Response(status_code=503)

@@ -181,6 +181,11 @@
       ]
     },
     {
+      "route": "DELETE /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/organizations/current/members/{user_id}",
       "auth": "session",
       "flags": []
@@ -192,6 +197,25 @@
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/devices/{controller_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/managed-agents/{agent_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "DELETE /gateway/packages/{package_id}",
@@ -736,6 +760,18 @@
       ]
     },
     {
+      "route": "GET /gateway/organizations/current/devices",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "GET /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/organizations/current/issues",
       "auth": "session",
       "flags": []
@@ -755,6 +791,11 @@
     },
     {
       "route": "GET /gateway/organizations/current/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}/removal",
       "auth": "session",
       "flags": []
     },
@@ -1117,7 +1158,22 @@
       ]
     },
     {
+      "route": "PATCH /gateway/organizations/current",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PATCH /gateway/organizations/current/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/organizations/current/workspaces/{workspace_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}",
       "auth": "session",
       "flags": []
     },
@@ -1428,6 +1484,26 @@
     },
     {
       "route": "POST /gateway/organizations/current/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/archive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/invitations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/restore",
       "auth": "session",
       "flags": []
     },
@@ -1766,12 +1842,22 @@
       ]
     },
     {
+      "route": "PUT /gateway/organizations/current/guardrails",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/organizations/current/services/{service}",
       "auth": "session",
       "flags": [
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "PUT /gateway/organizations/current/workspaces/{workspace_id}/admins",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "PUT /gateway/room-groups/{group_id}/rooms",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -7,6 +8,15 @@ import pytest
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.tenant_context import tenant_scope
+
+
+@pytest.fixture(autouse=True)
+def _bound_workspace() -> Iterator[None]:
+    """A workspace bound, as agent authentication binds one before any send:
+    each check names the workspace whose organization's policy applies."""
+    with tenant_scope("tenant-a"):
+        yield
 
 
 class _FakeClient:

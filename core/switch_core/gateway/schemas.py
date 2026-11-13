@@ -1318,6 +1318,54 @@ class TenantMembershipResponse(BaseModel):
     # None only for a workspace from before organizations that no migration
     # has given one yet.
     organization_id: str | None
+    # When the workspace was archived, None while it is not. Only its
+    # organization's `org_admin`s, and the operator, are told of one: nobody
+    # else may enter it (`workspace_archive.py`).
+    archived_at: str | None
+
+
+class OrganizationWorkspaceResponse(TenantMembershipResponse):
+    """One of the organization's workspaces, as its Workspaces page lists it:
+    when it was made, how many people, agents and rooms it has, each counted
+    as its own list counts them, and the names of its admins by membership.
+    The organization's `org_admin`s administer every workspace and are not
+    among them."""
+
+    created_at: str
+    users: int
+    agents: int
+    rooms: int
+    admins: list[str]
+    # Whether the caller may archive it now, and why not when they may not;
+    # restoring an archived one is any of the organization's admins'.
+    can_archive: bool
+    archive_blocked_reason: str | None
+    can_restore: bool
+
+
+class WorkspaceAdminsRequest(BaseModel):
+    """Who should be a workspace's admins among its members who are not its
+    organization's `org_admin`s; every other such member becomes a member."""
+
+    user_ids: list[str]
+
+
+class WorkspaceAdminsResponse(BaseModel):
+    """A workspace's admins by membership once chosen, by name, its
+    organization's `org_admin`s left out."""
+
+    id: str
+    name: str
+    admins: list[str]
+
+
+class WorkspaceArchiveResponse(BaseModel):
+    """A workspace archived or restored: when it was archived, None once
+    restored."""
+
+    id: str
+    name: str
+    archived_at: str | None
 
 
 class WorkspaceCountsResponse(BaseModel):
@@ -1338,6 +1386,7 @@ class OperatorWorkspaceResponse(BaseModel):
     name: str
     organization_id: str | None
     organization_name: str | None
+    archived_at: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -1461,6 +1510,19 @@ class TenantRenameRequest(BaseModel):
         StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
         AfterValidator(_shown_on_one_line),
     ]
+
+
+class OrganizationRenameRequest(BaseModel):
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+        AfterValidator(_shown_on_one_line),
+    ]
+
+
+class OrganizationRenameResponse(BaseModel):
+    id: str
+    name: str
 
 
 class TenantRenameResponse(BaseModel):
@@ -1695,6 +1757,23 @@ class MemberUpdateRequest(BaseModel):
     role: str
 
 
+class OrganizationMemberWorkspace(BaseModel):
+    """One of the organization's workspaces someone holds a membership in, and
+    their role there."""
+
+    id: str
+    name: str
+    role: str
+    archived: bool
+
+
+class OrganizationMemberAddRequest(BaseModel):
+    """Someone already in the organization, added to one of its workspaces."""
+
+    user_id: str
+    role: Literal["admin", "member"]
+
+
 class OrganizationMemberDetail(BaseModel):
     user_id: str
     name: str
@@ -1704,6 +1783,9 @@ class OrganizationMemberDetail(BaseModel):
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None
+    # The account agents added with the shared registration token are owned
+    # by: not a person, and never an admin of anything.
+    service_account: bool
     # What the caller may do with them, their own row included:
     # `can_change_role` for whoever passes the role route's gate, the
     # operator restoring an `org_admin` included;
@@ -1714,6 +1796,14 @@ class OrganizationMemberDetail(BaseModel):
     can_change_role: bool
     can_grant_org_admin: bool
     can_remove: bool
+
+
+class OrganizationMemberListEntry(OrganizationMemberDetail):
+    """`OrganizationMemberDetail`, with the organization's workspaces the
+    person holds a membership in, as the Users page lists them. An
+    `org_admin` in none is in the organization as a whole."""
+
+    workspaces: list[OrganizationMemberWorkspace]
 
 
 class OrganizationMemberUpdateRequest(BaseModel):
@@ -2455,80 +2545,45 @@ class DecisionTestResponse(BaseModel):
     error: DecisionTestError | None
 
 
-class TrustSettingsResponse(BaseModel):
-    """Switch Trust's one server-global settings row. The API key itself is
-    never returned — `has_api_key`/`api_key_last4` only confirm one is set,
-    the way the stored secret is surfaced everywhere else in the gateway."""
+class OrganizationGuardrailsResponse(BaseModel):
+    """The Switch Trust policy the organization connected, as its admins see
+    it: never the API key, only its last four characters, None when it can't
+    be read. `policy_name` is Switch Trust's name for the policy when it gave
+    one; `policy_url` where Switch Trust shows it, when Switch knows."""
 
-    endpoint: str
+    connected: bool
     policy_id: str | None
-    has_api_key: bool
+    policy_name: str | None
+    policy_url: str | None
     api_key_last4: str | None
-    enabled: bool
+    connected_by_name: str | None
+    connected_at: str | None
 
 
 class WorkspaceGuardrails(BaseModel):
     """The Switch Trust policy that checks the bound workspace's messages, as
     anyone in it may read it: which policy, never the key it is checked with.
-    `policy_id` is null when nothing checks them; `policy_url`, where the
-    policy is shown on Switch Trust, is null too when it is on an endpoint
-    Switch cannot link into."""
+    `policy_id` is null when nothing checks them; `policy_name` is Switch
+    Trust's name for it, when it gave one; `policy_url`, where the policy is
+    shown on Switch Trust, is null too when it is on an endpoint Switch
+    cannot link into."""
 
     checking: bool
     policy_id: str | None
+    policy_name: str | None
     policy_url: str | None
 
 
-class TrustSettingsUpdateRequest(BaseModel):
-    """`api_key` omitted (or null) leaves whatever key is already stored
-    untouched, so changing the endpoint or policy id doesn't force re-entering
-    the secret. Use `DELETE /trust-settings` to turn Switch Trust off.
+class OrganizationGuardrailsConnectRequest(BaseModel):
+    """A policy and its API key, both from Switch Trust. Switch Trust's
+    address is not asked for: it is Switch's own."""
 
-    No `timeout_seconds` here: unlike the rest of Switch Trust's settings,
-    the check timeout is fixed at deploy time (`SwitchConfig.
-    switch_trust_timeout_seconds`), not admin-editable."""
-
-    endpoint: str
-    policy_id: str | None
-    api_key: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_endpoint(self) -> TrustSettingsUpdateRequest:
-        value = self.endpoint
-        if value != value.strip():
-            raise ValueError("endpoint has leading or trailing whitespace")
-        parts = urlsplit(value)
-        if parts.scheme not in ("http", "https"):
-            raise ValueError("endpoint must be an http(s) URL")
-        if not parts.netloc:
-            raise ValueError("endpoint must include a host")
-        if parts.path.strip("/"):
-            raise ValueError(
-                "endpoint is the service's base URL — /guardrails/check is "
-                "appended to it, so it must have no path of its own"
-            )
-        if parts.query or parts.fragment:
-            raise ValueError(
-                "endpoint must be a bare base URL: a query or fragment is "
-                "dropped when /guardrails/check is appended, so it would "
-                "silently never be sent"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_api_key(self) -> TrustSettingsUpdateRequest:
-        if self.api_key is not None and not self.api_key.strip():
-            raise ValueError(
-                "api_key must not be blank; omit it to leave the stored key "
-                "unchanged, or use DELETE /trust-settings to turn Switch "
-                "Trust off"
-            )
-        return self
-
-    @field_validator("policy_id")
-    @classmethod
-    def _blank_policy_id_is_unset(cls, value: str | None) -> str | None:
-        return value.strip() if value and value.strip() else None
+    policy_id: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+    ]
+    api_key: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)
+    ]
 
 
 # ── Feature flags ────────────────────────────────────────────────────────────

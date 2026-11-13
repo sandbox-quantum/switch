@@ -13,6 +13,7 @@ import copy
 from collections.abc import AsyncIterator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -232,6 +233,7 @@ def _bridge(
         _channel_to_room={channel: ("room-uuid", TRANSPORT_ROOM)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _room_tenant=AsyncMock(return_value="tenant-1"),
         _activity_publisher=None,
         _approval_answers=None,
         _ensure_human_in_room=ensure_human,
@@ -514,7 +516,9 @@ def test_a_press_that_failed_before_its_send_leaves_the_card_unanswered() -> Non
 
 
 class _RedactingTrust:
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         return TrustCheckResult(
             outcome="redacted",
             policy_id="p",
@@ -522,7 +526,7 @@ class _RedactingTrust:
             redacted_content=content.replace("v-1", "[REDACTED]"),
         )
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return True
 
 

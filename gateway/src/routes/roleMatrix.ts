@@ -66,10 +66,6 @@ function built(path: string, open: readonly Persona[]): MatrixPage {
   return { path, open, status: "built" };
 }
 
-function planned(path: string, open: readonly Persona[]): MatrixPage {
-  return { path, open, status: "planned" };
-}
-
 export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
   current: [
     built("/ecosystem", EVERYONE),
@@ -134,8 +130,8 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/settings/org/workspaces", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/users", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/connectors", ORGANIZATION_ADMIN),
-    planned("/settings/org/guardrails", ORGANIZATION_ADMIN),
-    planned("/settings/org/devices", ORGANIZATION_ADMIN),
+    built("/settings/org/guardrails", ORGANIZATION_ADMIN),
+    built("/settings/org/devices", ORGANIZATION_ADMIN),
     built("/settings/org/audit-log", ORGANIZATION_ADMIN),
 
     built("/platform/workspaces", OPERATOR),
@@ -172,6 +168,8 @@ export const REDIRECTS: Record<MatrixLayout, readonly MatrixRedirect[]> = {
     { from: "/settings/org/workspaces", to: "/organization" },
     { from: "/settings/org/users", to: "/organization" },
     { from: "/settings/org/connectors", to: "/organization" },
+    { from: "/settings/org/guardrails", to: "/organization" },
+    { from: "/settings/org/devices", to: "/organization" },
     { from: "/settings/org/audit-log", to: "/organization" },
     { from: "/platform", to: "/operator/workspaces" },
     { from: "/platform/workspaces", to: "/operator/workspaces" },

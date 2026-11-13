@@ -10,6 +10,7 @@ vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 const POLICY = {
   checking: true,
   policy_id: "c117f173-policy",
+  policy_name: "Baseline Monitoring (Alert)",
   policy_url: "https://app.switchagents.ai/settings/guardrail-policies/c117f173-policy",
 };
 
@@ -44,6 +45,8 @@ describe("WorkspaceGuardrailsPage", () => {
     show();
 
     expect(await screen.findByText("c117f173-policy")).toBeTruthy();
+    // Its organization's policy, by the name Switch Trust gave it.
+    expect(screen.getByText("Baseline Monitoring (Alert)")).toBeTruthy();
     expect(screen.getByText("Switch Trust checks every message in Acme.")).toBeTruthy();
     expect(screen.getByRole("link", { name: /View on Switch Trust/ }).getAttribute("href")).toBe(POLICY.policy_url);
     expect(screen.queryByRole("link", { name: "Edit in organization settings" })).toBeNull();
@@ -60,7 +63,7 @@ describe("WorkspaceGuardrailsPage", () => {
 
   it("says when nothing checks the workspace's messages", async () => {
     as("member");
-    answer({ "GET /workspace/guardrails": [200, { checking: false, policy_id: null, policy_url: null }] });
+    answer({ "GET /workspace/guardrails": [200, { checking: false, policy_id: null, policy_name: null, policy_url: null }] });
     show();
 
     expect(await screen.findByText("No guardrails configured")).toBeTruthy();
