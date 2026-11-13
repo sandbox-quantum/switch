@@ -438,32 +438,34 @@ const TemplatesPanel = observer(function TemplatesPanel() {
 
         <ScopeTabs value={scope} onChange={setScope} counts={counts} showYours={meId !== null} />
 
-        <SearchInput
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search templates"
-          aria-label="Search templates by name, description and author"
-          containerClassName="w-full"
-          className="h-9"
-        />
+        <div className="space-y-3">
+          <SearchInput
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search templates"
+            aria-label="Search templates by name, description and author"
+            containerClassName="w-full"
+            className="h-9"
+          />
 
-        <div
-          className="flex flex-wrap items-center gap-2"
-          aria-label="Show templates of these kinds"
-        >
-          {KIND_CHIPS.map(({ value, label }) => {
-            const Icon = KIND_ICON[value];
-            return (
-              <FilterChip
-                key={value}
-                pressed={kinds.includes(value)}
-                onClick={() => setKinds((current) => toggleKind(current, value))}
-              >
-                <Icon className="size-4" aria-hidden />
-                {label}
-              </FilterChip>
-            );
-          })}
+          <div
+            className="flex flex-wrap items-center gap-2"
+            aria-label="Show templates of these kinds"
+          >
+            {KIND_CHIPS.map(({ value, label }) => {
+              const Icon = KIND_ICON[value];
+              return (
+                <FilterChip
+                  key={value}
+                  pressed={kinds.includes(value)}
+                  onClick={() => setKinds((current) => toggleKind(current, value))}
+                >
+                  <Icon className="size-4" aria-hidden />
+                  {label}
+                </FilterChip>
+              );
+            })}
+          </div>
         </div>
 
         {loading ? (
