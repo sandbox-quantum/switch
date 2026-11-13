@@ -11,6 +11,7 @@ import {
   fetchTeamPlacements,
   fetchTeamsAppPackage,
   issueLinkCode,
+  logout,
   removeBridgeFromTeam,
   setDefaultTeamsTeam,
   signOutEverywhere,
@@ -242,6 +243,26 @@ describe("signOutEverywhere", () => {
   it("throws when the server refuses", async () => {
     respond(401, { detail: "Session ended" });
     await expect(signOutEverywhere()).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("logout", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the server to clear this browser's session", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await logout();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain("/auth/logout");
+    expect(init.method).toBe("POST");
+  });
+
+  it("throws when the session wasn't cleared", async () => {
+    respond(403, { detail: "This request didn't come from Switch." });
+    await expect(logout()).rejects.toBeInstanceOf(ApiError);
   });
 });
 

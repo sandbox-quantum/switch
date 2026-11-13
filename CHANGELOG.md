@@ -79,6 +79,18 @@ version of their own to them without also giving them a release of their own.
   `GET /service-connections` reports `web_sign_in`, and
   `POST /service-connections/{service}/flows/web` and
   `POST /provider-connections/github/flows/web` start a sign-in.
+- **Your account in the new dashboard layout.** Behind `gateway_v2`, Settings
+  › Your account shows your display name, which you can change in place, and
+  your email, read-only. It has cards to change your password (not shown for
+  an account made through single sign-on), to sign out of this browser or of
+  every device, and to delete your account. The delete dialog says straight
+  away when deletion isn't possible yet, for example because you're the only
+  admin of a workspace or organization that has other people in it, instead
+  of after you've typed your email. A new `GET /gateway/auth/me/deletion`
+  answers with the reason `DELETE /gateway/auth/me` would give, or null.
+  Change password moves out of the account menu in the new layout. In the
+  settings menu, Your account and the way across to the other settings area
+  each sit in a group of their own, below a divider.
 - **A link into the web dashboard can name its workspace.** A page opened
   with `?workspace=<id>` switches to that workspace first, then opens the
   same page there, rather than showing whichever workspace the browser had
@@ -596,6 +608,11 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **A sign-out that fails in the dashboard says so.** Signing out, or out of
+  every device, from the account menu or the screens before a workspace said
+  nothing when Switch didn't answer, and a failed sign-out of this browser
+  looked signed out until the next reload signed it back in. The dashboard
+  now stays signed in and shows what went wrong.
 - **Creating an API key no longer says it won't be shown again.** Its owner
   can copy it again from the API keys page, as they always could.
 - **Deleting an API key that can't be deleted says why,** instead of closing
@@ -608,6 +625,18 @@ version of their own to them without also giving them a release of their own.
   yet". Both now show what happened.
 - **The retention window picker sits beside "Delete messages older than"
   again** in Workspace settings, rather than stretching across the page.
+- **The WorkOS directory mirror reads WorkOS's events again.** It asked for
+  them from a time written with a `+00:00` offset, which WorkOS refuses as
+  not ISO 8601, so every 30-second pass failed and changes made in WorkOS
+  reached Switch only through the daily check, a restart or a new link. It
+  now sends the time as WorkOS reads it (UTC, ending in `Z`).
+- **A members service at an address Switch won't connect to is reported, not
+  a server error.** With `ORGANIZATION_DIRECTORY=workos`, an Org Admin's role
+  change or removal whose members-service URL resolves to a private address
+  (one not allowed by `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) answered 500. It now
+  says the members service could not be reached, and why: its host does not
+  resolve, or its address is refused, logged at `error`. A WorkOS API address
+  refused the same way is reported the same way.
 - **A GitLab disconnect or reconnect no longer says agents keep their
   access.** Revoking the sign-in at GitLab also ends the access tokens agents
   hold, so neither warns any more that they may keep working until they

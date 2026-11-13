@@ -128,7 +128,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/settings/guardrails", EVERYONE),
     built("/settings/devices", EVERYONE),
     built("/usage", ADMINS),
-    planned("/settings/account", EVERYONE),
+    built("/settings/account", EVERYONE),
 
     built("/settings/org/general", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/workspaces", ORGANIZATION_ADMIN_OR_OPERATOR),
