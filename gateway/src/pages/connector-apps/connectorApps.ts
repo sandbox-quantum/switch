@@ -5,7 +5,12 @@
  * Labels follow what Google and GitHub call things, so the operator can copy
  * values across.
  */
-import type { ConnectorApp, ConnectorAppField, ConnectorAppImpact } from "../../data/api";
+import type {
+  ConnectorApp,
+  ConnectorAppField,
+  ConnectorAppImpact,
+  ConnectorAppScope,
+} from "../../data/api";
 
 export type CardState = "ready" | "not_set_up" | "configured" | "attention";
 
@@ -416,19 +421,60 @@ export function switchWarning(app: ConnectorApp, impact: ConnectorAppImpact): st
   return lines;
 }
 
-export function removeWarning(app: ConnectorApp): string {
+function counted(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** What removing an app does, before it is removed: the one sentence that
+ * says where people stand afterwards, and what it touches, counted. Removing
+ * revokes nothing: the connections and the grants on them are kept, and
+ * work again once their people reconnect. */
+export function removeImpact(
+  app: ConnectorApp,
+  scope: ConnectorAppScope,
+): { lead: string; lines: string[] } {
   const name = app.name;
-  if (app.server_app === true) {
-    const back = `Your workspaces go back to Switch's ${name} app.`;
-    if (app.connected_members === 0) return back;
-    const people =
-      app.connected_members === 1 ? "The 1 person" : `The ${app.connected_members} people`;
-    return `${back} ${people} connected now must reconnect.`;
+  const fallsBack = scope === "organization" && app.server_app === true;
+  const lead = fallsBack
+    ? `Your workspaces go back to Switch's ${name} app.`
+    : scope === "organization"
+      ? `Nobody in your organization can connect ${name} until your organization sets up an app again.`
+      : `Nobody can connect ${name} until an app is set up again.`;
+  const lines: string[] = [];
+  if (app.connected_members === 0) {
+    lines.push(`Nobody is connected through it, so nobody has to reconnect.`);
+    return { lead, lines };
   }
-  if (app.connected_members === 0) return `Nobody will be able to connect ${name}.`;
-  const people =
-    app.connected_members === 1 ? "the 1 person" : `the ${app.connected_members} people`;
-  return `Nobody will be able to connect ${name}, and ${people} connected now lose it. They can still disconnect.`;
+  lines.push(
+    fallsBack
+      ? `${counted(app.workspaces, "workspace moves", "workspaces move")} to Switch's app.`
+      : `${counted(app.workspaces, "workspace loses", "workspaces lose")} ${name}.`,
+  );
+  const one = app.connected_members === 1;
+  lines.push(
+    fallsBack
+      ? `${counted(app.connected_members, "connected account", "connected accounts")} must reconnect before ${one ? "it works" : "they work"} again.`
+      : `${counted(app.connected_members, "connected account stops", "connected accounts stop")} working. ${one ? "It" : "They"} can still be disconnected.`,
+  );
+  if (app.agent_grants > 0)
+    lines.push(
+      `${counted(app.agent_grants, "agent grant stops", "agent grants stop")} working until ${app.agent_grants === 1 ? "its owner reconnects" : "their owners reconnect"}. The grants themselves are kept.`,
+    );
+  return { lead, lines };
+}
+
+/** "Set up by Ada, 1 Oct 2026", or "Set up 1 Oct 2026 · changed by Ada, 15 Oct 2026"
+ * once someone saved it again; null for an app not saved here. */
+export function setUpLine(
+  app: Pick<ConnectorApp, "created_at" | "updated_at" | "updated_by_name">,
+  format: (iso: string) => string,
+): string | null {
+  if (app.created_at === null) return null;
+  const setUp = format(app.created_at);
+  const changed = app.updated_at === null ? setUp : format(app.updated_at);
+  const by = app.updated_by_name;
+  if (changed === setUp) return by ? `Set up by ${by}, ${setUp}` : `Set up ${setUp}`;
+  return by ? `Set up ${setUp} · changed by ${by}, ${changed}` : `Set up ${setUp} · changed ${changed}`;
 }
 
 export interface Confirmation {

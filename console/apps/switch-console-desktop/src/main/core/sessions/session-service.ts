@@ -78,6 +78,11 @@ const SESSION_START_FAILURE_REASON: Record<
  * the shape is honestly `unknown` rather than guessed.
  */
 function reportFailedSessionStart(params: CreateSessionParams, error: CreateSessionError): void {
+  // A session the app could not adopt is not a start anybody asked for: it is
+  // nearly always the poll finding one it had already taken on, and the poll
+  // logs anything else.
+  const startSource = startSourceOf(params.startSource);
+  if (startSource === 'adopted') return;
   // Not awaited: the reads that describe the attempt are ours, not the caller's,
   // and the person whose session failed should hear about it no later for our
   // having asked what kind it was.
@@ -90,7 +95,7 @@ function reportFailedSessionStart(params: CreateSessionParams, error: CreateSess
       outcome: 'failure',
       failure_reason: SESSION_START_FAILURE_REASON[error.type],
       entry_point: entryPointOf(params.entryPoint),
-      start_source: startSourceOf(params.startSource),
+      start_source: startSource,
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
       connected_to_room: params.connectedToRoom === true,
     });
@@ -98,7 +103,8 @@ function reportFailedSessionStart(params: CreateSessionParams, error: CreateSess
 }
 
 /**
- * Report a provision that was a retry.
+ * Report a provision that was a retry: one someone asked for, or the app's own
+ * (`auto`), which is `session_reopened`.
  *
  * The first attempt for a session is not one, and reporting it would drown the
  * signal: nearly every session is provisioned once. The session is read back
@@ -117,12 +123,13 @@ function reportProvisionRetry(
   void (async () => {
     const session = await getSession(sessionId);
     const agent = session ? await getAgentById(session.agentId) : null;
-    trackEvent('session_provision_retried', {
-      agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
-      location: agent ? await locationKindOf(agent.locationId) : 'unknown',
-      trigger,
+    const shape = {
+      agent_type: session ? agentTypeOf(session.providerId) : ('unknown' as const),
+      location: agent ? await locationKindOf(agent.locationId) : ('unknown' as const),
       outcome,
-    });
+    };
+    if (trigger === 'auto') trackEvent('session_reopened', shape);
+    else trackEvent('session_provision_retried', { ...shape, trigger });
   })().catch(() => {});
 }
 

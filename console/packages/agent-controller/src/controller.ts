@@ -1,8 +1,4 @@
-import type {
-  OpenAgentStream,
-  ProviderReadiness,
-  SessionStartedNotice,
-} from '@switch-console/agent-providers';
+import type { OpenAgentStream, ProviderReadiness } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
 import {
   AccessTokens,
@@ -106,11 +102,6 @@ export type ControllerDeps = {
   refreshPath: () => Promise<void>;
   /** Provider checks made before this controller started, taken as its own (`ProviderStatuses.seed`). */
   providerSeed: ProviderSeed;
-  /**
-   * A session of an agent here started, and Switch took its host's report:
-   * passed to whoever runs this controller (`SessionStartedNotice`).
-   */
-  sessionStarted: (started: Omit<SessionStartedNotice, 'kind'>) => void;
   /** `git`, `gh` and vendor tools, as sessions here would be set up with them (`toolStatuses`). */
   tools: () => Promise<ToolStatus[]>;
   fetch: Fetch;
@@ -333,11 +324,6 @@ export async function runController(
       },
       log,
       calls,
-      sessionStarted: ({ agentId, sessionId, startSource }) => {
-        const entry = assignment?.agents.find((held) => held.agent_id === agentId);
-        if (!entry) return;
-        deps.sessionStarted({ sessionId, provider: entry.definition.provider, startSource });
-      },
     }),
   });
   /** The agents whose saved cursor the hub has been given. */

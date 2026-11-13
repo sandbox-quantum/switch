@@ -1,0 +1,98 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  team:
+    type: string
+    label: Team
+    description: The team or service area this on-call covers
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agent run every command and file change without asking anyone first. Unsafe; off by default, so it asks before anything risky.
+    default: false
+    input: advanced
+resources:
+  handoff_summarizer:
+    type: agent
+    display_name: "{team} Handoff Summarizer"
+    description: Compiles shift summaries from alerts fired, actions taken, and open items
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{handoff_summarizer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [handoff_room]}
+    instructions: |-
+      You are the handoff summarizer for the {team} on-call handoff room. You help on-call engineers create thorough handoff summaries so nothing gets lost between shifts.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history, including earlier handoffs, to catch up.
+
+      When the outgoing on-call posts their handoff summary:
+      - Check that all 5 sections are covered: active issues, recent incidents, known risks, noisy alerts, open items
+      - If any section is missing or thin, ask specifically: 'Any noisy alerts during your shift that the next person should ignore?'
+      - Verify that links to dashboards, tickets, and threads are included - not just descriptions
+
+      When you see gaps in a handoff:
+      - Ask targeted questions: 'You mentioned a deploy going out at 3pm - is there a rollback plan if it goes sideways?'
+      - If a previous handoff mentioned an ongoing issue, check whether it was resolved or still needs tracking
+
+      When the incoming on-call acknowledges:
+      - Confirm the handoff is complete
+      - Summarize any open items that are carrying over from previous shifts
+
+      Whenever you are addressed, also:
+      - Keep a running list of items that have carried over across multiple shifts - these might need escalation
+      - You cannot act on a timer, so you cannot remind anyone at shift change on your own; if asked, say so and suggest the team set a calendar or chat reminder that mentions you
+  handoff_room:
+    type: room
+    name: "{team} - On-Call Handoff"
+    description: "On-call shift handoffs for {team}. Passing context on active issues and known risks."
+    bridge: "{bridge}"
+    agents: [handoff_summarizer]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room is for on-call shift handoffs. The outgoing on-call posts a handoff summary before their shift ends, and the incoming on-call acknowledges and asks any clarifying questions.
+
+      Handoff summary format:
+      1. Active issues: anything currently broken or degraded
+      2. Recent incidents: anything resolved in the last 24h that might recur
+      3. Known risks: deploys happening, maintenance windows, things to watch
+      4. Noisy alerts: alerts that fired but don't need action (and why)
+      5. Open items: anything you started investigating but didn't finish
+
+      Mention {handoff_summarizer.name} in the handoff and in the acknowledgement: it only sees messages that mention it by name.
+
+      The incoming on-call must explicitly acknowledge the handoff. Don't assume they saw it.
+    roles:
+      - name: outgoing-oncall
+        exclusive: true
+        instructions: |-
+          You're ending your on-call shift. Before handing off:
+          - Post the handoff summary covering all 5 sections (active issues, recent incidents, known risks, noisy alerts, open items)
+          - Be specific: link to dashboards, tickets, and threads - don't make the next person search
+          - Flag anything time-sensitive: 'deploy at 3pm needs watching' beats 'there might be a deploy'
+          - Wait for the incoming on-call to acknowledge before you consider yourself off duty
+      - name: incoming-oncall
+        exclusive: true
+        instructions: |-
+          You're starting your on-call shift. When you see the handoff:
+          - Read the entire summary before responding
+          - Acknowledge explicitly: 'Got it, I'm taking over'
+          - Ask clarifying questions about anything unclear - now is the time, not at 3am
+          - Verify you have access to all linked dashboards and tools
+          - Check the alert channels to confirm you're receiving pages
+    kickoff: "On-call handoff room is ready for {team}. @{handoff_summarizer.name} will help ensure clean handoffs. Outgoing on-call - post your handoff summary. Incoming - acknowledge when you've read it. Mention the handoff summarizer in both so it sees them."

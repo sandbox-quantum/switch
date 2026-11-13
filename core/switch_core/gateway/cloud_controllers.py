@@ -214,10 +214,12 @@ async def record_controller_status(
         machine.error = None
         machine.error_code = None
         machine.updated_at = now
-        # Revision 1 is the machine as first claimed: anything since (a wake, a
-        # restart, a workspace joining) bumped it. Only the first is timed,
+        # New until it has first been ready, however many revisions that took
+        # (a retry after a failed start included). Only the first is timed,
         # since nothing records when a later start began.
-        new_machine = machine.revision == 1
+        new_machine = machine.first_ready_at is None
+        if new_machine:
+            machine.first_ready_at = now
         emit_after_commit(
             session,
             current_telemetry(),
@@ -227,7 +229,7 @@ async def record_controller_status(
                 "provisioning_seconds": (
                     max((now - machine.created_at).total_seconds(), 0.0)
                     if new_machine
-                    else -1
+                    else None
                 ),
             },
         )
@@ -252,10 +254,7 @@ async def wake_controller_machine(
     if idle_sleeping(machine):
         store.start(machine, now)
         emit_after_commit(
-            session,
-            current_telemetry(),
-            "cloud_machine_woken",
-            {"trigger": trigger, "stopped_by": "idle"},
+            session, current_telemetry(), "cloud_machine_woken", {"trigger": trigger}
         )
     elif machine.desired_state == "running":
         machine.active_at = now

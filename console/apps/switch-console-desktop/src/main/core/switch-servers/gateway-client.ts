@@ -3378,6 +3378,28 @@ export async function updateTemplate(
   return { ...toSummary(t), definition: t.content };
 }
 
+/**
+ * Count a run of a stored or official template (`POST /templates/{id}/runs`),
+ * once the whole run has succeeded, whichever way it ran. Only a count for the
+ * catalogue. False when the server did not count it (404): one from before
+ * runs were counted, or a template the person can no longer read.
+ */
+export async function recordTemplateRun(
+  server: SwitchServer,
+  templateId: string
+): Promise<boolean> {
+  try {
+    await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}/runs`, {
+      authenticated: true,
+      method: 'POST',
+    });
+    return true;
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return false;
+    throw e;
+  }
+}
+
 /** Remove a template from the server's registry (`DELETE /templates/{id}`). */
 export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
   await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
@@ -4231,7 +4253,7 @@ export async function fetchConnectionAgents(
 }
 
 /**
- * Every service the workspace can switch on or off, for a workspace admin; null
+ * Every service the workspace can switch on or off, as the caller may see it; null
  * when the server has no workspace switch (a 404: it predates it, or its
  * `service_connections` flag is off). Any other failure, a refusal included,
  * is thrown for the caller to show.

@@ -59,6 +59,7 @@ from tests.switch_core.connections.fake_vendor import (
     STATIC_CLIENT_SECRET,
     FakeGoogle,
 )
+from tests.switch_core.connections.service_harness import agent_with_key, bound_to
 from tests.switch_core.management.harness import Harness, build_harness, cookies_for
 
 PUBLIC = "https://switch.example.com"
@@ -824,7 +825,11 @@ class TestImportAndRemove:
             listed = await client.get("/gateway/service-connections", cookies=cookies)
             gone = await client.delete(f"{APPS}/{GOOGLE}", cookies=cookies)
         assert removed.status_code == 200, removed.text
-        assert removed.json() == {"connected_members": 0, "workspaces": 0}
+        assert removed.json() == {
+            "connected_members": 0,
+            "workspaces": 0,
+            "agent_grants": 0,
+        }
         assert gone.status_code == 404
         assert await _rows(session_factory) == []
         [google] = [c for c in listed.json()["connections"] if c["slug"] == GOOGLE]
@@ -895,6 +900,24 @@ class TestCheckAndImpact:
                     oauth_client_id=STATIC_CLIENT_ID,
                 )
                 await session.commit()
+            if name == "ada":
+                bound = bound_to(session_factory, tenant_id)
+                for agent_name in ("builder", "planner"):
+                    agent_id, _ = await agent_with_key(bound, user, agent_name)
+                    async with tenant_session(session_factory, tenant_id) as session:
+                        await store.save_grant(
+                            session,
+                            agent_id=agent_id,
+                            owner_id=user.id,
+                            service=GOOGLE,
+                            access="read",
+                            tool_mode="deny",
+                            tools=[],
+                            resources={},
+                            account_id="account-ada",
+                            created_by=user.id,
+                        )
+                        await session.commit()
         async with world.harness.client() as client:
             cookies = cookies_for(operator)
             await client.put(f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies)
@@ -909,10 +932,23 @@ class TestCheckAndImpact:
                 cookies=cookies,
             )
             listed = await client.get(APPS, cookies=cookies)
-        assert other.json() == {"connected_members": 3, "workspaces": 2}
-        assert same.json() == {"connected_members": 0, "workspaces": 0}
+        assert other.json() == {
+            "connected_members": 3,
+            "workspaces": 2,
+            "agent_grants": 2,
+        }
+        assert same.json() == {
+            "connected_members": 0,
+            "workspaces": 0,
+            "agent_grants": 0,
+        }
         [google] = [a for a in listed.json()["apps"] if a["slug"] == GOOGLE]
-        assert (google["connected_members"], google["workspaces"]) == (3, 2)
+        assert (
+            google["connected_members"],
+            google["workspaces"],
+            google["agent_grants"],
+        ) == (3, 2, 2)
+        assert google["created_at"] is not None
         assert google["stale_connections"] == 0
 
 

@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from switch_core.telemetry.ages import UNKNOWN_AGE, age_days, age_hours
+from switch_core.telemetry.ages import age_days, age_hours
 from switch_core.telemetry.catalogue import CATALOGUE, TelemetryCatalogueError, validate
 
 
@@ -199,9 +199,9 @@ class TestAgeIsReportedInDays:
     """One implementation, tested once.
 
     There were eight copies of this arithmetic across the modules that emit a
-    removal, and they disagreed on the only case that matters — half reported
-    `0.0` for a timestamp they could not read and half reported `-1`. The
-    duplication was the defect; a test per copy would only have pinned it.
+    removal, and they disagreed on the only case that matters — what to report
+    for a timestamp they could not read. The duplication was the defect; a
+    test per copy would only have pinned it.
     """
 
     def test_a_fresh_row_is_near_zero(self) -> None:
@@ -215,18 +215,19 @@ class TestAgeIsReportedInDays:
         assert 23.9 < age_hours(moment) < 24.1
 
     @pytest.mark.parametrize("unreadable", [None, "yesterday", 0, object()])
-    def test_an_unreadable_timestamp_is_negative_rather_than_a_crash(
+    def test_an_unreadable_timestamp_is_unknown_rather_than_a_crash(
         self, unreadable: object
     ) -> None:
-        """`-1` rather than `0`: "could not tell" must stay distinguishable
-        from "created just now", per docs/old/telemetry-events.md. Pinning `0`
-        here would have locked in the opposite — a lookup failure silently
-        reporting as a genuine, very fresh row."""
-        assert age_days(unreadable) == UNKNOWN_AGE
-        assert age_hours(unreadable) == UNKNOWN_AGE
+        """None, which leaves the property off the event, rather than `0`:
+        "could not tell" must stay distinguishable from "created just now",
+        per docs/old/telemetry-events.md. Pinning `0` here would have locked in
+        the opposite — a lookup failure silently reporting as a genuine, very
+        fresh row."""
+        assert age_days(unreadable) is None
+        assert age_hours(unreadable) is None
 
     def test_a_clock_stepped_backwards_does_not_look_like_unknown(self) -> None:
         """The wall clock is unavoidable here — these ages span restarts — so a
-        row stamped in the future must clamp to zero rather than going negative
-        and colliding with the sentinel."""
+        row stamped in the future must clamp to zero rather than going
+        negative."""
         assert age_days(datetime.now(UTC) + timedelta(days=1)) == 0.0
