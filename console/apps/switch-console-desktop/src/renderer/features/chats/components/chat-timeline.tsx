@@ -416,12 +416,15 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 </div>
               </AgentRow>
             ) : (
-              <p
+              // Switch's own lines (notices, kickoff headlines) are written in
+              // the same Markdown as messages: drawn as text, `**name**` read
+              // as asterisks.
+              <div
                 id={messageAnchorId(message.messageId)}
                 className={cn('text-center text-xs text-foreground-muted', spacing())}
               >
-                {message.body}
-              </p>
+                <ChatMarkdown>{message.body}</ChatMarkdown>
+              </div>
             )}
             {(blocksByAnchor.get(message.messageId) ?? []).map(({ activity, turn }) => {
               const turnAgent = agentOf(activity.agentId);

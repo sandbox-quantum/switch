@@ -168,8 +168,8 @@ class MentionWarnings:
         handle = self._sender_handle(event)
         notice = (
             f"⚠️ @{handle} {names} {verb} in this room, so your message won't "
-            f"reach {pronoun}. Add the agent from the room's detail page in the "
-            f"gateway, or have an agent with room-management tools invite it."
+            f"reach {pronoun}. Add {pronoun} to the room in its settings, or ask "
+            f"an agent that manages rooms to invite {pronoun}."
         )
         await self.actor.send_admin(
             room.room_id,

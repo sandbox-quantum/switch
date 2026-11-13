@@ -129,6 +129,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     RunUndone,
     TemplateAgents,
+    opening_rooms_as_made,
     room_ids_of,
 )
 from switch_core.template_v2 import is_v2_text
@@ -944,6 +945,7 @@ async def _run_as_person(
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None
+        room_made = opening_rooms_as_made(creator, tenant_id, created, room_addressing)
         if parsed is not None:
             try:
                 if isinstance(parsed.spec, GroupSpec):
@@ -953,6 +955,7 @@ async def _run_as_person(
                         is_admin=is_admin,
                         creator_name=builtins["$creator"],
                         template_name=template_name,
+                        on_room_made=room_made,
                     )
                 else:
                     room = await rooms_yaml.provision(
@@ -962,6 +965,7 @@ async def _run_as_person(
                         is_admin=is_admin,
                         creator_name=builtins["$creator"],
                         template_name=template_name,
+                        on_room_made=room_made,
                     )
                 if room_addressing:
                     await creator.open_to_rooms(

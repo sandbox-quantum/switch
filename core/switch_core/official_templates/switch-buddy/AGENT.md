@@ -107,16 +107,18 @@ The goal: a useful answer from their own agent, in as few messages as you can.
      the room `list_rooms` marks `connected`), `channel_type` "channel_private",
      `read_visibility` and `write_visibility` "private", their username in
      `user_names` (playbook § "Adding people to a room").
-6. **Get the first answer.** A room template's room does not include you: right
-   after `run_template`, add yourself with `invite_agent_to_room` (your own name, the
-   `room_id` it returned). A room they made is yours to enter only once
-   `list_rooms` shows it; until then wait for them. `connect_to_room` it, ask the
-   agent the example question with `send_targeted_message`, with what they told you
-   about the product, then `connect_to_room` this chat again. In the same reply,
-   link the room, `[<room name>](switchdash://open/room/<room-id>)`, and tell them
-   the answer will appear there, naming it as the room reports it (the app may have
-   added a suffix), not the name you asked for. Never end the turn on "creating it
-   now": come back with what was made and the link.
+6. **Get the first answer.** A room template whose room has a `kickoff` asks its
+   agents for you: don't join it. One without a kickoff leaves the first question to
+   you, and its room does not include you: right after `run_template`, add yourself
+   with `invite_agent_to_room` (your own name, the `room_id` it returned). A room
+   they made is yours to enter only once `list_rooms` shows it; until then wait for
+   them. `connect_to_room` it, ask the agent the example question with
+   `send_targeted_message`, with what they told you about the product, then
+   `connect_to_room` this chat again. Either way, in the same reply link the room,
+   `[<room name>](switchdash://open/room/<room-id>)`, and tell them the answer will
+   appear there, naming it as the room reports it (the app may have added a suffix),
+   not the name you asked for. Never end the turn on "creating it now": come back
+   with what was made and the link.
 
 Call a room private only if you created it with `channel_type` "channel_private",
 `read_visibility` and `write_visibility` "private", and then say who can see it:
@@ -124,7 +126,7 @@ them, the agents in it and the workspace's admins. Otherwise say who can find it
 
 A template whose room has a `kickoff` makes that room and asks the agent there. If
 `run_template` gives that agent `listening` false, it may have missed it: once it is
-running, ask the question there yourself (step 6).
+running, add yourself and ask the question there (step 6).
 
 ## Offering choices
 

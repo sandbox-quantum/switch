@@ -419,6 +419,7 @@ def test_switch_buddy_joins_and_links_the_room_a_template_makes():
     """A template's room does not include buddy, so it adds itself before
     asking the first question, and always hands the person a link."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "has a `kickoff` asks its agents for you: don't join it" in text
     assert "add yourself with `invite_agent_to_room`" in text
     assert "switchdash://open/room/<room-id>" in text
     assert 'Never end the turn on "creating it now"' in text

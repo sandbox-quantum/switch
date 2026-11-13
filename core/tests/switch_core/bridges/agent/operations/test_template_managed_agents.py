@@ -892,6 +892,38 @@ async def test_a_v2_template_runs_and_opens_its_agent_to_its_room(managed):
 
 
 @pytest.mark.asyncio
+async def test_an_agent_is_opened_to_its_room_before_the_kickoff_is_posted(managed):
+    """The kickoff speaks for the agent running the template (switch-buddy),
+    which an agent left on its owner alone would refuse: it must already be
+    open to the room by the time the kickoff lands there."""
+    template_id = await _stored(managed, V2_EXPERT, kind="agent")
+    admin = managed["admin"]
+    policies_at_kickoff: list[Any] = []
+    send = admin.send_platform_message
+
+    async def snapshot_then_send(room_id: str, body: str, **kwargs: Any) -> Any:
+        async with managed["session_factory"]() as session:
+            agent = (
+                await session.execute(
+                    select(Agent).where(Agent.name == "switch-expert")
+                )
+            ).scalar_one()
+            policies_at_kickoff.append((room_id, agent.addressing_policy))
+        return await send(room_id, body, **kwargs)
+
+    admin.send_platform_message = snapshot_then_send
+
+    result = await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert policies_at_kickoff
+    for _room, policy in policies_at_kickoff:
+        assert policy is not None
+        assert any(
+            rule.get("rooms") == [result["room_id"]] for rule in policy["rules"]
+        )
+
+
+@pytest.mark.asyncio
 async def test_a_v2_template_with_its_room_off_creates_the_agent_alone(managed):
     template_id = await _stored(managed, V2_EXPERT, kind="agent")
 
