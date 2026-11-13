@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DISCORD_GATEWAY,
     DISCORD_GATEWAY_KEY,
     DiscordAdapter,
+    prompt_guild,
 )
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
 from switch_core.bridges.collaboration.discord.slash import build_app_commands
@@ -352,6 +353,7 @@ class DiscordGatewayClient:
         with no_tenant():
             adapter = await self._interaction_adapter(
                 interaction,
+                interaction.guild_id,
                 outside_a_server="This command only works inside a server.",
             )
             if adapter is not None:
@@ -364,28 +366,41 @@ class DiscordGatewayClient:
         included; those reach `_on_slash` through the command tree instead, so
         only presses are taken. A press from a guild no longer installed (a
         card left behind after a disconnect) is refused like a slash command.
+
+        A press on a link prompt arrives from a direct message, with no guild,
+        and is routed by the guild its button names (`prompt_guild`) instead.
+        That is only which bridge is asked: the bridge resolves the prompt in
+        its own tenant, from the account Discord says pressed it.
         """
         if interaction.type is not discord.InteractionType.component:
             return
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            data: dict[str, Any] = dict(interaction.data or {})
+            guild_id = prompt_guild(str(data.get("custom_id") or ""))
         with no_tenant():
             adapter = await self._interaction_adapter(
                 interaction,
+                guild_id,
                 outside_a_server="This button only works inside a server.",
             )
             if adapter is not None:
                 await adapter.dispatch_interaction(interaction)
 
     async def _interaction_adapter(
-        self, interaction: discord.Interaction, *, outside_a_server: str
+        self,
+        interaction: discord.Interaction,
+        guild_id: int | None,
+        *,
+        outside_a_server: str,
     ) -> DiscordAdapter | None:
-        """The bridge an interaction's guild resolves to, attached, or None.
+        """The bridge `guild_id` resolves to, attached, or None.
 
         Resolved fresh per event, and called with no tenant bound, like the
         message path (G1). An interaction that resolves to no bridge is
         answered with an ephemeral refusal rather than dropped: Discord shows
         "interaction failed" for one left unacknowledged.
         """
-        guild_id = interaction.guild_id
         if guild_id is None:
             await self._refuse(interaction, outside_a_server)
             return None

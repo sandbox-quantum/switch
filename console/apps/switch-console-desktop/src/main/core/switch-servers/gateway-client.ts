@@ -2484,6 +2484,14 @@ type LinkCodeJson = {
   /** Absent from a server that predates it. */
   expires_in_seconds?: number;
   instructions: string;
+  /** Absent from a server that predates it, and null when none was asked for. */
+  prompt?: {
+    number: number;
+    sent: boolean;
+    unavailable_reason?: string | null;
+    /** Absent from a server that predates it. */
+    link?: string | null;
+  } | null;
 };
 
 /** The gateway `ExternalUserSummary` wire shape. `link_request` is set when a
@@ -2499,11 +2507,21 @@ type ExternalUserSummaryJson = {
 };
 
 export function mapLinkCode(json: LinkCodeJson): LinkCode {
+  const prompt = json.prompt ?? null;
   return {
     code: json.code,
     expiresAt: json.expires_at,
     expiresInSeconds: json.expires_in_seconds ?? null,
     instructions: json.instructions,
+    prompt:
+      prompt === null
+        ? null
+        : {
+            number: prompt.number,
+            sent: prompt.sent,
+            unavailableReason: prompt.unavailable_reason ?? null,
+            link: prompt.link ?? null,
+          },
   };
 }
 
@@ -2592,6 +2610,8 @@ export async function searchBridgeDirectory(
  * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
  * does not say it can show that code (`expects_confirmation`) gets it as the
  * text of a 409 instead, which is all a Console from before then shows.
+ * `wants_prompt` asks it also to message the account with a number to tap; a
+ * server that predates that ignores it.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -2608,6 +2628,7 @@ export async function claimBridgeIdentity(
         external_user_id: params.externalUserId,
         username: params.username,
         expects_confirmation: true,
+        wants_prompt: true,
       },
     }
   );
@@ -2619,8 +2640,9 @@ export async function claimBridgeIdentity(
  * (`POST /collaborations/{id}/identities/{rowId}/code`), for a link still
  * pending or one made before links had to be confirmed. It replaces any code
  * issued before; the server keeps none, so this is also how a lost code is
- * "shown again". 409 means the link is already confirmed (or the account cannot
- * be linked at all), 404 that there is nothing to confirm.
+ * "shown again". It sends the account a new message to tap as well, retiring the
+ * last one's buttons. 409 means the link is already confirmed (or the account
+ * cannot be linked at all), 404 that there is nothing to confirm.
  */
 export async function issueIdentityLinkCode(
   server: SwitchServer,
@@ -2630,7 +2652,7 @@ export async function issueIdentityLinkCode(
   const res = await gatewayFetch(
     server,
     `/collaborations/${encodeURIComponent(bridgeId)}/identities/${encodeURIComponent(externalUserRowId)}/code`,
-    { authenticated: true, method: 'POST' }
+    { authenticated: true, method: 'POST', body: { wants_prompt: true } }
   );
   return mapLinkCode((await res.json()) as LinkCodeJson);
 }

@@ -32,7 +32,9 @@ from switch_core.bridges.collaboration.models import (
     ChannelRetirement,
     ChannelType,
     CreatedChannel,
+    DirectMessageUnavailable,
     DirectoryUser,
+    DirectPrompt,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -2233,6 +2235,112 @@ class PlatformAdapter(ABC):
             self.platform_name,
         )
         return False
+
+    async def answer_command(self, command: InboundCommand, text: str) -> None:
+        """Answer a command the bridge handles itself, without a room
+        (`chat_account_links.ACCOUNT_COMMANDS`).
+
+        `text` is Switch Markdown. It goes to the sender alone the way
+        `notify_privately` reaches them, and otherwise into the channel the
+        command came from, threaded under it, as the bridge. A direct
+        conversation is private already; a group DM is not. A platform with a
+        private reply to the command itself, carried in `command.reply_ref`,
+        overrides this to use it first.
+        """
+        if (
+            self.private_notice_delivery != "in_channel"
+            and command.channel_type != "direct"
+        ):
+            try:
+                await self.notify_privately(
+                    channel_id=command.channel_id,
+                    channel_name=command.channel_name,
+                    user_id=command.sender_id,
+                    content=text,
+                    thread_root_id=command.root_id,
+                )
+                return
+            except PrivateNoticeRefused as refused:
+                logger.warning(
+                    "%s would not let the bot reach %s privately (%s): "
+                    "answering %s in channel %s instead",
+                    self.platform_name,
+                    command.sender_name,
+                    refused,
+                    command.command,
+                    command.channel_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not answer %s privately on %s: answering in channel "
+                    "%s instead, where everyone in it sees it",
+                    command.command,
+                    self.platform_name,
+                    command.channel_id,
+                    exc_info=True,
+                )
+        await self.admin_message(
+            command.channel_id,
+            text,
+            command.root_id or command.message_ref,
+        )
+
+    def direct_prompt_unavailable(self) -> str | None:
+        """Why this bridge can't send anyone a direct prompt right now, in words
+        for the Switch user, or None when it can.
+
+        Asked before an account's prompt allowance is spent, so a platform that
+        could never send one is not counted as having messaged anyone. A refusal
+        about one person (they have not started the bot, their DMs are closed)
+        is `send_direct_prompt`'s to raise. This base can't send one at all.
+        """
+        return (
+            f"Switch can't send direct messages on {self.display_name}, so use "
+            "the code instead."
+        )
+
+    async def send_direct_prompt(
+        self, external_user_id: str, prompt: DirectPrompt
+    ) -> str:
+        """Message `external_user_id` directly with `prompt`, and return the
+        message's ref in the form a press on it carries back
+        (`InboundInteraction.message_ref`).
+
+        Each button carries `prompt.token` and its position the way this
+        platform's card buttons carry theirs, so a press arrives on the
+        ordinary interaction path.
+
+        Raises `DirectMessageUnavailable`, saying why for the Switch user, when
+        this platform cannot reach the person directly. This base is such a
+        platform.
+        """
+        raise DirectMessageUnavailable(
+            f"Switch can't send direct messages on {self.display_name}, so use "
+            "the code instead."
+        )
+
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """A web link that opens the conversation holding a prompt sent by
+        `send_direct_prompt`, for Switch Console to offer beside the number to
+        tap, so nobody has to go looking for the message. None where the
+        platform has no such link.
+        """
+        return None
+
+    async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
+        """Replace a prompt sent by `send_direct_prompt` with `text` (Switch
+        Markdown) and no buttons, once it has been answered.
+
+        Best effort, and must not raise: the answer has already been recorded,
+        and a message still showing buttons only invites a press that will be
+        told so.
+        """
+        logger.warning(
+            "%s cannot replace the direct prompt %s. It was answered: %s",
+            self.display_name,
+            message_ref,
+            text,
+        )
 
     async def tell_actor(
         self,

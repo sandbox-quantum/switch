@@ -1247,6 +1247,29 @@ export type LinkCode = {
   expiresInSeconds: number | null;
   /** How to post it on this platform, in Markdown — it differs per platform. */
   instructions: string;
+  /** The message to the account issued with this code, which confirms the link
+   * with a tap — or why it could not be sent. Null from a server that sends
+   * none. */
+  prompt: LinkPrompt | null;
+};
+
+/**
+ * A direct message Switch sends the account when it issues a code (CHOO-4121):
+ * three numbers and a "Not me" button. Tapping `number` there confirms the link
+ * as posting the code would; tapping another, or "Not me", cancels it. Each new
+ * code sends a new message and retires the buttons on the last one.
+ */
+export type LinkPrompt = {
+  /** The one to tap, of the three in the message. */
+  number: number;
+  /** False when no message went out, leaving the code as the only way. */
+  sent: boolean;
+  /** Why no message went out, as a sentence to show; null when one did. */
+  unavailableReason: string | null;
+  /** A web link that opens the message on the platform, so nobody has to go
+   * looking for it. Null when none went out, the platform cannot link to it,
+   * or the server predates it. */
+  link: string | null;
 };
 
 /**

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
+import discord
 import pytest
 
 from switch_core.bridges.agent.commands import (
@@ -109,6 +111,20 @@ class _FakeInteractionResponse:
     async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
         self._interaction.responses.append({"content": content, "ephemeral": ephemeral})
 
+    async def defer(self, *, ephemeral: bool = False, thinking: bool = False) -> None:
+        self._interaction.defers.append({"ephemeral": ephemeral, "thinking": thinking})
+
+
+class _FakeFollowup:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.error: Exception | None = None
+
+    async def send(self, content: str, **kwargs: Any) -> None:
+        if self.error is not None:
+            raise self.error
+        self.sent.append({"content": content, **kwargs})
+
 
 class _FakeInteraction:
     """Enough of discord.Interaction for the slash path.
@@ -119,11 +135,14 @@ class _FakeInteraction:
     """
 
     def __init__(self, channel: Any, *, original_id: int = 999) -> None:
+        self.id = 123456
         self.channel = channel
         self.user = _FakeUser()
         self.responses: list[dict[str, Any]] = []
+        self.defers: list[dict[str, Any]] = []
         self.edits: list[str] = []
         self.response = _FakeInteractionResponse(self)
+        self.followup = _FakeFollowup()
         self._original_id = original_id
 
     async def original_response(self) -> _FakeOriginalMessage:
@@ -483,6 +502,160 @@ def test_dispatch_failure_when_adapter_not_started_is_reported() -> None:
 
     assert len(interaction.edits) == 1
     assert "Failed to run" in interaction.edits[0]
+
+
+# ── Account commands ─────────────────────────────────────────────────────────
+#
+# `link-account` and `unlink-account` are answered by the bridge itself, to the
+# person who ran them alone. A "Running" notice would show the channel a code.
+
+
+class _HttpResponse:
+    status = 404
+    reason = "Not Found"
+    headers: dict[str, str] = {}
+
+
+def _answering_with(adapter: DiscordAdapter, text: str) -> list[InboundCommand]:
+    """Stand in for the bridge: take each command and answer it with `text`."""
+    captured: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        captured.append(cmd)
+        await adapter.answer_command(cmd, text)
+
+    adapter._on_command = on_command
+    return captured
+
+
+def _posted_in_channel(adapter: DiscordAdapter) -> list[tuple[str, str, str | None]]:
+    posted: list[tuple[str, str, str | None]] = []
+
+    async def admin_message(
+        channel_id: str, content: str, thread_root_id: str | None = None, **_: Any
+    ) -> str:
+        posted.append((channel_id, content, thread_root_id))
+        return f"{channel_id}:1"
+
+    adapter.admin_message = admin_message  # type: ignore[method-assign]
+    return posted
+
+
+def test_an_account_command_is_acknowledged_privately_and_posts_nothing() -> None:
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+    interaction = _FakeInteraction(_FakeChannel())
+
+    _invoke(adapter, interaction, "link-account", code="ABCD-1234")
+
+    assert interaction.responses == []
+    assert interaction.defers == [{"ephemeral": True, "thinking": True}]
+    assert len(commands) == 1
+    cmd = commands[0]
+    assert cmd.command == "link-account"
+    assert cmd.args == "ABCD-1234"
+    assert cmd.sender_id == "7"
+    assert cmd.channel_id == str(CHANNEL_ID)
+    assert cmd.reply_ref == str(interaction.id)
+    # A private ack is no message for a result to thread under.
+    assert cmd.message_ref is None
+
+
+def test_the_answer_is_a_private_follow_up_to_the_command() -> None:
+    adapter = _adapter()
+    posted = _posted_in_channel(adapter)
+    _answering_with(adapter, "This account is linked to:\n- **Jane**")
+    interaction = _FakeInteraction(_FakeChannel())
+
+    _invoke(adapter, interaction, "unlink-account", user=None)
+
+    assert len(interaction.followup.sent) == 1
+    sent = interaction.followup.sent[0]
+    assert sent["content"] == adapter.translate_outbound(
+        "This account is linked to:\n- **Jane**"
+    )
+    assert sent["ephemeral"] is True
+    assert posted == []
+
+
+def test_the_command_is_held_only_while_it_is_dispatched() -> None:
+    adapter = _adapter()
+    interaction = _FakeInteraction(_FakeChannel())
+    held: list[dict[str, Any]] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        held.append(dict(adapter._held_commands))
+
+    adapter._on_command = on_command
+    _invoke(adapter, interaction, "link-account", code="ABCD-1234")
+
+    assert held == [{str(interaction.id): interaction}]
+    assert adapter._held_commands == {}
+
+
+def test_a_dispatch_that_raises_lets_go_and_says_so_privately() -> None:
+    adapter = _adapter()
+    interaction = _FakeInteraction(_FakeChannel())
+
+    async def on_command(cmd: InboundCommand) -> None:
+        raise RuntimeError("database is down")
+
+    adapter._on_command = on_command
+    _invoke(adapter, interaction, "link-account", code="ABCD-1234")
+
+    assert adapter._held_commands == {}
+    # The edit lands on the private ack; nothing was posted in the open.
+    assert interaction.responses == []
+    assert len(interaction.edits) == 1
+    assert "database is down" in interaction.edits[0]
+
+
+def test_a_follow_up_discord_refuses_is_answered_in_the_channel(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _adapter()
+    posted = _posted_in_channel(adapter)
+    _answering_with(adapter, "Unlinked.")
+    interaction = _FakeInteraction(_FakeChannel())
+    interaction.followup.error = discord.HTTPException(_HttpResponse(), "expired")  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING):
+        _invoke(adapter, interaction, "unlink-account", user="Jane")
+
+    assert posted == [(str(CHANNEL_ID), "Unlinked.", None)]
+    assert "answered in the channel" in caplog.text
+
+
+def test_a_typed_account_command_is_answered_in_the_channel() -> None:
+    adapter = _adapter()
+    posted = _posted_in_channel(adapter)
+    typed = InboundCommand(
+        channel_id=str(CHANNEL_ID),
+        channel_type="channel_public",
+        sender_id="7",
+        sender_name="doe.jane",
+        command="link-account",
+        args="ABCD-1234",
+        message_ref=f"{CHANNEL_ID}:55",
+    )
+
+    _run(adapter.answer_command(typed, "Linked."))
+
+    assert posted == [(str(CHANNEL_ID), "Linked.", f"{CHANNEL_ID}:55")]
+
+
+def test_a_room_command_is_still_run_in_the_open() -> None:
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+    interaction = _FakeInteraction(_FakeChannel())
+
+    _invoke(adapter, interaction, "reset", target="worker")
+
+    assert interaction.defers == []
+    assert "Running" in interaction.responses[0]["content"]
+    assert commands[0].reply_ref is None
+    assert commands[0].message_ref == f"{CHANNEL_ID}:999"
+    assert adapter._held_commands == {}
 
 
 # ── Mentions picked from the `@` menu ────────────────────────────────────────

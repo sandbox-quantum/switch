@@ -2299,6 +2299,16 @@ class ExternalUser(TenantScoped, Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # How many link prompts this account has been sent since
+    # `link_prompt_window_started_at` (CHOO-4121), which `PROMPT_LIMIT` caps.
+    # On the account rather than on a request because a request is gone once
+    # it is answered or cancelled, and the limit must outlive both.
+    link_prompts_sent: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
+    link_prompt_window_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ExternalUserClaim(TenantScoped, Base):
@@ -2366,6 +2376,12 @@ class ExternalUserLinkRequest(TenantScoped, Base):
     __table_args__ = (
         Index("ix_external_user_link_requests_tenant_id", "tenant_id"),
         Index("ix_external_user_link_requests_user_id", "user_id"),
+        Index(
+            "uq_external_user_link_requests_prompt_token",
+            "prompt_token",
+            unique=True,
+            postgresql_where=text("prompt_token IS NOT NULL"),
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "external_user_id"],
             ["external_users.tenant_id", "external_users.id"],
@@ -2397,6 +2413,18 @@ class ExternalUserLinkRequest(TenantScoped, Base):
     code_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The prompt sent alongside the current code, if one was (CHOO-4121): what
+    # its buttons carry, the numbers it offered in order, and the one Switch
+    # Console showed. Replaced with the code, so a newer code retires the older
+    # prompt's buttons. The numbers are kept as they are rather than hashed:
+    # one of a few two-digit numbers hashes to nothing a reader could not undo.
+    # Where the message is showing is not kept: a press says which message it
+    # came from, and that is the only time the message needs changing.
+    prompt_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_choices: Mapped[list[int] | None] = mapped_column(
+        ARRAY(Integer), nullable=True
+    )
+    prompt_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
