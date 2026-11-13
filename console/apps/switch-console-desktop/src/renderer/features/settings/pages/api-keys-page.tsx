@@ -85,9 +85,6 @@ function ApiKeys({ serverId, userId }: { serverId: string; userId: string }) {
     <div className="space-y-8">
       <section className="space-y-3">
         <SectionLabel>Registration keys</SectionLabel>
-        <p className="text-sm text-foreground-muted">
-          An agent registers with Switch using one of these.
-        </p>
         <CreateRegistrationKey
           serverId={serverId}
           onCreated={(key) => {
