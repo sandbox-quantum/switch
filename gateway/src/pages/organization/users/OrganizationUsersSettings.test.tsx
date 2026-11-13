@@ -32,6 +32,7 @@ function member(
     role: "member",
     created_at: "2026-01-01",
     warning: null,
+    service_account: false,
     can_change_role: true,
     can_grant_org_admin: true,
     can_remove: true,

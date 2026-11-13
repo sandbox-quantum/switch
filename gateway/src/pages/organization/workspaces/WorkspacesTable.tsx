@@ -71,6 +71,16 @@ function StatsCell({ row }: { row: OrganizationWorkspace }) {
   );
 }
 
+/** A cell's content on one line, centred in the row's height as the grid's
+ * own text cells are. */
+function CellLine({ children }: { children: ReactNode }) {
+  return (
+    <Stack direction="row" sx={{ alignItems: "center", height: "100%", minWidth: 0 }}>
+      {children}
+    </Stack>
+  );
+}
+
 const NO_ADMINS_REASON =
   "No one in this workspace has the workspace admin role yet. Org admins can still administer it.";
 
@@ -203,15 +213,17 @@ export default function WorkspacesTable({
         flex: 1,
         minWidth: 220,
         renderCell: ({ row }) => (
-          <Typography variant="body2" sx={{ fontWeight: 500 }}>
-            {row.name}
-            {row.id === currentId && (
-              <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
-                {" "}
-                (current)
-              </Box>
-            )}
-          </Typography>
+          <CellLine>
+            <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+              {row.name}
+              {row.id === currentId && (
+                <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
+                  {" "}
+                  (current)
+                </Box>
+              )}
+            </Typography>
+          </CellLine>
         ),
       },
       {
@@ -247,8 +259,12 @@ export default function WorkspacesTable({
         headerName: "Admins",
         flex: 1,
         minWidth: 200,
-        sortable: false,
-        renderCell: ({ row }) => <AdminsCell admins={row.admins} />,
+        valueGetter: (_value, row) => row.admins.join(", "),
+        renderCell: ({ row }) => (
+          <CellLine>
+            <AdminsCell admins={row.admins} />
+          </CellLine>
+        ),
       },
       {
         field: "created_at",

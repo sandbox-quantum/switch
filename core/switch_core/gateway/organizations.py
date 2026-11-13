@@ -159,6 +159,7 @@ def _member_detail(
         role=member.role,
         created_at=str(member.created_at),
         warning=warning,
+        service_account=is_bootstrap_owner(user),
         can_change_role=change,
         # Never the registration service account (`SERVICE_ACCOUNT_ADMIN_REFUSAL`).
         can_grant_org_admin=change

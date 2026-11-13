@@ -57,6 +57,9 @@ const WORKSPACE_FILTER = {
     row.workspaces.length > 0 ? row.workspaces.map((w) => w.name) : ["No workspace"],
 };
 
+const SERVICE_ACCOUNT_REASON =
+  "Agents added with the shared registration token act with this account's role, so it can't be made an admin.";
+
 const ORG_ADMIN_WORKSPACE_REASON =
   "An org admin administers every workspace already; their role in one is not changed here.";
 
@@ -178,7 +181,9 @@ export default function OrganizationUsersSettings({
             onClick: () => setPending({ kind: "promote", member: row }),
             disabledReason: row.can_grant_org_admin
               ? null
-              : "Org admin is granted in your organization's account settings.",
+              : row.service_account
+                ? SERVICE_ACCOUNT_REASON
+                : "Org admin is granted in your organization's account settings.",
           });
         }
       }
@@ -236,15 +241,18 @@ export default function OrganizationUsersSettings({
         minWidth: 240,
         renderCell: ({ row }) => (
           <Stack sx={{ justifyContent: "center", height: "100%", minWidth: 0, lineHeight: 1.3 }}>
-            <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
-              {row.name}
-              {row.user_id === selfId && (
-                <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
-                  {" "}
-                  (you)
-                </Box>
-              )}
-            </Typography>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+              <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+                {row.name}
+                {row.user_id === selfId && (
+                  <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
+                    {" "}
+                    (you)
+                  </Box>
+                )}
+              </Typography>
+              {row.service_account && <Chip label="Service account" size="small" variant="outlined" />}
+            </Stack>
             <Typography variant="caption" color="text.secondary" noWrap>
               {row.email}
             </Typography>

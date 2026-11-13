@@ -1761,6 +1761,9 @@ class OrganizationMemberDetail(BaseModel):
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None
+    # The account agents added with the shared registration token are owned
+    # by: not a person, and never an admin of anything.
+    service_account: bool
     # What the caller may do with them, their own row included:
     # `can_change_role` for whoever passes the role route's gate, the
     # operator restoring an `org_admin` included;

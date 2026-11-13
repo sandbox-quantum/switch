@@ -296,6 +296,8 @@ class TestChangingRoles:
 
         grants = {row["user_id"]: row["can_grant_org_admin"] for row in listed.json()}
         assert grants[robot] is False and grants[bob] is True
+        services = {row["user_id"]: row["service_account"] for row in listed.json()}
+        assert services[robot] is True and services[bob] is False
         assert promoted.status_code == 409, promoted.text
         assert promoted.json()["detail"] == SERVICE_ACCOUNT_ADMIN_REFUSAL
         async with session_factory() as session:
