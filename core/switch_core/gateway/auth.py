@@ -14,13 +14,11 @@ from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
+from switch_core import room_admins, room_policy
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
-    Action,
     Principal,
-    can_unlink_from_room,
-    require,
     require_group_filing,
 )
 from switch_core.config import SwitchConfig
@@ -52,6 +50,7 @@ from switch_core.gateway.schemas import (
 )
 from switch_core.keys import Keyring, KeyringError, Purpose
 from switch_core.logging_context import log_context
+from switch_core.room_policy import RoomAction, RoomCaller, RoomDecision
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -1329,7 +1328,7 @@ async def require_tenant_admin(
     itself.
     """
     if not is_admin:
-        raise HTTPException(status_code=403, detail="Tenant admin access required")
+        raise HTTPException(status_code=403, detail="Workspace admin access required")
     return user
 
 
@@ -1338,28 +1337,31 @@ async def require_room_access(
     room_store: RoomStore,
     room_id: str,
     user: User,
-    action: Action,
+    action: RoomAction,
     is_admin: bool,
+    *,
+    owns_target: bool = False,
 ) -> Room:
-    """Load a room (404 if missing) and authorize `action` for `user`,
-    raising HTTP 403 if denied.
+    """Load a room (404 if missing) and authorize `action` for `user` by the
+    room policy (`room_policy`), raising HTTP 403 with its reason if denied.
 
-    Shared chokepoint for gateway routers that mutate a room they receive by
+    Shared chokepoint for gateway routers that act on a room they receive by
     id (attaching references, linking rooms, …) so they cannot operate on a
-    room the caller lacks access to. Mirrors the protocol layer's
-    ``_require_room_action``.
+    room the caller lacks access to.
 
     `is_admin` comes from ``get_tenant_is_admin``; it is a parameter rather
     than a read of its own so that a route cannot end up authorizing against
-    a different admin bit than the one its own dependencies resolved.
-
-    This is the widest of the tenant-admin gates: `authz.can` short-circuits
-    on the admin bit, so a workspace admin passes it for every room
-    in their workspace, private ones included. See the phase 2 design note on
-    what that grant covers.
+    a different admin bit than the one its own dependencies resolved. A
+    workspace admin is in the owner tier of every room in their workspace,
+    private ones included.
     """
     return await authorize_room(
-        session, room_store, room_id, Principal(user.id, is_admin), action
+        session,
+        room_store,
+        room_id,
+        Principal(user.id, is_admin),
+        action,
+        owns_target=owns_target,
     )
 
 
@@ -1368,22 +1370,65 @@ async def authorize_room(
     room_store: RoomStore,
     room_id: str,
     principal: Principal,
-    action: Action,
+    action: RoomAction,
+    *,
+    owns_target: bool = False,
 ) -> Room:
     """`require_room_access` for a caller who already holds a `Principal`: the
     one place a room's access rule is applied, for every gateway route."""
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
-    try:
-        require(principal, action, room)
-    except PermissionError as e:
-        # Whoever takes part in a room may read it, as its listing shows them.
-        if action != "read" or not await takes_part_in_room(
-            session, room_store, room.id, principal.id
-        ):
-            raise HTTPException(status_code=403, detail=str(e)) from e
+    await ensure_room_action(
+        session, room_store, room, principal, action, owns_target=owns_target
+    )
     return room
+
+
+async def ensure_room_action(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room: Room,
+    principal: Principal,
+    action: RoomAction,
+    *,
+    owns_target: bool = False,
+) -> None:
+    """Raise HTTP 403 with the policy's reason unless `principal` may do
+    `action` to `room`."""
+    decision = await decide_room_action(
+        session, room_store, room, principal, action, owns_target=owns_target
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=decision.reason)
+
+
+async def decide_room_action(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room: Room,
+    principal: Principal,
+    action: RoomAction,
+    *,
+    owns_target: bool = False,
+) -> RoomDecision:
+    """`room_policy.decide` for a gateway caller. Whether they are in the room,
+    and one of its room admins, is asked only when the answer could change the
+    outcome."""
+    outside = room_policy.decide(
+        RoomCaller(principal, in_room=False), room, action, owns_target=owns_target
+    )
+    if outside.allowed:
+        return outside
+    where = await room_admins.standing(session, room_store, room.id, principal.id)
+    if not where.in_room:
+        return outside
+    return room_policy.decide(
+        RoomCaller(principal, in_room=True, room_admin=where.room_admin),
+        room,
+        action,
+        owns_target=owns_target,
+    )
 
 
 async def require_room_unlink(
@@ -1392,31 +1437,16 @@ async def require_room_unlink(
     room_id: str,
     user: User,
     is_admin: bool,
+    *,
+    owns_target: bool,
 ) -> Room:
     """Load a room and authorize unlinking a reference, document or package
-    from it (`authz.can_unlink_from_room`): raise HTTP 403 unless `user`
-    takes part in it or is a tenant admin. Both may read it, so there is no
-    separate read check."""
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    await ensure_may_unlink(session, room_store, room, Principal(user.id, is_admin))
-    return room
-
-
-async def ensure_may_unlink(
-    session: AsyncSession, room_store: RoomStore, room: Room, principal: Principal
-) -> None:
-    """Raise HTTP 403 unless `principal` may unlink from `room`."""
-    # An admin may whether or not they take part, so is spared the query.
-    takes_part = not principal.is_admin and await takes_part_in_room(
-        session, room_store, room.id, principal.id
+    from it: raise HTTP 403 unless `user` is its owner or a tenant admin, or
+    owns what is unlinked and is in the room. `owns_target` is whether `user`
+    owns it."""
+    return await require_room_access(
+        session, room_store, room_id, user, "unlink", is_admin, owns_target=owns_target
     )
-    if not can_unlink_from_room(principal, takes_part=takes_part):
-        raise HTTPException(
-            status_code=403,
-            detail="Only those taking part in the room and admins can unlink from it",
-        )
 
 
 async def takes_part_in_room(

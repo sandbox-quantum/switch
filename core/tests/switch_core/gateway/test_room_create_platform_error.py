@@ -41,6 +41,21 @@ class _RaisingRoomService:
         raise self._exc
 
 
+class _NoAgents:
+    """No agent by those names, so the invite rule has nothing to refuse."""
+
+    async def get_many(self, session: Any, ids: Any) -> list[Any]:
+        return []
+
+    async def get_by_names(self, session: Any, names: Any) -> list[Any]:
+        return []
+
+
+class _Session:
+    async def commit(self) -> None:
+        return None
+
+
 def _request() -> RoomCreateRequest:
     return RoomCreateRequest(
         name="Switch Test Room",
@@ -57,7 +72,7 @@ async def _call(exc: Exception) -> HTTPException:
     with pytest.raises(HTTPException) as excinfo:
         await create_room(
             req=_request(),
-            session=None,  # type: ignore[arg-type]
+            session=_Session(),  # type: ignore[arg-type]
             room_service=_RaisingRoomService(exc),  # type: ignore[arg-type]
             room_store=None,  # type: ignore[arg-type]
             bridge_store=None,  # type: ignore[arg-type]
@@ -66,6 +81,7 @@ async def _call(exc: Exception) -> HTTPException:
             decisions=None,  # type: ignore[arg-type]
             user=type("U", (), {"id": "u1"})(),  # type: ignore[arg-type]
             is_admin=False,
+            agent_store=_NoAgents(),  # type: ignore[arg-type]
         )
     return excinfo.value
 
@@ -119,7 +135,7 @@ async def test_an_ordinary_bug_is_not_dressed_up_as_a_platform_refusal() -> None
     with pytest.raises(KeyError):
         await create_room(
             req=_request(),
-            session=None,  # type: ignore[arg-type]
+            session=_Session(),  # type: ignore[arg-type]
             room_service=_RaisingRoomService(KeyError("boom")),  # type: ignore[arg-type]
             room_store=None,  # type: ignore[arg-type]
             bridge_store=None,  # type: ignore[arg-type]
@@ -128,4 +144,5 @@ async def test_an_ordinary_bug_is_not_dressed_up_as_a_platform_refusal() -> None
             decisions=None,  # type: ignore[arg-type]
             user=type("U", (), {"id": "u1"})(),  # type: ignore[arg-type]
             is_admin=False,
+            agent_store=_NoAgents(),  # type: ignore[arg-type]
         )

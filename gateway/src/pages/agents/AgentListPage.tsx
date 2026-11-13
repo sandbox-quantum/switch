@@ -79,7 +79,7 @@ interface Notice {
   lines: string[];
 }
 
-/** Each device's label in this list. Every Switch cloud device has the same
+/** Each device's label in this list. Every Switch Cloud device has the same
  * name, as two people's laptops may, so a name shared by several devices
  * carries its owner too. */
 export function deviceLabels(agents: readonly AgentListEntry[]): Map<string, string> {

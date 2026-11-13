@@ -13,6 +13,7 @@ from switch_core.agent_templates import repo_note
 from switch_core.management.schemas import MAX_INSTRUCTIONS_BYTES
 from switch_core.official_templates import (
     _SHIPPED,
+    OfficialTemplate,
     current_revision,
     official_template,
     official_templates,
@@ -28,6 +29,18 @@ _PACKAGED = _REPO / "core" / "switch_core" / "official_templates"
 
 
 _PLAYBOOK = _PACKAGED / "switch-buddy" / "PLAYBOOK.md"
+
+
+def _agent_templates(
+    agent_management: bool, switch_buddy: bool
+) -> list[OfficialTemplate]:
+    """The official agent templates, without the room templates (see
+    test_official_room_templates)."""
+    return [
+        t
+        for t in official_templates(agent_management, switch_buddy)
+        if t.kind == "agent"
+    ]
 
 
 def test_the_switch_expert_copies_match_the_repository():
@@ -56,7 +69,7 @@ def test_the_flag_picks_the_document():
 def test_switch_expert_is_served_only_where_switch_buddy_is_not():
     """Buddy covers what the Switch expert does, so a server offers exactly
     one built-in assistant: buddy where it is served, the expert elsewhere."""
-    assert [t.id for t in official_templates(True, switch_buddy=True)] == [
+    assert [t.id for t in _agent_templates(True, switch_buddy=True)] == [
         "official:switch-buddy"
     ]
     assert official_template("official:switch-expert", True, switch_buddy=True) is None
@@ -65,7 +78,7 @@ def test_switch_expert_is_served_only_where_switch_buddy_is_not():
         (False, True),
         (True, False),
     ):
-        assert [t.id for t in official_templates(agent_management, switch_buddy)] == [
+        assert [t.id for t in _agent_templates(agent_management, switch_buddy)] == [
             "official:switch-expert"
         ]
 
@@ -86,7 +99,7 @@ def test_switch_buddy_reads_the_published_docs_not_a_clone():
 
 def test_the_instructions_are_written_in_and_the_documents_are_clean():
     for flag in (True, False):
-        for template in official_templates(flag, switch_buddy=True):
+        for template in _agent_templates(flag, switch_buddy=True):
             data = yaml.safe_load(template.content)
             agent = (
                 next(iter(data["resources"].values()))
@@ -103,7 +116,7 @@ def test_every_official_template_s_instructions_fit_the_server_limit():
     is a template nobody can create."""
     for agent_management in (True, False):
         for switch_buddy in (True, False):
-            for template in official_templates(agent_management, switch_buddy):
+            for template in _agent_templates(agent_management, switch_buddy):
                 data = yaml.safe_load(template.content)
                 agents = (
                     [r for r in data["resources"].values() if r["type"] == "agent"]
@@ -119,7 +132,7 @@ def test_every_official_template_s_instructions_fit_the_server_limit():
 
 def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
     for agent_management, switch_buddy in ((False, True), (True, False)):
-        assert [t.id for t in official_templates(agent_management, switch_buddy)] == [
+        assert [t.id for t in _agent_templates(agent_management, switch_buddy)] == [
             "official:switch-expert"
         ]
     buddy = official_template(
@@ -142,7 +155,11 @@ def test_only_switch_buddy_tells_a_person_not_to_run_it():
         "Switch Console sets up your switch-buddy for you."
     )
     for agent_management in (False, True):
-        (expert,) = official_templates(agent_management, switch_buddy=False)
+        (expert,) = [
+            t
+            for t in official_templates(agent_management, switch_buddy=False)
+            if t.kind == "agent"
+        ]
         assert expert.run_blocked_reason is None
 
 
@@ -371,3 +388,52 @@ def test_switch_buddy_always_tells_telegram_users_to_reply_to_the_bot():
         "reply to a Switch bot message with the agent's exact name and their request"
         in text
     )
+
+
+def test_switch_buddy_links_pages_that_still_have_what_it_sends_people_for():
+    """Account linking and guardrails left the server's home for Settings and
+    Admin; a link to home leaves the person with nothing to click."""
+    texts = [
+        (_PACKAGED / "switch-buddy" / "AGENT.md").read_text(),
+        _PLAYBOOK.read_text(),
+    ]
+    for text in texts:
+        for line in text.splitlines():
+            if "switchdash://open/home" in line:
+                assert "the workspace at a glance" in line, line
+    joined = " ".join(" ".join(texts).split())
+    assert "switchdash://open/settings?tab=messaging-apps" in joined
+    assert "switchdash://open/admin?tab=switch-trust" in joined
+
+
+def test_switch_buddy_names_only_choices_the_connect_dialog_offers():
+    """The connect dialog shows "Use your own app instead" only beside an
+    official app to install; where people bring their own app, the form opens
+    straight away, so buddy must not send them looking for it."""
+    playbook = " ".join(_PLAYBOOK.read_text().split())
+    assert "Use your own app instead" not in playbook
+    assert "pick Slack under Messaging app" in playbook
+
+
+def test_switch_buddy_joins_and_links_the_room_a_template_makes():
+    """A template's room does not include buddy, so it adds itself before
+    asking the first question, and always hands the person a link."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "has a `kickoff` asks its agents for you: don't join it" in text
+    assert "add yourself with `invite_agent_to_room`" in text
+    assert "switchdash://open/room/<room-id>" in text
+    assert 'Never end the turn on "creating it now"' in text
+
+
+def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    # Room suggestions and the agent fallback alike.
+    assert (
+        "Every list of suggestions, rooms or agents, ends with **Something else**"
+        in text
+    )
+    assert "ask for one line (what it is, who it's for)" in text
+    # The new room's link closes the reply, where it can't be missed.
+    assert "**[Open <room name> →](switchdash://open/room/<room-id>)**" in text
+    # Defaults are proposed in plain words, not the template's switch names.
+    assert 'never a parameter\'s name or "bypass" / "auto mode"' in text

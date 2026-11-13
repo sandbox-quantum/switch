@@ -1,8 +1,8 @@
 # Switch Console and the agent runtime
 
-_The desktop app that starts agent sessions on demand, holds their local state, and reports what they can be told to do_
+_How Switch Console runs agent sessions on the machine they live on_
 
-Published at <https://docs.switchagents.ai/flintai/switch/internals/switch-console> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/switch-console> — link readers there, not to this file.
 
 Switch Console is the desktop app that runs agent sessions on the machine those agents live on. It watches for room activity addressed to an agent it manages, and starts a session when that agent has no live one. That is what lets a mention in Slack reach a working agent with nobody having opened Console first.
 
@@ -18,19 +18,19 @@ Console is an Electron app, developed in a monorepo alongside the rest of Switch
 | **Preload** | A context bridge exposing a narrow, explicit API to the renderer |
 | **Renderer** | The React UI |
 | **Shared** | The agent provider registry and the types both sides agree on |
-| **Sidecar** | A headless process on a remote host, not an Electron one |
+| **Sidecar** | A headless on-host process, not an Electron one |
 
-The sidecar exists because Console is a window on a laptop and laptops close. Work that has to outlive the app runs in a process on the remote host that doesn't depend on Electron being alive. It is a remote mechanism only: a local agent is never given one.
+The sidecar exists because Console is a window on a laptop and laptops close. Work that has to outlive the app runs in a process on the host that doesn't depend on Electron being alive.
 
-## Its own database
+## The Console database
 
 Console keeps a local SQLite database on the machine it runs on. It is not a cache of the server's PostgreSQL and not a subset of it.
 
-Console's store holds sessions, local configuration, provider settings and the session-to-room binding. The server's holds rooms, agents, the resource library, identity mappings and runtime state.
+The Console store holds sessions, local configuration, provider settings and the session-to-room binding. The server store holds rooms, agents, the resource library, identity mappings and runtime state.
 
 **Note**
 
-Neither database is evidence for what the other contains. Both have a notion of a room and a notion of an agent, and they don't mean the same thing by either — Console's is scoped to what this installation manages on this machine, the server's to the whole deployment. A room Console has never heard of is a normal room.
+Neither database is evidence for what the other contains. Both have a notion of a room and a notion of an agent, and they don't mean the same thing by either. In Console each is scoped to what this installation manages on this machine; on the server, to the whole deployment. A room Console has never heard of is a normal room.
 
 ## Starting a session on demand
 
@@ -56,27 +56,23 @@ sequenceDiagram
   S->>P: reply reaches Slack
 ```
 
-The watcher holds the agent's event stream and claims the room the message arrived in for the session it started; that session reaches Switch through the MCP tools its own host serves, which the watcher runs over HTTP. [Sessions and the runtime](connectors-and-runtime.md) covers the details.
+The watcher holds the agent's event stream and claims the room the message arrived in for the session it started. That session reaches Switch through the MCP tools its own host serves, which the watcher runs over HTTP. [Sessions and the runtime](connectors-and-runtime.md) covers the details.
 
-### One implementation, two process trees
+### A separate implementation per host
 
-On-demand start is one implementation for both local and remote agents. What differs is where the watcher runs and what its process tree hangs off — and that difference is deliberate, not an accident of history.
+The sidecar has its own implementation of on-demand start for remote hosts. Local and remote are independent implementations of one behavior.
 
-**Local.** The watcher runs inside the Console process, and Console supervises the session it starts. Quitting Console stops the watcher and its sessions with it. Nothing is left detached and no sidecar is deployed, so a local agent does not answer while Console is closed. That is the intended behavior: the machine the agent lives on is the machine Console is on, and a process quietly surviving on someone's own laptop is a surprise, not a feature.
+Fixing on-demand start in Console does not fix it on a remote host. A difference in behavior between a local agent and a hosted one is a plausible symptom of the pair drifting apart, so treat a change to either as an open question about the other.
 
-**Remote.** The watcher runs in the sidecar on the SSH host. Console deploys and manages it but is not in its process tree and is not required for it to run, which is the whole point — a remote agent keeps working with Console closed.
-
-In both cases the agent's own CLI is a separate process: the provider SDKs launch it and talk to it, so there is always at least one process per running agent whatever the design. What moves between the two shapes is the watcher and the supervision around it.
-
-An agent that didn't answer is usually a question about the machine. The server did its part when the message was addressed. What happens next needs Console open beside a local agent, or a sidecar alive beside a remote one, configured to start sessions for it.
+When an agent doesn't answer, the cause is usually on the agent's machine. The server did its part when the message was addressed. What happens next needs a Console or a sidecar alive beside the agent, configured to start sessions for it.
 
 ## Binding a session to a room
 
-In Console's local model, a session's room is a row keyed by the session, cascading on delete. Remove the session and the binding goes with it. A session is associated with at most one room at a time.
+In the Console local model, a session's room is a row keyed by the session, cascading on delete. Remove the session and the binding goes with it. A session is associated with at most one room at a time.
 
 **Info**
 
-This is Console's storage model, not the room model the rest of Switch presents. The user-facing documentation describes a session as *attending* a room and able to leave it for another. Both are accurate about their own layer: a single current room in Console's table is what attending one room at a time looks like from the desktop app's side.
+This is the Console storage model, not the room model the rest of Switch presents. The user-facing documentation describes a session as *attending* a room and able to leave it for another. Both are accurate about their own layer: a single current room in the Console table is what attending one room at a time looks like from the desktop app's side.
 
 ## The agent provider registry
 
@@ -108,7 +104,7 @@ Some features are offered only in the managed case, because they need a server C
 
 When the server is managed and the room's messaging platform supports embedding, Console renders the room's conversation inside the app. Otherwise it falls back to a deeplink that opens the conversation in the platform's own client.
 
-Live embeds are capped. Past the ceiling, further rooms fall back to the deeplink — each live embed is a real client, and an unbounded number of them is an unbounded number of connections held open by a desktop app.
+Live embeds are capped. Past the cap, further rooms fall back to the deeplink. Each live embed is a real client, and an unbounded number of them is an unbounded number of connections held open by a desktop app.
 
 ## Reporting runtime state back
 
@@ -116,7 +112,7 @@ Console posts its sessions' runtime state to the server. The server records what
 
 That is what room commands read. When somebody runs a command against an agent from Slack, the server checks reported state rather than guessing, and declines a command the session can't honor.
 
-Freshness is bounded by Console's ability to report. A session whose Console has gone away stops updating, and the server's picture of it is a last-known one.
+Freshness is bounded by how well Console can report. A session whose Console has gone away stops updating, and the server's picture of it is a last-known one.
 
 ## Deeplinks
 
@@ -124,15 +120,17 @@ Console registers a custom URL scheme, so a link opens a specific room or sessio
 
 Many messaging platforms linkify only schemes they recognize, and a raw custom scheme arrives as unclickable text. Switch also serves a public HTTP redirect that resolves to the same destination: the platform linkifies the HTTP address, and the redirect hands off to the custom scheme.
 
+Links an agent writes to Console pages, `switchdash://open/…`, get the same treatment. On a platform that can't open the scheme, Switch rewrites each one to `/deeplink/open/…` on the server's public address, or names the page in words when the server has no public address.
+
 ## On a remote host
 
 The remote lifecycle is documented in full on [Onboard a remote host](../deploy/host-remotely.md). Restated here, unchanged:
 
 - A host reboot stops both the server and the agent listener on it.
 - Nothing declares a restart policy and nothing registers a service unit.
-- Launching Console again is what brings the agent back.
+- Console starts the listener again when it reaches the host: at launch, or when a host it was watching comes back. The server stays down until someone starts it.
 
-Your own machine closing is fine — that is what the sidecar is for. The host restarting is not, and nothing in the product today makes it self-healing.
+Your own machine closing is fine — that is what the sidecar is for. The host restarting is not, and while Console is closed nothing brings the listener back.
 
 ## Next steps
 

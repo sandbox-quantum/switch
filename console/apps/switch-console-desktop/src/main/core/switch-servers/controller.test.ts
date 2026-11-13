@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as WorkspaceSession from '@main/core/workspaces/workspace-session';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 
@@ -726,17 +726,36 @@ describe('adding a server by URL', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    serverKindOf.mockReturnValue('external');
   });
 
-  it('reports the add that worked', async () => {
+  afterEach(() => {
+    serverKindOf.mockReturnValue('remote_managed');
+  });
+
+  it('reports the add that worked, as the kind the new row is', async () => {
     const added = server({ id: 'new' });
     addServer.mockResolvedValue(added);
+    // Switch Cloud's own address pasted in: the same server as its button adds.
+    serverKindOf.mockReturnValue('cloud');
 
     await expect(switchServersController.addServer(params)).resolves.toBe(added);
+    expect(serverKindOf).toHaveBeenCalledWith(added);
     expect(trackEvent).toHaveBeenCalledExactlyOnceWith('server_added', {
-      server_kind: 'external',
+      server_kind: 'cloud',
       outcome: 'success',
       failure_reason: 'none',
+    });
+  });
+
+  it('describes an address that failed to register by the address itself', async () => {
+    addServer.mockRejectedValue(new Error('constraint failed'));
+
+    await expect(switchServersController.addServer(params)).rejects.toThrow('constraint failed');
+    expect(serverKindOf).toHaveBeenCalledWith({
+      managed: false,
+      managementKind: null,
+      url: 'http://switch',
     });
   });
 

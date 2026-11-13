@@ -14,6 +14,7 @@ vi.mock("../../data/hooks", () => ({
   useBridges: vi.fn(),
   useBridgeUsers: vi.fn(),
   useRoomGroups: vi.fn(),
+  useRoomAgentCandidates: vi.fn(),
 }));
 
 const result = <T,>(data: T) => ({ data, loading: false, error: null, refetch: vi.fn() });
@@ -49,6 +50,8 @@ beforeEach(() => {
   vi.mocked(hooks.useAgents).mockReturnValue(result([agent]));
   vi.mocked(hooks.useBridgeUsers).mockReturnValue(result([]));
   vi.mocked(hooks.useRoomGroups).mockReturnValue(result([]));
+  // The server's invite rule lets the viewer put the agent in a new room.
+  vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue(result({ agent_ids: [agent.id] }) as never);
 });
 
 afterEach(() => {
@@ -98,6 +101,26 @@ describe("New room: why Create is disabled", () => {
     expect(screen.getByText("Paste the external channel ID.")).toBeTruthy();
     fill("External channel ID", "C123");
     expect(create().disabled).toBe(false);
+  });
+
+  it("says why a connection that may make channels cannot make one yet", () => {
+    const reason = "No default team is set for this Teams messaging app.";
+    showForm([
+      bridge({
+        display_name: "Contoso",
+        bridge_type: "teams",
+        channel_creation_blocker: reason,
+      }),
+    ]);
+    fill("Name", "planning");
+    fill("Description", "Sprint planning");
+    chooseBridge("Contoso (teams)");
+
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(
+      (screen.getByRole("radio", { name: "Create new channel" }) as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect(screen.getByText("Paste the external channel ID.")).toBeTruthy();
   });
 
   it("says when the bridge can neither make nor link a channel", () => {

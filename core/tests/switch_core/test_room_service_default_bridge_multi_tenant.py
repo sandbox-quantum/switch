@@ -121,6 +121,11 @@ class _FakeLifecycle:
     def rooms_changed(self, bridge_id: str) -> None:
         self.rooms_changed_for.append(bridge_id)
 
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
 
 class _NoRunningClients:
     """No agents, no already-running system clients — keeps the test to

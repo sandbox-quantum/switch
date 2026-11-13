@@ -15,7 +15,12 @@ export type {
   StdioMcpServerSpec,
   TurnAttachment,
 } from './adapter';
-export { ProviderSessionError, ProviderUnavailableError, runtimeModeFor } from './adapter';
+export {
+  ProviderSessionError,
+  ProviderUnavailableError,
+  runtimeModeFor,
+  sessionInput,
+} from './adapter';
 export type { ClaudeAdapterLogger, ClaudeAdapterOptions } from './claude/claude-adapter';
 export { ClaudeAdapter, createClaudeAdapter } from './claude/claude-adapter';
 export type {
@@ -100,17 +105,7 @@ export {
   type ProviderRecheckReply,
   type ProviderRecheckRequest,
 } from './host/provider-recheck';
-export {
-  hostStartSources,
-  type HostStartSource,
-  type OwedSessionStart,
-} from './host/session-start';
-export {
-  isSessionStartedNotice,
-  reportedStartSource,
-  SESSION_STARTED_KIND,
-  type SessionStartedNotice,
-} from './host/session-started';
+export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
   type AgentStreamDeps,

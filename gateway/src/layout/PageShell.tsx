@@ -66,7 +66,7 @@ function StaleSessionBanner() {
       severity="warning"
       sx={{ mb: 2 }}
       action={
-        <Button color="inherit" size="small" onClick={recheck}>
+        <Button color="inherit" size="small" onClick={() => void recheck()}>
           Retry
         </Button>
       }

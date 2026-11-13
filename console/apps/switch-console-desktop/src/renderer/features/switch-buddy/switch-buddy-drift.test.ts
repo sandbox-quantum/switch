@@ -66,7 +66,6 @@ describe("switch-buddy's template, as Console uses it", () => {
       machineId: 'm-1',
       provider: 'claude',
       person: { name: 'Max', email: null },
-      entryPoint: 'onboarding',
     });
 
     const sent = Object.keys(runTemplateDocument.mock.calls[0]![1].inputs);

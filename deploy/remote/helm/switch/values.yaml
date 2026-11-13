@@ -218,6 +218,12 @@ switchCore:
   # Without it, Airtable shows as not set up.
   airtableClientSecret: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
+  # GitLab OAuth application for the GitLab connection, with the scopes mcp,
+  # read_api, read_user and api, and the redirect URI
+  # https://<public URL>/gateway/service-connections/gitlab/flows/callback.
+  # Without it or one saved under Connectors, GitLab shows as not set up.
+  gitlabClientSecret: ""
+  # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback
   # as its redirect URI. Without it or one saved under Connectors, Google
@@ -323,9 +329,10 @@ switchCore:
     # How often the usage snapshot is collected and sent.
     snapshotIntervalHours: 24
     # Which Amplitude project the usage lands in: prod, staging, dev or local.
-    # Leave it at prod unless this is one of Flint's own non-production
+    # Empty sends prod from a released image and dev from a development build
+    # (a `.dev` version). Set it only for one of Flint's own non-production
     # deployments; anything else is refused at startup.
-    environment: prod
+    environment: ""
     # Whether this is one of Flint's own deployments, so staff usage can be
     # told from adoption. Leave it false on any other deployment.
     internal: false
@@ -528,6 +535,28 @@ switchCore:
   # people must reconnect. An unknown service or profile stops switch-core at
   # startup. Empty: full scopes.
   serviceAccessProfiles: {}
+  # Where a connector's sign-ins come back, for one that can come back either
+  # way (Atlassian, Datadog, Linear) (SERVICE_SIGN_IN_REDIRECT), e.g.
+  # {"atlassian": "core"}. Unset, it comes back the first way the service's
+  # entry lists: "loopback" for Atlassian and Datadog, "core" for Linear where
+  # GATEWAY_PUBLIC_URL is set. "loopback" is Switch Console on the person's
+  # computer; "core" is <GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback,
+  # which an Atlassian or Datadog admin must allow-list first. Changing it registers a new
+  # client at the vendor, so everyone reconnects that service once. A service
+  # or way the catalog does not list stops switch-core at startup. Restart all
+  # replicas together to change it. With more than one replica, a chart
+  # upgrade is a rolling update, so upgrade with replicaCount 0, then upgrade
+  # again with your count; otherwise people may have to reconnect more than
+  # once.
+  serviceSignInRedirect: {}
+  # Whether a connector that takes a credential pasted in place of its sign-in
+  # also offers one that never expires, such as API and application keys, and
+  # hands it to agents (ALLOW_NON_EXPIRING_KEYS). Off, such keys are not
+  # offered, and a connection made with one while this was on must be
+  # reconnected another way. A never-expiring key can only be revoked at the
+  # vendor: disconnecting it or removing a grant forgets it in Switch but
+  # leaves it working.
+  allowNonExpiringKeys: false
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
   # sent there through this SMTP relay (SES SMTP, Postmark, a company relay —
   # anything that speaks SMTP). Off, the invitation is still created and the

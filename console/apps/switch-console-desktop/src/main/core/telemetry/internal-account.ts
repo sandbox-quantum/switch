@@ -8,7 +8,7 @@ import { KV } from '@main/db/kv';
 export const INTERNAL_EMAIL_DOMAINS: readonly string[] = ['sandboxaq.com', 'sandboxquantum.com'];
 
 /**
- * Whether the person using this installation is staff, as the `flint_internal`
+ * Whether the person using this installation is staff, as the `switch_trust.internal`
  * resource attribute: `true`, `false`, or `unknown` when no account says. Only
  * this travels; the address it was read from never leaves the machine.
  */

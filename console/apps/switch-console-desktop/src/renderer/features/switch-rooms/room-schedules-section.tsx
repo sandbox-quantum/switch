@@ -44,10 +44,12 @@ export function SchedulesSection({
   permissions,
 }: {
   workspaceId: string;
-  room: Pick<RemoteRoomDetail, 'id' | 'agentIds'>;
+  room: Pick<RemoteRoomDetail, 'id' | 'agentIds' | 'viewerIsRoomAdmin'>;
   permissions: Pick<RoomPermissions, 'canManage'>;
 }) {
-  const canChange = permissions.canManage;
+  // The owner, a room admin or a workspace admin; a server that predates
+  // room admins took managing the room.
+  const canChange = permissions.canManage || room.viewerIsRoomAdmin;
   const queryClient = useQueryClient();
   const key = schedulesKey(workspaceId, room.id);
   const schedules = useQuery({
@@ -100,7 +102,8 @@ export function SchedulesSection({
           <h2 className="text-sm font-semibold text-foreground">Schedules</h2>
           <p className="text-xs text-foreground-muted">
             Messages Switch posts to agents here on a timer, on behalf of whoever set them up.
-            {!canChange && ' Only the room’s owner or a workspace admin can change them.'}
+            {!canChange &&
+              ' Only the room’s owner, a room admin or a workspace admin can change them.'}
           </p>
         </div>
         {canChange && (

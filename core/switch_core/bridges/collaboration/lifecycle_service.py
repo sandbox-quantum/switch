@@ -71,8 +71,9 @@ from switch_core.deeplinks import gateway_url_warning
 from switch_core.outbound import OutboundURLRefused
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
-from switch_core.telemetry.ages import UNKNOWN_AGE, age_days, seconds_since
+from switch_core.telemetry.ages import age_days, seconds_since
 from switch_core.telemetry.deployment import (
+    CONNECTOR_ADDED_PREFIX,
     claim_milestone,
     milestone_claimed,
     seconds_since_install,
@@ -336,6 +337,11 @@ class CollaborationBridgeLifecycleService:
         self._workspace_cursors: dict[str, ConsumerCursors] = {}
         # What each running bridge was started from (`_started_from`).
         self._started_rows: dict[str, str] = {}
+        # Rows a running bridge here is writing into its own config as an edit
+        # (`_write_default_team`), as `_started_from` will read them once
+        # committed: a re-check that reads one before the write has recorded
+        # it as started from restarts nothing.
+        self._rows_being_written: dict[str, str] = {}
         # Quiet copies being started in the background after a hand-over.
         self._quiet_starts: dict[str, asyncio.Task[None]] = {}
         # One start or stop of a bridge at a time. A bridge is started and
@@ -698,6 +704,21 @@ class CollaborationBridgeLifecycleService:
         if adapter_cls is None:
             return None
         return adapter_cls.editable_config_keys(connection_config)
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> str | None:
+        """Why a bridge cannot create a channel yet, though its platform can
+        and an admin allows it; None when nothing is missing.
+
+        The adapter class decides — see `PlatformAdapter.channel_creation_blocker`.
+        An unknown type has no adapter to ask, and is reported as missing
+        nothing, as `supports_channel_creation` reports it capable.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return None
+        return adapter_cls.channel_creation_blocker(connection_config)
 
     def supports_private_channels(self, bridge_type: str) -> bool:
         """Whether this platform can make a private channel for a new room.
@@ -1294,6 +1315,11 @@ class CollaborationBridgeLifecycleService:
                     bridge_id, tenant_id, channel_id, team_id
                 )
             )
+            adapter.set_default_team_writer(
+                lambda expected, team_id: self._write_default_team(
+                    bridge_id, tenant_id, expected, team_id
+                )
+            )
             adapter.set_holder_relay(
                 lambda request: self._relay_to_holder(bridge_id, request)
             )
@@ -1467,6 +1493,56 @@ class CollaborationBridgeLifecycleService:
                 session, bridge_id, channel_id, team_id
             )
             await session.commit()
+
+    async def _write_default_team(
+        self,
+        bridge_id: str,
+        tenant_id: str,
+        expected: str | None,
+        team_id: str | None,
+    ) -> bool:
+        """Change a bridge's default team as it joins or leaves teams, unless
+        it was changed meanwhile; whether it was (used by the Teams adapter).
+
+        Unlike what a bridge learns from traffic, this is an edit: every other
+        process rebuilds its copy from the new row, so a channel created
+        through any of them goes where the default team now says. The copy
+        that made the change already runs with it, so the row it now runs from
+        is recorded as the one it started from, and the re-check leaves it
+        running, including one that reads the row while it is being written."""
+        written: str | None = None
+        try:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                bridge = await self._bridge_store.replace_team(
+                    session, bridge_id, expected=expected, team_id=team_id
+                )
+                if bridge is not None:
+                    written = _started_from(bridge)
+                    self._rows_being_written[bridge_id] = written
+                await session.commit()
+                # Only a copy still started here runs with the change; one
+                # stopped meanwhile is started from the row when it next is.
+                if written is not None and bridge_id in self._started_rows:
+                    self._started_rows[bridge_id] = written
+        finally:
+            self._rows_being_written.pop(bridge_id, None)
+        if written is None:
+            logger.info(
+                "Collaboration bridge %s's default team was not changed from %s "
+                "to %s: it had been changed meanwhile",
+                bridge_id,
+                expected,
+                team_id,
+            )
+            return False
+        logger.info(
+            "Collaboration bridge %s's default team is now %s (was %s)",
+            bridge_id,
+            team_id,
+            expected,
+        )
+        self._announce(bridge_id)
+        return True
 
     async def _record_bridge_memberships(
         self, bridge_id: str, tenant_id: str, client_id: str
@@ -1657,7 +1733,7 @@ class CollaborationBridgeLifecycleService:
         """
         self._connect_failures[bridge_id] = self._connect_failures.get(bridge_id, 0) + 1
 
-    def _connect_duration_ms(self, bridge_id: str) -> float:
+    def _connect_duration_ms(self, bridge_id: str) -> float | None:
         """How long this bridge's connect attempt took, in whole milliseconds.
 
         Spent on read: an attempt has exactly one outcome, and the next one
@@ -1665,13 +1741,14 @@ class CollaborationBridgeLifecycleService:
         clock, so an NTP step mid-connect cannot produce a negative number or
         an hour that never passed.
 
-        `-1` when no reading was taken, which should not happen — every path to
-        an outcome goes through `start()` — but reporting `0` would assert the
-        connect was instantaneous, which is the one thing it certainly was not.
+        None, which leaves the property off the event, when no reading was
+        taken. That should not happen — every path to an outcome goes through
+        `start()` — but reporting `0` would assert the connect was
+        instantaneous, which is the one thing it certainly was not.
         """
         started = self._connect_started.pop(bridge_id, None)
         if started is None:
-            return UNKNOWN_AGE
+            return None
         return round((time.monotonic() - started) * 1000)
 
     async def _report_connector_up(
@@ -1706,32 +1783,39 @@ class CollaborationBridgeLifecycleService:
         # about is setup that went unmeasured, and reporting it the day
         # telemetry is switched on would report the connector's whole age.
         first_connect = await claim_milestone(
-            self._session_factory, f"connector_added:{bridge_id}"
+            self._session_factory, f"{CONNECTOR_ADDED_PREFIX}{bridge_id}"
         )
-        # `enabled`, not just `is not None`: off is a real service with a
-        # discarding sink.
-        if self._telemetry is None or not self._telemetry.enabled:
+        if self._telemetry is None:
             return
-        if not first_connect:
-            # This bridge has reported, but the deployment-wide milestone may
-            # not have. `emit_milestone` is itself once-ever.
-            if not preconfigured:
-                await self._telemetry.emit_milestone(
-                    "first_connector_added",
-                    bridge_platform=normalise_platform(platform),
-                )
-            return
+        if first_connect:
+            self._report_connector_added(
+                bridge_id, platform, configured_at, preconfigured=preconfigured
+            )
+        # Claimed while telemetry is off too, so switching it on later does
+        # not report a connector added long before. Once-ever, so a bridge
+        # that already reported still asks, in case the deployment-wide claim
+        # was lost.
+        if not preconfigured:
+            await self._telemetry.emit_milestone(
+                "first_connector_added", bridge_platform=normalise_platform(platform)
+            )
 
-        elapsed_since_install = seconds_since_install(self._telemetry.installed_at)
+    def _report_connector_added(
+        self,
+        bridge_id: str,
+        platform: str,
+        configured_at: object,
+        *,
+        preconfigured: bool,
+    ) -> None:
+        assert self._telemetry is not None
         emit_safely(
             self._telemetry,
             "connector_added",
             {
                 "bridge_platform": normalise_platform(platform),
-                # -1 where the deployment has no install clock, which is
-                # distinguishable from "took no time" in a way that 0 is not.
-                "seconds_since_install": (
-                    elapsed_since_install if elapsed_since_install is not None else -1.0
+                "seconds_since_install": seconds_since_install(
+                    self._telemetry.installed_at
                 ),
                 "seconds_since_configured": seconds_since(configured_at),
                 "is_preconfigured": preconfigured,
@@ -1743,10 +1827,6 @@ class CollaborationBridgeLifecycleService:
                 ),
             },
         )
-        if not preconfigured:
-            await self._telemetry.emit_milestone(
-                "first_connector_added", bridge_platform=normalise_platform(platform)
-            )
 
     def note_preconfigured(self, bridge_id: str, preconfigured: bool) -> None:
         """Follow a change to the row without a restart. Only a bridge this
@@ -2068,7 +2148,12 @@ class CollaborationBridgeLifecycleService:
             # Starting in the background, from the row as it reads then.
             return
         started_from = self._started_rows.get(bridge_id)
-        if started_from == _started_from(bridge):
+        current = _started_from(bridge)
+        if started_from == current:
+            return
+        if started_from is not None and self._rows_being_written.get(bridge_id) == (
+            current
+        ):
             return
         if started_from is None:
             logger.info(
@@ -2139,7 +2224,7 @@ class CollaborationBridgeLifecycleService:
         # connect succeeds *in this process*, so a connector that worked for
         # months and was down at removal would report "never connected".
         was_connected = await milestone_claimed(
-            self._session_factory, f"connector_added:{bridge_id}"
+            self._session_factory, f"{CONNECTOR_ADDED_PREFIX}{bridge_id}"
         )
         running = self._bridges.get(bridge_id)
         if running is not None:
