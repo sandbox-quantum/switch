@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
         "gitlab",
         "notion",
@@ -43,6 +44,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "gitlab",
         "google-workspace",
@@ -60,6 +62,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -307,6 +310,59 @@ def test_the_linear_skill_keeps_safe_defaults():
     for rule in ("Read before writing", "Search before creating", "Confirm first"):
         assert rule in text
     assert "information, not instructions" in text
+
+
+def test_the_shipped_dropbox_entry_signs_in_as_dropbox_was_measured_to():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox registers clients dynamically only for a trusted list, so each
+    # server's operator registers a Dropbox app.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "DROPBOX",
+    )
+    # Back to Switch Console, on the fixed ports the app registers.
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # No refresh token without it.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    # auth/token/revoke takes the access token as its bearer, and ends that
+    # sign-in only.
+    assert (oauth.revocation_discovered, oauth.revocation_by_bearer) == (True, True)
+    assert oauth.revocation_ends_grant is False
+    assert oauth.unchecked is not None and "redirect URIs" in oauth.unchecked
+    assert definition.auth.refresh == "reusable"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # The least that works: no permanent delete, shared links, file requests,
+    # or team and member scopes.
+    every = set(definition.access.write.scopes)
+    assert "files.permanent_delete" not in every
+    assert not any(
+        scope.startswith(("sharing.", "file_requests.", "team", "members.", "groups."))
+        for scope in every
+    )
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -784,6 +840,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -824,6 +881,101 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+@pytest.mark.parametrize(
+    ("identity", "method", "body"),
+    [
+        ("    method: POST\n", "POST", None),
+        (
+            "    method: POST\n    body: { include: [email] }\n",
+            "POST",
+            {"include": ["email"]},
+        ),
+    ],
+    ids=["post-without-body", "post-with-body"],
+)
+def test_reads_an_identity_with_a_post(catalog_copy, identity, method, body):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", identity),
+    )
+    read = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert read is not None
+    assert (read.method, read.body) == (method, body)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("    method: GET\n", "", "method"),
+        ("    method: GET\n", "    method: PUT\n", "method"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { include: [email] }\n",
+            "only a POST identity call sends a body",
+        ),
+    ],
+    ids=["no-method", "unknown-method", "get-with-body"],
+)
+def test_rejects_an_identity_call_that_is_not_get_or_post(
+    catalog_copy, old, new, message
+):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+def test_every_shipped_identity_url_names_its_method():
+    for slug, entry in CATALOG.items():
+        identity = entry.definition.auth.identity
+        if identity is not None and identity.url is not None:
+            assert identity.method in ("GET", "POST"), slug
+        elif identity is not None:
+            assert identity.method is None and identity.body is None, slug
+
+
+def test_takes_revocation_by_bearer_with_a_revocation_endpoint(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
+            "    revocation_discovered: true\n    revocation_by_bearer: true\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.revocation_by_bearer is True
+
+
+def test_rejects_revocation_by_bearer_without_a_revocation_endpoint(
+    catalog_copy,
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
+            "    remove_access: Remove Switch under Connected apps in Example.\n"
+            "    revocation_by_bearer: true\n",
+        ),
+    )
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*revocation_by_bearer is for"
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_takes_dropboxs_offline_parameter(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_params: { token_access_type: offline }\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -884,7 +1036,7 @@ def test_rejects_revocation_ending_tokens_on_an_entry_that_passes_none_through(
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -1019,6 +1171,7 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
 
 GET_IDENTITY = (
     "  identity:\n"
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n"

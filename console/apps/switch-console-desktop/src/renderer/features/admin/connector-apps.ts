@@ -57,6 +57,7 @@ export interface SecretField {
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
 const GITLAB = 'gitlab';
+const DROPBOX = 'dropbox';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -340,10 +341,44 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === DROPBOX)
+    return [
+      {
+        text: "In Dropbox's App Console, create an app with Scoped access and Full Dropbox access. Use a Dropbox account your organization owns: whoever owns the app can delete it, and that disconnects everyone.",
+        copy: [],
+        link: {
+          label: 'Open the App Console',
+          href: 'https://www.dropbox.com/developers/apps/create',
+        },
+        items: [],
+      },
+      {
+        text: "Name it as people should see it on Dropbox's consent page.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'On its Permissions tab, tick exactly these, then Submit:',
+        copy: [],
+        link: null,
+        items: scopeRows(app.scopes),
+      },
+      redirectStep(
+        'On its Settings tab, under OAuth 2, add each of these redirect URIs:',
+        redirectUris(app)
+      ),
+      {
+        text: 'On its Settings tab, copy the App key and the App secret: they are the Client ID and the Client secret.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === AIRTABLE)
     return [
       {
-        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that stops every connection.",
+        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that disconnects everyone.",
         copy: [],
         link: { label: 'Open Builder Hub', href: 'https://airtable.com/create/oauth' },
         items: [],
@@ -459,6 +494,7 @@ const HELM_VALUES: Record<string, string> = {
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
   [GITLAB]: 'switchCore.gitlabClientSecret',
+  [DROPBOX]: 'switchCore.dropboxClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */

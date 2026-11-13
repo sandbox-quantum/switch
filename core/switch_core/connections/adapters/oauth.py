@@ -102,6 +102,10 @@ MCP_RESPONSE_BYTES = 1024 * 1024
 MCP_IDENTITY_BYTES = 4 * 1024 * 1024
 MCP_TOOL_PAGES = 20
 MCP_RESULT_BYTES = 64 * 1024
+
+# An access token this close to expiring is renewed before it revokes a
+# sign-in by its bearer, so the revocation is not refused as expired.
+BEARER_REVOCATION_MARGIN_S = 60
 # An identity answer can carry the account's roles and permissions (Datadog's
 # current_user does), so it may be far larger than metadata or a token answer.
 MAX_IDENTITY_BYTES = 1024 * 1024
@@ -896,14 +900,16 @@ class OAuthAdapter:
             body = await self._introspect(access_token, checked)
         else:
             assert self._identity.url is not None
+            assert self._identity.method is not None
             response = await self._send(
                 self._http.build_request(
-                    "GET",
+                    self._identity.method,
                     render(self._identity.url, checked),
                     headers={
                         "Authorization": f"Bearer {access_token}",
                         "Accept": "application/json",
                     },
+                    json=self._identity.body,
                 )
             )
             if response.status_code == 401:
@@ -1274,9 +1280,10 @@ class OAuthAdapter:
         shows (`alias`), or the service and the choices."""
         # The loader refuses paste methods on an entry with no identity url.
         assert self._identity.url is not None
+        assert self._identity.method is not None
         response = await self._send(
             self._http.build_request(
-                "GET",
+                self._identity.method,
                 render(self._identity.url, choices),
                 headers={
                     **self._paste_headers(method, values, choices),
@@ -1362,6 +1369,8 @@ class OAuthAdapter:
             raise ServiceAdapterError(
                 f"{self._name} gives Switch no way to revoke a sign-in."
             )
+        if self._oauth.revocation_by_bearer:
+            return await self._revoke_by_bearer(url, secret)
         refresh_token = secret.values.get("refresh_token")
         token, hint = (
             (refresh_token, "refresh_token")
@@ -1387,6 +1396,36 @@ class OAuthAdapter:
             return True
         if response.status_code == 400 and "invalid_token" in response.text:
             return False
+        raise ServiceAdapterError(
+            f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
+        )
+
+    async def _revoke_by_bearer(self, url: str, secret: ConnectionSecret) -> bool:
+        """Revoke with the sign-in's own access token as the bearer and no
+        body. An access token about to expire, or refused, is renewed first;
+        a sign-in the vendor will no longer renew has nothing left to revoke."""
+        current = secret
+        stale = (
+            current.access_token is None
+            or current.expires_at <= time.time() + BEARER_REVOCATION_MARGIN_S
+        )
+        for attempt in range(2):
+            if stale or attempt:
+                try:
+                    current = await self.refresh(secret)
+                except ReauthorizationRequiredError:
+                    return False
+            response = await self._send(
+                self._http.build_request(
+                    "POST",
+                    url,
+                    headers={"Authorization": f"Bearer {current.access_token}"},
+                )
+            )
+            if response.status_code == 200:
+                return True
+            if response.status_code != 401:
+                break
         raise ServiceAdapterError(
             f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
         )
