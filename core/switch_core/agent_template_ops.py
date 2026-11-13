@@ -30,7 +30,11 @@ from switch_core.official_templates import (
     matches,
     official_template,
     official_templates,
+    slug_of,
 )
+from switch_core.telemetry import TelemetryService, emit_after_commit
+from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.snapshot import normalise_template_kind
 from switch_core.template_lint import lint_template
 
 if TYPE_CHECKING:
@@ -106,8 +110,12 @@ class AgentTemplates:
         max_bytes: int,
         agent_management: bool,
         switch_buddy: bool,
+        telemetry: TelemetryService | None,
     ) -> None:
         self._store = store
+        # Saving and deleting report as the gateway's do, once the caller
+        # commits.
+        self._telemetry = telemetry
         self._max_bytes = max_bytes
         # Which document an official template that comes in two is served as.
         self._agent_management = agent_management
@@ -127,6 +135,7 @@ class AgentTemplates:
         rows = await self._store.list_all(
             session, viewer_id=acting.owner.id, is_admin=False, query=query, kind=kind
         )
+        hidden = await self._store.hidden_official_slugs(session)
         official = [
             {
                 "id": t.id,
@@ -138,7 +147,7 @@ class AgentTemplates:
                 "can_edit": False,
             }
             for t in official_templates(self._agent_management, self._switch_buddy)
-            if matches(t, query, kind)
+            if matches(t, query, kind) and slug_of(t.id) not in hidden
         ]
         return official + [
             {
@@ -158,12 +167,14 @@ class AgentTemplates:
     ) -> Template | OfficialTemplate:
         """A template the agent may read, or ``not_found``: one it may not
         read does not exist for it, as for a person. An ``official:`` id is
-        one that comes with Switch."""
+        one that comes with Switch, unless the workspace removed it."""
         if is_official(template_id):
             official = official_template(
                 template_id, self._agent_management, self._switch_buddy
             )
-            if official is None:
+            if official is None or slug_of(
+                template_id
+            ) in await self._store.hidden_official_slugs(session):
                 raise AgentRefused(
                     "not_found",
                     f"No template with id {template_id}. list_templates shows the "
@@ -286,6 +297,12 @@ class AgentTemplates:
             )
         except TemplateNameTaken as e:
             raise self._name_taken(name) from e
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "template_created",
+            {"template_kind": normalise_template_kind(kind)},
+        )
         return template, warnings
 
     async def _own(
@@ -295,8 +312,10 @@ class AgentTemplates:
         if isinstance(template, OfficialTemplate):
             raise AgentRefused(
                 "not_yours",
-                f"'{template.name}' comes with Switch, so nobody can change or "
-                "delete it. Save your own version under another name instead.",
+                f"'{template.name}' comes with Switch, so no agent can change or "
+                "delete it. Save your own version under another name instead. "
+                "A workspace admin can remove a room template that comes with "
+                "Switch from the workspace in Switch Console.",
             )
         if template.created_by_agent_id != acting.agent.id:
             raise AgentRefused(
@@ -367,4 +386,13 @@ class AgentTemplates:
         self._still_own(acting, locked)
         name = locked.name
         await self._store.delete(session, locked.id)
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "template_deleted",
+            {
+                "template_kind": normalise_template_kind(locked.kind),
+                "age_days": age_days(locked.created_at),
+            },
+        )
         return name

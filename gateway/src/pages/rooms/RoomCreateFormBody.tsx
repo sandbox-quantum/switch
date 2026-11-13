@@ -24,7 +24,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { type RoomRoleSpec, createRoom } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
@@ -73,6 +73,7 @@ export default function RoomCreateFormBody() {
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const blockedReasonId = useId();
 
   const hasBridge = !!bridgeId;
 
@@ -100,6 +101,8 @@ export default function RoomCreateFormBody() {
     selectedBridge?.private_channels_supported ?? true;
   const privateChannelNeedsLinkedAccount =
     selectedBridge?.private_channel_needs_linked_account ?? false;
+  const publicChannelAddsCreator =
+    selectedBridge?.public_channel_adds_creator ?? false;
   // A private choice the chosen connection cannot make is sent as public.
   const effectiveChannelType = privateChannelsSupported
     ? newChannelType
@@ -163,24 +166,26 @@ export default function RoomCreateFormBody() {
     [agentIds, childCountByParent],
   );
 
-  const canSubmit = useMemo(() => {
-    if (!name.trim() || !description.trim()) return false;
+  // Why Create is held, in the order the form asks for things, or null when
+  // it can go. Mirrors what the server refuses, so the page says it first.
+  const blockedReason = useMemo(() => {
+    const missing = [!name.trim() && "a name", !description.trim() && "a description"].filter(Boolean);
+    if (missing.length > 0) return `Give the room ${missing.join(" and ")}.`;
     if (hasBridge) {
-      if (noChannelSource) return false;
-      if (channelSource === "existing" && !externalChannelId.trim())
-        return false;
-      return true;
+      if (noChannelSource) {
+        return `${selectedBridge?.display_name ?? "This messaging app"} can't create a channel or link an existing one from here.`;
+      }
+      if (channelSource === "existing" && !externalChannelId.trim()) {
+        return "Paste the external channel ID.";
+      }
+      return null;
     }
-    return agentIds.length >= 1;
-  }, [
-    name,
-    description,
-    hasBridge,
-    noChannelSource,
-    channelSource,
-    externalChannelId,
-    agentIds,
-  ]);
+    if (agentIds.length === 0) {
+      return "A room with no bridge needs at least one agent. Add one, or choose a bridge.";
+    }
+    return null;
+  }, [name, description, hasBridge, noChannelSource, selectedBridge, channelSource, externalChannelId, agentIds]);
+  const canSubmit = blockedReason === null;
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -465,7 +470,10 @@ export default function RoomCreateFormBody() {
                   ? selectedBridge?.bridge_type === "teams"
                     ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
                     : `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
-                  : undefined
+                  : effectiveChannelType === "channel_public" &&
+                      publicChannelAddsCreator
+                    ? `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, if you have one.`
+                    : undefined
               }
             >
               <MenuItem value="channel_public">Public channel</MenuItem>
@@ -522,7 +530,11 @@ export default function RoomCreateFormBody() {
           <TextField
             {...params}
             label="Agents"
+            required={!hasBridge}
             placeholder={agentIds.length === 0 ? "Search agents…" : ""}
+            helperText={
+              hasBridge ? undefined : "A room with no bridge needs at least one agent; choose a bridge to leave this empty."
+            }
           />
         )}
       />
@@ -630,7 +642,12 @@ export default function RoomCreateFormBody() {
       )}
 
       <Divider />
-      <Stack direction="row" spacing={1} justifyContent="flex-end">
+      <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
+        {blockedReason && (
+          <Typography id={blockedReasonId} variant="body2" color="text.secondary" sx={{ flexGrow: 1 }}>
+            {blockedReason}
+          </Typography>
+        )}
         <Button onClick={() => navigate("/rooms")} disabled={submitting}>
           Cancel
         </Button>
@@ -638,6 +655,7 @@ export default function RoomCreateFormBody() {
           variant="contained"
           onClick={handleSubmit}
           disabled={!canSubmit || submitting}
+          aria-describedby={blockedReason ? blockedReasonId : undefined}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
           Create

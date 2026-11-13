@@ -38,6 +38,7 @@ const BRIDGE = {
   channelIdsRefused: null,
   privateChannels: null,
   privateChannelNeedsLinkedAccount: false,
+  publicChannelAddsCreator: false,
 } as RemoteBridge;
 
 let container: HTMLDivElement | null = null;

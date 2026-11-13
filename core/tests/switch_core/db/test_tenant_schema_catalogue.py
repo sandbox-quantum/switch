@@ -34,6 +34,7 @@ from switch_core.db.base import Base
 from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
     HISTORY_TABLES,
+    ORGANIZATION_HISTORY_TABLES,
     organization_scoped_tables,
     scoped_tables,
     unscoped_tables,
@@ -150,6 +151,12 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         assert set(HISTORY_TABLES) == {"audit_events"}
         assert scoped_tables(Base.metadata)["audit_events"] == "tenant_id"
         assert not Base.metadata.tables["audit_events"].c.tenant_id.foreign_keys
+        assert set(ORGANIZATION_HISTORY_TABLES) == {"organization_audit_events"}
+        table = Base.metadata.tables["organization_audit_events"]
+        assert (
+            organization_scoped_tables(Base.metadata)[table.name] == "organization_id"
+        )
+        assert not table.c.organization_id.foreign_keys
 
     async def test_scoped_is_everything_else(self) -> None:
         scoped = _scoped_tables()

@@ -652,8 +652,11 @@ the schema the server checks documents against. Write new templates in its
 version 2: every resource under `resources:` with a key and a `type`,
 resources naming each other by key, and `if:` as the one conditional.
 
-- **`list_templates`**: what you can use, every shared template plus your
-  owner's private ones. Each row says who saved it and `can_edit`.
+- **`list_templates`**: what you can use: the templates that come with
+  Switch (`official:` ids, among them ready-made rooms for common team
+  workflows such as incidents, sprints and launches), less any a workspace
+  admin removed, then every shared template plus your owner's private ones.
+  Each row says who saved it and `can_edit`.
 - **`get_template`**: one template's document, its `params` (the inputs to
   fill) and `agent_slots` (the agents it would create, each with its
   machine, provider, model, connections and whether an existing agent may
@@ -665,7 +668,10 @@ resources naming each other by key, and `if:` as the one conditional.
   `agents: {slot name: agent name}`. Everything is checked first and nothing
   is created on a refusal; agents made before a later failure are deleted
   again. Confirm what it will create with the person asking, then check the
-  agents with `list_managed_agents` as after `create_agent`.
+  agents with `list_managed_agents` as after `create_agent`. A `bridge`
+  param also takes `"Switch Console"`: the room is then on no messaging app,
+  with your owner in it as one of their Switch Console chats. That needs the
+  server's group chats, and suits a person with no chat app connected.
 - **`save_template`**: save a template for your owner, `private` or
   `shared`. Only you can change or delete it afterwards.
 - **`update_template`** / **`delete_template`**: only for templates you saved.
@@ -700,6 +706,8 @@ You can also author a document scoped to the room:
   for the agent reading it, the same way an attached reference does.
 - **`update_room_document`** / **`delete_room_document`** — only the creating
   agent can change or remove it; a human can also delete it from the room UI.
+  A document the room's template made can be changed or removed by any agent
+  in the room, including one added later.
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
@@ -1268,8 +1276,8 @@ Every Switch tool you call in normal operation, one line each.
 - `list_all_references` — every reference your owner can read, instance-wide.
 - `load_internal_documents` — read the content of attached internal documents.
 - `create_room_document` — author a document scoped to the connected room.
-- `update_room_document` — change a document you created.
-- `delete_room_document` — remove a document you created.
+- `update_room_document` — change a document you created, or one the room's template made.
+- `delete_room_document` — remove a document you created, or one the room's template made.
 - `add_users_to_room` — add human users to an existing room by name.
 - `archive_room` — archive a room you belong to.
 - `unarchive_room` — reverse an archive.

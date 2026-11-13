@@ -576,6 +576,9 @@ class CloudMachine(Base):
     running_observed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    #: When the machine first became ready, at any revision. Telemetry tells a
+    #: new machine from one starting again by it.
+    first_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -778,7 +781,7 @@ class AuditEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
-class OrganizationAuditEvent(OrganizationScoped, Base):
+class OrganizationAuditEvent(Base):
     """One change to an organization as a whole: its members, their roles,
     its workspaces. The organization's counterpart of `AuditEvent`, with the
     same rules: written in the transaction of the change it records,
@@ -788,6 +791,10 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
     A change inside one workspace stays in that workspace's `audit_events`;
     this holds what no single workspace owns, so an organization's admins
     read it in one place whichever workspace the change was made from.
+
+    `organization_id` carries no foreign key, as `AuditEvent.tenant_id`
+    does not: deleting an organization leaves its history behind. It is still
+    scoped by the policy (`rls_ddl.ORGANIZATION_HISTORY_TABLES`).
     """
 
     __tablename__ = "organization_audit_events"
@@ -799,6 +806,9 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
         ),
     )
 
+    organization_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default=require_organization_id
+    )
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
@@ -1594,6 +1604,12 @@ class Document(TenantScoped, Base):
     )
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Made by a room template's `docs:`: any agent in the room may change or
+    # delete it. A NULL `created_by_agent_id` alone does not say this, since
+    # deleting the agent that wrote a document NULLs it too.
+    from_template: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     write_visibility: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1772,6 +1788,57 @@ class TemplateInstallResource(TenantScoped, Base):
     # how it differs from it (``get_template_status``): a newer revision it
     # was not brought fully up to. Null when there is nothing to tell.
     notice: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TemplateRunRecord(TenantScoped, Base):
+    """One run of a template in this workspace, counted for the catalogue.
+
+    ``template_id`` is an ``official:`` id or a stored template's, so there is
+    no foreign key: an official template is not a row. A person's run is
+    reported by the client that ran it, once the whole run has succeeded; an
+    agent's is recorded by the operation that ran it. Nothing here says who
+    ran it, so the rows go with their template (``TemplateStore.delete``) or
+    their workspace, and erasing a person leaves nothing behind in them.
+    """
+
+    __tablename__ = "template_run_records"
+    __table_args__ = (
+        Index("ix_template_run_records_tenant_template", "tenant_id", "template_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class HiddenOfficialTemplate(Base):
+    """A template that comes with Switch which a workspace admin removed
+    from their workspace (see ``official_templates``): it is not listed,
+    read or run there. Other workspaces still have it.
+
+    ``tenant_id`` joins the primary key, as on ``tenant_join_domains``, so a
+    template is removed from a workspace once. ``hidden_by`` is cleared when
+    that admin's account goes; the template stays removed.
+    """
+
+    __tablename__ = "hidden_official_templates"
+
+    tenant_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("tenants.id", name="fk_hidden_official_templates_tenant"),
+        primary_key=True,
+        default=require_tenant_id,
+    )
+    # The slug, as in ``official:<slug>``.
+    slug: Mapped[str] = mapped_column(Text, primary_key=True)
+    hidden_by: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    hidden_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 # ── Packages ──────────────────────────────────────────────────────────────────
@@ -2619,6 +2686,12 @@ class DeploymentIdentity(Base):
     `installed_at` is null where the identity was created against a database
     that already held content; milestones are suppressed for such a deployment
     rather than measured from a guess. The daily counts are unaffected.
+
+    `telemetry_enabled_since` is when reporting was last switched on: set at a
+    boot with telemetry on when it is null, and cleared at a boot with it off.
+    No period count or room activation is dated before it. The one exception
+    is `deployment_installed`, which states the install itself and is dated to
+    it (`TelemetryService.report_installed`).
     """
 
     __tablename__ = "deployment_identity"
@@ -2629,6 +2702,9 @@ class DeploymentIdentity(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     client_id: Mapped[str] = mapped_column(Text, nullable=False, default=_uuid)
     installed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    telemetry_enabled_since: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(

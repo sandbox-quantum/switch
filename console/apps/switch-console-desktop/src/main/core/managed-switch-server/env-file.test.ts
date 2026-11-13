@@ -105,6 +105,7 @@ describe('buildEnvFile', () => {
       ...STABLE_MANAGED_SERVER_FLAGS,
       'group_chats',
       'buddy_slack_handoff',
+      'gateway_v2',
     ]);
     expect(managedServerFeatureFlags(true, false)).not.toContain('group_chats');
     expect(managedServerFeatureFlags(true, false)).not.toContain('buddy_slack_handoff');

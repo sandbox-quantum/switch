@@ -398,12 +398,16 @@ export function setupInstructions(
       },
     ];
   const redirects = redirectUris(app);
-  return [
+  const steps = [
     redirectStep(
       `Register an OAuth client for Switch at ${app.name}, with ${redirects.length > 1 ? 'these redirect URIs' : 'this redirect URI'}:`,
       redirects
     ),
   ];
+  // A vendor refuses a sign-in that asks for a scope its app lacks.
+  if (app.scopes.length > 0)
+    steps.push({ text: 'Give it exactly these scopes:', copy: [], link: null, items: app.scopes });
+  return steps;
 }
 
 export const UPDATE_SECRET_NOTE = 'Nobody is disconnected.';
@@ -416,7 +420,7 @@ export function switchWarning(app: ConnectorApp, impact: ConnectorAppImpact): st
   if (app.kind === 'github_app')
     lines.push('They will also need to choose their repositories again.');
   lines.push(
-    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid for up to an hour.`
+    `If the old app's secret leaked, also delete it at ${vendorName(app)}: tokens already handed to agents stay valid until they expire.`
   );
   return lines;
 }

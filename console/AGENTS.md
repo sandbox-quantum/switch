@@ -413,8 +413,9 @@ pnpm run lint
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
   emission and send nothing when it returns false. Do not read `telemetry.enabled` from
-  settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
-  cache the answer across a send, since the user can revoke it at any time. Consent off
+  settings directly — the gate is the one place that decides, and it fails closed when the
+  setting can't be read — and do not cache the answer across a send, since the user can
+  revoke it at any time. Consent off
   means **no request is made at all**, not a request whose result is discarded.
 - **The answer reaches the managed server too, and never by omission.** "Share usage
   data" is one decision covering this app and a Switch server it runs, so `startStack`
@@ -447,8 +448,12 @@ pnpm run lint
   filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
   success-vs-failure, how long an operation took, app version, operating system, the
-  random install id, which kind of launch it was (first, after an update, or neither),
-  and whether a signed-in account is on a company email domain — the yes/no only, read
+  random install id, a random id made fresh for each record (`flint.insert_id`, which
+  only keeps two alike events apart), the session the event is in (`flint.session_id`:
+  when the run of things someone did began, in epoch milliseconds, or `-1` for an event
+  that is not someone using the app — `BACKGROUND_EVENTS` in `events.ts`), which kind
+  of launch it was (first, after an update, or neither) and the version an update came
+  from, and whether a signed-in account is on a company email domain — the yes/no only, read
   from the domain, never the address. A duration is a number rather than a value from a fixed set,
   so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole
   milliseconds, and never a span that could encode something else. That is a branded
@@ -464,7 +469,7 @@ pnpm run lint
 - **The interface may report only through the one gate.** Almost everything is
   reported from the main process, where a call site is type-checked against the
   catalogue. The exceptions are moments that exist only in the UI — a screen
-  opened, a command run, a checklist abandoned — and they go through
+  opened, a command run, a page of the first run reached — and they go through
   `rpc.telemetry.track` into `src/main/core/telemetry/renderer-events.ts`, which
   checks the event is one of the few permitted and every value against the set
   the catalogue allows. That check is not ceremony: a type does not survive a
@@ -473,14 +478,14 @@ pnpm run lint
   the main process, observe it there.
 - **Report a moment, not a state — and if you must report a state, claim it after
   the gate.** A condition that is true from the instant it becomes true is true
-  again on every later launch, so reporting it directly counts it forever;
-  `ONCE_PER_INSTALL` in `renderer-events.ts` exists for that case and keeps the
-  record beside the emitter rather than in the user's settings, which would
-  report a setting nobody changed. The record is spent once and never given
-  back, so it must not be claimed until a send is actually possible: the app
-  renders behind the first-run consent prompt, so anything claiming before the
-  consent check spends its one chance while the answer is still unset and
-  retires the event for the life of the install.
+  again on every later launch, so reporting it directly counts it forever. A
+  state reported once per install needs a record that it was sent, kept beside
+  the emitter rather than in the user's settings, which would report a setting
+  nobody changed. The record is spent once and never given back, so it must not
+  be claimed until a send is actually possible (`telemetryService.canSend()`):
+  the app renders behind the first-run consent prompt, so anything claiming
+  before the consent check spends its one chance while the answer is still
+  unset and retires the event for the life of the install.
 - **Prefer a value the caller declares to one you read back.** Several
   dimensions describe an intent that only the caller has — which button, which
   source, whether a room was chosen — and the state that would answer is often
@@ -508,10 +513,8 @@ pnpm run lint
   from there. What a session host does tell is the Switch server it already works for:
   that a new session started and how (`host/session-start.ts`), as ordinary traffic to
   that server. Whether that leaves the server as telemetry is the server's own setting.
-  The agent controller this app runs on its own computer still reports nothing itself:
-  once Switch has taken a session's start it tells its parent over the IPC channel
-  (`host/session-started.ts`), and this app reports `managed_session_started` under its
-  own gate. A controller on any other machine has no parent listening; keep it that way.
+  The same holds for the agent controller this app runs on its own computer: Switch
+  counts its sessions from those reports, so this app does not report them again.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.

@@ -126,7 +126,7 @@ vi.mock('@main/core/sessions/session-hooks', () => ({
 }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
 
-const { deleteAgent } = await import('./deleteAgent');
+const { deleteAgent, pruneAgent } = await import('./deleteAgent');
 const { getAgentLocation } = await import('./agent-location');
 const { stopRemoteWatcher } = await import('./remote-watcher');
 const { autoSessionWatcher } = await import('@main/core/switch-rooms/auto-session-watcher');
@@ -456,6 +456,40 @@ describe('deleteAgent', () => {
       );
     });
 
+    it('reports an agent its server no longer has as pruned, with why, never as removed', async () => {
+      // The pass that keeps this app in step with Switch removes these with
+      // nobody at the keyboard. Filed as a removal, it read as people giving up
+      // on their agents, under a teardown that never happened.
+      await pruneAgent('agent-1', 'gone_from_server');
+
+      expect(h.trackEvent.mock.calls).toEqual([
+        [
+          'agent_pruned',
+          {
+            agent_type: 'claude',
+            location: 'local',
+            cause: 'gone_from_server',
+            outcome: 'success',
+          },
+        ],
+      ]);
+      expect(h.deleteRow).toHaveBeenCalled();
+      expect(gatewayDeleteAgent).not.toHaveBeenCalled();
+    });
+
+    it('reports a prune that failed, and hands the failure back', async () => {
+      h.deleteRow.mockRejectedValueOnce(new Error('database is locked'));
+
+      await expect(pruneAgent('agent-1', 'managed_agent_deleted')).rejects.toThrow('locked');
+
+      expect(h.trackEvent).toHaveBeenCalledWith('agent_pruned', {
+        agent_type: 'claude',
+        location: 'local',
+        cause: 'managed_agent_deleted',
+        outcome: 'failure',
+      });
+    });
+
     it('announces the sessions that went with it, which the database removes silently', async () => {
       // The rows go by a foreign key, so nothing else says they ended — and
       // every one of them reported starting.
@@ -467,8 +501,16 @@ describe('deleteAgent', () => {
         trigger: 'user',
       });
 
-      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1');
-      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-2');
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1', 'person');
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-2', 'person');
+    });
+
+    it('says the sessions a prune took went by nobody doing anything', async () => {
+      h.state.sessionRows = [{ id: 's-1' }];
+
+      await pruneAgent('agent-1', 'gone_from_server');
+
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1', 'app');
     });
 
     it('reports the removal as failed, with a code, when the gateway refuses', async () => {

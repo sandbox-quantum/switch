@@ -180,7 +180,7 @@ export async function attachConfiguredAgents(
   }
 
   await locationManager.openLocation(location);
-  for (const agent of created) agentEvents._emit('agent:created', agent, 'unknown');
+  for (const agent of created) agentEvents._emit('agent:created', agent, 'unknown', 'attached');
 
   if (params.sshHost !== null) {
     // Lazy import: remote-watcher transitively loads Electron's `app` module at

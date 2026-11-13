@@ -606,6 +606,15 @@ class ConnectionTools(BaseModel):
         return self
 
 
+class ConnectionLinks(BaseModel):
+    """The vendor's own pages a connector's profile points people to."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    documentation: str = Field(pattern=HTTPS_URL_PATTERN)
+    support: str = Field(pattern=HTTPS_URL_PATTERN)
+    privacy: str = Field(pattern=HTTPS_URL_PATTERN)
+
+
 class ConnectionDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     slug: str = Field(pattern=SLUG_PATTERN)
@@ -613,6 +622,10 @@ class ConnectionDefinition(BaseModel):
     category: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=200, pattern=r"^[^\n]+$")
     enabled: bool
+    # Who makes the service, and its own pages, as its profile shows them.
+    # Every shipped entry that can be connected names both.
+    publisher: str | None = Field(default=None, min_length=1, max_length=64)
+    links: ConnectionLinks | None = None
     adapter: AdapterName | None = None
     auth: ConnectionAuth
     token: TokenPolicy | None = None

@@ -750,12 +750,26 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me', 'DELETE', email);
+}
+
+/**
+ * Wipe the signed-in account and everything it owns on a server that allows
+ * test-account resets, confirmed by its email. A server that does not, or
+ * refuses, is raised with its own reason.
+ */
+export async function resetMyTestAccount(server: SwitchServer, email: string): Promise<void> {
+  await confirmByEmail(server, '/auth/me/reset-test-account', 'POST', email);
+}
+
+async function confirmByEmail(
+  server: SwitchServer,
+  path: string,
+  method: 'DELETE' | 'POST',
+  email: string
+): Promise<void> {
   try {
-    await gatewayFetch(server, '/auth/me', {
-      authenticated: true,
-      method: 'DELETE',
-      body: { email },
-    });
+    await gatewayFetch(server, path, { authenticated: true, method, body: { email } });
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
@@ -1831,6 +1845,8 @@ type BridgeJson = {
   // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  // Absent on a server predating it, which put nobody in a public channel.
+  public_channel_adds_creator?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1855,6 +1871,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelIdsRefused: b.channel_ids_refused ?? null,
     privateChannels: b.private_channels_supported ?? null,
     privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
+    publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
@@ -3361,6 +3378,28 @@ export async function updateTemplate(
   return { ...toSummary(t), definition: t.content };
 }
 
+/**
+ * Count a run of a stored or official template (`POST /templates/{id}/runs`),
+ * once the whole run has succeeded, whichever way it ran. Only a count for the
+ * catalogue. False when the server did not count it (404): one from before
+ * runs were counted, or a template the person can no longer read.
+ */
+export async function recordTemplateRun(
+  server: SwitchServer,
+  templateId: string
+): Promise<boolean> {
+  try {
+    await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}/runs`, {
+      authenticated: true,
+      method: 'POST',
+    });
+    return true;
+  } catch (e) {
+    if (e instanceof GatewayError && e.status === 404) return false;
+    throw e;
+  }
+}
+
 /** Remove a template from the server's registry (`DELETE /templates/{id}`). */
 export async function deleteTemplate(server: SwitchServer, templateId: string): Promise<void> {
   await gatewayFetch(server, `/templates/${encodeURIComponent(templateId)}`, {
@@ -4214,7 +4253,7 @@ export async function fetchConnectionAgents(
 }
 
 /**
- * Every service the workspace can switch on or off, for a workspace admin; null
+ * Every service the workspace can switch on or off, as the caller may see it; null
  * when the server has no workspace switch (a 404: it predates it, or its
  * `service_connections` flag is off). Any other failure, a refusal included,
  * is thrown for the caller to show.

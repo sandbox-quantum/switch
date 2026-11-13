@@ -32,7 +32,7 @@ from switch_core.gateway.schemas import (
     RoomGroupUpdateRequest,
 )
 from switch_core.telemetry import emit_safely
-from switch_core.telemetry.ages import UNKNOWN_AGE, age_days
+from switch_core.telemetry.ages import age_days
 
 router = APIRouter()
 
@@ -208,11 +208,11 @@ async def delete_room_group(
     # group and dismantling a working one.
     group = await room_group_store.get(session, group_id)
     room_count = (await room_group_store.get_room_counts(session)).get(group_id, 0)
-    # `UNKNOWN_AGE`, not `0.0`: a group that could not be read has no age, and
-    # zero is one a real group can have. Unreachable today — the delete below
-    # 404s on a missing group before the event is built — but the sentinel is
-    # what makes that stay true if the order ever changes.
-    age = age_days(group.created_at) if group else UNKNOWN_AGE
+    # None, not `0.0`: a group that could not be read has no age, and zero is
+    # one a real group can have. Unreachable today — the delete below 404s on
+    # a missing group before the event is built — but leaving it out is what
+    # keeps that true if the order ever changes.
+    age = age_days(group.created_at) if group else None
 
     try:
         removed = await room_group_store.delete(session, group_id)

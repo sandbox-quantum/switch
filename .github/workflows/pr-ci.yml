@@ -75,7 +75,9 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
       decision: ${{ steps.filter.outputs.decision }}
+      observability: ${{ steps.filter.outputs.observability }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      e2e_browser: ${{ steps.filter.outputs.e2e_browser }}
       local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
     steps:
       - name: Checkout
@@ -113,6 +115,10 @@ jobs:
             decision:
               - *shared
               - 'decision/**'
+            # The morning report, tested with its own dependencies, not core's.
+            observability:
+              - *shared
+              - 'deploy/observability/**'
             console:
               - *shared
               - 'console/**'
@@ -136,6 +142,18 @@ jobs:
             # The server, the stack the fast lane stands up, and the harness.
             e2e:
               - *shared
+              - 'core/**'
+              - 'console/tooling-e2e/**'
+              - 'console/pnpm-lock.yaml'
+              - 'deploy/local/**'
+              - '.env.example'
+              - '.github/workflows/e2e.yml'
+            # The gateway's pages, which the browser lane opens as each role, the
+            # server whose answers decide what each role is shown, and the
+            # harness and stack it runs on.
+            e2e_browser:
+              - *shared
+              - 'gateway/**'
               - 'core/**'
               - 'console/tooling-e2e/**'
               - 'console/pnpm-lock.yaml'
@@ -279,6 +297,27 @@ jobs:
       - name: pytest
         working-directory: decision
         run: uv run pytest -q
+
+  observability:
+    name: Morning report
+    needs: changes
+    if: ${{ needs.changes.outputs.observability == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      # The script's own dependencies, read from its header, plus pytest.
+      - name: pytest
+        working-directory: deploy/observability
+        run: uv run --no-project --with-requirements daily_report.py --with pytest pytest -q
 
   console:
     name: Switch Console
@@ -505,6 +544,23 @@ jobs:
     with:
       lane: fast
       agent_type: claude-code
+
+  # The gateway as each role, in both layouts: the role matrix
+  # (gateway/src/routes/roleMatrix.ts) checked against what a real account in
+  # each role is shown. Not a required check yet.
+  e2e-browser:
+    name: E2E browser lane (${{ matrix.gateway_layout }} layout)
+    needs: changes
+    if: ${{ needs.changes.outputs.e2e_browser == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        gateway_layout: [current, v2]
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: browser
+      agent_type: claude-code
+      gateway_layout: ${{ matrix.gateway_layout }}
 
   migration-heads-on-merge:
     name: Migration heads on merge

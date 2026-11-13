@@ -18,19 +18,27 @@ leaves its contracts alone.
 - **switch-core** — the backend service (`core/`). Released by tagging
   `switch-v<version>`; the version lives in `core/pyproject.toml`. See
   [RELEASING.md](RELEASING.md).
-- **switch-console** — the desktop app (`dash/`). Released by tagging
+- **switch-console** — the desktop app (`console/`). Released by tagging
   `switch-console-v<version>`; the version lives in
-  `dash/apps/switch-console-desktop/package.json`.
-- **agent-runtime** — the Switch protocol client and MCP runtime
-  (`dash/packages/switch-agent-runtime/`), published to a package registry.
-- **sidecar** — the remote runtime Switch Console deploys to an agent host
-  (`dash/apps/switch-console-desktop/src/sidecar/`). Versioned in
-  `sidecar-version.ts` and deployed by Switch Console, not published separately.
-- **switch-connector** / **switch-connector-codex** / **switch-connector-opencode**
-  — the three connectors (`connectors/`), versioned in their respective
-  manifests. The first two are installed from the plugin marketplace; the
-  OpenCode one is written by Switch Console, which has no marketplace to install
-  from, so its version identifies the source rather than an install.
+  `console/apps/switch-console-desktop/package.json`.
+- **agent-controller** — the headless agents controller
+  (`console/packages/agent-controller/`), released on
+  `switch-agent-controller-v*` tags.
+- **agent-runtime** — the Switch protocol client and MCP tool surface
+  (`console/packages/switch-agent-runtime/`). Bundled into Switch Console and
+  its sidecar, not published.
+- **sidecar** — the remote runtime Switch Console deploys to an agent host,
+  built from `console/packages/agent-providers/` and
+  `console/packages/agent-controller/`. Versioned in
+  [`artifacts.yaml`](artifacts.yaml) and deployed by Switch Console, not
+  published separately.
+
+The **switch-connector** / **switch-connector-codex** /
+**switch-connector-opencode** plugins are retired and no longer ship. Agent
+sessions get the Switch tools from Switch Console, so nothing needs to be
+installed from a plugin marketplace; any listing that still offers these
+plugins is out of date. Their sections at the end of this file are kept as
+history.
 
 Three things are **not** separately versioned, and ship under the switch-core
 release so a single tag pins the whole stack: the **operator dashboard**
@@ -45,6 +53,53 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Usage telemetry counts Switch Console chat.** Messages people post in a
+  Switch Console chat were stored without being counted, so desktop chat was
+  invisible to the message events and the period counts. Each post is now a
+  `message_sent` with `sender_kind = member`, a chat's Console members count
+  in a room's size, and adding people to a Console chat, when it is created
+  or later (an agent putting its owner in a room it made included), reports
+  `room_users_added`. A room used
+  only from Console chat becomes active (`room_became_active`,
+  `first_room_active`) and reports `was_ever_active` when it is archived or
+  deleted; the daily snapshot's room and people counts still count messaging
+  platforms only.
+- **Usage telemetry counts what agents and templates make.** An agent saving
+  or deleting a template now reports `template_created` / `template_deleted`,
+  a room group an agent or a group template makes reports
+  `room_group_created`, and roles an agent defines or deletes, or that a room
+  is made with, report `room_role_defined` / `room_role_deleted`, as the
+  dashboard's always did.
+- **Every usage telemetry event carries a random id.** The relay derived
+  Amplitude's dedup key from an event's contents, so two identical events from
+  one server in the same millisecond, such as a message addressed to two
+  agents of the same kind, arrived as one. Each record now carries a fresh
+  `flint.insert_id`.
+- **Templates have a page of their own in the new dashboard layout, and say
+  how often each one is run.** Behind `gateway_v2`, Templates leaves the
+  Resources tabs: the workspace's own templates and the ones that come with
+  Switch sit in separate tables, with each template's type, owner (marked
+  "You" for your own), runs and last change, and a menu on every row to run,
+  edit, duplicate or delete it. Edit and Delete follow what the server allows:
+  someone else's template shows them greyed with the owner's name, and an
+  official one cannot be edited or deleted by anyone. Run opens the template's
+  form in Switch Console, in the workspace the dashboard is showing.
+  Duplicate makes a private copy under a free name. The API carries the same
+  facts: every template response has `run_count`, the runs in this workspace
+  counted since this release, and `run_blocked_reason`, why a person should
+  not run it by hand (switch-buddy, which Switch Console sets up itself).
+  `POST /templates/{id}/runs` counts a run of a template the caller may read.
+  Switch Console reports each finished run there, and the agent operation
+  `run_template` counts its own. Runs from before this release are not
+  counted.
+- **`switch-purge-organization` deletes an organization when its owner
+  asks.** Run where switch-core runs, it shows what would go and what stays;
+  with `--execute --request REFERENCE` it ends the organization's messaging
+  app installs, revokes its service sign-ins, tears down its cloud machines,
+  then deletes every workspace with everything in it, the organization, and
+  the accounts that belonged to nothing else. It waits, and says so, while a
+  machine or token is still live outside Switch. WorkOS is left alone; the
+  command lists what to remove there.
 - **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
   through Meta's Cloud API and people can talk to agents in one-to-one chats,
   with files, quoted replies as threads and read receipts. Each connection
@@ -54,6 +109,16 @@ version of their own to them without also giving them a release of their own.
 - **Agents can use their owner's Sentry, through the Sentry connection.** Core
   signs in through Sentry's MCP server and reads the account from its `whoami`
   tool. Agents have Sentry for up to an hour after each sign-in.
+- **The GitLab connection.** A person connects gitlab.com from Switch
+  Console, and a granted agent works with projects, work items, merge
+  requests, files and pipelines, as that person, through GitLab's MCP server. Each server's operator registers a
+  GitLab OAuth application with the scopes `mcp`, `read_api`, `read_user`
+  and `api`, and saves it under Connector apps or names it in
+  `GITLAB_CLIENT_CONFIG_PATH`. Like Google Workspace and Airtable, it needs
+  `GATEWAY_PUBLIC_URL`. GitLab's dynamic registration grants only `mcp` and
+  no refresh, so Switch does not use it. Every connection can write: a
+  sign-in asks for `api`, and GitLab's MCP server lets a token write even
+  without it.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
@@ -87,7 +152,9 @@ version of their own to them without also giving them a release of their own.
   and what to check, posts when it fires, every hour while it stays firing and
   once on recovery, and error
   alerts count failures instead of taking a percentage, so low traffic doesn't
-  page on noise. Causes such as slow queries stay on the dashboards.
+  page on noise. Causes such as slow queries stay on the dashboards. The
+  agents-dropping alert compares with the same time a week earlier, so it
+  keeps firing for as long as agents stay away.
   `deploy/observability/apply.sh` creates or updates them in Datadog by name.
 - **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
   per crashed collaboration bridge, tagged with its platform and display name,
@@ -127,8 +194,62 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **Deleting a room from the dashboard can retire its platform channel**, as
+  Switch Console already could. The delete dialog offers to archive the
+  channel on Slack and Mattermost, delete it on Discord, or have the bot leave
+  the chat on Telegram, and keeps it unless asked, saying what becomes of it
+  either way. On Microsoft Teams the channel always stays, and the dialog says
+  to remove it there. A channel that could not be retired is reported on the
+  Rooms page, with what is left to do by hand.
+- **Organization settings › Connectors and apps, in the new dashboard
+  layout** (`gateway_v2`). The organization's Services and Connectors become
+  one page with two tabs. Connectors shows the catalogue, each connector with
+  a switch: on leaves it to each workspace, off turns it off and locks it in
+  every workspace, after asking. A menu beside the switch sets the rest: on or
+  off by default, or on and locked. Each card says how far the setting
+  reaches, including the workspaces that set their own. A connector that
+  can't be used until the organization sets up its app offers "Set up org
+  account" in place of the switch. Apps & accounts lists each vendor app with
+  who set it up and when, and opens its details, checks, secret updates and
+  removal in a side panel.
+- **Each connector has its own page in the new layout**, opened from its
+  card. It shows who you're connected as, Disconnect, Add or Replace keys for
+  a key-based connector, and points to Switch Console for one that signs in at
+  the vendor. When the connector is off in the workspace, the page says who
+  turned it off and who can turn it back on. It lists the connector's
+  publisher, documentation, support and privacy pages, its MCP address, and
+  the agents using it, whose grants you can add, change and remove for your
+  own agents. A workspace admin also sees every agent in the workspace using
+  it, and everyone else connected, with Revoke.
+- **Workspace admins can see who uses a connector, and end someone else's
+  access.** `GET /gateway/service-connections/{service}/workspace` lists
+  everyone connected, with how many of their agents are granted it, and every
+  agent granted it. `DELETE /gateway/service-connections/{service}/people/{user_id}`
+  disconnects someone else, removing the grants on it and revoking what was
+  issued, and is recorded as `service.connection_revoked`. Nobody, admins
+  included, grants on another person's connector.
+- **The connector catalogue says who turned a connector off.**
+  `GET /gateway/service-connections` adds `organization_locked` and
+  `decided_by`, named as the workspace's own switches name it. The catalogue also
+  carries each connector's `publisher`, `links` (documentation, support,
+  privacy) and `mcp_urls`, and the agents list for a connector carries each
+  agent's grant and whether it can be granted one.
+- **Connector app usage counts agent grants.** A connector app's entry, its
+  impact and its removal add `agent_grants`, the grants relying on the
+  connections an app change touches, and an app saved in Switch says when it
+  was first set up (`created_at`). The organization's connector list adds
+  each connector's `category` and `description`.
 
 #### Changed
+- **The morning report's graph explains itself.** `daily_report.py` draws the
+  graph of the day itself instead of taking a Datadog snapshot, with a title,
+  the time span, labelled axes, a legend and a caption on how to read it, so
+  the image makes sense on its own in Slack.
+- **The dashboard's Connector apps page lists the scopes to give an app**
+  for a vendor that has no setup steps of its own, such as GitLab. A
+  vendor refuses a sign-in that asks for a scope its app lacks. The page's
+  warning before switching apps says tokens already handed to agents stay
+  valid until they expire, no longer "up to an hour".
 - **switch-core's logs keep to what matters.** Successful routine polls (health
   checks, controller status, assignment and operations polls, Console's
   controller and agent lists, host observations, session activity) and
@@ -144,6 +265,13 @@ version of their own to them without also giving them a release of their own.
   bridge start, and "trusting unverified OIDC email" is said once per process.
   Two bridges connecting the same workspace, which pilot does on purpose, is
   said once per pair at info rather than as a warning on every start.
+- **Removing a connector app says what it touches first.** The dialog counts
+  the workspaces, connected accounts and agent grants affected, says whether
+  the organization's workspaces go back to Switch's app, and that nothing is
+  revoked: the accounts and grants are kept and work again once people
+  reconnect. Each app also says when it was set up and who changed it since.
+- **A connector's lock message points at the organization's connector
+  settings**, rather than a section name only the old layout has.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is
@@ -183,6 +311,33 @@ version of their own to them without also giving them a release of their own.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
+- **One message event instead of two.** `room_message_sent` and
+  `agent_message_sent` are replaced by `message_sent`, which keeps every
+  `sender_kind` and carries the sending agent's `known_agent_type` on an
+  agent's message, a third fewer events for the same messages.
+- **Milestones are claimed while telemetry is off.** A server that switched
+  telemetry on months in reported its next room, agent or connector as its
+  first. Milestones are now claimed whether telemetry is on or not, and what a
+  server did before that is claimed from its database at startup, without
+  being reported. `deployment_installed` still waits for telemetry, and is
+  then dated to the install itself.
+- **Room activation is dated when the room went live.**
+  `room_became_active` and `first_room_active` carried the time of the daily
+  pass that noticed them, up to a day late; they now carry the time of the
+  interaction. A room that went live while telemetry was off is not reported.
+- **A development build reports as `dev`.** A switch-core version that is not
+  a release (a `.dev` version) sends its usage to the development project
+  unless `TELEMETRY_ENVIRONMENT` says otherwise. The Helm chart's
+  `switchCore.telemetry.environment` is now empty by default, so the same
+  applies there; set it to keep a value.
+- **Unknown numbers are left off usage events.** An age, duration or room size
+  that could not be read was sent as `-1`, which every sum and average
+  included; the property is now left out.
+- **`reference_created` and a template's `document_created` say who made
+  them.** They always said `user`; an agent's reference now says `agent`, and
+  what a template makes says `agent` when an agent ran it and `system` when a
+  person did. A room made by a template an agent ran is
+  `created_by_kind = agent` rather than `user`.
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
   `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
   password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
@@ -206,8 +361,42 @@ version of their own to them without also giving them a release of their own.
   an app or by Telegram's anonymous group admins. switch-core logs a warning
   each time a notice goes to the channel for want of a private route. Notices
   about an agent's message are still posted for the room.
+- **The Rooms page uses the dashboard's shared table.** It counts the rooms,
+  searches their name, description, group, owner and bridge, and filters from
+  the column headers: by group (with its sub-groups, or "No group"), owner,
+  bridge (or "Not bridged") and connected user. Active and archived rooms are
+  two tabs with their counts, newest first. Archive and Delete are in each
+  row's menu, offered only where the server allows them. Deleting from the
+  list keeps a bridged room's channel and says so; delete the room from its
+  own page to remove the channel too. With `gateway_v2` on, a member sees the
+  rooms they own, are in or have an agent in, as Overview counts them, and so
+  does the rooms graph; an admin sees every room, and today's layout is
+  unchanged.
+- **Room actions in the dashboard ask first, and say why when refused.**
+  Archiving a room, deleting a room, deleting a role and deleting a room
+  document confirm in a dialog that stays open with the server's reason when
+  the action fails. Deleting a role, which takes its instructions with it,
+  used to happen at one click, and a failed delete or bulk archive gave no
+  reason. Unarchiving still acts at once.
 
 #### Fixed
+- **Deleting an agent from the dashboard says why when it is refused**,
+  rather than only that it could not.
+- **A workspace's connector list credits an organization's default to the
+  organization.** It named nobody as having set a connector the organization
+  turned on or off for its workspaces without locking it.
+- **A workspace admin can no longer clear the workspace's own setting for a
+  connector its organization has locked**, as they already couldn't switch
+  it. The workspace's choice is kept for when the organization unlocks it.
+  A switch or clear made while an organization admin changes that connector
+  now waits for the change, so it never acts on a lock that is changing.
+- **Agents can maintain the documents a room template creates.** A
+  template's `docs:` made documents no agent had written, and only the agent
+  that wrote a document could update or delete it, so every agent got 403.
+  A document a room template makes can now be updated or deleted by any
+  agent in the room; one an agent wrote is still that agent's alone, even
+  after that agent is deleted. Template documents made before this release
+  stay locked; run the template again to get ones agents can maintain.
 - **Removing someone from a workspace, or leaving it, says who receives what
   they owned.** Their rooms, packages, references, reference types, library
   documents and templates pass to another admin, and until now nothing said
@@ -270,8 +459,21 @@ version of their own to them without also giving them a release of their own.
   first pod to record the socket going if the controller comes back sooner.
 - **Junie in the provider table**, so a managed agent can run on JetBrains'
   Junie CLI; its sign-in command is `junie`.
+- **The dashboard's Rooms page and Room groups say when they cannot load.**
+  They showed an empty page, or "No groups yet", when the rooms or groups
+  failed to load. The rooms graph, which said only "Failed to fetch data",
+  now gives the server's reason.
+- **The dashboard's New room says why Create is disabled.** Create stayed
+  greyed out with no explanation, most often because a room with no bridge
+  needs an agent. It now names what is missing, and Agents is marked required
+  while no bridge is chosen.
 
 #### Security
+- **The OpenCode server-side connector is gone, and with it its blanket
+  approval.** It answered every permission request an OpenCode agent made with
+  `always`, so whatever the agent asked to do was allowed. Agents now connect
+  in through Switch Console or the agent bridge, where their own permission
+  settings apply.
 - **Only the people in a direct or group conversation decide who is in it.**
   The room routes and the agent tools added agents and people to one from
   outside it, though its platform fixes its members; a DM the bridge adopted
@@ -434,6 +636,32 @@ version of their own to them without also giving them a release of their own.
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
   "Yours", and every user. A count that cannot be read shows a dash and why.
+- **The new layout's Agents list.** The workspace's agents with their type,
+  availability, status, parent, owner and, where agent management is on, the
+  device each runs on, newest first. Filter by type, parent (including top
+  level), owner, status and device, or search. Rename, transfer and delete
+  from a row's menu, which offers only what you may do and says why a
+  transfer is blocked; deleting an agent says that its sub-agents become
+  top-level. A workspace's admins see every agent; a member sees the agents
+  they own, and an empty list says whether the workspace has no agents or
+  none of them are yours. `GET /gateway/agents` now reports each agent's
+  `status` (`online`, `offline`, or `not_tracked` for an agent that only
+  polls) and its `device` with whose device it is, which is named to the
+  device's owner and to workspace admins.
+- **An agent's page says when you can see the agent but not change it.**
+- **The new layout's Workspace › Connectors chooses which connectors the
+  workspace may use.** Each connector says whether it is enabled here and
+  what decided that: the organization's lock ("Set by" the organization, with
+  no switch for anyone), the organization's default, the workspace's own
+  choice, or the workspace's default. Workspace and organization admins
+  switch what is not locked, and a workspace that set its own can go back to
+  the default, the organization's where it set one; turning off a connector
+  people or agents use asks first. Members see the same page read-only. Each card says whether it
+  signs in through the organization's app or Switch's, or what stops anyone
+  using it. The workspace's connector list (`GET /workspace/services`) is now
+  readable by every member, with the counts of who a switch reaches left to
+  admins, and says which setting decides each connector, the organization's
+  default, whether the caller may change it, and why it can't be used.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -775,35 +1003,45 @@ version of their own to them without also giving them a release of their own.
   document an agent made counts as made by the agent's owner.
 - **Usage telemetry tells people from bots.** Slack, Discord and Mattermost
   posts from an integration (an app, a bot account, a webhook that isn't
-  Switch's own) were counted as people. The bridge now marks them, and the
-  daily snapshot reports `person_identity_active_*`, `bot_identity_active_*`
-  and `account_active_*` beside the old `chat_identity_active_*` and
-  `user_active_*`, which are still sent for one more stable release. Room and
-  agent message events report such posts as `sender_kind = bot`. An app's post
-  on Discord or Mattermost also no longer answers a request card or wakes an
+  Switch's own) were counted as people. The bridge now marks them: message
+  events report such posts as `sender_kind = bot`, the period counts report
+  integrations as `bot_identity_active` apart from people. An app's post on
+  Discord or Mattermost also no longer answers a request card or wakes an
   agent following the conversation, as already on Slack.
 - **Usage telemetry follows Switch Cloud.** Every event now carries
   `deployment_kind` (`switch_cloud`, `managed_by_console` or `self_hosted`),
   so Cloud can be charted on its own or left out. New events cover its funnel:
   `account_created` (sign-up, a first single sign-on sign-in, or an admin),
   `signup_refused` with the reason, `workspace_created`, and a cloud machine
-  being requested, becoming ready (with how long a new one took), failing
-  (with the reason), being woken, and being stopped. Machine events are sent
-  only once their change is committed.
+  being requested, becoming ready (with how long a new one took to first
+  become ready, however many attempts that took), failing (with the reason),
+  its owner starting (`cloud_machine_started`) or stopping it
+  (`cloud_machine_stopped`), Switch waking it because its agent was addressed
+  or placed (`cloud_machine_woken`), and Switch putting an idle one to sleep
+  (`cloud_machine_idle_stopped`). Machine events are sent only once their
+  change is committed.
 - **Usage telemetry counts each finished day, week and month.** The daily
   snapshot's `*_7d` counts are a trailing week, so a chart adding them up
-  over a week counted a room once for every day it was active. A new
-  `usage_period` event is sent once per finished UTC day, ISO week and
-  calendar month, with distinct active rooms, people and accounts for exactly
-  that period, dated to its middle. Summed at the matching interval it is the
-  real figure. A server that was off sends the periods it missed, up to 35
-  days back, when it next runs.
+  over a week counted a room once for every day it was active. New
+  `usage_day_counted`, `usage_week_counted` and `usage_month_counted` events
+  are sent once per finished UTC day, ISO week and calendar month, with that
+  period's distinct active rooms, people and accounts (Switch Console chat
+  included), integrations and agents, and its messages and turns, dated to the
+  period's middle. Summed at the matching interval each is the real figure.
+  None is dated before the server was installed or telemetry was switched on:
+  a period that ended before then isn't sent, and one that began before is
+  dated no earlier and says `is_partial`. A server that was off sends the
+  periods it missed, up to 35 days back, when it next runs.
 - **Agent telemetry says connection where it meant one.**
-  `agent_connected`, `agent_disconnected` and the `first_agent_connected`
-  milestone are sent alongside `agent_session_started`, `agent_session_ended`
-  and `first_session_started`, which measured an agent coming online, not a
-  coding-agent session. The old names stay for one more stable release. The
-  new `first_agent_session` milestone is the first session a host reports. A
+  `agent_session_started`, `agent_session_ended` and the
+  `first_session_started` milestone, which measured an agent coming online,
+  not a coding-agent session, are replaced by `agent_connected`,
+  `agent_disconnected` and `first_agent_connected`. `agent_disconnected` says
+  `normal` for a close Switch made on purpose (the agent deleted, its key
+  re-issued, moved onto an agent controller, its controller revoked) and
+  `room_claimed` for a room that couldn't be served, and is dated, and its
+  duration measured, to the last connection closing. The new
+  `first_agent_session` milestone is the first session a host reports. A
   deployment that already passed either milestone claims it at startup
   without reporting it.
 - **Workspaces belong to organizations. Upgrade by replacing every pod, and
@@ -1064,12 +1302,39 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **An agent's page no longer asks for your GitHub connection where GitHub
+  is not set up.** On a server with connectors on and no GitHub App, opening
+  an agent you own asked for it and was refused. The page already says GitHub
+  is not set up, and now asks nothing until it is.
+- **The operator is told why an organization's users are not theirs to
+  manage, without asking for them.** On an organization that has an admin,
+  its Users page asked for the members only to be refused, then explained;
+  it now explains from what the server has already said.
 - **A room's detail says whether the caller takes part in it, and whether
   it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
   room it returns from a create or change, always answered
   `viewer_is_member: false` and `is_console_chat: false`, so Console's room
   settings named a Console chat's messaging app "None". Both now say what
   the room list says.
+- **Usage events are no longer sent for changes that were rolled back.**
+  Reference, document, package, room link and room role events were sent
+  before the change was committed, and an event sent after commit also went
+  out when only a savepoint inside a rolled-back transaction had committed.
+  Each is now sent once the whole transaction commits.
+- **Usage events report only real changes.** Detaching something that was not
+  attached, removing a room link that did not exist, and archiving an archived
+  room no longer report anything; `room_agents_removed` counts the agents
+  actually removed, and `room_users_added` is not sent when nobody was added.
+- **An integration's posts no longer make a room count as used.** A room where
+  only an app or bot had posted counted in `room_active_*`, and could be
+  reported as `room_became_active`, `first_room_active` and ever active.
+- **A shutdown during the usage pass no longer re-sends it.** Stopping the
+  server while the daily pass was reporting rooms or periods handed its claim
+  back, so the next pass sent the snapshot and every period again.
+- **A milestone can no longer fail the request it rides on.** A mistake in a
+  milestone event could fail an agent's session report, stream or
+  registration; it is now logged instead. A server also stops writing a
+  milestone claim on every agent connection once it knows it is taken.
 - **`!list-documents` and `!list-references` answer again.** Since they began
   listing what a room's packages bring, both failed on the admin client that
   runs them, and the channel got no answer at all.
@@ -1268,6 +1533,17 @@ version of their own to them without also giving them a release of their own.
   uploaded again.
 
 #### Removed
+- **Server-side connectors.** switch-core no longer runs agents itself: the
+  OpenCode connector and the framework it plugged into are removed, with
+  `/gateway/connectors`, the Server Connectors choice in the gateway's Register
+  Agent dialog, the `connectors` health check, the `switch.connectors.running`
+  metric and the `server_connector_registered` and `server_connector_removed`
+  events. If you imported the Datadog monitor "a server-side connector is not
+  running" and its dashboard widgets, delete them there. Agents a connector
+  registered stop answering; the next release drops the connectors' table,
+  retires their keys and names those agents for you to delete.
+- **`package_created` no longer carries `created_by_kind`,** which was always
+  `user`: only people create packages.
 - **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
   removed** and answer `404`. They predate the operations door, which runs the
   same operations as MCP. Call `POST /agents/{id}/ops/<operation>` with the
@@ -3061,6 +3337,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Every usage event carries a session and an id of its own.**
+  `flint.session_id` is when the current run of things someone did in the app
+  began, in milliseconds; it ends after 30 minutes with nothing done, and is
+  `-1` on events nobody caused. `flint.insert_id` is a random id made for each
+  event, so two events alike in every field and sent in the same millisecond,
+  such as the rooms of one template run or the sessions of an agent deleted at
+  once, are no longer counted as one.
+- **A finished template run is counted on the server.** Once a run from a
+  stored or official template has fully succeeded, whichever way it ran,
+  Switch Console reports it, and so does switch-buddy's own setup, once. The
+  web dashboard shows the count beside each template. A server that does not
+  count runs is left alone, and the run is never failed for it.
+- **A Switch Console link can name a workspace and open a template's form.**
+  `workspace=<id>` switches to that workspace before opening the page, and on
+  a link to a template `use=1` opens its Use form. The web dashboard's Run
+  button needs both. A link for a workspace this Switch Console is not signed
+  in to says so and opens nothing.
 - **A service's note on agent access.** The connector page and the connect
   step show it where a service sets one (Sentry).
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on
@@ -3160,6 +3453,30 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Usage data tells what the app did by itself from what a person did.**
+  Sessions the app found running on a host are sent as `session_discovered`
+  rather than `session_started`. A session the app set up again by itself is
+  `session_reopened`; clicking a session that was not running stays
+  `session_provision_retried`, now with `trigger: session_click`. Subagents
+  the app took on are `subagent_adopted`, and agents loaded from a folder with
+  Load existing agents are `agent_attached`, rather than `agent_created`. An
+  agent removed because its Switch server no longer has it is `agent_pruned`,
+  with the cause, rather than `agent_removed` with `trigger: server_teardown`,
+  and its sessions' `session_ended` are sent in no session.
+- **Less usage data that says nothing about use.** An update check someone
+  asked for is sent as `update_check_requested`, and the checks the app makes
+  at launch and every hour as `update_checked`, which is not counted as
+  someone using the app. The screen a launch resumes on is no
+  longer sent as `view_opened`. `setting_changed` is sent only when a setting
+  actually changed, and never for the usage-data answer or the first run's own
+  progress. `update_install_started` is sent only for an install that did not
+  finish; one that worked is the next launch's `app_launched`.
+- **Adding agents to a room reports when it fails.** `room_agents_added`
+  carries `outcome` and `failure_reason`, as other actions do.
+- **The Connector apps page lists the scopes to give an app** for a vendor
+  that has no setup steps of its own, such as GitLab. The warning before
+  switching apps says tokens already handed to agents stay valid until they
+  expire, no longer "up to an hour". GitLab's tokens live two hours.
 - **Google Workspace shows Google's full-colour G** on the Connections grid,
   in place of a one-colour blue G that Google's guidelines do not offer, and
   the Atlassian connection shows the Atlassian logo rather than Jira's.
@@ -3175,18 +3492,13 @@ version of their own to them without also giving them a release of their own.
   Member, and the copy says "an admin of this workspace" where it said "an
   owner or admin". A server from before the merge that still reports `owner`
   shows as Admin, including for workspaces stored before the update.
-- **Usage data follows an install to a working agent.** Three new
-  `activation_milestone` steps (`server_ready`, `agent_ready`,
-  `first_agent_session`) are each sent once per install, and only by installs
-  made on this version or later, with `path` saying whether the install
-  started switch-buddy or skipped it. Sessions of agents on the agent
-  controller Console runs on this computer, which never reached
-  `session_started`, are sent as `managed_session_started`. Updates send
-  `update_download_started` and, on the first launch after one,
-  `update_installed` with the version it came from. Adding a server by
-  address, starting a server Console runs, and creating a room now say why
-  they failed where they said `error`, and Switch Cloud is its own
-  `server_kind`. An install once signed in with a staff account stays
+- **Usage data says more about updates, failures and Switch Cloud.** Pressing
+  Download on an update sends `update_download_started`, and the first launch
+  after an update sends `app_launched` with the version it came from
+  (`from_version`) and whether Restart to update installed it (`update_trigger`).
+  Adding a server by address, starting a server Console runs, and creating a
+  room now say why they failed where they said `error`, and Switch Cloud is its
+  own `server_kind`. An install once signed in with a staff account stays
   labelled internal after it signs out. `agent_reset`, which was listed but
   never sent, is gone from the list. `docs/TELEMETRY.md` has every field.
 - **Managed agents and machines update when the server says they changed.**
@@ -3201,6 +3513,32 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Usage data recognises Switch Cloud the way the app shows it**, by its
+  address's origin, and adding the Cloud by its address reports it as `cloud`
+  rather than `external`. A Switch Cloud address that cannot be read is logged,
+  and a server added by address is then reported with `server_kind: unknown`
+  rather than a guess.
+- **A first launch of the other release channel, or of an older version, is no
+  longer reported as an update.**
+- **`docs/TELEMETRY.md` matches what is sent.** It no longer lists a `bridge`
+  property, a `target` value, providers or screens that do not exist, and it
+  describes the first-run notice and Settings toggle that actually ship.
+- **A Bash pattern in Disallowed tools no longer removes Bash.** For a
+  Claude agent, an entry such as `Bash(curl:*)` took away the whole Bash tool.
+  It now denies only the commands it matches, as on the command line. A plain
+  tool name still removes that tool.
+- **"Web search: Off" stops a Codex agent searching and fetching the web.**
+  Switch Console wrote a setting current Codex ignores, so search stayed on.
+  Off now writes `web_search = "disabled"`; On writes `"live"`.
+- **Switch Console sets up a local server on Hyprland, Sway, i3 and similar
+  window managers.** It said secure secret storage was unavailable although a
+  Secret Service keyring was running. It now uses that keyring on any desktop
+  the system's own keyring choice doesn't cover, and the error names the
+  `--password-store=gnome-libsecret` workaround.
+- **Direct chats no longer appear under Rooms.** A direct chat with an agent
+  could be listed as a room, and opening it there said it had been "created
+  as an agent-only room". Rooms leaves out every chat the server marks as
+  direct, and a Console chat opened as a room says what it is.
 - **A room hears about a turn that finished without a reply.** When an agent
   addressed in a room ended its turn without doing anything in the room — it
   wrote its answer only as its final text, or its provider stopped it at a
@@ -3325,6 +3663,16 @@ version of their own to them without also giving them a release of their own.
   storage, which keeps the login in plaintext, and sign in again (#1048).
 
 #### Removed
+- **Usage events nothing needed any more.** `buddy_message_sent` (the Switch
+  server counts Console's chats), the setup checklist's
+  `onboarding_step_started`, `onboarding_checklist_dismissed` and
+  `onboarding_completed` (the checklist is no longer shown), and
+  `session_attached` and `session_ended`'s `failed` outcome, which nothing had
+  sent since 0.35.
+- **`buddy_step` no longer reports `created`.** A new buddy was reported twice,
+  as that step and as the `agent_created` its template run sends. It is now
+  only `agent_created`, whose `entry_point` is `switch_buddy` wherever the
+  buddy was set up: one set up in the first run said `onboarding`.
 - **The fallback to the agent event stream.** The agent runtime connects only
   over the WebSocket, so it can no longer reach a Switch server older than the
   socket (agent-protocol 7 and older), and it stops sending its own heartbeat
@@ -5790,8 +6138,10 @@ compatibility signal. History for those is in the git log.
 
 ## switch-connector (Claude Code)
 
-`connectors/claude-code-plugin/`. Version lives in
+Was `connectors/claude-code-plugin/`. Version lived in
 `.claude-plugin/plugin.json`.
+
+Retired: this plugin no longer ships and nothing installs it. Kept as history.
 
 ### [Unreleased]
 
@@ -6045,7 +6395,9 @@ manifest history.
 
 ## switch-connector-codex
 
-`connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
+Was `connectors/codex-plugin/`. Version lived in `.codex-plugin/plugin.json`.
+
+Retired: this plugin no longer ships and nothing installs it. Kept as history.
 
 ### [Unreleased]
 
@@ -6249,7 +6601,9 @@ manifest history.
 
 ## switch-connector-opencode
 
-`connectors/opencode-plugin/`. Version lives in `package.json`.
+Was `connectors/opencode-plugin/`. Version lived in `package.json`.
+
+Retired: this plugin no longer ships and nothing installs it. Kept as history.
 
 Unlike the other two connectors, nothing installs this one from a marketplace —
 OpenCode has none. Switch Console writes its files directly, so the version is

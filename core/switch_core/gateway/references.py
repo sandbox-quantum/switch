@@ -340,6 +340,7 @@ async def create_reference(
             description=req.description,
             instructions=req.instructions,
             value=req.value,
+            created_by_kind="user",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
