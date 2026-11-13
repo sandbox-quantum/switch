@@ -64,7 +64,7 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   operatesServer: () => admin.operator,
 }));
 
-const server = vi.hoisted(() => ({ managed: false, servesGateway: false }));
+const server = vi.hoisted(() => ({ managed: false, servesGateway: false, listed: true }));
 
 vi.mock('@renderer/features/switch-servers/server-gateway', () => ({
   servesWebGateway: () => server.servesGateway,
@@ -73,6 +73,7 @@ vi.mock('@renderer/features/switch-servers/server-gateway', () => ({
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     get servers() {
+      if (!server.listed) return [];
       return [
         {
           id: 'server',
@@ -212,6 +213,7 @@ beforeEach(() => {
   admin.operator = false;
   server.managed = false;
   server.servesGateway = false;
+  server.listed = true;
   gatewayLayout.v2 = false;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
@@ -334,8 +336,24 @@ it("offers the server's operator to set up an app that is not set up, on the car
 
   navigation.navigate('connectors', { connector: 'example' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
-  expect(button(/^Set up$/, page)).toBeDefined();
   expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  await act(async () => button(/^Set up$/, page)!.click());
+  expect(navigation.view()).toBe('admin');
+  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+});
+
+it('sends Set up to Admin apps for a server Console does not list', async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  server.listed = false;
+  const page = await discover([NOT_SET_UP]);
+
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).not.toHaveBeenCalled();
+  expect(navigation.view()).toBe('admin');
+  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
 });
 
 it("opens the gateway's connector apps to set an app up on a server with a web gateway", async () => {

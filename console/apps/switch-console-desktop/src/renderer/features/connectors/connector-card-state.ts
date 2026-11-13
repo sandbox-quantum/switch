@@ -10,9 +10,9 @@ export type ConnectorCardKind =
   | 'connect';
 
 /**
- * What the person looking may fix, and where: the server's operator sets up
- * the apps connectors sign in through (Admin → Connector apps); a workspace
- * admin, or the operator, turns a service on for the workspace.
+ * What the person looking may fix: the server's operator sets up the apps
+ * connectors sign in through; a workspace admin, or the operator, turns a
+ * service on for the workspace.
  */
 export type ConnectorViewer = {
   operator: boolean;
