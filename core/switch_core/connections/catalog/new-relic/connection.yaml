@@ -1,7 +1,47 @@
 slug: new-relic
 name: New Relic
 category: Observability
-description: Query New Relic telemetry and alerts.
-enabled: false
+description: Query New Relic NRQL telemetry, entities, alerts and system metrics.
+enabled: true
+publisher: New Relic
+links:
+  documentation: https://docs.newrelic.com/docs/apis/intro-apis/new-relic-api-keys/
+  support: https://support.newrelic.com
+  privacy: https://newrelic.com/termsandconditions/privacy
+adapter: api_key
 auth:
-  type: oauth
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: User Key
+        secret: true
+        help: New Relic User Settings, API Keys. Create a User Key (NRAK-...).
+      - name: region
+        label: Region
+        secret: false
+        help: The New Relic region for your account.
+        choices:
+          - newrelic.com
+          - eu.newrelic.com
+          - jp.newrelic.com
+    identity:
+      method: POST
+      url: "https://api.{region}/graphql"
+      headers:
+        API-Key: "{api_key}"
+        Content-Type: application/json
+      body:
+        query: "{ actor { user { id email } } }"
+      account_id: data.actor.user.id
+      label: data.actor.user.email
+    help_url: https://docs.newrelic.com/docs/apis/intro-apis/new-relic-api-keys/
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: new-relic
+      url: "https://mcp.{region}/mcp"
+      headers:
+        api-key: "{api_key}"
+tools: { mode: pass_through }
