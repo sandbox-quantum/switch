@@ -585,6 +585,8 @@ class TestChecks:
                     {**_secret(expires_in=3600), "access_token": "gho_access_new"}
                 ),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
         async with session_factory() as session:
             grant = await STORE.get_grant(session, world.agent.id, "github")
@@ -1780,7 +1782,9 @@ class TestPassThrough:
         await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
         warning = await _reconnect(pt, session_factory, account_id="acct-2")
         assert len(pt.vendor.connections_revoked) == 1
-        assert warning is None
+        # No token is named as still working. The grant was made for the
+        # old account, so the agent is named to grant again.
+        assert warning == "Grant Example again to these agents: planner."
 
     async def test_a_reconnect_that_keeps_the_old_sign_in_names_its_tokens(
         self, session_factory, tmp_path

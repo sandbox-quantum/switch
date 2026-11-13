@@ -260,6 +260,8 @@ class TestGrants:
                 external_identity="ada-example",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(SECRET)),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             await STORE.save_grant(
                 session,
