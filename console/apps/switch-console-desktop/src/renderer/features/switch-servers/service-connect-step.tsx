@@ -1,9 +1,11 @@
 import { ExternalLink } from 'lucide-react';
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  SIGN_IN_HINT_AFTER_MS,
+  signInHint,
   signInProgress,
 } from '@renderer/features/connectors/connect-flow';
 import { reconnectNote } from '@renderer/features/connectors/connectors-catalog';
@@ -55,6 +57,13 @@ export function ServiceConnectStep({
   callsRef.current = calls;
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
+  // The flow whose browser has been away long enough for the hint.
+  const [slowFlowId, setSlowFlowId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!flowId) return;
+    const timer = setTimeout(() => setSlowFlowId(flowId), SIGN_IN_HINT_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [flowId]);
   useEffect(() => {
     if (!flowId) return;
     let alive = true;
@@ -119,6 +128,7 @@ export function ServiceConnectStep({
     }
   };
   const progress = signInProgress(flow, connection.name);
+  const hint = flowId && slowFlowId === flowId ? signInHint(flow, connection.name) : null;
   const needsReconnect =
     connection.status === 'needs_reauthorization' || connection.status === 'error';
   return (
@@ -131,10 +141,13 @@ export function ServiceConnectStep({
       <DialogContentArea className="space-y-4 pt-0">
         {flowId ? (
           progress !== null && (
-            <p className="flex items-center gap-2 text-sm">
-              <Spinner />
-              {progress}
-            </p>
+            <>
+              <p className="flex items-center gap-2 text-sm">
+                <Spinner />
+                {progress}
+              </p>
+              {hint && <p className="text-sm text-foreground-muted">{hint}</p>}
+            </>
           )
         ) : (
           <>

@@ -206,6 +206,76 @@ it('waits on the browser, and cannot be closed meanwhile', async () => {
   expect(button(/^cancel$/i, dialog())).toBeDefined();
 });
 
+it('suggests what to check once the browser has been away a minute', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    switchServers.getServiceFlow.mockResolvedValue({
+      status: 'pending',
+      account: null,
+      error: null,
+      warning: null,
+    });
+    await render(connectStep());
+    await signIn();
+
+    await act(async () => vi.advanceTimersByTimeAsync(59_000));
+    expect(dialog().textContent).toMatch(/Finish signing in in your browser/);
+    expect(dialog().textContent).not.toContain('showed an error');
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(dialog().textContent).toContain(
+      'If Example showed an error, cancel, and ask the person who set up Example for Switch to check its redirect URI and scopes.'
+    );
+    expect(button(/^cancel$/i, dialog())).toBeDefined();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('waits a new minute for a sign-in started again after Cancel', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    switchServers.getServiceFlow.mockResolvedValue({
+      status: 'pending',
+      account: null,
+      error: null,
+      warning: null,
+    });
+    await render(connectStep());
+    await signIn();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(dialog().textContent).toContain('showed an error');
+
+    await act(async () => button(/^cancel$/i, dialog())!.click());
+    switchServers.startServiceConnection.mockResolvedValue('flow-2');
+    await act(async () => button(/^connect example/i, dialog())!.click());
+    await act(async () => vi.advanceTimersByTimeAsync(59_000));
+    expect(dialog().textContent).toMatch(/Finish signing in in your browser/);
+    expect(dialog().textContent).not.toContain('showed an error');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('suggests nothing for a sign-in that came back before the minute', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    switchServers.getServiceFlow.mockResolvedValue({
+      status: 'checking',
+      account: null,
+      error: null,
+      warning: null,
+    });
+    await render(connectStep());
+    await signIn();
+
+    await act(async () => vi.advanceTimersByTimeAsync(61_000));
+    expect(dialog().textContent).toMatch(/Connecting Example/);
+    expect(dialog().textContent).not.toContain('showed an error');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("shows the server's reason when it refuses the account, and lets the dialog close", async () => {
   switchServers.getServiceFlow.mockResolvedValue({
     status: 'failed',
