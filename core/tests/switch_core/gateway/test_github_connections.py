@@ -426,7 +426,10 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
     await relay(client, second)
     response = await complete(client, second)
     assert response.status_code == 409
-    assert "already linked" in response.json()["detail"]
+    assert response.json()["detail"] == (
+        "This GitHub account is already linked to another Switch user in this "
+        "Switch workspace. Remove that link first."
+    )
     assert (
         "already linked"
         in (await client.get(BASE + f"/flows/{second}")).json()["error"]
@@ -437,6 +440,72 @@ async def test_github_identity_cannot_link_to_another_workspace_user(github_app)
         rows = (await session.scalars(select(ServiceConnection))).all()
         assert len(rows) == 1
         assert rows[0].user_id == "github-user"
+
+
+async def _sign_in_as_another_user(github_app):
+    """The first user links the GitHub account; a second user then signs in
+    to the same account and is refused. Returns the refusal."""
+    client, github, identity, factory = github_app
+    first = await authorize(client)
+    await relay(client, first)
+    assert (await complete(client, first)).status_code == 200
+    async with factory() as session:
+        other = User(
+            id="other-github-user",
+            name="Other",
+            email="other@example.com",
+            role="user",
+            password_hash="unused",
+        )
+        session.add(other)
+        await session.commit()
+    identity["user"] = other
+    github.exchange.return_value = {
+        **github.exchange.return_value,
+        "access_token": "SYNTHETIC-SECOND-ACCESS",
+    }
+    second = await authorize(client)
+    await relay(client, second)
+    response = await complete(client, second)
+    assert response.status_code == 409
+    assert response.json()["code"] == "account_linked_elsewhere"
+    return response
+
+
+async def test_a_github_sign_in_linked_elsewhere_is_revoked(github_app):
+    _, github, _, _ = github_app
+    await _sign_in_as_another_user(github_app)
+    # Only the second user's token; the first user's sign-in stays live.
+    github.revoke.assert_awaited_once_with("SYNTHETIC-SECOND-ACCESS")
+
+
+async def test_a_github_sign_in_linked_elsewhere_says_when_it_was_not_revoked(
+    github_app,
+):
+    _, github, _, _ = github_app
+    github.revoke.side_effect = GitHubError("Synthetic revocation failure")
+    response = await _sign_in_as_another_user(github_app)
+    assert response.json()["retryable"] is False
+    # Removing Switch from the account would end the first user's connection.
+    assert response.json()["detail"].endswith(
+        " Switch could not revoke the sign-in GitHub just issued."
+    )
+
+
+async def test_a_github_sign_in_linked_elsewhere_survives_a_failed_cleanup(
+    github_app, monkeypatch
+):
+    from switch_core.connections.broker import ServiceBroker
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("synthetic discard failure")
+
+    monkeypatch.setattr(ServiceBroker, "discard_sign_in", broken)
+    response = await _sign_in_as_another_user(github_app)
+    assert response.json()["code"] == "account_linked_elsewhere"
+    assert response.json()["detail"].endswith(
+        " Switch could not check the sign-in GitHub just issued."
+    )
 
 
 async def test_callback_is_taken_once_and_a_cancelled_consent_fails(github_app):

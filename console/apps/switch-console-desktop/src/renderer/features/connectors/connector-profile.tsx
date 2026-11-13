@@ -141,11 +141,9 @@ export function ConnectorProfile({
             )}
             {action && (
               <Button
-                variant={action === 'replace' ? 'outline' : 'default'}
+                variant={connection.status === 'connected' ? 'outline' : 'default'}
                 disabled={!connection.connectable}
-                onClick={() =>
-                  connect(connection, action === 'replace' ? 'replace' : 'connect', afterConnected)
-                }
+                onClick={() => connect(connection, action, afterConnected)}
               >
                 {ACTION_LABEL[action]}
               </Button>

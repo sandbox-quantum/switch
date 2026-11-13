@@ -166,6 +166,11 @@ export const connectionAgentsSchema = z.array(
     name: z.string(),
     /** Whether the agent has a grant on the service. */
     granted: z.boolean(),
+    /**
+     * The grant was made for another account than the one connected now, so it
+     * gives no access. An older server leaves it out.
+     */
+    account_changed: z.boolean().optional(),
     /** Whether anyone but its owner can address it, and so use what it is granted. */
     addressing_open: z.boolean(),
   })

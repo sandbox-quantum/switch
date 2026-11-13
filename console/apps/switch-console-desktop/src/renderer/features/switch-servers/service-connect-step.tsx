@@ -4,7 +4,9 @@ import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  signInProgress,
 } from '@renderer/features/connectors/connect-flow';
+import { reconnectNote } from '@renderer/features/connectors/connectors-catalog';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { Button } from '@renderer/lib/ui/button';
@@ -27,11 +29,14 @@ import type { ServiceCalls } from './service-calls';
 export function ServiceConnectStep({
   calls,
   connection,
+  reconnecting,
   onBack,
   onConnected,
 }: {
   calls: ServiceCalls;
   connection: ConnectionCatalogEntry;
+  /** Opened to sign in again, so it offers a new sign-in even while one is connected. */
+  reconnecting: boolean;
   onBack: () => void;
   /** Moves on once the account is connected, with the warning Switch gave. */
   onConnected?: (warning: string | null) => void;
@@ -39,7 +44,7 @@ export function ServiceConnectStep({
   const service = connection.slug;
   const [state, dispatch] = useReducer(
     connectFlowReducer,
-    connection.status === 'connected',
+    connection.status === 'connected' && !reconnecting,
     initialConnectFlow
   );
   const { connected, flowId, flow, busy, warning, error } = state;
@@ -113,6 +118,7 @@ export function ServiceConnectStep({
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
     }
   };
+  const progress = signInProgress(flow, connection.name);
   const needsReconnect =
     connection.status === 'needs_reauthorization' || connection.status === 'error';
   return (
@@ -124,12 +130,12 @@ export function ServiceConnectStep({
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         {flowId ? (
-          <p className="flex items-center gap-2 text-sm">
-            <Spinner />
-            {flow?.status === 'checking'
-              ? `Connecting ${connection.name}…`
-              : 'Finish signing in in your browser, then return here.'}
-          </p>
+          progress !== null && (
+            <p className="flex items-center gap-2 text-sm">
+              <Spinner />
+              {progress}
+            </p>
+          )
         ) : (
           <>
             <p className="text-sm text-foreground-muted">{connection.description}</p>
@@ -145,6 +151,9 @@ export function ServiceConnectStep({
               <p className="text-sm text-destructive">
                 Switch can no longer use your {connection.name} sign-in. Connect again.
               </p>
+            )}
+            {reconnecting && !connected && (
+              <p className="text-sm text-foreground-muted">{reconnectNote(connection)}</p>
             )}
             {connected && (
               <p className="text-xs text-foreground-muted">

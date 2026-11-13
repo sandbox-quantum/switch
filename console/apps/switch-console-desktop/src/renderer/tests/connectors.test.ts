@@ -4,6 +4,7 @@ import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  signInProgress,
 } from '@renderer/features/connectors/connect-flow';
 import {
   type ConnectorViewer,
@@ -21,6 +22,7 @@ import {
   connectorsPageAccess,
   keyAccessText,
   profileConnectAction,
+  reconnectNote,
   signInLabel,
   tokenLifetimeLabel,
   workspaceOffNotice,
@@ -45,6 +47,8 @@ import {
   agentsUnlistedText,
   noAgentsText,
   offersAddAgent,
+  staleGrantsText,
+  usesService,
 } from '@renderer/features/connectors/grant-agents';
 import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 import {
@@ -455,8 +459,15 @@ describe('the profile', () => {
     expect(profileConnectAction(entry())).toBe('connect');
     expect(profileConnectAction(entry({ status: 'needs_reauthorization' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ status: 'error' }))).toBe('reconnect');
-    expect(profileConnectAction(entry({ status: 'connected' }))).toBeNull();
+    // A connected sign-in can be made again, to switch account or consent again.
+    expect(profileConnectAction(entry({ status: 'connected' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ slug: 'github', status: 'connected' }))).toBeNull();
+    expect(
+      profileConnectAction(entry({ status: 'connected', workspace_enabled: false }))
+    ).toBeNull();
+    expect(
+      profileConnectAction(entry({ status: 'connected', unavailable_code: 'app_not_set_up' }))
+    ).toBeNull();
     expect(profileConnectAction(entry({ status: 'connected', auth_type: 'api_key' }))).toBe(
       'replace'
     );
@@ -473,6 +484,15 @@ describe('the profile', () => {
     expect(
       profileConnectAction(entry({ workspace_enabled: false, status: 'needs_reauthorization' }))
     ).toBeNull();
+  });
+
+  it('says what signing in again to another account does', () => {
+    expect(reconnectNote(entry())).toBe(
+      'Signing in to another Example account replaces this one. Each agent then needs Example turned on again.'
+    );
+    expect(reconnectNote(entry({ slug: 'notion', name: 'Notion' }))).toBe(
+      'Choosing another Notion workspace replaces this connection. Each agent then needs Notion turned on again.'
+    );
   });
 
   it('tells a member who can switch it on, and offers an admin the switch', () => {
@@ -636,6 +656,19 @@ describe('the agents on a connector page', () => {
     expect(OPEN_AGENT_NOTE).toBe('Others can address it; it would act as you.');
   });
 
+  it('counts a grant made for another account as not in use, and offers it again', () => {
+    const changed = { agent_id: 'm4', name: 'M4', granted: true, account_changed: true };
+    const listed = [...agents, { ...changed, addressing_open: false }];
+    expect(listed.filter(usesService).map((agent) => agent.agent_id)).toEqual(['m3']);
+    expect(addableAgents(listed, 'M4').map((agent) => agent.agent_id)).toEqual(['m4']);
+    expect(staleGrantsText(['M4'], 'Example')).toBe(
+      'M4: granted for another Example account, so it has no access now. Turn Example on again for it.'
+    );
+    expect(staleGrantsText(['M4', 'M5'], 'Example')).toBe(
+      'M4, M5: granted for another Example account, so they have no access now. Turn Example on again for them.'
+    );
+  });
+
   it("sends the person to the agent's Connectors where the server cannot list agents", () => {
     expect(agentsUnlistedText('Example')).toBe(
       "This server can't list your agents here. Turn Example on for an agent from the agent's Connectors."
@@ -672,6 +705,18 @@ describe('the sign-in flow', () => {
   };
   const run = (state: ConnectFlowState, ...events: Parameters<typeof connectFlowReducer>[1][]) =>
     events.reduce(connectFlowReducer, state);
+
+  it('asks for the browser only while the sign-in can still finish there', () => {
+    const flow = { account: null, error: null, warning: null };
+    expect(signInProgress({ ...flow, status: 'pending' }, 'Example')).toBe(
+      'Finish signing in in your browser, then return here.'
+    );
+    expect(signInProgress(null, 'Example')).toBe(
+      'Finish signing in in your browser, then return here.'
+    );
+    expect(signInProgress({ ...flow, status: 'checking' }, 'Example')).toBe('Connecting Example…');
+    expect(signInProgress({ ...flow, status: 'failed', error: 'Refused.' }, 'Example')).toBeNull();
+  });
 
   it('cannot be closed while waiting for the browser, or mid-call', () => {
     expect(canCloseConnectFlow(initialConnectFlow(false))).toBe(true);

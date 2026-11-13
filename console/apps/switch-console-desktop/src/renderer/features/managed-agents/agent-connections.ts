@@ -1,4 +1,9 @@
 import { isYours } from '@renderer/features/connectors/connectors-catalog';
+import {
+  accountChangedNote,
+  grantCardNote,
+  grantStands,
+} from '@renderer/features/locations/components/settings-view/sections/service-grants';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { ServiceGrant, ServiceGrants } from '@shared/core/switch-servers/service-grants';
@@ -66,7 +71,7 @@ export function agentConnectionCards(
 
 /** The card's badge: what the agent has of the service now. */
 export function connectionCardStatus(card: AgentConnectionCard): string {
-  if (card.grant === null) return 'Off';
+  if (card.grant === null || !grantStands(card.grant)) return 'Off';
   if (card.kind === 'on-off') return 'On';
   return card.grant.access === 'write' ? 'Read and push' : 'Read';
 }
@@ -76,7 +81,10 @@ export function connectionCardStatus(card: AgentConnectionCard): string {
  * turned on, or what the service is.
  */
 export function connectionCardDetail(card: AgentConnectionCard): string {
-  if (card.grant) return card.grant.summary;
+  if (card.grant) {
+    if (card.kind !== 'on-off') return grantCardNote(card.grant, card.kind === 'github');
+    return grantStands(card.grant) ? card.grant.summary : accountChangedNote(card.name);
+  }
   const { service } = card;
   if (service === null) return '';
   if (service.unavailable_reason !== null) return service.unavailable_reason;

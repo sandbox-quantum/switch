@@ -1912,6 +1912,13 @@ describe('GitHub connection transport', () => {
     expect((fetchMock.mock.calls.at(-1) as unknown as [string])[0]).toBe(
       'https://switch.example.com/gateway/agents/agent%201/service-grants'
     );
+    // A grant made for another account keeps the server's mark through parsing.
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...listed, grants: [{ ...listed.grants[0], account_changed: true }] })
+      )
+    );
+    expect((await fetchServiceGrants(SERVER, 'agent 1'))?.grants[0]?.account_changed).toBe(true);
 
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ grant: listed.grants[0], warning: 'Access stays a while.' }))

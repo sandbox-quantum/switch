@@ -214,6 +214,86 @@ class TestGrants:
                 first.id
             ]
 
+    async def test_a_grant_made_again_never_repeats_a_revision(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """An agent host keeps a token while the grant's revision is the one
+        it was issued under, so a grant saved again in place, or removed and
+        made again, must not take a revision it had before."""
+        async with session_factory() as session:
+            owner = await _user(session, "ada")
+            agent = await add_agent(session, name="builder", owner_id=owner.id)
+            await _connect(session, owner.id)
+            grant = await _grant(session, agent, owner.id)
+            seen = [grant.revision]
+            await STORE.bump_grant(session, agent.id, "github")
+            seen.append((await _grant(session, agent, owner.id)).revision)
+            seen.append((await _grant(session, agent, owner.id)).revision)
+            await STORE.delete_grant(session, grant.id)
+            seen.append((await _grant(session, agent, owner.id)).revision)
+            await session.commit()
+        assert len(set(seen)) == len(seen), seen
+
+    async def test_bumping_grants_moves_only_the_owners_on_that_service(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Every host holding a token for a grant that moved drops it, so
+        another person's grants, or the owner's on another service, stay."""
+        async with session_factory() as session:
+            ada = await _user(session, "ada")
+            grace = await _user(session, "grace")
+            builder = await add_agent(session, name="builder", owner_id=ada.id)
+            planner = await add_agent(session, name="planner", owner_id=grace.id)
+            await _connect(session, ada.id)
+            await _connect(session, grace.id, account_id="3003")
+            await _grant(session, builder, ada.id)
+            await _grant(session, planner, grace.id, account_id="3003")
+            await STORE.save_connection(
+                session,
+                user_id=ada.id,
+                service="example",
+                consent="write",
+                granted_scopes=[],
+                account_id="ex-1",
+                external_identity="ada-example",
+                encrypted_secret=TEST_KEYRING.encrypt(json.dumps(SECRET)),
+                oauth_client_id=None,
+            )
+            await STORE.save_grant(
+                session,
+                agent_id=builder.id,
+                owner_id=ada.id,
+                service="example",
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="ex-1",
+                created_by=ada.id,
+            )
+            await session.commit()
+        grants = (
+            (builder.id, "github"),
+            (planner.id, "github"),
+            (builder.id, "example"),
+        )
+
+        async def revisions() -> list[int]:
+            async with session_factory() as session:
+                found = [await STORE.get_grant(session, a, s) for a, s in grants]
+            return [grant.revision for grant in found if grant is not None]
+
+        before = await revisions()
+        async with session_factory() as session:
+            await STORE.bump_grants(session, ada.id, "github")
+            await session.commit()
+        after = await revisions()
+        assert [a != b for a, b in zip(after, before, strict=True)] == [
+            True,
+            False,
+            False,
+        ]
+
     async def test_deleting_the_agent_deletes_its_grants(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

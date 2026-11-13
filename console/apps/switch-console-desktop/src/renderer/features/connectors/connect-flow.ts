@@ -81,6 +81,16 @@ export function canCloseConnectFlow(state: ConnectFlowState): boolean {
   return !state.busy && (state.flowId === null || state.error !== null);
 }
 
+/**
+ * What the dialog says while a sign-in is under way; null once it failed,
+ * when the error is what the person reads.
+ */
+export function signInProgress(flow: ServiceFlow | null, name: string): string | null {
+  if (flow?.status === 'failed') return null;
+  if (flow?.status === 'checking') return `Connecting ${name}…`;
+  return 'Finish signing in in your browser, then return here.';
+}
+
 function isGone(cause: unknown): boolean {
   return cause instanceof RpcError && cause.numberField('status') === 410;
 }

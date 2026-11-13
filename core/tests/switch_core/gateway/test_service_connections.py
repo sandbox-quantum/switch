@@ -442,6 +442,52 @@ class TestGrants:
         fetch = await _token_for(harness, agent_id, key)
         assert fetch.json()["error"]["code"] == "grant_missing"
 
+    @pytest.mark.parametrize(
+        ("account_id", "changed"), [("2002", True), ("1001", False)]
+    )
+    async def test_a_grant_for_another_account_reads_account_changed(
+        self, harness: Harness, account_id: str, changed: bool
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        await connect(harness.session_factory, owner.id)
+        await grant_directly(harness.session_factory, agent_id, owner.id)
+        await connect(harness.session_factory, owner.id, account_id=account_id)
+
+        async with harness.client() as client:
+            response = await client.get(
+                f"/gateway/agents/{agent_id}/service-grants",
+                cookies=cookies_for(owner),
+            )
+
+        assert response.status_code == 200, response.text
+        [grant] = response.json()["grants"]
+        assert grant["account_changed"] is changed
+
+    async def test_a_grant_turned_off_and_on_moves_its_revision(
+        self, harness: Harness
+    ) -> None:
+        """The agent host drops a token only when the grant's revision moves,
+        so the new grant must not read as the one the token was issued under."""
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, key = await agent_with_key(harness.session_factory, owner, "builder")
+        await connect(harness.session_factory, owner.id)
+        await _put(harness, owner, agent_id, {"resources": RESOURCES})
+        issued = (await _token_for(harness, agent_id, key)).json()
+        async with harness.client() as client:
+            removed = await client.delete(
+                f"/gateway/agents/{agent_id}/service-grants/github",
+                cookies=cookies_for(owner),
+            )
+            assert removed.status_code == 200, removed.text
+            await _put(harness, owner, agent_id, {"resources": RESOURCES})
+            grants = await client.get(
+                f"/agents/{agent_id}/service-grants", headers=bearer(key)
+            )
+
+        [grant] = grants.json()["grants"]
+        assert grant["revision"] != issued["grant_revision"]
+
 
 class TestMemberRemoval:
     async def test_removing_a_member_takes_their_connections(
@@ -637,11 +683,17 @@ class TestYourAgents:
         assert response.status_code == 200, response.text
         listed = response.json()
         assert [
-            (a["agent_id"], a["name"], a["granted"], a["addressing_open"])
+            (
+                a["agent_id"],
+                a["name"],
+                a["granted"],
+                a["account_changed"],
+                a["addressing_open"],
+            )
             for a in listed
         ] == [
-            (granted_id, "builder", True, True),
-            (plain_id, "planner", False, False),
+            (granted_id, "builder", True, False, True),
+            (plain_id, "planner", False, False, False),
         ]
         builder, planner = listed
         assert (builder["grant"]["access"], builder["grant"]["resources"]) == (
@@ -664,6 +716,22 @@ class TestYourAgents:
 
         assert response.status_code == 200, response.text
         assert [a["grantable"] for a in response.json()] == [False]
+
+    async def test_a_grant_for_another_account_reads_account_changed(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        await connect(harness.session_factory, owner.id)
+        await grant_directly(harness.session_factory, agent_id, owner.id)
+        await connect(harness.session_factory, owner.id, account_id="2002")
+
+        response = await _agents(harness, owner)
+
+        assert response.status_code == 200, response.text
+        assert [
+            (a["agent_id"], a["granted"], a["account_changed"]) for a in response.json()
+        ] == [(agent_id, True, True)]
 
     async def test_an_agent_only_its_owners_agents_can_address_is_not_open(
         self, harness: Harness

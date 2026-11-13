@@ -26,12 +26,23 @@ export function agentsSummary(count: number): string {
   return `${count} ${count === 1 ? 'agent' : 'agents'}`;
 }
 
+/** Whether the agent uses the service: granted it, for the account connected now. */
+export function usesService(agent: Pick<ConnectionAgent, 'granted' | 'account_changed'>): boolean {
+  return agent.granted && agent.account_changed !== true;
+}
+
 /** The agents the search offers: those without the service, matching what was typed. */
 export function addableAgents(agents: ConnectionAgent[], filter: string): ConnectionAgent[] {
   const query = filter.trim().toLowerCase();
   return agents.filter(
-    (agent) => !agent.granted && (query === '' || agent.name.toLowerCase().includes(query))
+    (agent) => !usesService(agent) && (query === '' || agent.name.toLowerCase().includes(query))
   );
+}
+
+/** What the section says of agents whose grant was made for another account. */
+export function staleGrantsText(names: string[], serviceName: string): string {
+  const one = names.length === 1;
+  return `${names.join(', ')}: granted for another ${serviceName} account, so ${one ? 'it has' : 'they have'} no access now. Turn ${serviceName} on again for ${one ? 'it' : 'them'}.`;
 }
 
 /** What the section says when the person has no agents in the workspace. */

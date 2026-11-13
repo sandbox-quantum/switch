@@ -7,6 +7,7 @@ played by following the redirect it would receive.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import shutil
@@ -20,10 +21,11 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.adapters import ServiceAdapterError
+from switch_core.connections.adapters.oauth import OAuthAdapter, SignIn
 from switch_core.connections.app_credentials import UNREADABLE
 from switch_core.connections.broker import Principal, ServiceBroker, ServiceError
-from switch_core.connections.flows import ServiceFlows
+from switch_core.connections.flows import INTERRUPTED, ServiceFlows
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import (
     LOOPBACK_CALLBACK_PATH,
@@ -40,7 +42,7 @@ from switch_core.gateway.service_connections import (
 )
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
-from tests.switch_core.connections.fake_vendor import FakeOAuthServer
+from tests.switch_core.connections.fake_vendor import ISSUER, FakeOAuthServer
 from tests.switch_core.connections.test_loader import (
     GET_IDENTITY,
     INTROSPECTION_IDENTITY,
@@ -59,6 +61,10 @@ PUBLIC = "https://switch.example.com"
 PORT = 43123
 FLOWS = "/gateway/service-connections/example/flows"
 STORE = ServiceConnectionStore()
+NOT_REVOKED = (
+    "Switch did not revoke the sign-in Example just issued, because that "
+    "could also end a connection Switch keeps."
+)
 
 
 class World:
@@ -399,10 +405,178 @@ class TestLoopback:
             refused = await second.complete(await _loopback_code(world, second))
             assert refused.status_code == 409
             assert refused.json()["code"] == "account_linked_elsewhere"
+            assert refused.json()["detail"].startswith(
+                "This Example account is already linked to another Switch user "
+                "in this Switch workspace. Remove that link first."
+            )
             # The flow reads failed with the reason, for Console to show.
             assert (await second.status()).json()["status"] == "failed"
             assert "already linked" in (await second.status()).json()["error"]
         assert await _connection(session_factory, grace.id) is None
+
+    async def test_an_account_linked_elsewhere_revokes_the_new_sign_in(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback, core]\n    revocation_discovered: true",
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            second = Console(client, grace)
+            refused = await second.complete(await _loopback_code(world, second))
+        assert refused.status_code == 409
+        assert refused.json()["code"] == "account_linked_elsewhere"
+        held = await _connection(session_factory, ada.id)
+        assert held is not None
+        kept = json.loads(TEST_KEYRING.decrypt(held.encrypted_secret))["refresh_token"]
+        # Only grace's new sign-in is revoked; ada's stays live.
+        assert len(world.vendor.revoked) == 1
+        assert world.vendor.revoked[0]["token"] != kept
+        assert list(world.vendor.live_refresh) == [kept]
+
+    async def test_an_account_linked_elsewhere_keeps_a_shared_grant(
+        self, session_factory, tmp_path
+    ) -> None:
+        """At a vendor that revokes whole grants, revoking the new sign-in
+        would end the holder's, which is the same account's through the same
+        client."""
+        world = _introspected_world(
+            session_factory, tmp_path / "catalog", ends_grant=True
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            agent_id = await _grant_agent(session_factory, ada)
+            second = Console(client, grace)
+            refused = await second.complete(await _loopback_code(world, second))
+        assert refused.status_code == 409
+        # The sign-in is in the holder's grant, so the message has no note.
+        assert refused.json()["detail"] == (
+            "This Example account is already linked to another Switch user "
+            "in this Switch workspace. Remove that link first."
+        )
+        assert world.vendor.revoked == []
+        await _issue(session_factory, world, agent_id)
+
+    async def test_an_account_linked_elsewhere_through_another_client_is_not_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        """At a vendor that revokes whole grants, the new sign-in's client is
+        shared by every workspace on the server, so revoking it could end a
+        connection Switch keeps in another workspace."""
+        world = _introspected_world(
+            session_factory, tmp_path / "catalog", ends_grant=True
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            async with session_factory() as session:
+                await session.execute(
+                    update(ServiceConnection)
+                    .where(ServiceConnection.user_id == ada.id)
+                    .values(oauth_client_id="another-client")
+                )
+                await session.commit()
+            second = Console(client, grace)
+            refused = await second.complete(await _loopback_code(world, second))
+        assert refused.status_code == 409, refused.text
+        assert world.vendor.revoked == []
+        assert refused.json()["detail"].endswith(f" {NOT_REVOKED}")
+
+    async def test_an_identify_refusal_revokes_the_sign_in_and_says_connect_again(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback, core]\n    revocation_discovered: true",
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            world.vendor.fail["https://api.example.test/me"] = (401, {"error": "x"})
+            refused = await console.complete(code)
+            flow = (await console.status()).json()
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["detail"] == "Example refused the sign-in. Connect again."
+        assert flow["status"] == "failed"
+        assert len(world.vendor.revoked) == 1
+
+    async def test_an_account_linked_elsewhere_says_when_the_sign_in_was_not_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback, core]\n    revocation_discovered: true",
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            world.vendor.fail[f"{ISSUER}/revoke"] = (500, {"error": "x"})
+            second = Console(client, grace)
+            refused = await second.complete(await _loopback_code(world, second))
+            flow = (await second.status()).json()
+        assert refused.status_code == 409
+        assert refused.json()["code"] == "account_linked_elsewhere"
+        assert refused.json()["retryable"] is False
+        # Removing Switch from the account would end ada's connection.
+        assert refused.json()["detail"].endswith(
+            " Switch could not revoke the sign-in Example just issued."
+        )
+        assert flow["error"] == refused.json()["detail"]
+
+    async def test_an_account_linked_elsewhere_survives_a_failed_cleanup(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("synthetic discard failure")
+
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            world.broker.discard_sign_in = broken  # type: ignore[method-assign]
+            second = Console(client, grace)
+            refused = await second.complete(await _loopback_code(world, second))
+            flow = (await second.status()).json()
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["code"] == "account_linked_elsewhere"
+        assert refused.json()["detail"].endswith(
+            " Switch could not check the sign-in Example just issued."
+        )
+        assert flow["status"] == "failed"
+        assert flow["error"] == refused.json()["detail"]
+
+    async def test_an_outage_at_the_code_exchange_is_a_503_and_revokes_nothing(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback, core]\n    revocation_discovered: true",
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            world.vendor.fail[f"{ISSUER}/token"] = (503, {"error": "x"})
+            refused = await console.complete(code)
+            flow = (await console.status()).json()
+        assert refused.status_code == 503, refused.text
+        assert flow["status"] == "failed"
+        assert world.vendor.revoked == []
+        assert await _connection(session_factory, ada.id) is None
 
     async def test_a_sign_in_granted_only_reading_connects_read_only(
         self, session_factory, tmp_path
@@ -572,6 +746,77 @@ class TestCoreCallback:
         row = await _flow_row(session_factory, started.json()["id"])
         assert row.status == "failed"
         assert row.error == UNREADABLE
+
+    async def test_an_adapter_refusal_at_authorize_shows_its_reason(
+        self, session_factory, tmp_path
+    ) -> None:
+        """Trying again cannot help, so the page and the flow say why."""
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            entry=OAUTH_ENTRY.replace(GET_IDENTITY, INTROSPECTION_IDENTITY),
+            redirect="[core]",
+            public_url=PUBLIC,
+        )
+        del world.vendor.metadata["introspection_endpoint"]
+        ada = await add_member(session_factory, "ada")
+        reason = (
+            "Example's authorization server offers no token introspection, "
+            "so Switch cannot tell whose sign-in this is."
+        )
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            assert left.status_code == 502
+            assert escape(reason) in left.text
+            flow = (await console.status()).json()
+        assert (flow["status"], flow["error"]) == ("failed", reason)
+
+    async def test_an_outage_at_authorize_is_a_503_page_with_its_reason(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            world.vendor.fail[f"{ISSUER}/.well-known/oauth-authorization-server"] = (
+                503,
+                {"error": "x"},
+            )
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            flow = (await console.status()).json()
+        assert left.status_code == 503, left.text
+        assert flow["status"] == "failed"
+        assert escape(flow["error"]) in left.text
+
+    async def test_a_client_refused_at_authorize_ends_the_flow_with_why(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        reason = "Example refused Switch's client."
+
+        async def refused(self: OAuthAdapter) -> str:
+            raise ServiceAdapterError(reason)
+
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            monkeypatch.setattr(OAuthAdapter, "client_id", refused)
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            flow = (await console.status()).json()
+        assert left.status_code == 502, left.text
+        assert escape(reason) in left.text
+        assert (flow["status"], flow["error"]) == ("failed", reason)
 
     async def test_returns_through_core_straight_to_console(
         self, session_factory, tmp_path
@@ -791,6 +1036,29 @@ class TestWorkspaceSwitch:
         assert (flow.status, flow.encrypted_result) == ("failed", None)
         assert flow.error == WORKSPACE_REFUSAL["detail"]
 
+    async def test_switched_off_mid_sign_in_at_a_whole_grant_vendor_nothing_is_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        """With no connection kept here, the same account can still have one
+        kept in another workspace through the same client."""
+        world = _introspected_world(
+            session_factory, tmp_path / "catalog", ends_grant=True, workspace_gate=True
+        )
+        ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, True, ada)
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            await _switch(session_factory, False, ada)
+            refused = await console.complete(code)
+        assert refused.status_code == 403
+        assert refused.json() == {
+            **WORKSPACE_REFUSAL,
+            "detail": f"{WORKSPACE_REFUSAL['detail']} {NOT_REVOKED}",
+        }
+        assert world.vendor.revoked == []
+        assert await _connection(session_factory, ada.id) is None
+
     async def test_a_sign_in_that_cannot_be_revoked_says_what_to_do(
         self, session_factory, tmp_path
     ) -> None:
@@ -813,17 +1081,27 @@ class TestWorkspaceSwitch:
 
 
 def _introspected_world(
-    session_factory: async_sessionmaker[AsyncSession], root: Path
+    session_factory: async_sessionmaker[AsyncSession],
+    root: Path,
+    *,
+    ends_grant: bool = False,
+    workspace_gate: bool = False,
 ) -> World:
     """The example entry read as Notion is: by introspection, as the
-    workspace and the user, with the sign-in revoked where it is advertised."""
+    workspace and the user, with the sign-in revoked where it is advertised.
+    `ends_grant`: a revocation ends every sign-in of the account through the
+    client, as Google's does."""
+    revocation = "    revocation_discovered: true\n"
+    if ends_grant:
+        revocation += "    revocation_ends_grant: true\n"
     return _world(
         session_factory,
         root,
         entry=OAUTH_ENTRY.replace(GET_IDENTITY, INTROSPECTION_IDENTITY).replace(
             "    redirect: [loopback, core]\n",
-            "    redirect: [loopback, core]\n    revocation_discovered: true\n",
+            "    redirect: [loopback, core]\n" + revocation,
         ),
+        workspace_gate=workspace_gate,
     )
 
 
@@ -950,3 +1228,183 @@ class TestIntrospectedAccount:
         ) == (kept.account_id, kept.encrypted_secret, kept.secret_revision, kept.status)
         issued = await _issue(session_factory, world, agent_id)
         assert issued.token in world.vendor.live_access
+
+    async def test_a_sign_in_whose_account_cannot_be_read_is_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        world.vendor.introspected = {}
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            refused = await console.complete(await _loopback_code(world, console))
+            assert refused.status_code == 400, refused.text
+            assert "did not name the account" in refused.json()["detail"]
+            assert (await console.status()).json()["error"] == refused.json()["detail"]
+        assert [form["token_type_hint"] for form in world.vendor.revoked] == [
+            "refresh_token"
+        ]
+        assert world.vendor.live_refresh == {}
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_an_unreadable_account_keeps_a_shared_grant(
+        self, session_factory, tmp_path
+    ) -> None:
+        """At a vendor that revokes whole grants, the new sign-in may be in
+        the grant of the one Switch keeps, so it is not revoked."""
+        world = _introspected_world(
+            session_factory, tmp_path / "catalog", ends_grant=True
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            agent_id = await _grant_agent(session_factory, ada)
+            world.vendor.introspected = {}
+            console = Console(client, ada)
+            refused = await console.complete(await _loopback_code(world, console))
+        assert refused.status_code == 400, refused.text
+        assert world.vendor.revoked == []
+        assert refused.json()["detail"].endswith(f" {NOT_REVOKED}")
+        await _issue(session_factory, world, agent_id)
+
+    async def test_an_unreadable_account_is_not_revoked_where_another_person_may_hold_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        """At a vendor that revokes whole grants, the unknown account can be
+        one another person holds through the same client."""
+        world = _introspected_world(
+            session_factory, tmp_path / "catalog", ends_grant=True
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            world.vendor.introspected = {}
+            console = Console(client, grace)
+            refused = await console.complete(await _loopback_code(world, console))
+            flow = (await console.status()).json()
+        assert refused.status_code == 400, refused.text
+        assert world.vendor.revoked == []
+        assert refused.json()["detail"].endswith(f" {NOT_REVOKED}")
+        assert flow["error"] == refused.json()["detail"]
+
+    async def test_a_failed_discard_still_fails_the_flow(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        world.vendor.introspected = {}
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("synthetic discard failure")
+
+        world.broker.discard_sign_in = broken  # type: ignore[method-assign]
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            refused = await console.complete(await _loopback_code(world, console))
+            flow = (await console.status()).json()
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["detail"] == (
+            "Example did not name the account's id. Switch could not check the "
+            "sign-in Example just issued."
+        )
+        assert flow["status"] == "failed"
+        assert flow["error"] == refused.json()["detail"]
+
+    async def test_a_cancelled_discard_fails_the_flow_as_interrupted(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        world.vendor.introspected = {}
+
+        async def cancelled(signed_in: SignIn) -> str | None:
+            raise asyncio.CancelledError
+
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            tenant_id = (await _flow_row(session_factory, console.state)).tenant_id
+            flow = await world.flows.owned(console.state, tenant_id, ada.id)
+            async with session_factory() as session:
+                _, adapter = await world.broker.sign_in(session, "example")
+            with pytest.raises(asyncio.CancelledError):
+                await world.flows.complete(
+                    flow,
+                    completion_secret=console.secret,
+                    code=code,
+                    adapter=adapter,
+                    discard=cancelled,
+                )
+            stored = (await console.status()).json()
+        assert (stored["status"], stored["error"]) == ("failed", INTERRUPTED)
+
+    async def test_an_unrevoked_sign_in_says_where_to_remove_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        world.vendor.introspected = {}
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            world.vendor.fail[f"{ISSUER}/revoke"] = (500, {"error": "x"})
+            refused = await console.complete(code)
+            flow = (await console.status()).json()
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["detail"].endswith(
+            " Switch could not revoke the sign-in Example just issued. Remove "
+            "Switch from your Example account's connected apps."
+        )
+        assert flow["error"] == refused.json()["detail"]
+
+    async def test_an_unrevoked_sign_in_beside_a_kept_connection_gives_no_advice(
+        self, session_factory, tmp_path
+    ) -> None:
+        """Removing Switch at the vendor would end the kept connection too."""
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            world.vendor.introspected = {}
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            world.vendor.fail[f"{ISSUER}/revoke"] = (500, {"error": "x"})
+            refused = await console.complete(code)
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["detail"].endswith(
+            " Switch could not revoke the sign-in Example just issued."
+        )
+
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_an_unavailable_vendor_at_identify_is_a_503(
+        self, session_factory, tmp_path, status
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            world.vendor.fail[f"{ISSUER}/introspect"] = (status, {"error": "x"})
+            refused = await console.complete(code)
+            assert refused.status_code == 503, refused.text
+            assert refused.json()["detail"].startswith("Example is unavailable")
+            flow = (await console.status()).json()
+        assert flow["status"] == "failed"
+        assert flow["error"] == refused.json()["detail"]
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_an_outage_at_identify_still_revokes_the_sign_in(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            world.vendor.fail[f"{ISSUER}/introspect"] = (503, {"error": "x"})
+            refused = await console.complete(code)
+        assert refused.status_code == 503, refused.text
+        assert [form["token_type_hint"] for form in world.vendor.revoked] == [
+            "refresh_token"
+        ]

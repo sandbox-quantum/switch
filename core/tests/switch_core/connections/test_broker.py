@@ -552,6 +552,32 @@ class TestChecks:
         assert (refused.status_code, refused.code) == (409, "grant_account_changed")
         assert len(vendor.issued) == 1
 
+    @pytest.mark.parametrize(("account_id", "moves"), [("2002", True), ("1001", False)])
+    async def test_connecting_another_account_moves_the_grants_revision(
+        self, broker, session_factory, account_id, moves
+    ) -> None:
+        """The agent host drops a token it holds only when the grant's
+        revision moves; a grant for another account no longer stands."""
+        world = await _world(session_factory)
+        async with session_factory() as session:
+            await broker.connect(
+                session,
+                user_id=world.owner.id,
+                service="github",
+                consent="write",
+                granted_scopes=[],
+                account_id=account_id,
+                external_identity="ada-gh",
+                secret=ConnectionSecret(
+                    {**_secret(expires_in=3600), "access_token": "gho_access_new"}
+                ),
+                oauth_client_id=None,
+            )
+        async with session_factory() as session:
+            grant = await STORE.get_grant(session, world.agent.id, "github")
+        assert grant is not None
+        assert (grant.revision != world.grant.revision) is moves
+
     async def test_write_on_a_read_only_connection_is_forbidden(
         self, broker, session_factory
     ) -> None:

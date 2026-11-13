@@ -76,7 +76,13 @@ async def _grant_view(
 ) -> dict:
     entry = CATALOG.get(grant.service)
     access: AccessLevel = "write" if grant.access == "write" else "read"
+    connection = await STORE.get_connection(session, grant.owner_id, grant.service)
     return {
+        # Made for another account than the one connected now, so it gives
+        # no access (`grant_account_changed`) until it is made again.
+        "account_changed": (
+            connection is None or grant.account_id != connection.account_id
+        ),
         "service": grant.service,
         "name": grant.service if entry is None else entry.definition.name,
         "access": grant.access,
@@ -219,6 +225,8 @@ async def list_service_agents(
             )
         )
     }
+    connection = await STORE.get_connection(session, user.id, service)
+    account = None if connection is None else connection.account_id
     entries = []
     for agent in agents:
         grant = grants.get(agent.id)
@@ -227,6 +235,8 @@ async def list_service_agents(
                 "agent_id": agent.id,
                 "name": agent.display_name or agent.name,
                 "granted": grant is not None,
+                # Made for another account than the one connected now.
+                "account_changed": grant is not None and grant.account_id != account,
                 # What it is granted, for a page that shows and changes it.
                 "grant": None
                 if grant is None
@@ -410,7 +420,7 @@ async def connect_with_key(
             content={
                 "detail": (
                     f"This {name} key's account is already linked to another "
-                    "Switch user in this workspace. Remove that link first."
+                    "Switch user in this Switch workspace. Remove that link first."
                 ),
                 "code": "account_linked_elsewhere",
                 "retryable": False,

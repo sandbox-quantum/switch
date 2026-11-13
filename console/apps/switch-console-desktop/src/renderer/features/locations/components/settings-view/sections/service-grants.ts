@@ -1,5 +1,25 @@
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
+import type { ServiceGrant } from '@shared/core/switch-servers/service-grants';
+
+/** Whether a grant gives access: it exists, and was made for the account connected now. */
+export function grantStands(grant: ServiceGrant | null): boolean {
+  return grant !== null && grant.account_changed !== true;
+}
+
+const otherAccount = (serviceName: string) =>
+  `This was granted for another ${serviceName} account, so it gives no access now.`;
+
+/** Said of a grant made for another account than the one connected now. */
+export function accountChangedNote(serviceName: string): string {
+  return `${otherAccount(serviceName)} Turn it on again for the account connected now.`;
+}
+
+/** A grant card's line, which names only the controls the card has. */
+export function grantCardNote(grant: ServiceGrant, changeable: boolean): string {
+  if (grantStands(grant)) return grant.summary;
+  return `${otherAccount(grant.name)} ${changeable ? 'Change it, or remove it.' : 'Remove it.'}`;
+}
 
 /** The repository ids a GitHub grant names. */
 export function grantedRepositoryIds(resources: Record<string, unknown>): number[] {

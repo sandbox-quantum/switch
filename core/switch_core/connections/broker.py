@@ -1280,17 +1280,17 @@ class ServiceBroker:
         self,
         service: str,
         held: tuple[str | None, str],
-        revoked: tuple[str | None, str],
+        revoked: tuple[str | None, str | None],
     ) -> bool:
         """Whether revoking a sign-in would also end the one held: the vendor
         ends every sign-in of an account through a client when one is revoked
         (`revocation_ends_grant`), and both are the same account's through the
         same client. Each is (OAuth client, account id); a sign-in from before
-        clients were recorded went through the server's client.
+        clients were recorded went through the server's client. A revoked
+        sign-in whose account is unknown (None) can be the held account's, so
+        it counts as the same account.
         """
-        entry = self._catalog.get(service)
-        oauth = None if entry is None else entry.definition.auth.oauth
-        if oauth is None or not oauth.revocation_ends_grant:
+        if not self._revocation_ends_grant(service):
             return False
         server = self._adapters.get(service)
         server_client = None if server is None else server.current_client_id()
@@ -1298,8 +1298,13 @@ class ServiceBroker:
         return (
             held_client is not None
             and held_client == (revoked[0] or server_client)
-            and held[1] == revoked[1]
+            and revoked[1] in (None, held[1])
         )
+
+    def _revocation_ends_grant(self, service: str) -> bool:
+        entry = self._catalog.get(service)
+        oauth = None if entry is None else entry.definition.auth.oauth
+        return oauth is not None and oauth.revocation_ends_grant
 
     async def _revoker(
         self, session: AsyncSession, service: str, oauth_client_id: str | None
@@ -1817,7 +1822,8 @@ class ServiceBroker:
         for a key.
 
         Re-linking keeps the grants (a different account then fails them with
-        `grant_account_changed`) and revokes what was issued on the old
+        `grant_account_changed`, and moves their revision) and revokes what
+        was issued on the old
         sign-in, and the old sign-in itself when it is not the new one.
         Commits `session`; returns a warning naming what could not be revoked.
         """
@@ -1829,27 +1835,13 @@ class ServiceBroker:
         try:
             await self.require_workspace_enabled(session, service)
         except ServiceError as refusal:
-            # The vendor has already issued this sign-in: one Switch will not
-            # keep is revoked, rather than left live with nobody holding it.
-            previous = await self._store.get_connection(session, user_id, service)
-            kept = previous is not None and (
-                self._secret(previous).access_token == secret.access_token
-                # Revoking it would end the kept one too, at a vendor that
-                # revokes whole grants. It stays live at the vendor, in the
-                # grant the kept one holds.
-                or self._shares_grant(
-                    service,
-                    (previous.oauth_client_id, previous.account_id),
-                    (oauth_client_id, account_id),
-                )
-            )
-            await session.rollback()
-            note = (
-                None
-                if kept
-                else await self._revoke_unkept(
-                    session, service, secret, oauth_client_id
-                )
+            note = await self.discard_sign_in(
+                session,
+                service=service,
+                kept=await self._store.get_connection(session, user_id, service),
+                secret=secret,
+                oauth_client_id=oauth_client_id,
+                account_id=account_id,
             )
             raise ServiceError(
                 refusal.status_code,
@@ -1880,6 +1872,10 @@ class ServiceBroker:
             encrypted_secret=self._keyring.encrypt(json.dumps(secret.values)),
             oauth_client_id=oauth_client_id,
         )
+        if previous is not None and replaced_account != account_id:
+            # The grants were made for the old account and no longer stand:
+            # an agent host drops a token it holds when the revision moves.
+            await self._store.bump_grants(session, user_id, service)
         await record_audit_event(
             session,
             tenant_id=require_tenant_id(),
@@ -1926,23 +1922,77 @@ class ServiceBroker:
             warnings.append(withdrawn)
         return " ".join(warnings) or None
 
+    async def discard_sign_in(
+        self,
+        session: AsyncSession,
+        *,
+        service: str,
+        kept: ServiceConnection | None,
+        secret: ConnectionSecret,
+        oauth_client_id: str | None,
+        account_id: str | None,
+    ) -> str | None:
+        """The vendor has issued a sign-in that Switch will not keep: revoke
+        it, rather than leave it live with nobody holding it. At a vendor that
+        ends all of an account's sign-ins on one revocation
+        (`revocation_ends_grant`, as Google does), Switch does not revoke it,
+        and says so: the server's client is shared by every workspace, so the
+        revocation could end a connection Switch keeps in another one. `kept`
+        is the connection Switch keeps for the same account or person, if
+        any, and `account_id` is None when Switch could not read the account.
+        Ends `session`'s transaction before it calls the vendor. Returns a
+        sentence for the person when the sign-in was not revoked."""
+        same = (
+            kept is not None and self._secret(kept).access_token == secret.access_token
+        )
+        # The sign-in stays live at the vendor, in the grant the kept one
+        # holds. A sign-in whose account is unknown may be outside it.
+        in_kept = (
+            kept is not None
+            and account_id is not None
+            and self._shares_grant(
+                service,
+                (kept.oauth_client_id, kept.account_id),
+                (oauth_client_id, account_id),
+            )
+        )
+        await session.rollback()
+        if same or in_kept:
+            return None
+        if self._revocation_ends_grant(service):
+            logger.warning(
+                "%s unkept sign-in left live: revoking it could end a kept sign-in",
+                service,
+            )
+            return (
+                f"Switch did not revoke the sign-in "
+                f"{self._entry(service).definition.name} just issued, because "
+                "that could also end a connection Switch keeps."
+            )
+        return await self._revoke_unkept(
+            session, service, secret, oauth_client_id, beside_kept=kept is not None
+        )
+
     async def _revoke_unkept(
         self,
         session: AsyncSession,
         service: str,
         secret: ConnectionSecret,
         oauth_client_id: str | None,
+        *,
+        beside_kept: bool,
     ) -> str | None:
         """Revoke a new sign-in that was not kept; a sentence for the person
-        when it could not be. A key is the person's own, and theirs to keep."""
+        when it could not be. A key is the person's own, and theirs to keep.
+        `beside_kept`: Switch keeps a connection for the same account or
+        person, which removing Switch at the vendor would end too."""
         definition = self._entry(service).definition
         if definition.adapter == "api_key":
             return None
         name = definition.name
-        unrevoked = (
-            f"Switch could not revoke the sign-in {name} just issued. Remove "
-            f"Switch from your {name} account's connected apps."
-        )
+        unrevoked = f"Switch could not revoke the sign-in {name} just issued."
+        if not beside_kept:
+            unrevoked += f" Remove Switch from your {name} account's connected apps."
         try:
             adapter = await self._revoker(session, service, oauth_client_id)
             async with asyncio.timeout(VENDOR_CALL_SECONDS):
