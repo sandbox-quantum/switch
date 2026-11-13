@@ -2,6 +2,7 @@ import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
 import { type Layout, outsideWorkspace } from "../routes/routeTable";
+import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
@@ -49,6 +50,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
           }}
         >
           <StaleSessionBanner />
+          <LinkNoticeBanner />
           <Outlet />
         </Stack>
       </Stack>

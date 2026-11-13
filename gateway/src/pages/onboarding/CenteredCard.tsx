@@ -1,6 +1,7 @@
 import { Alert, Box, Button, Card, Stack, Typography } from "@mui/material";
 import { type ReactNode, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
+import LinkNoticeBanner from "../../layout/LinkNoticeBanner";
 
 /** The layout the sign-in page uses, for the screens a signed-in person sees
  * before they are in a workspace. */
@@ -42,6 +43,7 @@ export default function CenteredCard({
         <Typography variant="body2" sx={{ mb: 3, color: "text.secondary" }}>
           {subtitle}
         </Typography>
+        <LinkNoticeBanner />
         {children}
         <Stack
           direction="row"
