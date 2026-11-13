@@ -161,7 +161,8 @@ export const ChatAddParticipantPanel = observer(function ChatAddParticipantPanel
             inputId={ADD_PARTICIPANT_INPUT}
             autoFocus={false}
             busy={adding}
-            overlay
+            // It is shown in a dialog, which clips a list floating past its edge.
+            overlay={false}
             candidates={candidates}
             picked={picked}
             onChange={setPicked}

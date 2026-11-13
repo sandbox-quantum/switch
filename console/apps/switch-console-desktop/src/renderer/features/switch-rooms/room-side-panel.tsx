@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, FileText, Loader2, MoreHorizontal, Plus } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  UserPlus,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
@@ -287,11 +295,24 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       aria-label="Room"
       className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2"
     >
+      {/* A Console room takes people as well as agents, so its add is its own
+      button, not the + beside Agents, which reads as agents only. */}
+      {consoleChat && controls.addAgents && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full justify-start"
+          onClick={controls.addAgents}
+        >
+          <UserPlus />
+          Add participants
+        </Button>
+      )}
       <Fold
         title="Agents"
         count={agentIds.length}
-        onAdd={controls.addAgents}
-        addLabel={consoleChat ? 'Add participants' : 'Add agents'}
+        onAdd={consoleChat ? null : controls.addAgents}
+        addLabel="Add agents"
       >
         {unreadable ? (
           <Note>{failureText(detail.error, 'Could not read who is in this room.')}</Note>
