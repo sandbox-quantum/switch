@@ -98,6 +98,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "agent_skills": "deleted",
     "approval_request_posts": "deleted",
     "approval_requests": "deleted",
+    "bridge_hourly_sends": "deleted",
     "bridge_message_map": "deleted",
     "chat_hidden": "deleted",
     "chat_reads": "deleted",

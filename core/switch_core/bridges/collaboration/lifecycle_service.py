@@ -44,6 +44,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeStartRefused,
     FailureReason,
 )
+from switch_core.bridges.collaboration.send_ledger import StoredSendLedger
 from switch_core.bridges.collaboration.webhooks import (
     BridgeWebhookTarget,
     WebhookBridgeStopped,
@@ -1297,6 +1298,13 @@ class CollaborationBridgeLifecycleService:
             )
             adapter.set_holder_relay(
                 lambda request: self._relay_to_holder(bridge_id, request)
+            )
+            adapter.set_send_ledger(
+                StoredSendLedger(
+                    session_factory=self._session_factory,
+                    tenant_id=tenant_id,
+                    bridge_id=bridge_id,
+                )
             )
             adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
             adapter.set_third_party_avatars(self._config.third_party_avatars_enabled)
