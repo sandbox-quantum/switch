@@ -171,6 +171,15 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     );
   });
 
+  it("gives an agent Kimi Code's model variables, but not its home in the controller's", async () => {
+    env = { ...env, KIMI_MODEL_NAME: 'kimi-k2', KIMI_CODE_HOME: '/home/controller/.kimi-code' };
+    runtime = makeRuntime();
+    await start('agent-1');
+    expect(readFileSync(join(config.dataDir, 'units', '01', 'environment'), 'utf8')).toBe(
+      "ANTHROPIC_API_KEY='sk-placeholder'\nKIMI_MODEL_NAME='kimi-k2'\n"
+    );
+  });
+
   it('gives each agent a user of its own, and says so when none is left', async () => {
     await start('agent-1');
     await start('agent-2');

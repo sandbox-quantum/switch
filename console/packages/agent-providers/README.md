@@ -37,6 +37,7 @@ protocols. These adapters are the only Console session runtime.
 | `droid` | `droid exec --output-format acp` (Factory Droid), ACP over stdio, on the generic ACP adapter | Native sessions, resume, MCP registration, and approvals; the runtime modes map to Droid's autonomy levels. |
 | `cline` | `cline --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection and approvals. Its ACP mode ignores the MCP servers sent in `session/new`, so they go in a per-session settings file named by `CLINE_MCP_SETTINGS_PATH` (`mcpServersAtLaunch`). |
 | `junie` | `junie --acp=true`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration and approvals; its brave mode is set from the runtime mode. |
+| `kimi-code` | `kimi acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration, approvals and questions. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -88,11 +89,12 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | goose (ACP) | 1.57.0 | 9/10 (2026-11-04, Amazon Linux 2023) | `user-input` skipped: Goose uses ACP form elicitation, which the generic client does not advertise (`userInput: false`); without the skip the scenario times out at 180s waiting for `user-input.requested`. Real-CLI scenarios run one at a time with 65s spacing; full back-to-back suite can hit Gemini free-tier limits. |
 | cline (ACP) | 3.0.74 | 8/10 on Cline's free `nvidia/nemotron-3.5-lightning:free` (2026-11-06; 6/10 on the first of two runs). 4/10 on Groq's free tier (2026-11-05) | Signs in over ACP only with a Cline account, ClinePass or a ChatGPT subscription, or with `CLINE_API_KEY` (then `CLINE_PROVIDER` and `CLINE_MODEL` can pick another provider); a key saved for another provider with `cline auth` is not used. Sessions run in a hub daemon that reads `CLINE_MCP_SETTINGS_PATH` once, so each session gets a daemon of its own. No question tool over ACP, so `user-input` is skipped. Set `CLINE_TEST_MODEL` to pick the model for the suite; without it Cline uses its own default, which needs account credits. ACP model ids carry `:free` where the CLI's carry `-free`. With the free model, `file-write-full-access` and `mcp-registered` each failed once in two runs (`mcp-registered` passes alone). On Windows Cline runs commands in PowerShell 5.1, whose `>` writes UTF-16: `approval-required` fails there, because the model retries after reading the file and the suite answers only the first approval. On Groq, the `reasoning_content` Cline sends back after a tool call is refused, and the free tier's 8000 tokens a minute is about one Cline call. |
 | junie (ACP) | 26.11.3 (3959.5) | 8/10 (2026-11-07) | Run with `JUNIE_ANTHROPIC_API_KEY` and `JUNIE_LLM_PROVIDER=anthropic` (Claude Sonnet 5). `user-input` is skipped: Junie asks through ACP elicitation, which the generic adapter does not implement. `approval-declined` is skipped: told it may not be allowed to run the command, Junie in Safe mode answers "declined" without attempting it, so no approval is raised; declining is covered by the unit tests. A JetBrains account without a Junie licence (Junie's log: `NoLicense detected after login`) offers no model and refuses every prompt with `model_not_available`, and a Junie API key from such an account reports `api_key` with the full catalogue but every model call fails with `NO_LICENSE`; the sign-in check reports the former as unusable. |
+| kimi-code (ACP) | 2.5.0 | 10/10 (2026-11-05) | Run on Mistral Medium 3.5 (`mistral-medium-latest`) through Mistral's OpenAI-compatible API, given with `KIMI_MODEL_PROVIDER_TYPE=openai`, `KIMI_MODEL_BASE_URL`, `KIMI_MODEL_NAME` and `KIMI_MODEL_API_KEY` in the shell; the test passes those, and `KIMI_CODE_HOME`, through. Kimi has no steering, so in `steer-mid-turn` the second message runs as its own turn once the first ends. A SIGTERM ends Kimi before it saves the last turn of a conversation, so a session is stopped by closing its input. A failed turn ends as a finished one with no reply. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor, Antigravity, DeepSeek Harness, Kiro, Mistral Vibe, Qwen Code, Cline and Junie run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity, DeepSeek Harness, Kiro, Mistral Vibe, Qwen Code, Cline, Junie and Kimi Code run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -107,7 +109,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
 
 Everything else that differs between CLIs is in its hooks file
 (`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
-`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`, `src/qwen/qwen-acp.ts`, `src/cline/cline-adapter.ts`, `src/junie/junie-adapter.ts`):
+`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`, `src/qwen/qwen-acp.ts`, `src/cline/cline-adapter.ts`, `src/junie/junie-adapter.ts`,
+`src/kimi-code/kimi-code-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -118,7 +121,8 @@ everything in `full-access` and edits in `auto-accept-edits`. Otherwise the
 person is offered allow once, allow for this session and reject; options
 whose name or id names a permanent or future policy are never offered. A request whose tool
 call names only its id is described and decided by the call the agent
-announced: its title, and whether it runs a command or edits a file.
+announced: its title, and whether it runs a command or edits a file. A
+request's text is the approval's detail.
 
 **Cursor** extensions: `cursor/ask_question` (several questions, multi-select),
 `cursor/create_plan` (an approval with the plan as its detail),
@@ -297,3 +301,27 @@ sessions) or chooses one of the provider's models for the agent. With only such 
 key (or `JUNIE_LITELLM_URL`), a sign-in check that finds no account reports
 Junie as signed in, naming the variable; the key itself is checked at the
 first turn.
+
+**Kimi Code** offers its `login` method in the handshake whether or not it is
+signed in, so its sign-in check reads what `kimi provider list --json` prints:
+a provider or model with an API key, with the variable its `api_key_env` names
+set, with a `*_API_KEY` entry in its `env` table, or with the token file
+`kimi login` writes. That command writes an empty `config.toml` in Kimi's home
+when there is none; when it fails, the check reports what Kimi printed. A
+provider with a key but no `default_model` reads as signed in, though Kimi
+starts no session without one. Questions arrive as ACP form elicitations,
+which the adapter announces it can answer: all of a call's questions at once,
+several choices where a question takes them, each asked by its own text (from
+the form's message, a line each) with the short header the model gave it
+beside it. Kimi's form has no field for a typed answer. Where a form fails,
+Kimi asks the first question alone as a permission request whose option ids
+start with `q0_`, and that is asked as a question too. Its permission
+requests are titled with the tool's name, such as `Bash`, and say what it
+asks to do in their text. In its
+`default` mode, which `approval-required` uses, Kimi itself lets writes and
+edits inside a git work tree run without asking; in `yolo`, which auto mode
+uses, it runs every MCP tool, a connector's included, without asking. A turn
+that fails for any reason but its sign-in ends as a finished one: Kimi logs
+the error and sends nothing, so it reads as a turn without a reply. Sessions
+and checks run with `KIMI_CODE_NO_AUTO_UPDATE` set, so a native install swaps
+in an update it has staged only when it is run outside Switch.

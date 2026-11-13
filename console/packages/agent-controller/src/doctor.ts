@@ -142,7 +142,7 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
       name: 'Providers',
       status: 'fail',
       detail:
-        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here. Install one (claude, codex, opencode, cursor, antigravity, dsh, pi, mistral-vibe or junie) and sign in, or set its API key in the --env-file the service runs with.',
+        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here. Install one (claude, codex, opencode, cursor, antigravity, dsh, pi, mistral-vibe, junie or kimi-code) and sign in, or set its API key in the --env-file the service runs with.',
     });
   return checks;
 }

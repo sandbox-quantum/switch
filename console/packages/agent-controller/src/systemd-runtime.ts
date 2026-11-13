@@ -85,6 +85,7 @@ const PATH_VARIABLES = new Set([
   'CLOUDSDK_CONFIG',
   'GOOGLE_APPLICATION_CREDENTIALS',
   'AWS_PROFILE',
+  'KIMI_CODE_HOME',
 ]);
 
 type UnitState = { activeState: string; result: string; mainPid: number };

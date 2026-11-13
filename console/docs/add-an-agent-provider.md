@@ -86,6 +86,7 @@ the agent advertises. **Don't re-implement any of it in hooks:**
     offer permanent policies;
   - describe and decide a request that names only its tool call's id by the
     call the agent announced: its title, and whether it runs a command or edits;
+  - show a request's text as the approval's detail;
 - model selection through a `model` config option or through the session's
   `models` list;
 - cancel, queued turns, process exit and errors.
@@ -94,7 +95,7 @@ Add hooks only for what really differs:
 
 | Hook | When you need it |
 |---|---|
-| `launch` (required) | The binary, its arguments and its environment. It may prepare the host first, as Antigravity does with its profile directory. The environment is complete and not merged with anything, so add to `env`, never to `process.env`. It is told the session's runtime mode, for an agent whose permission policy is set at launch (DeepSeek Harness). |
+| `launch` (required) | The binary, its arguments and its environment. It may prepare the host first, as Antigravity does with its profile directory. The environment is complete and not merged with anything, so add to `env`, never to `process.env`. It is told the session's runtime mode, for an agent whose permission policy is set at launch (DeepSeek Harness). Set `exitsOnClosedInput` for an agent that a signal would stop before it has saved its sessions. |
 | `loginCommand` (required) | The command a person runs on the execution machine to sign in. It is shown whenever the CLI is signed out. |
 | `checkSignIn` | Answers "is this CLI signed in?" **without signing it in**. Use the `handshake()` it's given (and `request()` for a read-only call over the same connection, as Mistral Vibe does with `_auth/status`), the `connection()` that opened for anything more (Junie reads the account an empty session reports), or the CLI's own status command. Without it, the check runs the handshake and reports the sign-in as unknown. |
 | `mcpServersAtLaunch` | The agent ignores the MCP servers sent in `session/new` and reads its own configuration instead (Cline). `launch` is given the session's servers in `mcpServers` and writes them where the agent reads them, returning a `cleanup` that removes what it wrote; `session/new` is then sent an empty list. |
@@ -111,7 +112,7 @@ Add hooks only for what really differs:
 | `toolKind` | The ACP `kind` of a tool the agent leaves unlabelled (Cline reports `apply_patch` as `other`). It decides the approval a call needs, such as whether `auto-accept-edits` lets it through, and the card it shows as. |
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
-| `clientCapabilities` | Client capabilities to announce in `initialize` beyond the protocol's own, for requests your `extensions` answer. An agent that asks its questions as ACP form elicitations needs only `FORM_ELICITATION_CAPABILITIES` here and `answerFormElicitations` as `extensions`, both from `src/acp/elicitation.ts`, as Antigravity and Mistral Vibe use them. |
+| `clientCapabilities` | Client capabilities to announce in `initialize` beyond the protocol's own, for requests your `extensions` answer. An agent that asks its questions as ACP form elicitations needs only `FORM_ELICITATION_CAPABILITIES` here and `answerFormElicitations` as `extensions`, both from `src/acp/elicitation.ts`, as Antigravity and Mistral Vibe use them. Kimi Code, which asks each question by a line of the form's message, answers with `elicitationQuestions` and `elicitationAnswer` from the same file. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:

@@ -13,6 +13,7 @@ import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
 import { droidAcp } from '../droid/droid-adapter';
 import { gooseAcp } from '../goose/goose-adapter';
 import { junieAcp } from '../junie/junie-adapter';
+import { kimiCodeAcp } from '../kimi-code/kimi-code-acp';
 import { kiroAcp } from '../kiro/kiro-acp';
 import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
@@ -135,6 +136,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   acpProviderRuntime(droidAcp),
   acpProviderRuntime(clineAcp),
   acpProviderRuntime(junieAcp),
+  acpProviderRuntime(kimiCodeAcp),
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));

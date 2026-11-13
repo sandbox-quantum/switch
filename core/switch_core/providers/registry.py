@@ -270,6 +270,11 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="WebSearch", description="Searches the web"),
         ),
     ),
+    AgentProvider(
+        id="kimi-code",
+        label="Kimi Code",
+        sign_in_command="kimi login",
+    ),
 )
 
 
