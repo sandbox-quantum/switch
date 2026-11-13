@@ -3,8 +3,9 @@
 The code a person posts from their chat account (CHOO-3881) proves two things
 at once: the chat account acted, and the person signed in to Switch saw the
 code. A prompt proves the same two things without the typing. Switch's bot
-messages the account a few numbers, Switch Console shows the Switch user which
-is right, and the account taps it. A wrong number or `Not me` cancels the
+messages the account a few numbers, the Switch app the person linked from
+(Switch Console or the dashboard) shows them which is right, and the account
+taps it. A wrong number or `Not me` cancels the
 request, so a person can't be talked into confirming a request they didn't
 start by guessing.
 
@@ -56,10 +57,12 @@ DECLINED = (
     "Cancelled: this request linked this account to nobody. If you didn't "
     "start it, nothing else needs doing."
 )
+# Worded for whichever Switch app started the link, Switch Console or the
+# dashboard: the account cannot tell, and the person knows where they were.
 WRONG_NUMBER = (
-    "That isn't the number Switch Console showed, so nothing was confirmed and "
-    "this request is cancelled. If you meant to link this account, start again "
-    "in Switch Console."
+    "That isn't the number Switch showed, so nothing was confirmed and this "
+    "request is cancelled. If you meant to link this account, start again in "
+    "Switch."
 )
 
 
@@ -72,8 +75,8 @@ def declined_older(name: str) -> str:
 
 
 EXPIRED = (
-    "This request has expired, so nothing was linked. Start again in Switch "
-    "Console if you meant to link this account."
+    "This request has expired, so nothing was linked. Start again in Switch if "
+    "you meant to link this account."
 )
 NOT_WAITING = (
     "This request is no longer waiting: it was confirmed, cancelled, or "
@@ -108,7 +111,7 @@ def compose_prompt(
         f"**{escape(requester_name)}** ({escape(requester_email)}) is linking "
         f"this {platform} "
         "account to their Switch account.\n\n"
-        "Tap the number Switch Console is showing to finish. If you didn't "
+        "Tap the number Switch is showing you to finish. If you didn't "
         f"start this, tap **{NOT_ME_LABEL}** and nothing is linked."
     )
     return DirectPrompt(
@@ -132,8 +135,8 @@ class PendingPrompt:
 
 @dataclass(frozen=True)
 class PromptOutcome:
-    """What Switch Console is told: the number to show, and whether the
-    message went out, with why not when it did not."""
+    """What the Switch app that asked is told: the number to show, and whether
+    the message went out, with why not when it did not."""
 
     number: int
     sent: bool

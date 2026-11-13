@@ -98,7 +98,7 @@ ADDRESSING_DENIED_MESSAGE = (
 ADDRESSING_UNCLAIMED_MESSAGE = (
     "I only take instructions from my owner, and this chat account isn't "
     "linked to a Switch user, so I can't tell whether that's you. If you're my "
-    "owner, link this account in Switch Console and try again. Otherwise, ask "
+    "owner, link this account in Switch and try again. Otherwise, ask "
     "my owner to let you in: they can change who can talk to me in my settings."
 )
 

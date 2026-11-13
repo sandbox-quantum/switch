@@ -14,8 +14,8 @@ hash is there to keep codes out of anything that reads the table, not to
 withstand a brute force.
 
 A prompt is the same proof without the typing (CHOO-4121). Switch's bot sends
-the account a direct message offering a few numbers, Switch Console shows the
-Switch user which one is right, and tapping it confirms the link: the account
+the account a direct message offering a few numbers, the Switch app that asked
+shows the Switch user which one is right, and tapping it confirms the link: the account
 acted, and only the Switch user knew which number to tap. A wrong number
 cancels the request rather than inviting a second guess, and `Not me` does the
 same, so the odds of confirming a request one did not start are one in
@@ -92,7 +92,7 @@ def is_prompt_token(value: str) -> bool:
 
 
 def new_prompt_choices() -> tuple[int, list[int]]:
-    """The number Switch Console shows, and the numbers the message offers in
+    """The number the Switch app shows, and the numbers the message offers in
     the order it offers them, the right one among them."""
     rng = secrets.SystemRandom()
     choices = rng.sample(range(_PROMPT_LOWEST, _PROMPT_HIGHEST + 1), PROMPT_CHOICES)

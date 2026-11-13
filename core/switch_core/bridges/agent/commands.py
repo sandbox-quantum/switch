@@ -2414,14 +2414,14 @@ COMMANDS: list[Command] = [
     Command(
         "link-account",
         "Confirm a link between this chat account and your Switch user, with "
-        "the code Switch Console showed you. Usage: `!link-account CODE`.",
+        "the code Switch showed you. Usage: `!link-account CODE`.",
         _cmd_link_account,
         args_spec=(
             # Free text so a bridge passes it through as typed: a declared
             # name-style argument comes back with an `@` in front.
             CommandArg(
                 "code",
-                "The code Switch Console showed you",
+                "The code Switch showed you",
                 required=True,
                 free_text=True,
             ),

@@ -23,13 +23,13 @@ from switch_core.db.stores.user_store import UserStore
 ACCOUNT_COMMANDS = frozenset({"link-account", "unlink-account"})
 
 LINK_USAGE = (
-    "Usage: `link-account CODE`, with the code Switch Console showed you when "
-    "you linked this account."
+    "Usage: `link-account CODE`, with the code Switch showed you when you "
+    "linked this account."
 )
 CODE_REFUSED = (
     "⚠️ That code doesn't match a link waiting for this account, or it has "
-    "expired. Get a new code in Switch Console, and post it from the account "
-    "you're linking."
+    "expired. Get a new code in Switch, and post it from the account you're "
+    "linking."
 )
 NOT_LINKED = "This account isn't linked to any Switch user."
 

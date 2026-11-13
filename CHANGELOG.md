@@ -684,7 +684,7 @@ version of their own to them without also giving them a release of their own.
   machine says that by its own status.
 - **Link a chat account by tapping a number.** When someone links a chat
   account in Switch Console, Switch's bot sends that account a direct message
-  with three numbers and a **Not me** button. Tapping the number Console shows
+  with three numbers and a **Not me** button. Tapping the number Switch shows
   confirms the link, the same proof as posting the code. A wrong number or
   **Not me** cancels the request, and **Not me** on a request to confirm a link
   made before links needed confirming removes that link too. Slack, Mattermost, Discord and Telegram send

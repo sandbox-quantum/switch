@@ -36,7 +36,7 @@ DM = "dm-bot-admin-user-abc"
 PROMPT = DirectPrompt(
     text=(
         "**Ada** (ada@example.com) is linking this Mattermost account to their "
-        "Switch account.\n\nTap the number Switch Console is showing to finish."
+        "Switch account.\n\nTap the number Switch is showing you to finish."
     ),
     token="lnk.prompt-token",
     labels=("12", "47", "83", "Not me"),

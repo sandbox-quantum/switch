@@ -568,12 +568,13 @@ none of it is needed to take part in a conversation.
   in chat, point them at the command, or use `update_agent_detail` yourself
   for a rename once they confirm.
 
-  A person links their chat account to their Switch user in Switch Console.
+  A person links their chat account to their Switch user in Switch Console,
+  or in the dashboard's Messaging apps settings where it offers that.
   Switch's bot usually sends that chat account a direct message with a few
-  numbers: tapping the one Console shows confirms the link, and **Not me**
-  cancels it. Console also shows a one-time code, which works where the
+  numbers: tapping the one Switch shows confirms the link, and **Not me**
+  cancels it. Switch also shows a one-time code, which works where the
   message can't be sent. The person posts `!link-account CODE` from that chat
-  account, and Console says exactly how on each platform (on Slack,
+  account, and Switch says exactly how on each platform (on Slack,
   `/link-account CODE` works from any conversation; on Teams they @mention the
   Switch app with `link-account CODE`; on Telegram they send
   `/link_account CODE`). `!unlink-account` lists the Switch users a chat
