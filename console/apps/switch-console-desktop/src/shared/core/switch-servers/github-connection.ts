@@ -4,6 +4,12 @@ export const gitHubConnectionSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('not_connected'), install_url: z.string() }),
   z.object({
     status: z.literal('connected'),
+    /**
+     * How it was connected: through the App's sign-in (`oauth`), or with a
+     * pasted personal access token (`token`), which reaches no installations.
+     * Absent from a server from before tokens.
+     */
+    method: z.string().optional(),
     login: z.string(),
     install_url: z.string(),
     installations: z.array(

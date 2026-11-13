@@ -149,7 +149,7 @@ export default function PasteDialog({
           <Typography variant="caption" color="text.secondary">
             {pastedLasts(connection.name, method.expires)} {method.access_note}
           </Typography>
-          {!replacing && (
+          {!replacing && !connection.web_sign_in && (
             <Typography variant="caption" color="text.secondary">
               {CONSOLE_SIGN_IN_NOTE}
             </Typography>

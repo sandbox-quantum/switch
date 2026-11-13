@@ -126,6 +126,7 @@ def build_adapter(
         if github_app is None:
             return None
         return GitHubAdapter(
+            definition,
             github_app.connections,
             github_app.signer,
             read_only=github_app.read_only,

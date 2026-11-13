@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { pasteAgainMethod } from '@renderer/features/connectors/connect-flow';
+import { GitHubTokenStep } from '@renderer/features/switch-servers/github-token-step';
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import { workspaceServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import { ServiceConnectStep } from '@renderer/features/switch-servers/service-connect-step';
@@ -38,6 +40,13 @@ export function ConnectServiceModal({
   onConnected: (warning: string | null) => void;
 } & BaseModalProps) {
   const calls = workspaceServiceCalls(workspaceId);
+  const githubToken =
+    connection.slug === 'github'
+      ? (connection.paste.find((way) => way.method === 'token') ?? null)
+      : null;
+  const [pastingToken, setPastingToken] = useState(
+    githubToken !== null && startAt === 'paste_again'
+  );
   const connected = (warning: string | null) => {
     onConnected(warning);
     if (offersAddAgent(connection)) onClose();
@@ -54,6 +63,19 @@ export function ConnectServiceModal({
         onConnected={onConnected}
       />
     );
+  if (githubToken !== null && pastingToken)
+    return (
+      <GitHubTokenStep
+        calls={calls}
+        connection={connection}
+        method={githubToken}
+        onBack={() => setPastingToken(false)}
+        onConnected={(warning) => {
+          setPastingToken(false);
+          onConnected(warning);
+        }}
+      />
+    );
   if (connection.slug === 'github')
     return (
       <ManagedGitHubStep
@@ -61,6 +83,7 @@ export function ConnectServiceModal({
         onBack={onClose}
         onDone={onClose}
         onConnected={onConnected}
+        onUseToken={githubToken === null ? undefined : () => setPastingToken(true)}
       />
     );
   if (connection.key)

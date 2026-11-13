@@ -37,6 +37,7 @@ export function ManagedGitHubStep({
   onContinue,
   onConnected,
   onDone,
+  onUseToken,
 }: {
   serverId: string;
   onBack: () => void;
@@ -51,6 +52,8 @@ export function ManagedGitHubStep({
    * before: for a page that has those of its own, as a connector's does.
    */
   onDone?: () => void;
+  /** Offers connecting with a personal access token in place of the App, where the server takes one. */
+  onUseToken?: () => void;
 }) {
   const [connection, setConnection] = useState<GitHubConnection | null>(null);
   const [flowId, setFlowId] = useState<string | null>(null);
@@ -171,6 +174,7 @@ export function ManagedGitHubStep({
     }
   };
   const connected = connection?.status === 'connected';
+  const withToken = connection?.status === 'connected' && connection.method === 'token';
   return (
     <>
       <DialogHeader showCloseButton={!flowId}>
@@ -185,6 +189,21 @@ export function ManagedGitHubStep({
             {slowFlowId === flowId && (flowStatus === null || flowStatus === 'pending') && (
               <p className="text-sm text-foreground-muted">{SIGN_IN_HINT}</p>
             )}
+          </>
+        ) : withToken ? (
+          <>
+            <p className="flex items-center gap-2 text-sm">
+              <CircleCheck className="size-5 text-foreground-success" />
+              Connected with a personal access token as <strong>{connection.login}</strong>
+            </p>
+            <p className="text-sm text-foreground-muted">
+              Agents you turn GitHub on for act as you, in every repository the token reaches.
+              GitHub ends the token on the date you set; paste a new one then.
+            </p>
+            <p className="text-xs text-foreground-muted">
+              Disconnecting removes the token from Switch. Only GitHub can revoke it: delete it in
+              GitHub to stop it working.
+            </p>
           </>
         ) : connected ? (
           <>
@@ -287,6 +306,16 @@ export function ManagedGitHubStep({
                 </div>
               </div>
             </div>
+            {onUseToken && (
+              <button
+                type="button"
+                disabled={busy}
+                className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-not-allowed"
+                onClick={onUseToken}
+              >
+                Use a personal access token instead
+              </button>
+            )}
           </>
         )}
         <p

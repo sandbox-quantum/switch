@@ -183,10 +183,13 @@ async def list_service_connections(
                 else switches[definition.slug].decided_by,
                 # A grant hands the agent the owner's own token: it is on or
                 # off, at the connection's level, and lasts the token's life.
+                # So does one on a credential the person pasted for a service
+                # that otherwise mints its tokens (a GitHub token).
                 "pass_through": (
                     definition.token is not None
                     and definition.token.kind == "pass_through"
-                ),
+                )
+                or (connection is not None and connection.method != "oauth"),
                 "token_lifetime": (
                     None if definition.token is None else definition.token.max_lifetime
                 ),
@@ -246,7 +249,7 @@ async def list_service_connections(
                     None
                     if connection is None
                     or connection.method == "oauth"
-                    or definition.adapter != "oauth"
+                    or definition.adapter == "api_key"
                     else _pasted_reach(connection.method)
                 ),
             }

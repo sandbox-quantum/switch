@@ -3,7 +3,10 @@ import {
   FLAGS_NOT_READ_YET,
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  githubThroughApp,
+} from '@shared/core/switch-servers/connection-catalog';
 import { lifetimeText, pasteAgainMethod, pastedConnection } from './connect-flow';
 import type { ConnectorCardState, ConnectorFix } from './connector-card-state';
 
@@ -172,7 +175,7 @@ export function keyAccessText(entry: ConnectionCatalogEntry): string | null {
 
 /** How the service is connected, for the profile's side column. */
 export function signInLabel(entry: ConnectionCatalogEntry): string {
-  if (entry.slug === 'github') return 'GitHub App';
+  if (githubThroughApp(entry)) return 'GitHub App';
   const pasted = pastedConnection(entry);
   if (pasted !== null) return pasted.way;
   return entry.auth_type === 'api_key' ? 'Key' : `Sign in at ${entry.name}`;

@@ -32,6 +32,7 @@ import {
   type ServiceGrants,
   setServiceGrant,
   updateAgentAddressingPolicy,
+  githubThroughApp,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 
@@ -152,6 +153,8 @@ export default function ServiceAccessSection({
   const onOff = services.filter((service) => service.enabled && service.pass_through);
   const onOffSlugs = new Set(onOff.map((service) => service.slug));
   const githubService = services.find((service) => service.slug === "github") ?? null;
+  // GitHub connected with a pasted token is on or off, among the others.
+  const githubApp = githubService === null || githubThroughApp(githubService);
   // Why GitHub can't be granted here at all, said where its form would be.
   const githubBlocked = githubService === null ? null : serviceBlockedReason(githubService);
 
@@ -266,13 +269,13 @@ export default function ServiceAccessSection({
             />
           ))}
 
-        {grants && canGrant && githubBlocked !== null && (
+        {grants && canGrant && githubApp && githubBlocked !== null && (
           <Typography variant="body2" color="text.secondary">
             {githubBlocked}
             {isOperator && githubService?.server_setup_needed && <SetUpLink />}
           </Typography>
         )}
-        {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
+        {grants && canGrant && githubApp && githubBlocked === null && (editing || !githubGrant) && (
           <GitHubGrantForm
             github={github}
             githubError={githubError}
@@ -290,7 +293,7 @@ export default function ServiceAccessSection({
           />
         )}
 
-        <GitHubNotes />
+        {githubApp && <GitHubNotes />}
       </Stack>
     </>
   );

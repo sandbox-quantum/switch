@@ -140,5 +140,11 @@ async def test_a_key_is_never_issued_to_an_agent() -> None:
     with pytest.raises(ServiceAdapterError, match="never handed to an agent"):
         await adapter.issue(
             AccessToken(key, datetime.now(UTC) + timedelta(hours=1)),
-            IssueRequest(service="example", access="write", reach={}, resources={}),
+            IssueRequest(
+                service="example",
+                access="write",
+                reach={},
+                resources={},
+                pasted=True,
+            ),
         )

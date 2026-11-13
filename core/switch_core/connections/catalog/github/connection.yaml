@@ -12,6 +12,18 @@ adapter: github
 auth:
   type: oauth
   refresh: rotating
+  # In place of the App's sign-in, a person may paste a personal access token
+  # of their own. It is checked with GET /user, and refused where GitHub says
+  # it has no expiration date (unless ALLOW_NON_EXPIRING_KEYS is on). It
+  # reaches what the person let it, acts as them, and only GitHub revokes it.
+  paste:
+    - name: token
+      label: Personal access token
+      fields:
+        - { name: pat, label: Personal access token, secret: true }
+      headers: { Authorization: "Bearer {pat}" }
+      expires: vendor
+      help_url: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
 token: { kind: minted, max_lifetime: 3600 }
 access:
   read:

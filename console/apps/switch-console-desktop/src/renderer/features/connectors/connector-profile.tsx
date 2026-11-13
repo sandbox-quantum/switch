@@ -8,7 +8,10 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  githubThroughApp,
+} from '@shared/core/switch-servers/connection-catalog';
 import { pastedConnection } from './connect-flow';
 import { ConnectorAgentsSection } from './connector-agents-section';
 import { openConnectorAppSetUp } from './connector-app-set-up';
@@ -200,7 +203,7 @@ export function ConnectorProfile({
         )}
       </section>
 
-      {connection.slug === 'github' && state.kind === 'connected' && (
+      {githubThroughApp(connection) && state.kind === 'connected' && (
         <GitHubAccessSection serverId={serverId} workspaceId={workspaceId} />
       )}
 

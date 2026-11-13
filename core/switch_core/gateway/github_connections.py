@@ -730,18 +730,31 @@ async def connection_status(
             "install_url": github.install_url,
             "can_revoke": False,
         }
+    row = await STORE.get_connection(session, user_id, "github")
+    if row is None:
+        raise HTTPException(409, "The GitHub connector changed. Please retry.")
+    await session.commit()
+    if row.method != "oauth":
+        # A pasted token reaches what it does, not through the App, so there
+        # are no installations to list: a grant on it names no repositories.
+        return {
+            "status": "connected",
+            "method": row.method,
+            "login": row.external_identity,
+            "installations": [],
+            "sso_hidden_organizations": [],
+            "install_url": github.install_url,
+            "can_revoke": True,
+        }
     try:
         reach = await github.repositories(token)
     except GitHubAuthorizationError as error:
         raise HTTPException(422, str(error)) from None
     except GitHubError as error:
         raise HTTPException(502, str(error)) from None
-    row = await STORE.get_connection(session, user_id, "github")
-    if row is None:
-        raise HTTPException(409, "The GitHub connector changed. Please retry.")
-    await session.commit()
     return {
         "status": "connected",
+        "method": row.method,
         "login": row.external_identity,
         "installations": reach.installations,
         # Organizations whose single sign-on hides their installations from

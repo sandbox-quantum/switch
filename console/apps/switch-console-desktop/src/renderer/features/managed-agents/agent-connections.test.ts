@@ -77,6 +77,15 @@ describe("an agent's connection cards", () => {
     ]);
   });
 
+  it('turns GitHub on or off, like the rest, where it was connected with a pasted token', () => {
+    expect(
+      slugs([service('github', { pass_through: true, method: 'token' }), service('atlassian')], [])
+    ).toEqual([
+      ['github', 'on-off'],
+      ['atlassian', 'on-off'],
+    ]);
+  });
+
   it('keeps a card for a connection that needs reconnecting', () => {
     expect(slugs([service('atlassian', { status: 'needs_reauthorization' })], [])).toEqual([
       ['atlassian', 'on-off'],

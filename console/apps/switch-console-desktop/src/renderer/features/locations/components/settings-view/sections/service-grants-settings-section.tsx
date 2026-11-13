@@ -19,7 +19,10 @@ import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Switch } from '@renderer/lib/ui/switch';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  githubThroughApp,
+} from '@shared/core/switch-servers/connection-catalog';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
 import type { ServiceGrant } from '@shared/core/switch-servers/service-grants';
 import {
@@ -151,6 +154,9 @@ export function ServiceGrantsRow({
   const current = grants.data;
 
   const githubGrant = grants.data.grants.find((grant) => grant.service === 'github') ?? null;
+  // GitHub connected with a pasted token is on or off, among the others.
+  const githubService = services.data?.find((service) => service.slug === 'github');
+  const githubApp = githubService === undefined || githubThroughApp(githubService);
   // Services whose agents use the owner's own token: on or off, nothing to choose.
   const onOff = (services.data ?? []).filter((service) => service.enabled && service.pass_through);
   const onOffSlugs = new Set(onOff.map((service) => service.slug));
@@ -226,7 +232,7 @@ export function ServiceGrantsRow({
         />
       ))}
 
-      {(editing || !githubGrant) && (
+      {githubApp && (editing || !githubGrant) && (
         <GitHubGrantForm
           github={github}
           current={githubGrant}
@@ -240,11 +246,13 @@ export function ServiceGrantsRow({
         />
       )}
 
-      <ul className="list-disc space-y-1 pl-5 text-xs text-foreground-muted">
-        {(cloud ? CLOUD_GITHUB_GRANT_NOTES : GITHUB_GRANT_NOTES).map((note) => (
-          <li key={note}>{note}</li>
-        ))}
-      </ul>
+      {githubApp && (
+        <ul className="list-disc space-y-1 pl-5 text-xs text-foreground-muted">
+          {(cloud ? CLOUD_GITHUB_GRANT_NOTES : GITHUB_GRANT_NOTES).map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

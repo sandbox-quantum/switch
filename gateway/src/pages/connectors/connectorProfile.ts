@@ -11,6 +11,7 @@ import type {
   ServicePasteMethod,
   SignInOutcome,
 } from "../../data/api";
+import { githubThroughApp } from "../../data/api";
 
 /** Connected in any state: a connection that needs a fresh sign-in is still theirs. */
 export function isConnected(connection: Pick<ServiceConnection, "status">): boolean {
@@ -141,9 +142,13 @@ export function offNotice(
   return { text: `${why} ${after} A workspace admin can turn it on.`, fixedIn: "workspace" };
 }
 
-export function signInLabel(connection: Pick<ServiceConnection, "auth_type" | "slug" | "publisher" | "name">): string {
+export function signInLabel(
+  connection: Pick<ServiceConnection, "auth_type" | "slug" | "publisher" | "name" | "pass_through" | "method">,
+): string {
   if (connection.auth_type === "api_key") return "A key you paste";
-  if (connection.slug === "github") return "Sign in with GitHub, through the Switch GitHub App";
+  if (connection.method === "token") return "A token you pasted";
+  if (connection.method === "keys") return "Keys you pasted";
+  if (githubThroughApp(connection)) return "Sign in with GitHub, through the Switch GitHub App";
   return `Sign in at ${connection.publisher ?? connection.name}`;
 }
 

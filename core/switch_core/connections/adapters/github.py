@@ -8,6 +8,13 @@ App. Before every grant and every issue the person's own sign-in is asked
 which of those repositories they still see, and for write, can push to, so a
 grant never reaches further than its owner does.
 
+A person may instead paste a personal access token of their own (the
+entry's `auth.paste` method `token`). It reaches whatever they let it, acts
+as them, and only GitHub can revoke it, so a grant on it is on or off and
+names no repositories, and the token is handed out as it is. Before every
+grant and every issue GitHub is asked whose it is (`GET /user`), and a token
+GitHub names no expiration date for is reported as one that never ends.
+
 An App whose permissions stop short of what the catalog's write level asks
 for, as GitHub answered when it was saved or last checked
 (`connections/app_checks.py`), lets agents read only: the broker refuses a
@@ -25,20 +32,31 @@ from typing import Any
 from switch_core.config import SwitchConfig
 from switch_core.connections.adapters import (
     AccessToken,
+    ConnectionNotRevocable,
     ConnectionSecret,
+    Identity,
     IssuedToken,
     IssueRequest,
+    Pasted,
     ReauthorizationRequiredError,
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.adapters.api_key import checked_fields
+from switch_core.connections.loader import (
+    AccessLevel,
+    ConnectionDefinition,
+    PasteExpiry,
+    PasteMethod,
+    render,
+)
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
     GitHubError,
     GitHubUnavailableError,
     repository_writable,
+    token_owner,
 )
 from switch_core.providers.github_installation import (
     MAX_REPOSITORIES,
@@ -161,14 +179,26 @@ def _vendor_error(error: GitHubError) -> ServiceAdapterError:
     return ServiceAdapterError(str(error))
 
 
+def _pasted_error(error: GitHubError) -> ServiceAdapterError:
+    if isinstance(error, GitHubAuthorizationError):
+        return ReauthorizationRequiredError(
+            "GitHub refused the pasted token, which may be wrong, revoked or expired."
+        )
+    return _vendor_error(error)
+
+
 class GitHubAdapter:
     def __init__(
         self,
+        definition: ConnectionDefinition,
         connections: GitHubConnections,
         signer: GitHubInstallationCredentials | None,
         *,
         read_only: bool,
     ) -> None:
+        if definition.adapter != "github":
+            raise ValueError(f"{definition.slug} is not a github entry.")
+        self._paste = definition.auth.paste
         self._connections = connections
         self._signer = signer
         self.can_issue = signer is not None
@@ -177,7 +207,84 @@ class GitHubAdapter:
     def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return self._connections.client_id
 
+    # ── A personal access token pasted in place of the sign-in ───────────────
+
+    def paste_method(self, name: str) -> PasteMethod:
+        method = next((m for m in self._paste if m.name == name), None)
+        if method is None:
+            raise ServiceAdapterError(f"GitHub takes no pasted {name}.")
+        return method
+
+    def checked_paste(
+        self, method: PasteMethod, submitted: Mapping[str, str]
+    ) -> dict[str, str]:
+        """The pasted token, one printable line, and nothing else."""
+        return checked_fields("GitHub", method.fields, submitted)
+
+    def pasted_secret(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> ConnectionSecret:
+        """What a connection made with a pasted token stores: the token
+        itself, which is what git and gh are handed."""
+        if choices:
+            raise ServiceAdapterError("GitHub takes no choices with a pasted token.")
+        return ConnectionSecret(
+            {"access_token": values[method.fields[0].name], "method": method.name}
+        )
+
+    def pasted(self, secret: ConnectionSecret) -> Pasted | None:
+        name = secret.values.get("method")
+        if name is None:
+            return None
+        method = (
+            next((m for m in self._paste if m.name == name), None)
+            if isinstance(name, str)
+            else None
+        )
+        if method is None:
+            raise ReauthorizationRequiredError(
+                "The GitHub connector was made with a credential Switch no longer "
+                "takes."
+            )
+        token = secret.access_token
+        if token is None:
+            raise ReauthorizationRequiredError(
+                "The GitHub connector holds no pasted token."
+            )
+        return Pasted(method, {method.fields[0].name: token}, {})
+
+    def _paste_headers(
+        self, method: PasteMethod, values: Mapping[str, str]
+    ) -> dict[str, str]:
+        return {name: render(value, values) for name, value in method.headers.items()}
+
+    async def check_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> PasteExpiry:
+        """Whether GitHub takes the token, and whether it names an expiration
+        date for it: `never` for a token made without one."""
+        try:
+            owner = await token_owner(self._paste_headers(method, values))
+        except GitHubError as error:
+            raise _pasted_error(error) from None
+        return "vendor" if owner.expires else "never"
+
+    async def identify_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> Identity:
+        """The GitHub account the token acts as: its id, and its login."""
+        try:
+            owner = await token_owner(self._paste_headers(method, values))
+        except GitHubError as error:
+            raise _pasted_error(error) from None
+        return Identity(str(owner.user_id), owner.login)
+
+    # ── ServiceAdapter ───────────────────────────────────────────────────────
+
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
+        if secret.values.get("method") is not None:
+            # The broker checks a pasted token instead, and never asks.
+            raise ServiceAdapterError("A token pasted for GitHub is not refreshed.")
         refresh_token = secret.values.get("refresh_token")
         refresh_expires_at = secret.values.get("refresh_expires_at")
         if (
@@ -236,6 +343,13 @@ class GitHubAdapter:
     async def check_grant(
         self, access_token: str, request: IssueRequest
     ) -> dict[str, Any]:
+        if request.pasted:
+            if request.resources:
+                raise ServiceAdapterError(
+                    "A grant on a pasted GitHub token reaches what the token does; "
+                    "it names no repositories. Grant GitHub to the agent again."
+                )
+            return {}
         installation_id, repository_ids = _reach(request.resources)
         try:
             reached = await self._connections.installation_repositories(
@@ -270,6 +384,15 @@ class GitHubAdapter:
 
     async def issue(self, access: AccessToken, request: IssueRequest) -> IssuedToken:
         resources = await self.check_grant(access.token, request)
+        if request.pasted:
+            # The owner's own token, which only GitHub can revoke: the broker
+            # checked it with GitHub under the connection's lock.
+            return IssuedToken(
+                token=access.token,
+                expires_at=access.expires_at,
+                resources=resources,
+                revocable=False,
+            )
         permissions = request.reach.get("permissions")
         if not isinstance(permissions, dict):
             raise ServiceAdapterError("GitHub grants name App permissions.")
@@ -297,6 +420,12 @@ class GitHubAdapter:
             raise _vendor_error(error) from None
 
     async def revoke_connection(self, secret: ConnectionSecret, method: str) -> bool:
+        if method != "oauth":
+            raise ConnectionNotRevocable(
+                "Switch has forgotten the pasted GitHub token but cannot revoke "
+                "it. Delete it in GitHub, under Settings, Developer settings, "
+                "Personal access tokens, to stop it working."
+            )
         token = secret.access_token
         if token is None:
             return False
@@ -309,6 +438,11 @@ class GitHubAdapter:
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]
     ) -> str:
+        if not resources:
+            return (
+                f"{agent_name} can use GitHub with your personal access token, "
+                "as far as it allows, acting as you."
+            )
         count = len(resources.get("repository_ids", []))
         noun = "repository" if count == 1 else "repositories"
         verb = "read and push to" if access == "write" else "read"

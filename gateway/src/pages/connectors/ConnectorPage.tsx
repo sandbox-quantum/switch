@@ -450,6 +450,13 @@ export default function ConnectorPage() {
                 {connected ? "Reconnect" : "Connect"}
               </Button>
             )}
+            {!connected && way === "web" && connection.paste.length > 0 && (
+              <Button variant="text" onClick={() => setPasteDialog("add")} disabled={leaving !== null}>
+                {connection.paste.some((offered) => offered.method === "token")
+                  ? "Use a token instead"
+                  : "Use keys instead"}
+              </Button>
+            )}
             {!connected && way === "paste" && (
               <Button variant="contained" onClick={() => setPasteDialog("add")}>
                 Connect

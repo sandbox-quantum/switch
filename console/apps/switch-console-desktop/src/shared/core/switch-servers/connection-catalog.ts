@@ -121,7 +121,8 @@ export const connectionCatalogEntrySchema = z.object({
   read_only_reason: z.string().nullable(),
   /**
    * Whether a grant hands the agent the owner's own token: on or off, at the
-   * connection's level. False for GitHub, whose grant names repositories.
+   * connection's level. False for GitHub through its App, whose grant names
+   * repositories; true for GitHub connected with a pasted token.
    */
   pass_through: z.boolean(),
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
@@ -181,6 +182,16 @@ export const connectionCatalogEntrySchema = z.object({
   organization_locked: z.boolean(),
 });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntrySchema>;
+
+/**
+ * Whether the service is GitHub reached through the Switch GitHub App, whose
+ * grants name repositories and a level. GitHub connected with a pasted token
+ * is on or off for an agent, like any service that hands out the owner's own
+ * token.
+ */
+export function githubThroughApp(entry: Pick<ConnectionCatalogEntry, 'slug' | 'pass_through'>) {
+  return entry.slug === 'github' && !entry.pass_through;
+}
 
 /** `GET /provider-connections/catalog`, which servers before service connections answer. */
 export const connectionCatalogSchema = z.object({

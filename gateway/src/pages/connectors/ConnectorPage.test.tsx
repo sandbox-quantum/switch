@@ -601,6 +601,43 @@ describe("connecting by pasting a token in place of a sign-in", () => {
     expect(await screen.findByText("Datadog is connected.")).toBeTruthy();
   });
 
+  it("offers a token beside a sign-in in the browser, as GitHub's in place of its App", async () => {
+    signedIn();
+    const token = pastedConnector().paste[0]!;
+    const calls = server(
+      serviceConnection({
+        slug: "github",
+        name: "GitHub",
+        publisher: "GitHub",
+        web_sign_in: true,
+        pass_through: false,
+        paste: [{ ...token, help_url: "https://docs.github.com/tokens" }],
+      }),
+      [],
+      null,
+      { "PUT /service-connections/github/paste": { warning: null, external_identity: "octocat" } },
+    );
+    renderPage("github");
+
+    expect(await screen.findByRole("button", { name: "Connect" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Use a token instead" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), {
+      target: { value: "github_pat_example" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/github/paste",
+        body: { method: "token", fields: { pat: "github_pat_example" }, choices: {} },
+      }),
+    );
+    expect(await screen.findByText("GitHub is connected.")).toBeTruthy();
+  });
+
   it("pastes keys instead where the server takes them", async () => {
     signedIn();
     const calls = server(pastedConnector(), [], null, {

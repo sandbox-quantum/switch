@@ -511,7 +511,7 @@ describe('the profile', () => {
   it('names the sign-in type and how long access lasts', () => {
     expect(signInLabel(entry())).toBe('Sign in at Example');
     expect(signInLabel(entry({ auth_type: 'api_key' }))).toBe('Key');
-    expect(signInLabel(entry({ slug: 'github' }))).toBe('GitHub App');
+    expect(signInLabel(entry({ slug: 'github', pass_through: false }))).toBe('GitHub App');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 3600 }))).toBe('1 hour');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 28_800 }))).toBe('8 hours');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 900 }))).toBe('15 minutes');

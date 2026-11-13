@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -21,18 +22,23 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from switch_core.config import SwitchConfig
 from switch_core.connections.adapters import (
     AccessToken,
+    ConnectionNotRevocable,
     ConnectionSecret,
     IssueRequest,
     ReauthorizationRequiredError,
     ServiceAdapterError,
     ServiceUnavailableError,
 )
+from switch_core.connections.adapters import github as github_adapter
 from switch_core.connections.adapters.github import GitHubAdapter, load_github_app
 from switch_core.connections.loader import CATALOG
+from switch_core.providers import github as github_provider
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubError,
     GitHubUnavailableError,
+    TokenOwner,
+    token_owner,
 )
 from switch_core.providers.github_installation import InstallationToken
 
@@ -56,6 +62,7 @@ def _request(access: str, resources: dict) -> IssueRequest:
         access=access,  # type: ignore[arg-type]
         reach=WRITE if access == "write" else READ,
         resources=resources,
+        pasted=False,
     )
 
 
@@ -87,7 +94,7 @@ def signer() -> AsyncMock:
 
 @pytest.fixture
 def adapter(github: AsyncMock, signer: AsyncMock) -> GitHubAdapter:
-    return GitHubAdapter(github, signer, read_only=False)
+    return GitHubAdapter(CATALOG["github"].definition, github, signer, read_only=False)
 
 
 class TestRefresh:
@@ -350,5 +357,184 @@ class TestSettings:
         assert app is not None and app.signer is None
         assert "GITHUB_APP_CONFIG_PATH" in caplog.text
         assert "not granted to agents" in caplog.text
-        adapter = GitHubAdapter(app.connections, app.signer, read_only=app.read_only)
+        adapter = GitHubAdapter(
+            CATALOG["github"].definition,
+            app.connections,
+            app.signer,
+            read_only=app.read_only,
+        )
         assert not adapter.can_issue
+
+
+TOKEN = CATALOG["github"].definition.auth.paste_method("token")
+
+
+class TestPastedToken:
+    def test_the_secret_is_the_token_itself(self, adapter: GitHubAdapter) -> None:
+        assert TOKEN is not None
+        secret = adapter.pasted_secret(TOKEN, {"pat": "github_pat_SYNTHETIC"}, {})
+
+        assert secret.values == {
+            "access_token": "github_pat_SYNTHETIC",
+            "method": "token",
+        }
+        pasted = adapter.pasted(secret)
+        assert pasted is not None
+        assert (pasted.method, pasted.values, pasted.choices) == (
+            TOKEN,
+            {"pat": "github_pat_SYNTHETIC"},
+            {},
+        )
+
+    def test_a_sign_in_holds_no_pasted_token(self, adapter: GitHubAdapter) -> None:
+        assert adapter.pasted(ConnectionSecret({"access_token": "ghu_x"})) is None
+
+    def test_a_method_github_no_longer_takes_must_be_pasted_again(
+        self, adapter: GitHubAdapter
+    ) -> None:
+        with pytest.raises(ReauthorizationRequiredError):
+            adapter.pasted(ConnectionSecret({"access_token": "x", "method": "keys"}))
+
+    @pytest.mark.parametrize(("expires", "ends"), [(True, "vendor"), (False, "never")])
+    async def test_github_says_whether_the_token_ends(
+        self, adapter: GitHubAdapter, monkeypatch, expires: bool, ends: str
+    ) -> None:
+        assert TOKEN is not None
+        seen: list[dict] = []
+
+        async def owner(headers: dict[str, str]) -> TokenOwner:
+            seen.append(headers)
+            return TokenOwner(1001, "ada-gh", expires=expires)
+
+        monkeypatch.setattr(github_adapter, "token_owner", owner)
+
+        assert await adapter.check_pasted(TOKEN, {"pat": "github_pat_X"}, {}) == ends
+        identity = await adapter.identify_pasted(TOKEN, {"pat": "github_pat_X"}, {})
+        assert (identity.account_id, identity.label) == ("1001", "ada-gh")
+        assert seen == [{"Authorization": "Bearer github_pat_X"}] * 2
+
+    async def test_a_refused_token_must_be_pasted_again(
+        self, adapter: GitHubAdapter, monkeypatch
+    ) -> None:
+        assert TOKEN is not None
+
+        async def refused(headers: dict[str, str]) -> TokenOwner:
+            raise GitHubAuthorizationError("401")
+
+        monkeypatch.setattr(github_adapter, "token_owner", refused)
+
+        with pytest.raises(ReauthorizationRequiredError, match="pasted token"):
+            await adapter.check_pasted(TOKEN, {"pat": "github_pat_X"}, {})
+
+    async def test_a_pasted_token_is_not_refreshed(
+        self, adapter: GitHubAdapter, github: AsyncMock
+    ) -> None:
+        with pytest.raises(ServiceAdapterError, match="not refreshed"):
+            await adapter.refresh(
+                ConnectionSecret({"access_token": "x", "method": "token"})
+            )
+        github.exchange.assert_not_called()
+
+    async def test_issue_hands_out_the_token_and_mints_nothing(
+        self, adapter: GitHubAdapter, signer: AsyncMock
+    ) -> None:
+        request = IssueRequest(
+            service="github", access="write", reach=WRITE, resources={}, pasted=True
+        )
+
+        issued = await adapter.issue(AccessToken("github_pat_X", None), request)
+
+        assert (
+            issued.token,
+            issued.expires_at,
+            issued.resources,
+            issued.revocable,
+        ) == (
+            "github_pat_X",
+            None,
+            {},
+            False,
+        )
+        signer.mint.assert_not_called()
+
+    async def test_a_pasted_token_cannot_be_revoked_by_switch(
+        self, adapter: GitHubAdapter, github: AsyncMock
+    ) -> None:
+        with pytest.raises(ConnectionNotRevocable, match="Delete it in GitHub"):
+            await adapter.revoke_connection(
+                ConnectionSecret({"access_token": "x", "method": "token"}), "token"
+            )
+        github.revoke.assert_not_called()
+
+    def test_the_summary_says_it_acts_as_the_owner(
+        self, adapter: GitHubAdapter
+    ) -> None:
+        assert adapter.summary("planner", "write", {}) == (
+            "planner can use GitHub with your personal access token, as far as "
+            "it allows, acting as you."
+        )
+
+
+def _github_answering(monkeypatch, handler) -> None:
+    real = httpx.AsyncClient
+
+    def client(**kwargs):
+        return real(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(github_provider.httpx, "AsyncClient", client)
+
+
+class TestTokenOwner:
+    async def test_reads_the_account_and_the_expiration_header(
+        self, monkeypatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url == "https://api.github.com/user"
+            assert request.headers["Authorization"] == "Bearer github_pat_X"
+            return httpx.Response(
+                200,
+                json={"id": 1001, "login": "ada-gh"},
+                headers={
+                    "GitHub-Authentication-Token-Expiration": "2027-01-01 00:00:00 UTC"
+                },
+            )
+
+        _github_answering(monkeypatch, handler)
+
+        owner = await token_owner({"Authorization": "Bearer github_pat_X"})
+
+        assert owner == TokenOwner(1001, "ada-gh", expires=True)
+
+    async def test_no_expiration_header_is_a_token_that_never_ends(
+        self, monkeypatch
+    ) -> None:
+        _github_answering(
+            monkeypatch,
+            lambda request: httpx.Response(200, json={"id": 1001, "login": "ada-gh"}),
+        )
+
+        owner = await token_owner({"Authorization": "Bearer ghp_X"})
+
+        assert owner.expires is False
+
+    @pytest.mark.parametrize(
+        ("status", "raised"),
+        [
+            (401, GitHubAuthorizationError),
+            (503, GitHubUnavailableError),
+            (403, GitHubError),
+        ],
+    )
+    async def test_refusals(self, monkeypatch, status: int, raised) -> None:
+        _github_answering(monkeypatch, lambda request: httpx.Response(status, json={}))
+
+        with pytest.raises(raised):
+            await token_owner({"Authorization": "Bearer x"})
+
+    async def test_an_answer_without_an_account_is_refused(self, monkeypatch) -> None:
+        _github_answering(
+            monkeypatch, lambda request: httpx.Response(200, json={"id": "1"})
+        )
+
+        with pytest.raises(GitHubError, match="did not name"):
+            await token_owner({"Authorization": "Bearer x"})
