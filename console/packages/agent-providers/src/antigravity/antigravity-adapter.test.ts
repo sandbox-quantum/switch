@@ -1,4 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { elicitationAnswer, elicitationQuestions } from '../acp/elicitation';
 import { FakeAppServer } from '../codex/fake-app-server';
@@ -758,4 +761,59 @@ it('auto-approves calls to any MCP server the session registered, not only Switc
     outcome: { outcome: 'selected', optionId: 'once' },
   });
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
+});
+
+it('loads user MCP servers from antigravity-cli settings.json and lets session servers win', async () => {
+  const { readAntigravityUserMcpServers } = await import('./antigravity-adapter');
+  const tempHome = mkdtempSync(join(tmpdir(), 'agy-mcp-'));
+  try {
+    const cliDir = join(tempHome, '.gemini', 'antigravity-cli');
+    mkdirSync(cliDir, { recursive: true });
+    writeFileSync(
+      join(cliDir, 'settings.json'),
+      JSON.stringify({
+        mcpServers: {
+          pencil: { command: '/bin/pencil', args: ['--stdio'], env: { FOO: 'bar' } },
+          remote: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer tok' } },
+          off: { command: '/bin/off', disabled: true },
+        },
+      })
+    );
+    const loaded = await readAntigravityUserMcpServers({ HOME: tempHome });
+    expect(loaded).toEqual({
+      pencil: {
+        transport: 'stdio',
+        command: '/bin/pencil',
+        args: ['--stdio'],
+        env: { FOO: 'bar' },
+      },
+      remote: {
+        transport: 'http',
+        url: 'https://example.com/mcp',
+        headers: { Authorization: 'Bearer tok' },
+      },
+    });
+
+    const adapter = createAntigravityAdapter();
+    await adapter.startSession({
+      sessionId: 'user-mcp',
+      cwd: '/work',
+      runtimeMode: 'auto',
+      env: { HOME: tempHome },
+      mcpServers: {
+        switch: { transport: 'http', url: 'http://127.0.0.1:9999/mcp' },
+        pencil: { transport: 'stdio', command: '/override', args: [] },
+      },
+      connectorMcpServers: [],
+    });
+    const newCall = servers.at(-1)!.received.find((m) => m.method === 'session/new');
+    const mcpServers = (
+      newCall?.params as { mcpServers: Array<{ name: string; command?: string }> } | undefined
+    )?.mcpServers;
+    expect(mcpServers).toBeDefined();
+    expect(mcpServers!.map((s) => s.name)).toEqual(['pencil', 'remote', 'switch']);
+    expect(mcpServers!.find((s) => s.name === 'pencil')?.command).toBe('/override');
+  } finally {
+    rmSync(tempHome, { recursive: true, force: true });
+  }
 });
