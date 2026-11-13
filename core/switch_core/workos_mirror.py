@@ -133,7 +133,7 @@ class WorkOSMirror:
             events = await self._directory.events(
                 EVENT_TYPES,
                 after=cursor.after,
-                range_start=cursor.started_at.isoformat(),
+                range_start=cursor.started_at,
             )
         except EventCursorRejected as error:
             await self._restart(fence, cursor, error.message)
@@ -165,7 +165,7 @@ class WorkOSMirror:
             if after is None or after == page_from:
                 return read
             events = await self._directory.events(
-                EVENT_TYPES, after=after, range_start=cursor.started_at.isoformat()
+                EVENT_TYPES, after=after, range_start=cursor.started_at
             )
         return read
 

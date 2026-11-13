@@ -34,6 +34,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -274,10 +275,10 @@ class WorkOSDirectory:
         return members
 
     async def events(
-        self, types: tuple[str, ...], *, after: str | None, range_start: str
+        self, types: tuple[str, ...], *, after: str | None, range_start: datetime
     ) -> list[dict[str, Any]]:
         """One page of events of `types`, oldest first: those after event
-        `after`, or from `range_start` (ISO 8601) when there is none yet.
+        `after`, or from `range_start` when there is none yet.
         Empty once there are no more. Each event is returned as WorkOS sent
         it, for the caller to skip one it can't read rather than lose the
         page. Raises `EventCursorRejected` when WorkOS refuses `after` or
@@ -290,7 +291,7 @@ class WorkOSDirectory:
         if after:
             params["after"] = after
         else:
-            params["range_start"] = range_start
+            params["range_start"] = _workos_time(range_start)
         try:
             page = await self._get("/events", params)
         except WorkOSRefused as error:
@@ -419,3 +420,11 @@ def _token_of(change: MemberChange) -> str:
     if change.access_token is None:
         raise DirectorySignInRequired(SIGN_IN_FIRST)
     return change.access_token
+
+
+def _workos_time(moment: datetime) -> str:
+    """`moment` as WorkOS reads a time: UTC, to the millisecond, ending in
+    `Z`. It refuses an offset such as `+00:00` as not ISO 8601."""
+    return (
+        moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    )

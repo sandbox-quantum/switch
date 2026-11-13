@@ -4,6 +4,7 @@ stand-in for the WorkOS API."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -27,6 +28,8 @@ from switch_core.workos_directory import (
 
 API = "https://workos.example.test"
 KEY = "sk_test_example"
+
+_ANY_TIME = datetime(2026, 11, 2, tzinfo=UTC)
 
 
 class _WorkOS:
@@ -457,15 +460,17 @@ class TestWhatTheMirrorReads:
         types = ("organization_membership.created", "organization.deleted")
 
         first = await directory.events(
-            types, after=None, range_start="2026-11-02T00:00:00+00:00"
+            types,
+            after=None,
+            range_start=datetime(2026, 11, 2, 1, 2, 3, 456789, tzinfo=UTC),
         )
-        await directory.events(types, after="event_1", range_start="unused")
+        await directory.events(types, after="event_1", range_start=_ANY_TIME)
 
         assert [event["id"] for event in first] == ["event_1"]
         assert seen[0].url.path == "/events"
         assert seen[0].url.params.get_list("events") == list(types)
         assert seen[0].url.params["order"] == "asc"
-        assert seen[0].url.params["range_start"] == "2026-11-02T00:00:00+00:00"
+        assert seen[0].url.params["range_start"] == "2026-11-02T01:02:03.456Z"
         assert "after" not in seen[0].url.params
         assert seen[1].url.params["after"] == "event_1"
         assert "range_start" not in seen[1].url.params
@@ -477,7 +482,7 @@ class TestWhatTheMirrorReads:
 
         with pytest.raises(DirectoryUnavailable):
             await directory.events(
-                ("organization.deleted",), after=None, range_start="x"
+                ("organization.deleted",), after=None, range_start=_ANY_TIME
             )
 
     async def test_an_event_is_handed_back_as_sent_for_the_caller_to_judge(
@@ -488,7 +493,7 @@ class TestWhatTheMirrorReads:
         )
 
         assert await directory.events(
-            ("organization.deleted",), after=None, range_start="x"
+            ("organization.deleted",), after=None, range_start=_ANY_TIME
         ) == [{"id": "event_1"}]
 
     @pytest.mark.parametrize("status", [400, 404, 422])
@@ -505,7 +510,7 @@ class TestWhatTheMirrorReads:
 
         with pytest.raises(EventCursorRejected):
             await directory.events(
-                ("organization.deleted",), after="event_old", range_start="x"
+                ("organization.deleted",), after="event_old", range_start=_ANY_TIME
             )
 
     @pytest.mark.parametrize(
@@ -530,7 +535,7 @@ class TestWhatTheMirrorReads:
 
         with pytest.raises(DirectoryUnavailable) as refused:
             await directory.events(
-                ("organization.deleted",), after="event_1", range_start="x"
+                ("organization.deleted",), after="event_1", range_start=_ANY_TIME
             )
         assert not isinstance(refused.value, EventCursorRejected)
         assert str(status) in refused.value.message

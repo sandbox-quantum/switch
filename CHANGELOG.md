@@ -582,6 +582,16 @@ version of their own to them without also giving them a release of their own.
   yet". Both now show what happened.
 - **The retention window picker sits beside "Delete messages older than"
   again** in Workspace settings, rather than stretching across the page.
+- **The WorkOS directory mirror reads WorkOS's events again.** It asked for
+  them from a time written with a `+00:00` offset, which WorkOS refuses as
+  not ISO 8601, so every 30-second pass failed and changes made in WorkOS
+  reached Switch only through the daily check, a restart or a new link. It
+  now sends the time as WorkOS reads it (UTC, ending in `Z`).
+- **A members service at an address Switch won't connect to is reported, not
+  a server error.** With `ORGANIZATION_DIRECTORY=workos`, an Org Admin's role
+  change or removal whose members-service URL resolves to a private address
+  (one not allowed by `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) answered 500. It now
+  says the members service could not be reached, and logs why at `error`.
 - **A GitLab disconnect or reconnect no longer says agents keep their
   access.** Revoking the sign-in at GitLab also ends the access tokens agents
   hold, so neither warns any more that they may keep working until they

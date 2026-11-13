@@ -15,6 +15,7 @@ from switch_core.organization_directory import (
     DirectorySignInRequired,
     DirectoryUnavailable,
 )
+from switch_core.outbound import OutboundURLRefused
 
 URL = "https://members.example.test"
 TOKEN = "token-of-the-admin"
@@ -110,3 +111,18 @@ class TestRefusals:
 
         with pytest.raises(DirectoryUnavailable):
             await _service(handler).remove(TOKEN, "om_1")
+
+    async def test_an_address_switch_refuses_is_unavailable(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise OutboundURLRefused(
+                "members.example.test resolves to 10.0.0.1, which is not a public address."
+            )
+
+        with pytest.raises(DirectoryUnavailable, match="its address is refused"):
+            await _service(handler).set_role(TOKEN, "om_1", "org_admin")
+        assert any(
+            r.levelname == "ERROR" and "not a public address" in r.getMessage()
+            for r in caplog.records
+        )

@@ -31,6 +31,7 @@ from switch_core.organization_directory import (
     DirectorySignInRequired,
     DirectoryUnavailable,
 )
+from switch_core.outbound import OutboundURLRefused
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,11 @@ class MembersService:
         except httpx.HTTPError as error:
             raise DirectoryUnavailable(
                 f"The members service could not be reached ({type(error).__name__})."
+            ) from error
+        except OutboundURLRefused as error:
+            logger.error("The members service is refused as a destination: %s", error)
+            raise DirectoryUnavailable(
+                "The members service could not be reached (its address is refused)."
             ) from error
         if response.status_code == 401:
             if _ran_out(access_token):
