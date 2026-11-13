@@ -190,6 +190,21 @@ def _run(connection: Connection, alembic_cfg: AlembicConfig, target: str) -> Non
             environment.run_migrations()
 
 
+def _upgrade(connection: Connection, alembic_cfg: AlembicConfig, target: str) -> None:
+    """Upgrade to `target`, a revision short of head, with the same recorder."""
+    script = ScriptDirectory.from_config(alembic_cfg)
+
+    def migrate(revision: Any, context: Any) -> Any:
+        return script._upgrade_revs(target, revision)
+
+    with EnvironmentContext(alembic_cfg, script, fn=migrate) as environment:
+        environment.configure(
+            connection=connection, on_version_apply=[record_expand_only]
+        )
+        with environment.begin_transaction():
+            environment.run_migrations()
+
+
 async def test_applying_the_chain_records_the_expand_only_revisions(
     scratch_engine: AsyncEngine, alembic_cfg: AlembicConfig
 ) -> None:
@@ -240,9 +255,9 @@ async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
     script = ScriptDirectory.from_config(alembic_cfg)
     revision = script.get_revision("ab802e19c401")
     assert isinstance(revision.down_revision, str)
+    assert revision.module.expand_only is True
     # The previous build lacks this revision and everything chained after it.
     newer = list(script.iterate_revisions("heads", revision.down_revision))
-    assert all(r.module.expand_only is True for r in newer)
     newer_files = {Path(r.path).name for r in newer}
 
     old_scripts = tmp_path / "previous-build"
@@ -257,8 +272,9 @@ async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
         revision.down_revision
     ]
 
+    # Only as far as this revision: what a later one does is its own test.
     async with scratch_engine.begin() as connection:
-        await connection.run_sync(_run, alembic_cfg, "head")
+        await connection.run_sync(_upgrade, alembic_cfg, revision.revision)
     async with scratch_engine.connect() as connection:
         parent = await connection.scalar(
             text(
