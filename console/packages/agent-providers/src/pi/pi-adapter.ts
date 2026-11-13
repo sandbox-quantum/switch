@@ -42,6 +42,9 @@ import { PI_SIGN_IN_REQUIRED } from './sign-in';
 const PROVIDER = 'pi';
 const TITLE_LIMIT = 200;
 
+// Windows keeps a directory busy for a moment after the process using it exits.
+const REMOVE_OPTIONS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
+
 /**
  * The only commands sent to Pi. Its queue, compaction and retry settings
  * commands save to the user's `settings.json`, and a Switch session must not
@@ -295,7 +298,7 @@ export class PiAdapter implements ProviderAdapter {
         onExit: (reason) => this.exited(input.sessionId, reason),
       });
     } catch (cause) {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, REMOVE_OPTIONS);
       const message = `Could not start Pi: ${messageOf(cause)}`;
       throw new ProviderSessionError(PROVIDER, input.sessionId, message, { cause });
     }
@@ -351,7 +354,7 @@ export class PiAdapter implements ProviderAdapter {
     } catch (cause) {
       this.sessions.delete(state.id);
       await client.dispose();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, REMOVE_OPTIONS);
       if (cause instanceof ProviderSessionError) throw cause;
       throw new ProviderSessionError(
         PROVIDER,
@@ -464,7 +467,7 @@ export class PiAdapter implements ProviderAdapter {
       await state.client.dispose();
     } finally {
       this.exited(id, 'Session stopped');
-      await rm(state.dir, { recursive: true, force: true });
+      await rm(state.dir, REMOVE_OPTIONS);
     }
   }
 
@@ -1063,7 +1066,7 @@ export class PiAdapter implements ProviderAdapter {
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
     this.emit(state, { type: 'session.exited', reason: why });
     if (!stopping)
-      rm(state.dir, { recursive: true, force: true }).catch((error: unknown) =>
+      rm(state.dir, REMOVE_OPTIONS).catch((error: unknown) =>
         this.logger.error('Could not remove a Pi session directory', { error: messageOf(error) })
       );
   }
