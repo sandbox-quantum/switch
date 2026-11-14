@@ -12,6 +12,7 @@ import { cursorAcp } from '../cursor/cursor-adapter';
 import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
 import { droidAcp } from '../droid/droid-adapter';
 import { gooseAcp } from '../goose/goose-adapter';
+import { grokBuildAcp } from '../grok-build/grok-build-acp';
 import { junieAcp } from '../junie/junie-adapter';
 import { kiroAcp } from '../kiro/kiro-acp';
 import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
@@ -135,6 +136,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   acpProviderRuntime(droidAcp),
   acpProviderRuntime(clineAcp),
   acpProviderRuntime(junieAcp),
+  acpProviderRuntime(grokBuildAcp),
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));

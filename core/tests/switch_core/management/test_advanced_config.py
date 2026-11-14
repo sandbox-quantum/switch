@@ -17,7 +17,7 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
         DefinitionV1(provider="gemini")
     assert (
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
-        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie"
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie, grok-build"
         in str(raised.value)
     )
 
@@ -41,6 +41,7 @@ def test_the_served_provider_list() -> None:
         ("droid", "Factory Droid"),
         ("cline", "Cline CLI"),
         ("junie", "Junie"),
+        ("grok-build", "Grok Build"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
@@ -49,6 +50,7 @@ def test_the_served_provider_list() -> None:
     assert by_id["cursor"]["advanced_fields"] == []
     assert by_id["kiro"]["advanced_fields"] == []
     assert by_id["droid"]["advanced_fields"] == []
+    assert by_id["grok-build"]["advanced_fields"] == []
 
 
 def test_the_served_schema() -> None:
@@ -70,6 +72,7 @@ def test_the_served_schema() -> None:
         "droid",
         "cline",
         "junie",
+        "grok-build",
     }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
@@ -98,7 +101,11 @@ def test_the_served_schema() -> None:
     assert providers["goose"] == {"fields": []}
     assert providers["qwen"] == {"fields": []}
     assert providers["droid"] == {"fields": []}
+<<<<<<< HEAD
+    assert providers["grok-build"] == {"fields": []}
+=======
     assert providers["junie"] == {"fields": []}
+>>>>>>> upstream/main
     claude = {field["key"]: field for field in providers["claude"]["fields"]}
     assert claude["isolation"] == {
         "key": "isolation",
@@ -162,6 +169,7 @@ def test_the_served_schema() -> None:
         ("cursor", {}),
         ("kiro", {}),
         ("droid", {}),
+        ("grok-build", {}),
     ],
 )
 def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
@@ -175,6 +183,7 @@ def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
         ("cursor", {"effort": "high"}, "it has no advanced configuration"),
         ("kiro", {"effort": "high"}, "it has no advanced configuration"),
         ("droid", {"effort": "high"}, "it has no advanced configuration"),
+        ("grok-build", {"effort": "high"}, "it has no advanced configuration"),
         ("claude", {"effort": "huge"}, "claude setting 'effort' must be one of"),
         ("claude", {"effort": ""}, "leave the field out to leave it unset"),
         ("claude", {"effort": None}, "leave the field out to leave it unset"),
