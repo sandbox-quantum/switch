@@ -3414,6 +3414,16 @@ export async function setServiceGrant(
 }
 
 /** A catalog service, with the signed-in person's connection to it. */
+/**
+ * Whether the service is GitHub reached through the Switch GitHub App, whose
+ * grants name repositories and a level. GitHub connected with a pasted token
+ * is on or off for an agent, like any service that hands out the owner's own
+ * token.
+ */
+export function githubThroughApp(service: Pick<ServiceConnection, "slug" | "pass_through">): boolean {
+  return service.slug === "github" && !service.pass_through;
+}
+
 export interface ServiceConnection {
   slug: string;
   name: string;
@@ -3424,6 +3434,9 @@ export interface ServiceConnection {
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: string | null;
   /** Whether it waits on the server's operator setting up its app under Connectors. */
+  /** Why a person cannot sign in to it here though pasting a credential
+   * connects it (GitHub with no App set up); null where signing in works. */
+  sign_in_unavailable_reason: string | null;
   server_setup_needed: boolean;
   /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
   app_source: "organization" | "server";
@@ -3434,7 +3447,11 @@ export interface ServiceConnection {
    */
   read_only_reason: string | null;
   status: "not_connected" | "active" | "needs_reauthorization";
-  /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
+  /**
+   * Whether a grant hands the agent the owner's own token: on or off, at the
+   * connection's level. False for GitHub through its App, whose grant names
+   * repositories; true for GitHub connected with a pasted token.
+   */
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: number | null;
@@ -3491,6 +3508,10 @@ export interface ServicePasteMethod {
   label: string;
   fields: ServiceKeyField[];
   help_url: string | null;
+  /** The vendor's form for a new one, already filled in for Switch, where it offers one. */
+  create_url: string | null;
+  /** The vendor's page listing the ones a person has made, where one is deleted. */
+  manage_url: string | null;
   expires: "vendor" | "never";
   access_note: string;
 }

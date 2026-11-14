@@ -2469,9 +2469,9 @@ class TestReplacedClient:
 
 
 class TestWithdrawnMethod:
-    """A connection made in a way its entry no longer offers (a token pasted
-    for a service people now sign in to) must be made again, and nothing it
-    holds is used meanwhile."""
+    """A connection made in a way its entry no longer offers (keys pasted
+    for a service people now sign in to, or paste a token for) must be made
+    again, and nothing it holds is used meanwhile."""
 
     async def _made_by(
         self, session_factory: async_sessionmaker[AsyncSession], world: World
@@ -2480,7 +2480,7 @@ class TestWithdrawnMethod:
             await session.execute(
                 update(ServiceConnection)
                 .where(ServiceConnection.user_id == world.owner.id)
-                .values(method="token")
+                .values(method="keys")
             )
             await session.commit()
 

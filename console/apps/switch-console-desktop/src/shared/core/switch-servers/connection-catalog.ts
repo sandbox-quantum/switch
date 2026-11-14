@@ -31,6 +31,11 @@ export const servicePasteMethodSchema = z.object({
   label: z.string(),
   fields: z.array(serviceKeyFieldSchema).min(1),
   help_url: z.string().nullable(),
+  /**
+   * The vendor's form for a new one, already filled in with what Switch asks
+   * for, where it has one; a server from before it sends none.
+   */
+  create_url: z.string().nullable().default(null),
   /** `vendor`: it ends on the date it was made to end; `never`: only the vendor can revoke it. */
   expires: z.enum(['vendor', 'never']),
   /** What a connection made with it reaches, said in place of an access level. */
@@ -113,6 +118,17 @@ export const connectionCatalogEntrySchema = z.object({
    */
   unavailable_code: z.enum(UNAVAILABLE_CODES).nullable(),
   /**
+   * Why a person cannot sign in to it here though pasting a credential
+   * connects it (GitHub with no App set up); null where signing in works,
+   * and from a server that predates it.
+   */
+  sign_in_unavailable_reason: z.string().nullable(),
+  /**
+   * Whether it, or signing in to it, waits on the server's operator setting
+   * up its app. False from a server that predates it.
+   */
+  server_setup_needed: z.boolean(),
+  /**
    * Why it can be granted for reading only on the server (its GitHub App
    * lacks the write permissions), for a form to say beside the write choice
    * it disables. Null where writing can be granted too, and from a server
@@ -121,7 +137,8 @@ export const connectionCatalogEntrySchema = z.object({
   read_only_reason: z.string().nullable(),
   /**
    * Whether a grant hands the agent the owner's own token: on or off, at the
-   * connection's level. False for GitHub, whose grant names repositories.
+   * connection's level. False for GitHub through its App, whose grant names
+   * repositories; true for GitHub connected with a pasted token.
    */
   pass_through: z.boolean(),
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
@@ -182,6 +199,16 @@ export const connectionCatalogEntrySchema = z.object({
 });
 export type ConnectionCatalogEntry = z.infer<typeof connectionCatalogEntrySchema>;
 
+/**
+ * Whether the service is GitHub reached through the Switch GitHub App, whose
+ * grants name repositories and a level. GitHub connected with a pasted token
+ * is on or off for an agent, like any service that hands out the owner's own
+ * token.
+ */
+export function githubThroughApp(entry: Pick<ConnectionCatalogEntry, 'slug' | 'pass_through'>) {
+  return entry.slug === 'github' && !entry.pass_through;
+}
+
 /** `GET /provider-connections/catalog`, which servers before service connections answer. */
 export const connectionCatalogSchema = z.object({
   connections: z.array(
@@ -191,6 +218,8 @@ export const connectionCatalogSchema = z.object({
         connectable: true,
         unavailable_reason: true,
         unavailable_code: true,
+        sign_in_unavailable_reason: true,
+        server_setup_needed: true,
         read_only_reason: true,
         pass_through: true,
         token_lifetime: true,
@@ -227,6 +256,8 @@ export const serviceConnectionsSchema = z.object({
       unavailable_reason: z.string().nullable(),
       // Absent from a Switch that predates them.
       unavailable_code: z.string().nullable().default(null),
+      sign_in_unavailable_reason: z.string().nullable().default(null),
+      server_setup_needed: z.boolean().default(false),
       read_only_reason: z.string().nullable().default(null),
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),

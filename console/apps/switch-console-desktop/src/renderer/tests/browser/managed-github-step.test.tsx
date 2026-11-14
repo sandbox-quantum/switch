@@ -23,8 +23,14 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
+import { GitHubTokenStep } from '@renderer/features/switch-servers/github-token-step';
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
+import type { ServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
+import type {
+  ConnectionCatalogEntry,
+  ServicePasteMethod,
+} from '@shared/core/switch-servers/connection-catalog';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -43,7 +49,12 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(onBack: () => void, onDone?: () => void): Promise<void> {
+async function render(
+  onBack: () => void,
+  onDone?: () => void,
+  onUseToken?: () => void,
+  appUnavailable: string | null = null
+): Promise<void> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -51,7 +62,13 @@ async function render(onBack: () => void, onDone?: () => void): Promise<void> {
     root!.render(
       <Dialog open>
         <DialogContent>
-          <ManagedGitHubStep serverId="server" onBack={onBack} onDone={onDone} />
+          <ManagedGitHubStep
+            serverId="server"
+            onBack={onBack}
+            onDone={onDone}
+            onUseToken={onUseToken}
+            appUnavailable={appUnavailable}
+          />
         </DialogContent>
       </Dialog>
     )
@@ -192,7 +209,12 @@ it('keeps its minute when the page around it renders again', async () => {
       root!.render(
         <Dialog open>
           <DialogContent>
-            <ManagedGitHubStep serverId="server" onBack={() => {}} onConnected={() => {}} />
+            <ManagedGitHubStep
+              serverId="server"
+              onBack={() => {}}
+              onConnected={() => {}}
+              appUnavailable={null}
+            />
           </DialogContent>
         </Dialog>
       )
@@ -222,4 +244,125 @@ it('waits a new minute for a sign-in started again after Cancel', async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+function way(title: string): HTMLButtonElement | undefined {
+  return [...dialog().querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((row) =>
+    row.textContent?.includes(title)
+  );
+}
+
+it('where the server takes a token, sets the App and a token out as a choice, the App first', async () => {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'not_connected',
+    install_url: 'https://github.com/apps/example/installations/new',
+  });
+  const onUseToken = vi.fn();
+  await render(
+    () => {},
+    () => {},
+    onUseToken
+  );
+
+  await vi.waitFor(() => expect(way('Switch GitHub App')).toBeDefined());
+  expect(way('Switch GitHub App')!.getAttribute('aria-checked')).toBe('true');
+  expect(way('Switch GitHub App')!.textContent).toContain('Best for most people, and for teams');
+  expect(way('Switch GitHub App')!.textContent).toContain('Recommended');
+  expect(way('Personal access token')!.textContent).toContain('only GitHub can revoke it');
+  expect(way('Personal access token')!.textContent).not.toContain('Recommended');
+  expect(button(/^connect github\s*$/i, dialog())).toBeDefined();
+
+  await act(async () => way('Personal access token')!.click());
+  expect(button(/^connect github\s*$/i, dialog())).toBeUndefined();
+  await act(async () => button(/^continue$/i, dialog())!.click());
+  expect(onUseToken).toHaveBeenCalledOnce();
+  expect(switchServers.startGitHubConnection).not.toHaveBeenCalled();
+});
+
+it('with no App on the server, shows the App as not set up and starts on the token', async () => {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'not_connected',
+    install_url: null,
+  });
+  const onUseToken = vi.fn();
+  const reason =
+    "GitHub's connector app isn't set up on this server yet. Whoever runs Switch can set it up.";
+  await render(
+    () => {},
+    () => {},
+    onUseToken,
+    reason
+  );
+
+  await vi.waitFor(() => expect(way('Switch GitHub App')).toBeDefined());
+  const app = way('Switch GitHub App')!;
+  expect(app.disabled).toBe(true);
+  expect(app.getAttribute('aria-checked')).toBe('false');
+  expect(app.textContent).toContain('Not set up here');
+  expect(app.textContent).toContain(reason);
+  expect(app.textContent).not.toContain('Recommended');
+  expect(way('Personal access token')!.getAttribute('aria-checked')).toBe('true');
+  expect(way('Personal access token')!.textContent).toContain('Works now');
+  expect(button(/^connect github\s*$/i, dialog())).toBeUndefined();
+  await act(async () => button(/^continue$/i, dialog())!.click());
+  expect(onUseToken).toHaveBeenCalledOnce();
+});
+
+it('without a token in its place, offers the App alone', async () => {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'not_connected',
+    install_url: 'https://github.com/apps/example/installations/new',
+  });
+  await render(() => {});
+
+  await vi.waitFor(() => expect(button(/^connect github\s*$/i, dialog())).toBeDefined());
+  expect(way('Personal access token')).toBeUndefined();
+});
+
+it("the token step opens GitHub's form filled in for Switch, saying what it asks for", async () => {
+  const method: ServicePasteMethod = {
+    method: 'token',
+    label: 'Personal access token',
+    fields: [
+      { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
+    ],
+    help_url: 'https://docs.github.example.test/tokens',
+    create_url:
+      'https://github.com/settings/personal-access-tokens/new?name=Switch%20agents&expires_in=30&contents=write&pull_requests=write',
+    expires: 'vendor',
+    access_note: 'Reaches what your token allows.',
+  };
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      <Dialog open>
+        <DialogContent>
+          <GitHubTokenStep
+            calls={{} as ServiceCalls}
+            connection={
+              { name: 'GitHub', connectable: true, token_lifetime: null } as ConnectionCatalogEntry
+            }
+            method={method}
+            onBack={() => {}}
+            onConnected={() => {}}
+          />
+        </DialogContent>
+      </Dialog>
+    )
+  );
+
+  await vi.waitFor(() => expect(button(/create a token in github/i, dialog())).toBeDefined());
+  const asks = [...dialog().querySelectorAll('[aria-label="What the form asks for"] li')].map(
+    (item) => item.textContent
+  );
+  expect(asks).toEqual([
+    'Code: read and write',
+    'Pull requests: read and write',
+    'Expires in 30 days',
+  ]);
+  expect(button(/how tokens work/i, dialog())).toBeDefined();
+  expect(dialog().textContent).toContain('2. Paste it here');
+  expect(dialog().textContent).not.toContain('How to make a token in GitHub');
 });

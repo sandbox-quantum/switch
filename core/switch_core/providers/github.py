@@ -88,6 +88,63 @@ def sso_hidden_organizations(header: str | None) -> list[int]:
 
 
 @dataclass(frozen=True)
+class TokenOwner:
+    """The account a personal access token acts as, and whether GitHub says
+    it ends: `expires` where GitHub names its expiration date
+    (`GitHub-Authentication-Token-Expiration`), which it does for every
+    token made with one."""
+
+    user_id: int
+    login: str
+    expires: bool
+
+
+async def token_owner(headers: dict[str, str]) -> TokenOwner:
+    """`GET /user` with a personal access token in `headers`."""
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            response = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    **headers,
+                    "Accept": "application/json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+    except httpx.HTTPError:
+        raise GitHubUnavailableError(
+            "Could not reach GitHub to check the token. Please try again."
+        ) from None
+    if response.status_code == 401:
+        raise GitHubAuthorizationError(
+            "GitHub refused the token, which may be wrong, revoked or expired."
+        )
+    if rate_limited(response) or response.status_code >= 500:
+        raise GitHubUnavailableError(
+            "GitHub is unavailable or reached its rate limit. Please try again."
+        )
+    if response.status_code != 200:
+        raise GitHubError(
+            f"GitHub would not say whose the token is (HTTP {response.status_code})."
+        )
+    try:
+        user = response.json()
+    except ValueError:
+        raise GitHubError("GitHub's answer for the token is not JSON.") from None
+    if (
+        not isinstance(user, dict)
+        or type(user.get("id")) is not int
+        or not isinstance(user.get("login"), str)
+        or not user["login"]
+    ):
+        raise GitHubError("GitHub did not name the token's account.")
+    expiration = response.headers.get("GitHub-Authentication-Token-Expiration")
+    return TokenOwner(
+        user["id"], user["login"], bool(expiration and expiration.strip())
+    )
+
+
+@dataclass(frozen=True)
 class GitHubReach:
     """The App's installations a person reaches, and the organizations whose
     single sign-on hid installations from their sign-in (`sso_hidden`), which

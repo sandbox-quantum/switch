@@ -28,6 +28,8 @@ function service(
     status: 'connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: null,
@@ -74,6 +76,15 @@ describe("an agent's connection cards", () => {
       ['github', 'github'],
       ['atlassian', 'on-off'],
       ['datadog', 'on-off'],
+    ]);
+  });
+
+  it('turns GitHub on or off, like the rest, where it was connected with a pasted token', () => {
+    expect(
+      slugs([service('github', { pass_through: true, method: 'token' }), service('atlassian')], [])
+    ).toEqual([
+      ['github', 'on-off'],
+      ['atlassian', 'on-off'],
     ]);
   });
 

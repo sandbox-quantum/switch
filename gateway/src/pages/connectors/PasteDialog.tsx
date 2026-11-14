@@ -1,5 +1,7 @@
+import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import {
   Alert,
+  Chip,
   Button,
   CircularProgress,
   Dialog,
@@ -17,7 +19,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import { type ServiceConnection, type ServicePasteMethod, connectServiceWithPaste } from "../../data/api";
-import { CONSOLE_SIGN_IN_NOTE, pastedLasts } from "./connectorProfile";
+import { CONSOLE_SIGN_IN_NOTE, pastedLasts, prefilledAccess } from "./connectorProfile";
 
 /** What the person picked for the service's choices: what they connected
  * with before, else each list's first. */
@@ -86,21 +88,63 @@ export default function PasteDialog({
   };
 
   return (
-    <Dialog open onClose={busy ? undefined : onClose} maxWidth="xs" fullWidth>
-      <DialogTitle>{replacing ? `Replace your ${connection.name} ${what}` : `Connect ${connection.name}`}</DialogTitle>
+    <Dialog open onClose={busy ? undefined : onClose} maxWidth={method.create_url ? "sm" : "xs"} fullWidth>
+      <DialogTitle>
+        {replacing
+          ? `Replace your ${connection.name} ${what}`
+          : method.method === "token"
+            ? `Connect ${connection.name} with a ${method.label.toLowerCase()}`
+            : `Connect ${connection.name}`}
+      </DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
-          <DialogContentText>
-            Switch checks it with {vendor} before saving, and never shows it back.
-            {method.help_url && (
-              <>
-                {" "}
-                <Link href={method.help_url} target="_blank" rel="noreferrer">
-                  Where to make {method.method === "token" ? "one" : "them"}
-                </Link>
-              </>
-            )}
-          </DialogContentText>
+          {method.create_url ? (
+            <Stack spacing={1.25} component="section" aria-label={`Create a ${what} in ${vendor}`}>
+              <Typography variant="subtitle2" component="h3">
+                1. Create a {what} in {vendor}
+              </Typography>
+              <DialogContentText>
+                {vendor}&apos;s form opens filled in with what agents need. Choose what it can reach, then generate
+                it and copy it.
+              </DialogContentText>
+              <Stack direction="row" spacing={0.75} useFlexGap sx={{ flexWrap: "wrap" }} aria-label="Filled in for you">
+                {prefilledAccess(method.create_url).map((said) => (
+                  <Chip key={said} size="small" variant="outlined" label={said} />
+                ))}
+              </Stack>
+              <Stack direction="row" spacing={2} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
+                <Button
+                  variant="outlined"
+                  href={method.create_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  endIcon={<OpenInNewOutlined />}
+                >
+                  Create a {what} in {vendor}
+                </Button>
+                {method.help_url && (
+                  <Link href={method.help_url} target="_blank" rel="noreferrer" variant="body2">
+                    How {what}s work
+                  </Link>
+                )}
+              </Stack>
+              <Typography variant="subtitle2" component="h3" sx={{ pt: 1 }}>
+                2. Paste it here
+              </Typography>
+            </Stack>
+          ) : (
+            <DialogContentText>
+              Switch checks it with {vendor} before saving, and never shows it back.
+              {method.help_url && (
+                <>
+                  {" "}
+                  <Link href={method.help_url} target="_blank" rel="noreferrer">
+                    Where to make {method.method === "token" ? "one" : "them"}
+                  </Link>
+                </>
+              )}
+            </DialogContentText>
+          )}
           {(connection.sign_in_choices ?? []).map((field) => (
             <TextField
               key={field.name}
@@ -141,15 +185,22 @@ export default function PasteDialog({
               label={field.label}
               type={field.secret ? "password" : "text"}
               autoComplete="off"
-              helperText={field.help ?? undefined}
+              helperText={
+                field.help ??
+                (method.create_url
+                  ? `Switch checks it with ${vendor}, keeps it encrypted, and never shows it again.`
+                  : undefined)
+              }
               value={values[field.name] ?? ""}
               onChange={(event) => setValues({ ...values, [field.name]: event.target.value })}
             />
           ))}
           <Typography variant="caption" color="text.secondary">
-            {pastedLasts(connection.name, method.expires)} {method.access_note}
+            {method.create_url
+              ? method.access_note
+              : `${pastedLasts(connection.name, method.expires)} ${method.access_note}`}
           </Typography>
-          {!replacing && (
+          {!replacing && !connection.web_sign_in && connection.sign_in_unavailable_reason === null && (
             <Typography variant="caption" color="text.secondary">
               {CONSOLE_SIGN_IN_NOTE}
             </Typography>

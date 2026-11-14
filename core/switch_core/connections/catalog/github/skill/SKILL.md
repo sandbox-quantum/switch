@@ -32,6 +32,12 @@ nothing to set up or renew.
   changed, your owner has to grant it again.
 - Through the grant, pushes, pull requests, comments and reviews appear as the
   Switch GitHub App's bot, not as your owner.
+- Your owner may have connected GitHub with a token of their own in place of
+  the Switch GitHub App. Then the grant is not limited to chosen repositories:
+  it reaches whatever your owner let that token reach, and everything you do
+  appears as your owner, not as the App's bot. Keep to the repositories the
+  user asked you to work on all the same, and ask before acting anywhere
+  else.
 - Never print, log or store a credential, and leave git's credential settings
   and `gh`'s sign-in alone.
 

@@ -218,7 +218,7 @@ describe("the Connectors catalogue", () => {
     renderPage();
 
     fireEvent.click(await screen.findByRole("button", { name: "Connect Datadog" }));
-    const dialog = await screen.findByRole("dialog", { name: "Connect Datadog" });
+    const dialog = await screen.findByRole("dialog", { name: "Connect Datadog with a personal access token" });
     expect(within(dialog).getByRole("combobox", { name: "Datadog site" })).toBeTruthy();
     expect(within(dialog).getByLabelText("Personal access token")).toBeTruthy();
   });

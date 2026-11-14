@@ -13,7 +13,7 @@ import ConnectorPage from "./ConnectorPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
-function signedIn({ admin = false, orgAdmin = false } = {}) {
+function signedIn({ admin = false, orgAdmin = false, operator = false } = {}) {
   vi.mocked(useAuth).mockReturnValue({
     session: {
       user: { id: "me", name: "Ada", email: "ada@example.test", is_operator: false },
@@ -22,9 +22,10 @@ function signedIn({ admin = false, orgAdmin = false } = {}) {
     capabilities: {
       administersWorkspace: admin,
       administersOrganization: orgAdmin,
+      isOperator: operator,
       features: { gateway_v2: true },
     },
-    isOperator: false,
+    isOperator: operator,
   } as unknown as ReturnType<typeof useAuth>);
 }
 
@@ -427,6 +428,78 @@ describe("a connector's page", () => {
     );
   });
 
+  it("says a pasted token keeps working after disconnecting, and shows why it was not revoked", async () => {
+    signedIn();
+    const calls = server(
+      pastedConnector({
+        status: "active",
+        can_revoke: true,
+        method: "token",
+        choices: { site: "datadoghq.eu" },
+        external_identity: "ada@example.test",
+      }),
+      [],
+      null,
+      {
+        "DELETE /service-connections/datadog": {
+          warning: "Switch has forgotten the pasted Datadog token but cannot revoke it.",
+        },
+      },
+    );
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(/Switch forgets your personal access token but cannot revoke it/),
+    ).toBeTruthy();
+    expect(within(dialog).queryByText(/what was handed out to them is revoked/)).toBeNull();
+    expect(within(dialog).getByRole("link", { name: "How to delete it" }).getAttribute("href")).toBe(
+      "https://docs.example.test/tokens",
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(calls.map((c) => `${c.method} ${c.path}`)).toContain("DELETE /service-connections/datadog"),
+    );
+    expect(await screen.findByText("Switch has forgotten the pasted Datadog token but cannot revoke it.")).toBeTruthy();
+  });
+
+  it("links a pasted GitHub token's disconnect to the page it is deleted on", async () => {
+    signedIn();
+    const token = pastedConnector().paste[0]!;
+    const page = "https://github.com/settings/personal-access-tokens";
+    server(
+      serviceConnection({
+        slug: "github",
+        name: "GitHub",
+        publisher: "GitHub",
+        status: "active",
+        can_revoke: true,
+        method: "token",
+        external_identity: "octocat",
+        paste: [{ ...token, manage_url: page }],
+      }),
+      [],
+      null,
+      {
+        "DELETE /service-connections/github": {
+          warning: `Switch has forgotten the pasted GitHub token but cannot revoke it. Delete it in GitHub to stop it working: ${page}`,
+        },
+      },
+    );
+    renderPage("github");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("link", { name: "Delete it in GitHub" }).getAttribute("href")).toBe(page);
+    expect(within(dialog).queryByRole("link", { name: "How to delete it" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    const shown = "github.com/settings/personal\u2011access\u2011tokens";
+    expect((await screen.findByRole("link", { name: shown })).getAttribute("href")).toBe(page);
+  });
+
   it("goes back to the page that opened it", async () => {
     signedIn();
     server(serviceConnection());
@@ -599,6 +672,107 @@ describe("connecting by pasting a token in place of a sign-in", () => {
       }),
     );
     expect(await screen.findByText("Datadog is connected.")).toBeTruthy();
+  });
+
+  it("sets GitHub's App and a token side by side, with a link to a token made for Switch", async () => {
+    signedIn();
+    const token = pastedConnector().paste[0]!;
+    const calls = server(
+      serviceConnection({
+        slug: "github",
+        name: "GitHub",
+        publisher: "GitHub",
+        web_sign_in: true,
+        pass_through: false,
+        paste: [
+          {
+            ...token,
+            help_url: "https://docs.github.com/tokens",
+            create_url: "https://github.com/settings/personal-access-tokens/new?name=Switch&expires_in=30&contents=write",
+          },
+        ],
+      }),
+      [],
+      null,
+      { "PUT /service-connections/github/paste": { warning: null, external_identity: "octocat" } },
+    );
+    renderPage("github");
+
+    const choices = await screen.findByRole("region", { name: "Connect GitHub" });
+    expect(within(choices).getByRole("region", { name: "Switch GitHub App" })).toBeTruthy();
+    expect(within(choices).getByText("Agents act as you, wherever the token reaches")).toBeTruthy();
+    expect(within(choices).getByRole("button", { name: "Sign in with GitHub" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    fireEvent.click(within(choices).getByRole("button", { name: "Use a token" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect GitHub with a personal access token" });
+    expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
+    expect(within(dialog).getByRole("link", { name: /Create a token in GitHub/ }).getAttribute("href")).toBe(
+      "https://github.com/settings/personal-access-tokens/new?name=Switch&expires_in=30&contents=write",
+    );
+    expect(within(dialog).getByText("Code: read and write")).toBeTruthy();
+    expect(within(dialog).getByText("Expires in 30 days")).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), {
+      target: { value: "github_pat_example" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/github/paste",
+        body: { method: "token", fields: { pat: "github_pat_example" }, choices: {} },
+      }),
+    );
+    expect(await screen.findByText("GitHub is connected.")).toBeTruthy();
+  });
+
+  describe("on a server with no GitHub App", () => {
+    const noApp = () => {
+      const token = pastedConnector().paste[0]!;
+      return serviceConnection({
+        slug: "github",
+        name: "GitHub",
+        publisher: "GitHub",
+        pass_through: false,
+        web_sign_in: false,
+        server_setup_needed: true,
+        sign_in_unavailable_reason:
+          "GitHub's connector app isn't set up on this server yet. Whoever runs Switch can set it up.",
+        paste: [{ ...token, help_url: "https://docs.github.com/tokens" }],
+      });
+    };
+
+    it("shows the App as not set up, and connects with a token", async () => {
+      signedIn();
+      server(noApp());
+      renderPage("github");
+
+      const choices = await screen.findByRole("region", { name: "Connect GitHub" });
+      const app = within(choices).getByRole("region", { name: "Switch GitHub App" });
+      expect(within(app).getByText("Not set up here")).toBeTruthy();
+      expect(within(app).getByText(/Whoever runs Switch can set it up/)).toBeTruthy();
+      expect(within(app).queryByRole("button")).toBeNull();
+      expect(within(app).queryByRole("link")).toBeNull();
+      const token = within(choices).getByRole("region", { name: "Personal access token" });
+      expect(within(token).getByText("Available now")).toBeTruthy();
+      expect(screen.getByText("A personal access token (the Switch GitHub App isn't set up here)")).toBeTruthy();
+      // Only the token's button connects: no Connect beside the name.
+      expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+      fireEvent.click(within(token).getByRole("button", { name: "Use a token" }));
+      const dialog = await screen.findByRole("dialog", { name: "Connect GitHub with a personal access token" });
+      expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
+    });
+
+    it("offers the operator the way to set the App up", async () => {
+      signedIn({ operator: true });
+      server(noApp());
+      renderPage("github");
+
+      const app = await screen.findByRole("region", { name: "Switch GitHub App" });
+      expect(within(app).getByRole("link", { name: "Set up the App" }).getAttribute("href")).toBe(
+        "/platform/connectors",
+      );
+    });
   });
 
   it("pastes keys instead where the server takes them", async () => {

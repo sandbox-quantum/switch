@@ -162,6 +162,8 @@ class TestList:
                     }
                 ],
                 "help_url": "https://docs.example.test/tokens",
+                "create_url": None,
+                "manage_url": None,
                 "expires": "vendor",
                 "access_note": "Reaches what your token allows.",
             }
@@ -172,7 +174,7 @@ class TestList:
             None,
         )
         assert (entry["reconnect_code"], entry["reconnect_reason"]) == (None, None)
-        assert (await world.entry(ada, "github"))["paste"] == []
+        assert (await world.entry(ada, "linear"))["paste"] == []
 
     async def test_offers_keys_too_where_the_server_allows_them(
         self, session_factory, tmp_path, monkeypatch
@@ -307,13 +309,13 @@ class TestPaste:
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             response = await client.put(
-                "/gateway/service-connections/github/paste",
+                "/gateway/service-connections/linear/paste",
                 json={"method": "token", "fields": {"pat": TOKEN}, "choices": {}},
                 cookies=cookies_for(ada),
             )
 
         assert response.status_code == 404, response.text
-        assert response.json()["detail"] == "GitHub is not connected with pasted token."
+        assert response.json()["detail"] == "Linear is not connected with pasted token."
 
     @pytest.mark.parametrize(
         "body",

@@ -141,6 +141,16 @@ export function connectorCardState(
     };
   if (entry.status === 'connected')
     return { kind: 'connected', label: 'Connected', detail: null, tone: 'good', fix: null };
+  // Connectable without its app (GitHub by pasted token): the operator is
+  // offered to set the app up, so people can sign in too.
+  if (viewer.operator && entry.server_setup_needed)
+    return {
+      kind: 'connect',
+      label: 'Not connected',
+      detail: `Set up its app so people can sign in to ${entry.name}, not only paste a token.`,
+      tone: 'muted',
+      fix: 'set_up',
+    };
   return { kind: 'connect', label: 'Not connected', detail: null, tone: 'muted', fix: null };
 }
 

@@ -442,8 +442,10 @@ class PasteMethod(BaseModel):
     they pick (a site) is the entry's own `auth.oauth.choices`, shared with
     its sign-in. `headers` are the MCP request headers the credential goes in,
     templates of the fields and the choices; the entry's identity call is made
-    with them too. `expires`: `vendor` for a credential its vendor ends on the
-    date it was made to end, which Switch neither asks for nor stores;
+    with them too. GitHub's single method, a personal access token, has no
+    MCP server: its headers are those its check at GitHub's API is made with.
+    `expires`: `vendor` for a credential its vendor ends on the date it was
+    made to end, which Switch neither asks for nor stores;
     `never` for one that works until someone revokes it at the vendor, which
     a server offers only where it allows such keys (`ALLOW_NON_EXPIRING_KEYS`).
 
@@ -451,7 +453,10 @@ class PasteMethod(BaseModel):
     pasted value whose one group, itself starting there, is the part the
     vendor shows people (a token's public portion): it names the connection
     where the vendor will not say whose the credential is. `help_url` is where
-    the person makes one.
+    the person reads how to make one; `create_url`, where the vendor offers
+    it, opens the vendor's form for a new one already filled in for Switch;
+    `manage_url` is the vendor's page listing the ones a person has made,
+    where one is deleted.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -463,6 +468,8 @@ class PasteMethod(BaseModel):
     )
     expires: PasteExpiry
     alias: str | None = Field(default=None, min_length=3, max_length=200)
+    create_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    manage_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
 
     @model_validator(mode="after")
@@ -518,7 +525,7 @@ class ConnectionAuth(BaseModel):
     oauth: OAuthClient | None = None
     identity: ConnectionIdentity | None = None
     api_key: ApiKeySignIn | None = None
-    # Credentials an oauth entry takes pasted, in place of a sign-in.
+    # Credentials an oauth or github entry takes pasted, in place of a sign-in.
     paste: list[PasteMethod] = Field(default_factory=list, max_length=2)
 
     def paste_method(self, name: str) -> PasteMethod | None:
@@ -884,9 +891,10 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError("only an api_key entry's MCP servers name headers")
             if self.cli is not None and self.cli.env is not None:
                 raise ValueError("only an api_key entry's tool takes env templates")
-        if self.adapter != "oauth" and self.auth.paste:
+        if self.adapter not in ("oauth", "github") and self.auth.paste:
             raise ValueError(
-                "only an oauth entry takes a pasted credential in place of its sign-in"
+                "only an oauth or github entry takes a pasted credential in place "
+                "of its sign-in"
             )
         if (
             self.auth.paste
@@ -994,6 +1002,26 @@ class ConnectionDefinition(BaseModel):
             )
         if self.token is not None and self.token.kind != "minted":
             raise ValueError("the github adapter mints its tokens")
+        self._check_github_paste()
+
+    def _check_github_paste(self) -> None:
+        """GitHub takes one pasted credential, a personal access token, which
+        is checked at GitHub's API with the method's headers. Whether it ends
+        is what GitHub says of each token, so the method says `vendor`."""
+        methods = self.auth.paste
+        if not methods:
+            return
+        if len(methods) != 1 or methods[0].name != "token":
+            raise ValueError("the github adapter takes one pasted method: token")
+        method = methods[0]
+        if len(method.fields) != 1:
+            raise ValueError("github's paste method token is one field")
+        if method.expires != "vendor":
+            raise ValueError(
+                "github's paste method token expires: vendor; GitHub says of each "
+                "token whether it ends"
+            )
+        _check_paste_headers(method, set())
 
     def _check_oauth(self) -> None:
         if self.auth.type != "oauth":
@@ -1089,30 +1117,7 @@ class ConnectionDefinition(BaseModel):
         oauth = self.auth.oauth
         choices = set() if oauth is None else {field.name for field in oauth.choices}
         for method in methods:
-            shared = sorted(method.field_names() & choices)
-            if shared:
-                raise ValueError(
-                    f"paste method {method.name} names a field after a choice: "
-                    f"{', '.join(shared)}"
-                )
-            check_templates(
-                fields=method.field_names() | choices,
-                choices=choices,
-                urls=[],
-                values=list(method.headers.values()),
-                where=f"paste method {method.name}'s headers",
-            )
-            named = {
-                name
-                for value in method.headers.values()
-                for name in template_fields(value)
-            }
-            unused = sorted(method.field_names() - named)
-            if unused:
-                raise ValueError(
-                    f"paste method {method.name} asks for fields no header "
-                    f"carries: {', '.join(unused)}"
-                )
+            _check_paste_headers(method, choices)
 
     def _check_oauth_templates(self) -> None:
         """An OAuth entry's URLs name only its choices, and only as `{name}`."""
@@ -1207,6 +1212,33 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
         raise CatalogError(f"Connection {slug} is enabled but has no skill/SKILL.md.")
     _check_frontmatter(slug, "SKILL.md", files["SKILL.md"])
     return files
+
+
+def _check_paste_headers(method: PasteMethod, choices: set[str]) -> None:
+    """A paste method's headers name only its own fields and `choices`, and
+    carry every field it asks for."""
+    shared = sorted(method.field_names() & choices)
+    if shared:
+        raise ValueError(
+            f"paste method {method.name} names a field after a choice: "
+            f"{', '.join(shared)}"
+        )
+    check_templates(
+        fields=method.field_names() | choices,
+        choices=choices,
+        urls=[],
+        values=list(method.headers.values()),
+        where=f"paste method {method.name}'s headers",
+    )
+    named = {
+        name for value in method.headers.values() for name in template_fields(value)
+    }
+    unused = sorted(method.field_names() - named)
+    if unused:
+        raise ValueError(
+            f"paste method {method.name} asks for fields no header "
+            f"carries: {', '.join(unused)}"
+        )
 
 
 def _check_frontmatter(slug: str, relative: str, content: str) -> None:

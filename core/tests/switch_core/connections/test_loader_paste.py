@@ -197,7 +197,7 @@ def test_refuses_a_paste_method_no_agent_could_be_handed(catalog_copy, token, me
         load_catalog(catalog_copy)
 
 
-def test_only_an_oauth_entry_takes_a_pasted_credential(catalog_copy):
+def test_only_an_oauth_or_github_entry_takes_a_pasted_credential(catalog_copy):
     _write_example(
         catalog_copy,
         API_KEY_ENTRY.replace(
@@ -207,7 +207,7 @@ def test_only_an_oauth_entry_takes_a_pasted_credential(catalog_copy):
     )
     with pytest.raises(
         CatalogError,
-        match="only an oauth entry takes a pasted credential in place of its sign-in",
+        match="only an oauth or github entry takes a pasted credential in place of its sign-in",
     ):
         load_catalog(catalog_copy)
 
@@ -256,3 +256,74 @@ def test_the_shipped_datadog_entry_takes_a_token_or_keys_in_place_of_its_sign_in
     }
     assert keys.alias is None
     assert definition.methods() == ["oauth", "token", "keys"]
+
+
+def test_github_takes_a_personal_access_token_its_vendor_ends():
+    definition = CATALOG["github"].definition
+    [method] = definition.auth.paste
+
+    assert (method.name, method.label, method.expires) == (
+        "token",
+        "Personal access token",
+        "vendor",
+    )
+    assert [(f.name, f.secret) for f in method.fields] == [("pat", True)]
+    assert method.headers == {"Authorization": "Bearer {pat}"}
+    assert method.help_url is not None
+    assert method.help_url.startswith("https://docs.github.com/")
+    # GitHub's form for a new fine-grained token, asking for what the App does.
+    assert method.create_url is not None
+    assert method.create_url.startswith(
+        "https://github.com/settings/personal-access-tokens/new?"
+    )
+    assert "contents=write" in method.create_url
+    assert "pull_requests=write" in method.create_url
+    # Where a token made there is deleted, since Switch cannot revoke it.
+    assert method.manage_url == "https://github.com/settings/personal-access-tokens"
+    assert definition.methods() == ["oauth", "token"]
+
+
+GITHUB_PASTE = (
+    "  paste:\n"
+    "    - name: token\n"
+    "      label: Personal access token\n"
+    "      fields:\n"
+    "        - { name: pat, label: Personal access token, secret: true }\n"
+    '      headers: { Authorization: "Bearer {pat}" }\n'
+    "      expires: vendor\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "message"),
+    [
+        (
+            "      expires: vendor\n",
+            "      expires: never\n",
+            "github's paste method token expires: vendor",
+        ),
+        (
+            "        - { name: pat, label: Personal access token, secret: true }\n",
+            "        - { name: pat, label: Personal access token, secret: true }\n"
+            "        - { name: other, label: Other, secret: true }\n",
+            "github's paste method token is one field",
+        ),
+        ("    - name: token\n", "    - name: keys\n", "takes one pasted method: token"),
+        (
+            '      headers: { Authorization: "Bearer {pat}" }\n',
+            '      headers: { Authorization: "Bearer {other}" }\n',
+            "names an unknown field 'other'",
+        ),
+    ],
+)
+def test_github_refuses_another_paste_method(catalog_copy, before, after, message):
+    path = catalog_copy / "github" / "connection.yaml"
+    text = path.read_text()
+    start = text.index("  paste:\n")
+    end = text.index("token: { kind")
+    path.write_text(text[:start] + GITHUB_PASTE.replace(before, after) + text[end:])
+
+    with pytest.raises(
+        CatalogError, match=f"(?s)github is invalid.*{re.escape(message)}"
+    ):
+        load_catalog(catalog_copy)

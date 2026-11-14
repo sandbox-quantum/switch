@@ -141,6 +141,20 @@ async def workspace_app(
     return app_for_workspace(request, await broker.organization_app(session, "github"))
 
 
+async def workspace_app_if_set_up(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> GitHubConnections | None:
+    """`workspace_app`, or None where neither the workspace's organization
+    nor the server set up a GitHub App, so GitHub connects only with a pasted
+    token."""
+    app = await broker.organization_app(session, "github")
+    if app is None and request.app.state.github_connections is None:
+        return None
+    return app_for_workspace(request, app)
+
+
 def get_sign_in_flows(request: Request) -> SignInFlows:
     flows = getattr(request.app.state, "sign_in_flows", None)
     if not isinstance(flows, SignInFlows):
@@ -707,7 +721,7 @@ async def connection(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections, Depends(workspace_app)],
+    github: Annotated[GitHubConnections | None, Depends(workspace_app_if_set_up)],
 ) -> dict:
     return await connection_status(user.id, session, broker, github)
 
@@ -716,9 +730,12 @@ async def connection_status(
     user_id: str,
     session: AsyncSession,
     broker: ServiceBroker,
-    github: GitHubConnections,
+    github: GitHubConnections | None,
 ) -> dict:
-    """The person's GitHub link and every repository the App lets them reach."""
+    """The person's GitHub link and every repository the App lets them reach.
+    With no App (`github` None) there is nothing to install: `install_url` is
+    null, and only a pasted token connects it."""
+    install_url = None if github is None else github.install_url
     try:
         token = await broker.connection_access_token(session, user_id, "github")
     except ServiceError as error:
@@ -727,27 +744,42 @@ async def connection_status(
     if token is None:
         return {
             "status": "not_connected",
-            "install_url": github.install_url,
+            "install_url": install_url,
             "can_revoke": False,
         }
+    row = await STORE.get_connection(session, user_id, "github")
+    if row is None:
+        raise HTTPException(409, "The GitHub connector changed. Please retry.")
+    await session.commit()
+    if row.method != "oauth":
+        # A pasted token reaches what it does, not through the App, so there
+        # are no installations to list: a grant on it names no repositories.
+        return {
+            "status": "connected",
+            "method": row.method,
+            "login": row.external_identity,
+            "installations": [],
+            "sso_hidden_organizations": [],
+            "install_url": install_url,
+            "can_revoke": True,
+        }
+    if github is None:
+        raise HTTPException(503, broker.server_availability("github") or "")
     try:
         reach = await github.repositories(token)
     except GitHubAuthorizationError as error:
         raise HTTPException(422, str(error)) from None
     except GitHubError as error:
         raise HTTPException(502, str(error)) from None
-    row = await STORE.get_connection(session, user_id, "github")
-    if row is None:
-        raise HTTPException(409, "The GitHub connector changed. Please retry.")
-    await session.commit()
     return {
         "status": "connected",
+        "method": row.method,
         "login": row.external_identity,
         "installations": reach.installations,
         # Organizations whose single sign-on hides their installations from
         # this sign-in: connecting again and authorizing them shows those.
         "sso_hidden_organizations": reach.sso_hidden,
-        "install_url": github.install_url,
+        "install_url": install_url,
         # The caller's own connection, theirs to disconnect.
         "can_revoke": True,
     }

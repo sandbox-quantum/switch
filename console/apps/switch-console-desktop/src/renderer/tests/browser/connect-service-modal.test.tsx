@@ -47,6 +47,8 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
@@ -191,6 +193,7 @@ const PASTABLE = entry({
         { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
       ],
       help_url: null,
+      create_url: null,
       expires: 'vendor',
       access_note: 'Reaches what your token allows.',
     },
@@ -215,7 +218,12 @@ it('closes as soon as the server has kept a pasted token, handing the warning on
   const onConnected = vi.fn();
   const onClose = vi.fn();
   const modal = await render(PASTABLE, onConnected, onClose);
-  await act(async () => button(/^use a token instead$/i, modal)!.click());
+  await act(async () =>
+    [...modal.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
+      .find((row) => row.textContent?.includes('Personal access token'))!
+      .click()
+  );
+  await act(async () => button(/^continue$/i, modal)!.click());
   await type(modal.querySelector<HTMLInputElement>('input[type="password"]')!, 'SYNTHETIC');
   await act(async () => button(/^connect example/i, modal)!.click());
 
