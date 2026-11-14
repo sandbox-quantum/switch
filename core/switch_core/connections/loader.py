@@ -124,8 +124,11 @@ class ApiKeyField(BaseModel):
     """One value a person pastes, or picks, to connect.
 
     A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
+    Any other field is either a choice among `choices` (a site, a region),
+    which templates may put anywhere in a URL, or a value typed to match
+    `pattern` (an account, a subdomain), which a URL may hold only as a whole
+    host label of a domain the template fixes, or a whole path segment
+    (`url_placements`): so it can pick an account, never another host.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -138,18 +141,31 @@ class ApiKeyField(BaseModel):
     choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
         default=None, min_length=1, max_length=20
     )
+    # Matched against the whole value (`re.fullmatch`).
+    pattern: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
-    def _secret_or_choice(self) -> "ApiKeyField":
+    def _secret_choice_or_pattern(self) -> "ApiKeyField":
         if self.name == TOKEN_PLACEHOLDER:
             raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
+        if [self.secret, self.choices is not None, self.pattern is not None].count(
+            True
+        ) != 1:
             raise ValueError(
-                f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
+                f"field {self.name} is a secret typed freely, a choice among "
+                "choices, or a value matching a pattern: exactly one of those"
             )
         if self.choices is not None and len(set(self.choices)) != len(self.choices):
             raise ValueError(f"field {self.name} lists a choice twice")
+        if self.pattern is not None:
+            try:
+                compiled = re.compile(self.pattern)
+            except re.error as error:
+                raise ValueError(
+                    f"field {self.name}'s pattern is not a regular expression: {error}"
+                ) from None
+            if compiled.fullmatch(""):
+                raise ValueError(f"field {self.name}'s pattern matches an empty value")
         return self
 
 
@@ -355,28 +371,54 @@ class ConnectionIdentity(BaseModel):
         return self
 
 
+class ApiKeyBasic(BaseModel):
+    """HTTP Basic credentials, each a template of the fields: for a vendor
+    that takes a key as a password (Zendesk's `{email}/token` and token)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
 class ApiKeyIdentity(BaseModel):
     """The call that checks a pasted key and says whose it is: `method` to
-    `url`, with `headers` (and a JSON `body`, for a POST), each a template of
-    the fields. `account_id` and `label` are dotted paths in its JSON answer;
-    without `account_id` the account is the key itself (its SHA-256), and
-    without `label` the connection is named by the service and its choices."""
+    `url`, with `headers`, `basic` credentials or both (and a JSON `body`, for
+    a POST), each a template of the fields. `account_id` and `label` are
+    dotted paths in its JSON answer; without `account_id` the account is the
+    key itself (its SHA-256), and without `label` the connection is named by
+    the service and its choices."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] = Field(
-        min_length=1
+        default_factory=dict
     )
+    basic: ApiKeyBasic | None = None
     body: dict[str, object] | None = None
     account_id: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
     label: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
-    def _body_for_post(self) -> "ApiKeyIdentity":
+    def _body_and_credentials(self) -> "ApiKeyIdentity":
         if (self.body is not None) != (self.method == "POST"):
             raise ValueError("a POST identity call sends a body, and only one does")
+        if not self.headers and self.basic is None:
+            raise ValueError("an identity call sends the key in headers or basic")
+        if self.basic is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError(
+                "an identity call with basic credentials names no Authorization header"
+            )
         return self
+
+    def templates(self) -> list[str]:
+        """The header and credential templates, which name the fields."""
+        values = list(self.headers.values())
+        if self.basic is not None:
+            values += [self.basic.username, self.basic.password]
+        return values
 
 
 class ApiKeySignIn(BaseModel):
@@ -398,8 +440,9 @@ class ApiKeySignIn(BaseModel):
         check_templates(
             fields=self.field_names(),
             choices=self.choice_names(),
+            patterns=self.pattern_names(),
             urls=[self.identity.url],
-            values=list(self.identity.headers.values()),
+            values=self.identity.templates(),
             where="the identity call",
         )
         return self
@@ -408,25 +451,64 @@ class ApiKeySignIn(BaseModel):
         return {field.name for field in self.fields}
 
     def choice_names(self) -> set[str]:
-        return {field.name for field in self.fields if not field.secret}
+        return {field.name for field in self.fields if field.choices is not None}
+
+    def pattern_names(self) -> set[str]:
+        return {field.name for field in self.fields if field.pattern is not None}
+
+
+def url_placements(url: str) -> dict[str, set[str]]:
+    """Where a URL template puts each field it names: `host` for a whole host
+    label followed only by labels the template fixes (at least a domain and
+    its suffix), `path` for a whole path segment, `other` for anywhere else."""
+    template_fields(url)
+    rest = url.removeprefix("https://")
+    host, _, tail = rest.partition("/")
+    path = re.split(r"[?#]", tail, maxsplit=1)[0]
+    placed: dict[str, set[str]] = {}
+    labels = host.split(".")
+    for index, label in enumerate(labels):
+        after = labels[index + 1 :]
+        fixed = len(after) >= 2 and not any("{" in part for part in after)
+        for name in TEMPLATE_FIELD_RE.findall(label):
+            whole = label == "{" + name + "}"
+            placed.setdefault(name, set()).add("host" if whole and fixed else "other")
+    for segment in path.split("/"):
+        for name in TEMPLATE_FIELD_RE.findall(segment):
+            whole = segment == "{" + name + "}"
+            placed.setdefault(name, set()).add("path" if whole else "other")
+    for name in TEMPLATE_FIELD_RE.findall(tail[len(path) :]):
+        placed.setdefault(name, set()).add("other")
+    return placed
 
 
 def check_templates(
     *,
     fields: set[str],
     choices: set[str],
+    patterns: set[str],
     urls: list[str],
     values: list[str],
     where: str,
 ) -> None:
-    """Templates name only the entry's `fields`, and a URL only its `choices`:
-    the fields picked from a list, never a secret."""
+    """Templates name only the entry's `fields`; a URL names only its `choices`,
+    the fields picked from a list, never a secret, and its pattern fields where
+    they cannot change the host."""
     for url in urls:
-        for name in template_fields(url):
-            if name not in choices:
-                raise ValueError(
-                    f"{where}'s URL may name only a choice field, not {name!r}"
+        for name, places in url_placements(url).items():
+            if name in patterns:
+                if "other" in places:
+                    raise ValueError(
+                        f"{where}'s URL may hold field {name!r} only as a whole "
+                        "host label of a fixed domain or a whole path segment"
+                    )
+            elif name not in choices:
+                kinds = (
+                    "a choice field, or a pattern field"
+                    if patterns
+                    else "a choice field"
                 )
+                raise ValueError(f"{where}'s URL may name only {kinds}, not {name!r}")
     for value in values:
         for name in template_fields(value):
             if name not in fields:
@@ -968,6 +1050,7 @@ class ConnectionDefinition(BaseModel):
                 check_templates(
                     fields=sign_in.field_names(),
                     choices=sign_in.choice_names(),
+                    patterns=sign_in.pattern_names(),
                     urls=[server.url],
                     values=list(server.headers.values()),
                     where=f"MCP server {server.name}",
@@ -978,6 +1061,7 @@ class ConnectionDefinition(BaseModel):
             check_templates(
                 fields=sign_in.field_names(),
                 choices=sign_in.choice_names(),
+                patterns=sign_in.pattern_names(),
                 urls=[],
                 values=list(self.cli.env.values()),
                 where=f"command-line tool {self.cli.name}",
@@ -1098,6 +1182,7 @@ class ConnectionDefinition(BaseModel):
             check_templates(
                 fields=method.field_names() | choices,
                 choices=choices,
+                patterns=set(),
                 urls=[],
                 values=list(method.headers.values()),
                 where=f"paste method {method.name}'s headers",
@@ -1136,8 +1221,14 @@ class ConnectionDefinition(BaseModel):
             ]
         for where, url in urls:
             if url is not None:
+                # An OAuth entry's URLs name only its choices, never a pattern field.
                 check_templates(
-                    fields=choices, choices=choices, urls=[url], values=[], where=where
+                    fields=choices,
+                    choices=choices,
+                    patterns=set(),
+                    urls=[url],
+                    values=[],
+                    where=where,
                 )
 
     def methods(self) -> list[ConnectionMethod]:

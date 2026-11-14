@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -124,6 +125,150 @@ def test_the_token_splits_secret_from_public_fields_and_templates_fill_in() -> N
 def test_the_connection_keeps_the_fields_picked_from_a_list_as_its_choices() -> None:
     adapter = _adapter(lambda request: httpx.Response(200))
     assert adapter.choices(FIELDS) == {"region": "eu.example.test"}
+
+
+ACCOUNT_ENTRY = {
+    **ENTRY,
+    "auth": {
+        **ENTRY["auth"],
+        "api_key": {
+            "fields": [
+                {"name": "api_key", "label": "User key", "secret": True},
+                {
+                    "name": "account",
+                    "label": "Account",
+                    "secret": False,
+                    # Looser than a DNS label, so the adapter's own check shows.
+                    "pattern": "[A-Za-z0-9._@/-]+",
+                },
+            ],
+            "identity": {
+                "method": "GET",
+                "url": "https://{account}.example.test/api/me",
+                "headers": {"API-Key": "{api_key}"},
+                "account_id": "id",
+            },
+        },
+    },
+    "mcp": {
+        "servers": [
+            {
+                "name": "example",
+                "url": "https://mcp.example.test/{account}/mcp",
+                "headers": {"API-Key": "{api_key}"},
+            }
+        ]
+    },
+}
+
+
+def _account_adapter() -> ApiKeyAdapter:
+    definition = ConnectionDefinition.model_validate(ACCOUNT_ENTRY)
+    return ApiKeyAdapter(
+        definition,
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))
+        ),
+    )
+
+
+def test_a_pattern_field_takes_a_value_that_fits_its_place() -> None:
+    values = _account_adapter().checked_fields(
+        {"api_key": "SYNTHETIC-USER-KEY", "account": "acme-eu"}
+    )
+    assert values["account"] == "acme-eu"
+
+
+@pytest.mark.parametrize(
+    "account",
+    [
+        "acme corp",  # not one token
+        "evil.test",  # a second host label
+        "evil.test/x",
+        "a@evil.test",
+        "-acme",
+        "acme!",  # outside the pattern
+        "..",
+    ],
+)
+def test_a_pattern_field_never_takes_a_value_that_moves_the_request(
+    account: str,
+) -> None:
+    with pytest.raises(InvalidKeyError, match="not in the form Example uses"):
+        _account_adapter().checked_fields(
+            {"api_key": "SYNTHETIC-USER-KEY", "account": account}
+        )
+
+
+BASIC_ENTRY = {
+    **ENTRY,
+    "auth": {
+        **ENTRY["auth"],
+        "api_key": {
+            "fields": [
+                {"name": "api_key", "label": "User key", "secret": True},
+                {
+                    "name": "email",
+                    "label": "Email",
+                    "secret": False,
+                    "pattern": "[^@ ]+@[^@ ]+",
+                },
+            ],
+            "identity": {
+                "method": "GET",
+                "url": "https://api.example.test/me",
+                "basic": {"username": "{email}/token", "password": "{api_key}"},
+                "account_id": "id",
+            },
+        },
+    },
+    "mcp": {
+        "servers": [
+            {
+                "name": "example",
+                "url": "https://mcp.example.test/mcp",
+                "headers": {"API-Key": "{api_key}"},
+            }
+        ]
+    },
+}
+
+
+async def test_basic_credentials_carry_the_key_as_a_password() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": 7})
+
+    definition = ConnectionDefinition.model_validate(BASIC_ENTRY)
+    adapter = ApiKeyAdapter(
+        definition, httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    identity = await adapter.identify(
+        {"api_key": "SYNTHETIC-USER-KEY", "email": "ada@example.test"}
+    )
+
+    assert identity.account_id == "7"
+    [request] = seen
+    scheme, _, encoded = request.headers["Authorization"].partition(" ")
+    assert scheme == "Basic"
+    assert (
+        base64.b64decode(encoded).decode()
+        == "ada@example.test/token:SYNTHETIC-USER-KEY"
+    )
+
+
+async def test_basic_credentials_never_take_a_colon_in_the_username() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request is made")
+
+    definition = ConnectionDefinition.model_validate(BASIC_ENTRY)
+    adapter = ApiKeyAdapter(
+        definition, httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(InvalidKeyError, match="cannot take a ':'"):
+        await adapter.identify({"api_key": "SYNTHETIC", "email": "a:b@example.test"})
 
 
 async def test_disconnecting_says_only_the_vendor_can_revoke_a_key() -> None:
