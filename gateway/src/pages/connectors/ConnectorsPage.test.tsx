@@ -287,7 +287,7 @@ describe("the Connectors catalogue", () => {
     });
     renderPage();
 
-    expect(await screen.findByText("Off here")).toBeTruthy();
+    expect(await screen.findByText("Off in this workspace")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect Google Workspace" })).toBeNull();
   });
 
@@ -298,7 +298,7 @@ describe("the Connectors catalogue", () => {
     answer({ "GET /service-connections": { connections: [off, unavailable, datadog, asana] } });
     renderPage();
 
-    expect(await screen.findByText("Off here")).toBeTruthy();
+    expect(await screen.findByText("Off in this workspace")).toBeTruthy();
     const shown = screen.getAllByText(/^(Google Workspace|Atlassian|Datadog|Asana)$/).map((node) => node.textContent);
     expect(shown).toEqual(["Datadog", "Google Workspace", "Atlassian", "Asana"]);
   });

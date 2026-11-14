@@ -35,7 +35,7 @@ type Tab = "yours" | "discover";
 
 /** Ones that can't be used here as things stand (off in the workspace, not
  * set up, unavailable) go last, so the usable ones lead; the order is kept
- * otherwise. These are the cards that carry an Off here or Unavailable badge. */
+ * otherwise. These are the cards that carry an Off in this workspace or Unavailable badge. */
 function usableFirst(connections: ServiceConnection[]): ServiceConnection[] {
   const blocked = (c: ServiceConnection) => !c.workspace_enabled || !c.connectable;
   return [...connections.filter((c) => !blocked(c)), ...connections.filter(blocked)];
@@ -293,7 +293,7 @@ export default function ConnectorsPage() {
                       !connection.enabled ? (
                         <Chip size="small" label="Coming soon" />
                       ) : off ? (
-                        <Reason label="Off here" why={off.text} icon={<BlockOutlined />} />
+                        <Reason label="Off in this workspace" why={off.text} icon={<BlockOutlined />} />
                       ) : (
                         !connection.connectable && (
                           <Reason label="Unavailable" why={connection.unavailable_reason ?? "It can't be connected here."} />
