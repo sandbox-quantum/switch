@@ -15,8 +15,8 @@ import { gooseAcp } from '../goose/goose-adapter';
 import { junieAcp } from '../junie/junie-adapter';
 import { kiroAcp } from '../kiro/kiro-acp';
 import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
-import { createOpencodeAdapter } from '../opencode/opencode-adapter';
-import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
+import { checkOpencodeSignInAnyLine, createOpencodeRuntimeAdapter } from '../opencode/runtime';
+import { OPENCODE_LOGIN } from '../opencode/sign-in';
 import { createPiAdapter } from '../pi/pi-adapter';
 import { checkPiSignIn, PI_INHERIT_ENV, PI_LOGIN } from '../pi/sign-in';
 import { qwenAcp } from '../qwen/qwen-acp';
@@ -108,12 +108,12 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     inheritEnv: [],
     unsupportedPlatforms: {},
     createAdapter: ({ binaryPath, logger, skill, serviceSkills }) =>
-      createOpencodeAdapter({
+      createOpencodeRuntimeAdapter({
         binaryPath,
-        ...(logger ? { logger } : {}),
+        logger,
         skills: [...(skill ? [{ name: 'switch', content: skill }] : []), ...serviceSkills],
       }),
-    checkSignIn: checkOpencodeSignIn,
+    checkSignIn: checkOpencodeSignInAnyLine,
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(copilotAcp),

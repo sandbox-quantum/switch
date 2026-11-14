@@ -34,6 +34,8 @@ export interface AcpConfigChoice {
 export interface AcpConfigOption {
   id: string;
   type: string;
+  /** What the option controls; `thought_level` is the model's reasoning effort. */
+  category?: string;
   currentValue?: string;
   options?: Array<AcpConfigChoice | { options: AcpConfigChoice[] }>;
 }
@@ -54,6 +56,15 @@ export interface AcpSessionResult {
   models?: AcpSessionModels;
   modes?: AcpSessionModes;
   configOptions?: AcpConfigOption[];
+}
+
+/** Token counts for one turn, as `session/prompt` answers them. */
+export interface AcpPromptUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  thoughtTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
 }
 
 export interface AcpPermissionOption {
@@ -86,6 +97,9 @@ export interface AcpSessionUpdate extends Omit<AcpToolCall, 'content' | 'toolCal
   toolCallId?: string;
   content?: AcpToolCallContent[] | { type: string; text?: string };
   configOptions?: AcpConfigOption[];
+  /** The message a chunk belongs to, where the agent says. */
+  messageId?: string;
+  _meta?: Record<string, unknown>;
 }
 
 export interface AcpPermissionRequest {
@@ -96,12 +110,35 @@ export interface AcpPermissionRequest {
 
 export const ACP_CANCELLED = { outcome: { outcome: 'cancelled' } } as const;
 
-/** Models offered through a `model` select in the session's config options. */
+function choicesOf(option: AcpConfigOption): AcpConfigChoice[] {
+  return (option.options ?? []).flatMap((choice) =>
+    'value' in choice ? [choice] : choice.options
+  );
+}
+
+/**
+ * Models offered through a `model` select in the session's config options.
+ * The reasoning effort a `thought_level` select offers is the current model's
+ * alone, so only that model offers it, under the option's id; the session
+ * announces another model's levels once it is selected.
+ */
 export function modelsFromConfig(options: AcpConfigOption[]): ModelChoice[] {
   const model = modelConfigOption(options);
-  return (model?.options ?? [])
-    .flatMap((option) => ('value' in option ? [option] : option.options))
-    .map((option) => ({ id: option.value, label: option.name, options: {}, imageInput: true }));
+  const effort = effortConfigOption(options);
+  return (model ? choicesOf(model) : []).map((option) => ({
+    id: option.value,
+    label: option.name,
+    options:
+      effort && option.value === model?.currentValue
+        ? { [effort.id]: choicesOf(effort).map((choice) => choice.value) }
+        : {},
+    imageInput: true,
+  }));
+}
+
+/** The session's reasoning-effort select, if it has one. */
+export function effortConfigOption(options: AcpConfigOption[]): AcpConfigOption | undefined {
+  return options.find((option) => option.category === 'thought_level' && option.type === 'select');
 }
 
 export function modelConfigOption(options: AcpConfigOption[]): AcpConfigOption | undefined {

@@ -43,4 +43,29 @@ describe('opencode host dependency', () => {
   it('probes the opencode binary', () => {
     expect(hostDependency.binaryNames).toEqual(['opencode']);
   });
+
+  // npm refuses to install @opencode/cli over opencode-ai (both own
+  // `opencode`), so updating 1.x has to remove it first and, if OpenCode 2 then
+  // fails to install, put the same 1.x back.
+  it('upgrades 1.x by replacing opencode-ai, restoring it on failure', () => {
+    for (const platform of ['macos', 'linux', 'windows'] as const) {
+      const migration = firstOption(platform).lineMigration;
+      expect(migration?.below).toBe('2.0.0');
+      expect(migration?.removeCommand).toContain('npm uninstall -g');
+      expect(migration?.removeCommand).toContain('opencode-ai');
+      expect(migration?.removeCommand).not.toContain('@opencode/cli');
+      expect(migration?.restoreCommand).toContain('opencode-ai@{version}');
+    }
+    expect(firstOption('linux').lineMigration?.restoreCommand).toContain('--prefix "$HOME/.local"');
+  });
+
+  // Windows cannot delete opencode.exe while it runs, so the upgrade checks first.
+  it('checks for a running OpenCode before upgrading on Windows only', () => {
+    const precheck = firstOption('windows').lineMigration?.precheck;
+    expect(precheck?.command).toContain('Get-Process -Name opencode');
+    expect(precheck?.command).not.toMatch(/[$%]/);
+    expect(precheck?.blockedMessage).toContain('Nothing was changed.');
+    expect(firstOption('macos').lineMigration?.precheck).toBeUndefined();
+    expect(firstOption('linux').lineMigration?.precheck).toBeUndefined();
+  });
 });

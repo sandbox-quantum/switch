@@ -251,7 +251,9 @@ what the video has to show.
 
 A CLI with its own protocol needs an adapter that implements `ProviderAdapter`
 (`console/packages/agent-providers/src/adapter.ts`). Codex (JSON-RPC
-app-server), OpenCode (HTTP and SSE), Pi (its RPC mode, with an extension of
-Switch's own) and Claude (the Agent SDK) are the examples. Register it in
+app-server), OpenCode 1.x (HTTP and SSE), Pi (its RPC mode, with an extension of
+Switch's own) and Claude (the Agent SDK) are the examples. OpenCode 2 is ACP, and
+`opencode/runtime.ts` picks between the two by the installed version as each
+session starts. Register it in
 `PROVIDER_RUNTIMES` with its own `createAdapter`, `checkSignIn` and
 `loginCommand`. Everything after step 1 is the same.
