@@ -32,10 +32,6 @@ type Tab = "yours" | "all";
 
 /** The usable connectors first, then the ones not built yet; each group in
  * the catalog's own order. */
-function ordered(connections: ServiceConnection[]): ServiceConnection[] {
-  return [...connections.filter((c) => c.enabled), ...connections.filter((c) => !c.enabled)];
-}
-
 /** A badge whose reason shows on hover, and is read out with the card by a
  * screen reader. It sits inside the card's button, so it can't take focus
  * itself; the connector's page says the same in full. */
@@ -133,7 +129,7 @@ export default function ConnectorsPage() {
 
   const load = useCallback(async () => {
     try {
-      const listed = ordered(await fetchServiceConnections());
+      const listed = await fetchServiceConnections();
       setConnections(listed);
       // Yours, unless there is nothing of yours yet to show; chosen on the
       // first read only, so connecting one later doesn't switch tabs.
@@ -209,7 +205,8 @@ export default function ConnectorsPage() {
         ) : (
           <Box>
             <CatalogueGrid
-              connectors={shown === "yours" ? connected : connections}
+              connectors={shown === "yours" ? connected : connections.filter((c) => c.enabled)}
+              comingSoon={shown === "yours" ? [] : connections.filter((c) => !c.enabled)}
               query={query}
               onQueryChange={setQuery}
               controls={

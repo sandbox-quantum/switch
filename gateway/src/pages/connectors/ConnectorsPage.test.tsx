@@ -110,7 +110,22 @@ describe("the Connectors catalogue", () => {
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     const shown = screen.getAllByText(/^(Google Workspace|Atlassian|Datadog|Asana)$/).map((node) => node.textContent);
     expect(shown).toEqual(["Atlassian", "Datadog", "Google Workspace", "Asana"]);
-    expect(screen.getByText("Coming soon")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Available" })).toBeTruthy();
+    const soon = screen.getByRole("region", { name: "Coming soon" });
+    expect(within(soon).getByText("Asana")).toBeTruthy();
+    expect(within(soon).queryByText("Datadog")).toBeNull();
+  });
+
+  it("searches the coming soon section too, and leaves out a section with no match", async () => {
+    signedIn();
+    answer({ "GET /service-connections": { connections: [asana, datadog, google] } });
+    renderPage();
+
+    expect(await screen.findByText("Google Workspace")).toBeTruthy();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search connectors" }), { target: { value: "asana" } });
+    expect(screen.queryByRole("heading", { name: "Available" })).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Coming soon" })).getByText("Asana")).toBeTruthy();
+    expect(screen.queryByText("Datadog")).toBeNull();
   });
 
   it("opens on All when nothing is connected yet, and says so on Yours", async () => {

@@ -11,6 +11,10 @@ const CATALOG_DIR = join(here, '../../../../../../../core/switch_core/connection
 const catalogSlugs = readdirSync(CATALOG_DIR, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name);
+// Coming soon entries whose owners publish no logo file a product UI may use
+// yet, or none in SVG. Their tiles show initials until one is added.
+const AWAITING_LOGO = ['azure-devops', 'launchdarkly', 'monday', 'servicenow'];
+const logoSlugs = catalogSlugs.filter((slug) => !AWAITING_LOGO.includes(slug));
 const bundled = readdirSync(ICON_DIR)
   .filter((file) => file.endsWith('.svg'))
   .map((file) => file.replace(/\.svg$/, ''));
@@ -20,8 +24,13 @@ describe('connection brand icons', () => {
     expect(catalogSlugs).toContain('github');
   });
 
-  it.each(catalogSlugs)('%s has a logo the loader resolves', (slug) => {
+  it.each(logoSlugs)('%s has a logo the loader resolves', (slug) => {
     expect(hasConnectionIcon(slug)).toBe(true);
+  });
+
+  it.each(AWAITING_LOGO)('%s is in the catalog and still has no logo', (slug) => {
+    expect(catalogSlugs).toContain(slug);
+    expect(hasConnectionIcon(slug)).toBe(false);
   });
 
   it('falls back for a slug this build does not know', () => {

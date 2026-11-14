@@ -302,6 +302,10 @@ function grid(page: HTMLElement): HTMLElement | null {
   );
 }
 
+function comingSoonGrid(page: HTMLElement): HTMLElement | null {
+  return page.querySelector<HTMLElement>('[role="group"][aria-label="Coming soon connectors"]');
+}
+
 it("shows the workspace's catalog, everything on Discover and what the person has on Yours", async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
@@ -313,8 +317,9 @@ it("shows the workspace's catalog, everything on Discover and what the person ha
   );
   expect(button(/^Example/, grid(page)!)).toBeDefined();
   expect(page.querySelector('button[aria-label="Connect Example"]')).not.toBeNull();
-  expect(button(/^Linear/, grid(page)!)?.disabled).toBe(true);
-  expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
+  expect(button(/^Linear/, grid(page)!)).toBeUndefined();
+  expect(button(/^Linear/, comingSoonGrid(page)!)?.disabled).toBe(true);
+  expect(button(/^Linear/, comingSoonGrid(page)!)?.textContent).toMatch(/Coming soon/);
 
   await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
   await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeUndefined());

@@ -70,6 +70,25 @@ PasteMethodName = Literal["token", "keys"]
 PasteExpiry = Literal["vendor", "never"]
 
 
+# The catalog's categories, one list so the apps can filter by them and no
+# entry can coin a near-duplicate ("Monitoring" beside "Observability").
+Category = Literal[
+    "Source control",
+    "Project management",
+    "Knowledge base",
+    "Productivity",
+    "File storage",
+    "Observability",
+    "Deployment",
+    "Data",
+    "CRM",
+    "Customer support",
+    "Design",
+    "Payments",
+    "Meetings",
+]
+
+
 AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
@@ -825,7 +844,7 @@ class ConnectionDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     slug: str = Field(pattern=SLUG_PATTERN)
     name: str = Field(min_length=1, max_length=64)
-    category: str = Field(min_length=1, max_length=64)
+    category: Category
     description: str = Field(min_length=1, max_length=200, pattern=r"^[^\n]+$")
     enabled: bool
     # Who makes the service, and its own pages, as its profile shows them.

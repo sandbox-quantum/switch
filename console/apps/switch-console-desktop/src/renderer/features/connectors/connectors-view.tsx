@@ -308,25 +308,61 @@ function ConnectorGrid({
             : 'This server offers no connectors.'}
       </p>
     );
+  const card = (entry: ConnectionCatalogEntry) => (
+    <ConnectorCard
+      key={entry.slug}
+      entry={entry}
+      viewer={viewer}
+      turningOn={turningOn.has(entry.slug)}
+      onOpen={() => onOpen(entry.slug)}
+      onSetUp={() => onSetUp(entry)}
+      onTurnOn={() => onTurnOn(entry)}
+      onConnect={() => onConnect(entry)}
+    />
+  );
+  // Entries nobody can connect yet get a section of their own under the
+  // rest, so a long list of them never pushes the usable ones out of sight.
+  const available = entries.filter((entry) => entry.status !== 'coming_soon');
+  const comingSoon = entries.filter((entry) => entry.status === 'coming_soon');
+  if (comingSoon.length === 0)
+    return (
+      <div role="group" aria-label="Connectors" className={GRID}>
+        {available.map(card)}
+      </div>
+    );
   return (
-    <div
-      role="group"
-      aria-label="Connectors"
-      className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3"
-    >
-      {entries.map((entry) => (
-        <ConnectorCard
-          key={entry.slug}
-          entry={entry}
-          viewer={viewer}
-          turningOn={turningOn.has(entry.slug)}
-          onOpen={() => onOpen(entry.slug)}
-          onSetUp={() => onSetUp(entry)}
-          onTurnOn={() => onTurnOn(entry)}
-          onConnect={() => onConnect(entry)}
-        />
-      ))}
+    <div className="flex flex-col gap-8">
+      {available.length > 0 && (
+        <section aria-labelledby="connectors-available" className="flex flex-col gap-3">
+          <SectionTitle id="connectors-available" title="Available" count={available.length} />
+          <div role="group" aria-label="Connectors" className={GRID}>
+            {available.map(card)}
+          </div>
+        </section>
+      )}
+      <section aria-labelledby="connectors-coming-soon" className="flex flex-col gap-3">
+        <div>
+          <SectionTitle id="connectors-coming-soon" title="Coming soon" count={comingSoon.length} />
+          <p className="mt-1 text-sm text-foreground-muted">
+            Not available yet. They appear above once they can be connected.
+          </p>
+        </div>
+        <div role="group" aria-label="Coming soon connectors" className={GRID}>
+          {comingSoon.map(card)}
+        </div>
+      </section>
     </div>
+  );
+}
+
+const GRID = 'grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3';
+
+function SectionTitle({ id, title, count }: { id: string; title: string; count: number }) {
+  return (
+    <h2 id={id} className="flex items-baseline gap-2 text-sm font-semibold">
+      {title}
+      <span className="font-normal text-foreground-muted">{count}</span>
+    </h2>
   );
 }
 
