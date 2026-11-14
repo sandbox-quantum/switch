@@ -22,6 +22,7 @@ import type {
   DependencyStatus,
   DependencyStatusUpdatedEvent,
   DependencyUninstallResult,
+  DependencyUpdateError,
   DependencyUpdateResult,
   HostDependency,
   HostDependencySelection,
@@ -727,6 +728,7 @@ export class HostDependencyManager {
 
     // Determine effective routing method from provenance or explicit override
     let effectiveMethod: InstallMethod | null | undefined;
+    let activeVersion = this.state.get(id)?.version ?? null;
 
     if (method) {
       effectiveMethod = method;
@@ -740,6 +742,7 @@ export class HostDependencyManager {
         if (activeInst && !activeInst.manageable) {
           return err({ type: 'no-update-strategy', id });
         }
+        if (activeInst) activeVersion = activeInst.version;
         const provKind = activeInst?.provenance.kind;
         effectiveMethod = isRealInstallMethod(provKind) ? (provKind as InstallMethod) : null;
       } else {
@@ -753,6 +756,91 @@ export class HostDependencyManager {
 
     await this.ctx.refreshShellEnv?.();
 
+    const option = effectiveMethod
+      ? pickInstallOption(descriptor, this.platform, effectiveMethod)
+      : undefined;
+    const migration = option?.lineMigration;
+    if (
+      option &&
+      migration &&
+      activeVersion !== null &&
+      compareVersions(activeVersion, migration.below) < 0
+    ) {
+      const migrated = await this.migrateLine(id, option.command, migration, activeVersion);
+      if (!migrated.success) return migrated;
+    } else {
+      const updated = await this.runUpdatePlan(id, descriptor, effectiveMethod);
+      if (!updated.success) return updated;
+    }
+
+    await this.ctx.refreshShellEnv?.();
+    this.detector.invalidate();
+
+    const state = await this.probe(id);
+    if (state.status !== 'available') {
+      return err({ type: 'not-detected-after-update', id });
+    }
+
+    this.onExecutableInvalidated.emit({ id });
+    return ok(state);
+  }
+
+  /**
+   * Replaces `previousVersion`, on an earlier release line, with what `installCommand`
+   * installs. The earlier line is removed first, since the two own the same command; if the
+   * install then fails, the exact previous version is put back.
+   */
+  private async migrateLine(
+    id: DependencyId,
+    installCommand: string,
+    migration: { removeCommand: string; restoreCommand: string },
+    previousVersion: string
+  ): Promise<Result<void, DependencyUpdateError>> {
+    this.logger.info(
+      `[HostDependencyManager] Moving ${id} ${previousVersion} to a new release line: ${migration.removeCommand}; ${installCommand}`
+    );
+    const removed = await this.runInstallCommand(migration.removeCommand);
+    if (!removed.success) return err(removed.error);
+    this.detector.invalidate();
+    const installed = await this.runInstallCommand(installCommand);
+    if (installed.success) return ok();
+
+    const restoreCommand = migration.restoreCommand.replaceAll('{version}', previousVersion);
+    this.logger.warn(
+      `[HostDependencyManager] Installing the new line of ${id} failed; restoring ${previousVersion}: ${restoreCommand}`
+    );
+    const restored = await this.runInstallCommand(restoreCommand);
+    await this.ctx.refreshShellEnv?.();
+    this.detector.invalidate();
+    if (restored.success) {
+      await this.probe(id);
+      return err({
+        type: 'line-migration-failed',
+        id,
+        restoredVersion: previousVersion,
+        cause: installed.error,
+      });
+    }
+    this.logger.error(
+      `[HostDependencyManager] Restoring ${id} ${previousVersion} failed too; it is not installed`
+    );
+    await this.probe(id);
+    return err({
+      type: 'line-migration-unrestored',
+      id,
+      previousVersion,
+      cause: installed.error,
+      restoreError: restored.error,
+      installCommand,
+      restoreCommand,
+    });
+  }
+
+  private async runUpdatePlan(
+    id: DependencyId,
+    descriptor: DependencyDescriptor,
+    effectiveMethod: InstallMethod | null | undefined
+  ): Promise<Result<void, DependencyUpdateError>> {
     const plan = this.resolveUpdatePlan(effectiveMethod, descriptor, 'update');
 
     if (plan.kind === 'package-manager') {
@@ -775,17 +863,7 @@ export class HostDependencyManager {
     } else {
       return err({ type: 'no-update-strategy', id });
     }
-
-    await this.ctx.refreshShellEnv?.();
-    this.detector.invalidate();
-
-    const state = await this.probe(id);
-    if (state.status !== 'available') {
-      return err({ type: 'not-detected-after-update', id });
-    }
-
-    this.onExecutableInvalidated.emit({ id });
-    return ok(state);
+    return ok();
   }
 
   /**

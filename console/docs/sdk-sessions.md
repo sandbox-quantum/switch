@@ -274,15 +274,16 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 **Provider default** clears the previous session effort override.
 
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
-boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
-`session.summarize` with native busy/idle completion. Console shows progress and the
+boundary, Codex's `thread/compact/start` with turn completion, or OpenCode 1.x's
+`session.summarize` with native busy/idle completion. OpenCode 2 runs through
+`opencode acp`, and Console does not compact it yet. Console shows progress and the
 outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation, and Kiro's `_kiro/session/compact` extension is not used. None receives a substitute summarization prompt. Pi compacts with its own RPC `compact` command.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
-| OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
+| OpenCode | Yes | Connected models and native variants | Native session compaction on 1.x; unavailable on 2 | Staged file URLs |
 | Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 | DeepSeek Harness | Yes | ACP `model` option (its `[provider, model]` routes) | Unavailable | Staged file references |

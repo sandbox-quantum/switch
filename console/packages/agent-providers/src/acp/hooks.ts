@@ -70,6 +70,8 @@ export interface AcpSelectedAnswer {
 export interface AcpSessionContext {
   /** The running turn, or null when there is none or it was interrupted. */
   readonly turnId: string | null;
+  /** The session's runtime mode. */
+  readonly runtimeMode: RuntimeMode;
   /** Names of the MCP servers this session registered. */
   readonly mcpServerNames: ReadonlySet<string>;
   /**
@@ -192,6 +194,16 @@ export interface AcpProviderHooks {
    * `allow_always` writes its allowlist for every later run). Never offered.
    */
   persistentPermissionKinds?: readonly string[];
+  /**
+   * The vendor request that adds a message to the running turn rather than
+   * queueing it behind (OpenCode's `_session/steering`), sent with the
+   * session id and the message's prompt content. The agent answers
+   * `{ outcome: 'injected' }` when the turn took it and
+   * `{ outcome: 'promptRequired' }` when no turn was running, in which case
+   * the message is sent as a turn of its own. Omit for an agent that cannot
+   * steer; its `capabilities.steering` should then be false.
+   */
+  steerMethod?: string;
   /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id

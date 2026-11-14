@@ -68,7 +68,18 @@ export function getAgentUpdateErrorMessage(error: AgentUpdateError): string {
       return `No update strategy is available for ${error.id}.`;
     case 'not-detected-after-update':
       return 'The agent was not detected after update.';
+    case 'line-migration-failed':
+      return `Installing the new version failed, so ${error.restoredVersion} was put back and keeps working. ${commandFailureText(error.cause)}`;
+    case 'line-migration-unrestored':
+      return `The upgrade failed, and so did putting ${error.previousVersion} back, so it is not installed now. Agents that use it can't start until one of these succeeds in a terminal: ${error.installCommand}, or to go back: ${error.restoreCommand}. ${commandFailureText(error.cause)}`;
   }
+}
+
+function commandFailureText(
+  error: Extract<AgentUpdateError, { type: 'line-migration-failed' }>['cause']
+): string {
+  if (error.type === 'command-failed' && error.output) return `${error.message} ${error.output}`;
+  return error.message;
 }
 
 export function getAgentUpdateActionState({

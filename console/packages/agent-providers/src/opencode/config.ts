@@ -8,6 +8,12 @@ export interface OpencodePermissionRule {
   action: OpencodePermissionAction;
 }
 
+/**
+ * `codemode: false` is OpenCode 2's: without it a server's tools are reachable
+ * only from scripts the model runs in its `execute` tool, where one approval
+ * covers a whole script and names no server. Off, each tool is its own call,
+ * `<server>_<tool>`, asked about on its own as in 1.x.
+ */
 export type OpencodeMcpEntry =
   | {
       type: 'local';
@@ -15,8 +21,15 @@ export type OpencodeMcpEntry =
       enabled: true;
       timeout: number;
       environment?: Record<string, string>;
+      codemode?: false;
     }
-  | { type: 'remote'; url: string; enabled: true; headers?: Record<string, string> };
+  | {
+      type: 'remote';
+      url: string;
+      enabled: true;
+      headers?: Record<string, string>;
+      codemode?: false;
+    };
 
 export interface OpencodeConfigFile {
   $schema: string;

@@ -86,6 +86,43 @@ export function DependencyInstallationUpdateCard({
     const isUpdatingThis =
       isUpdating && (updatingMethod === undefined || updatingMethod === usedMethod);
 
+    const migration = installOption?.lineMigration;
+    if (
+      migration &&
+      usedInstallation.version &&
+      isOlderVersion(usedInstallation.version, migration.below)
+    ) {
+      const name = agentPayload?.name ?? agentId;
+      const next = usedInstallation.latestVersion ?? migration.below;
+      return (
+        <div className="space-y-2 rounded-lg border p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="flex size-6 items-center justify-center rounded-lg bg-background-1">
+                <RefreshCw className="size-3.5 shrink-0 text-foreground-muted" />
+              </div>
+              <span className="text-foreground">
+                Upgrade to {name} {next.split('.')[0]}
+              </span>
+            </div>
+            {versionArrow}
+          </div>
+          <p className="text-xs text-foreground-muted">{migration.summary}</p>
+          <CommandRow
+            command={`${migration.removeCommand} && ${command}`}
+            action={
+              <CommandActionButton
+                disabled={isUpdatingThis}
+                onClick={() => void update(usedMethod as InstallMethod)}
+              >
+                {isUpdatingThis ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Upgrade'}
+              </CommandActionButton>
+            }
+          />
+        </div>
+      );
+    }
+
     return (
       <UpdateCard versionArrow={versionArrow}>
         <CommandRow
@@ -156,4 +193,15 @@ function UpdateCard({
       {children}
     </div>
   );
+}
+
+/** Whether dotted version `a` is older than `b`; a segment that is not a number compares as 0. */
+function isOlderVersion(a: string, b: string): boolean {
+  const pa = a.split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const pb = b.split('.').map((part) => Number.parseInt(part, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff < 0;
+  }
+  return false;
 }

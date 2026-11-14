@@ -4,9 +4,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { checkProviderReadiness } from '../host/provider-readiness';
 
-// A stand-in for `opencode serve`: says it is listening, then answers the two
-// routes the sign-in check asks.
-const FAKE_SERVE = `
+const AS_1X = `if (process.argv.includes('--version')) { console.log('1.19.5'); process.exit(0); }\n`;
+
+// A stand-in for OpenCode 1.x's `opencode serve`: says it is listening, then
+// answers the two routes the sign-in check asks.
+const FAKE_SERVE =
+  AS_1X +
+  `
 const http = require('node:http');
 const port = Number(process.argv.find((arg) => arg.startsWith('--port=')).slice(7));
 http
@@ -20,11 +24,26 @@ http
   .listen(port, '127.0.0.1', () => console.log('opencode server listening on http://127.0.0.1:' + port));
 `;
 
-const FAILING_SERVE = `
+const FAILING_SERVE =
+  AS_1X +
+  `
 console.log('starting');
 console.error('boom: the config could not be read');
 process.exit(3);
 `;
+
+// A stand-in for OpenCode 2.x, which lists its providers from a private server.
+const FAKE_2X = `
+if (process.argv.includes('--version')) { console.log('opencode v2.3.0'); process.exit(0); }
+if (process.argv.join(' ').includes('api --standalone provider.list'))
+  console.log(JSON.stringify({ data: [
+    { id: 'opencode', name: 'OpenCode', settings: { apiKey: 'public' } },
+    { id: 'openrouter', name: 'OpenRouter', settings: {} },
+  ] }));
+else process.exit(2);
+`;
+
+const FAKE_3X = `console.log('opencode v3.0.0');`;
 
 let root: string;
 beforeEach(() => {
@@ -70,6 +89,19 @@ function check(binaryPath: string) {
 describe('the OpenCode sign-in check, with spaces in every path', () => {
   it('starts the CLI and reads its connected backends', async () => {
     expect((await check(installCli(FAKE_SERVE))).status).toBe('authenticated');
+  }, 60_000);
+
+  it('asks OpenCode 2 for its providers', async () => {
+    const result = await check(installCli(FAKE_2X));
+    expect(result.status).toBe('authenticated');
+    expect(result.message).toContain('OpenRouter');
+  }, 60_000);
+
+  it('says a version it cannot drive is unsupported, without offering a sign-in', async () => {
+    const result = await check(installCli(FAKE_3X));
+    expect(result.status).toBe('unknown');
+    expect(result.loginHelps).toBe(false);
+    expect(result.message).toContain('OpenCode 3.0.0 is newer than this version of Switch Console');
   }, 60_000);
 
   it('says what the CLI printed when it does not start', async () => {

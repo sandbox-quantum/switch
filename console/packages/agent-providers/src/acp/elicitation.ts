@@ -45,6 +45,12 @@ function choices(
   return [];
 }
 
+/**
+ * The free-text field an agent adds beside a field with offered answers, for
+ * typing one of its own: agy's `<field>_other`, OpenCode's `<field>_custom`.
+ */
+const OTHER_SUFFIXES = ['_other', '_custom'] as const;
+
 /** One question a form elicitation asks, and the fields its answer fills. */
 interface ElicitationField {
   question: UserInputQuestion;
@@ -57,7 +63,7 @@ interface ElicitationField {
 /**
  * The questions a form elicitation asks. A field with offered answers is one
  * question, choosing one of them or (an array field) several; the free-text
- * "Other" agy adds beside it as `<field>_other` becomes that question's own
+ * "Other" added beside it (`OTHER_SUFFIXES`) becomes that question's own
  * typed answer. Any other free-text field is a question answered by typing.
  * A field with both a title and a description (Vibe's header and question)
  * asks the description under the title as its header.
@@ -70,14 +76,17 @@ function elicitationFields(request: AcpElicitationRequest): ElicitationField[] {
   const freeText = (property: ElicitationProperty | undefined): property is ElicitationProperty =>
     property !== undefined && !offeredBy(property).length;
   return Object.entries(properties).flatMap(([id, property]): ElicitationField[] => {
-    const base = id.endsWith('_other') ? properties[id.slice(0, -'_other'.length)] : undefined;
+    const suffix = OTHER_SUFFIXES.find((candidate) => id.endsWith(candidate));
+    const base = suffix ? properties[id.slice(0, -suffix.length)] : undefined;
     if (freeText(property) && base && !freeText(base)) return [];
     const offered = offeredBy(property);
-    const other = properties[`${id}_other`];
+    const otherId = OTHER_SUFFIXES.map((candidate) => `${id}${candidate}`).find((candidate) =>
+      freeText(properties[candidate])
+    );
     const textField = !offered.length
       ? { id, property }
-      : freeText(other)
-        ? { id: `${id}_other`, property: other }
+      : otherId
+        ? { id: otherId, property: properties[otherId]! }
         : undefined;
     const header = property.title && property.description ? property.title : undefined;
     return [

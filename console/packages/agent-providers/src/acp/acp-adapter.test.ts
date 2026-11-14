@@ -1,7 +1,7 @@
 import type * as fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { ProviderConversationUnavailableError } from '../adapter';
+import { ProviderConversationUnavailableError, SteerNotSentError } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
 import type { AcpProviderHooks } from './hooks';
@@ -744,3 +744,36 @@ it.each([
     expect(server.received.some((m) => m.id === 80 && m.result)).toBe(false);
   }
 );
+
+it('steers a message into the running turn through the hooks steer request', async () => {
+  const hooks: AcpProviderHooks = { ...dummy, steerMethod: '_vendor/steer' };
+  const { adapter, server } = await start(hooks);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'go' });
+  await server.waitFor('session/prompt');
+  server.reply('_vendor/steer', { outcome: 'injected' });
+  expect(
+    await adapter.sendTurn({ sessionId: 's', turnId: 't2', text: 'also', expectedTurnId: 't1' })
+  ).toEqual({ turnId: 't2', steeredInto: 't1' });
+  expect(server.received.find((m) => m.method === '_vendor/steer')?.params).toEqual({
+    sessionId: 'native',
+    prompt: [{ type: 'text', text: 'also' }],
+  });
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+});
+
+it('queues a message the agent will not steer, unless the caller required the steer', async () => {
+  const hooks: AcpProviderHooks = { ...dummy, steerMethod: '_vendor/steer' };
+  const { adapter, server } = await start(hooks);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'go' });
+  await server.waitFor('session/prompt');
+  server.replyAlways('_vendor/steer', () => ({ outcome: 'promptRequired' }));
+  await expect(
+    adapter.sendTurn({ sessionId: 's', turnId: 't2', text: 'now', expectedTurnId: 't1' })
+  ).rejects.toBeInstanceOf(SteerNotSentError);
+  expect(await adapter.sendTurn({ sessionId: 's', turnId: 't3', text: 'later' })).toEqual({
+    turnId: 't3',
+  });
+  await expect(
+    adapter.sendTurn({ sessionId: 's', turnId: 't4', text: 'x', expectedTurnId: 'gone' })
+  ).rejects.toBeInstanceOf(SteerNotSentError);
+});

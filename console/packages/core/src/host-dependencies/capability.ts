@@ -34,6 +34,23 @@ export const installOptionSchema = z.object({
   /** Uninstall command for installs made via this method. Required when the descriptor's
    *  `uninstall.kind` is `'package-manager'`. */
   uninstallCommand: z.string().optional(),
+  /**
+   * An installation older than `below` is on an earlier release line that this option
+   * replaces rather than updates, typically because a renamed package owns the same
+   * command and the package manager will not install over it. Updating such an
+   * installation runs `removeCommand`, then `command`; if that install fails,
+   * `restoreCommand`, with `{version}` replaced by the removed version, puts the
+   * earlier line back, so the host is not left without the dependency. `summary` is
+   * shown to the person before they choose to upgrade: what carries over and what changes.
+   */
+  lineMigration: z
+    .object({
+      below: z.string(),
+      removeCommand: z.string(),
+      restoreCommand: z.string(),
+      summary: z.string(),
+    })
+    .optional(),
 });
 export type InstallOption = z.output<typeof installOptionSchema>;
 

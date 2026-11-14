@@ -26,6 +26,18 @@ const validateSessionId = (id: string) => id.startsWith('ses');
  * macOS and Windows keep the plain global install: their default prefixes are
  * user-writable, and changing them would strand anyone who already has it.
  */
+/**
+ * OpenCode 2 is a different package (`@opencode/cli`, formerly `opencode-ai`)
+ * that owns the same `opencode` command, so npm will not install it over 1.x:
+ * updating 1.x removes it first, and puts the same version back if OpenCode 2
+ * does not install. Sign-ins, settings and saved sessions carry over, since
+ * OpenCode 2 reads what 1.x left.
+ */
+const OPENCODE_2 = '2.0.0';
+
+const OPENCODE_2_SUMMARY =
+  'Your sign-ins, opencode.json, agents, commands, skills and saved sessions carry over, and agents resume their conversations. The opencode command in your terminal becomes OpenCode 2 too. Sessions already running keep the version they started with until they stop. If OpenCode 2 does not install, this version is put back.';
+
 const OPENCODE_HOST_DEPENDENCY = (() => {
   const base = npmDependency({ id: 'opencode', package: '@opencode/cli' });
 
@@ -36,6 +48,16 @@ const OPENCODE_HOST_DEPENDENCY = (() => {
     options?.map((opt) => ({
       ...opt,
       ...(opt.uninstallCommand ? { uninstallCommand: opt.uninstallCommand + ' opencode-ai' } : {}),
+      ...(opt.method === 'npm'
+        ? {
+            lineMigration: {
+              below: OPENCODE_2,
+              removeCommand: 'npm uninstall -g opencode-ai',
+              restoreCommand: 'npm install -g opencode-ai@{version}',
+              summary: OPENCODE_2_SUMMARY,
+            },
+          }
+        : {}),
     }));
 
   return {
@@ -49,6 +71,15 @@ const OPENCODE_HOST_DEPENDENCY = (() => {
           command: 'npm install -g --prefix "$HOME/.local" @opencode/cli',
           uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" @opencode/cli opencode-ai',
           recommended: true,
+          // 1.x may sit in either prefix. Removing it from the system one needs
+          // write access there; without it the upgrade stops before changing anything.
+          lineMigration: {
+            below: OPENCODE_2,
+            removeCommand:
+              'npm uninstall -g opencode-ai && npm uninstall -g --prefix "$HOME/.local" opencode-ai',
+            restoreCommand: 'npm install -g --prefix "$HOME/.local" opencode-ai@{version}',
+            summary: OPENCODE_2_SUMMARY,
+          },
         },
       ],
     },

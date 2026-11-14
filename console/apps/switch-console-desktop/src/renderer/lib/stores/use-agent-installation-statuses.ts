@@ -1,9 +1,11 @@
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo } from 'react';
+import { getAgentUpdateErrorMessage } from '@renderer/lib/components/agent-selector/agent-install';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
   AgentInstallationStatus,
+  AgentUpdateError,
   AgentPayload,
   DependencyStatus,
   HostDependencySelection,
@@ -118,7 +120,17 @@ export function useAgentInstallationStatuses(connectionId?: string) {
         if (!connectionId) void recheckThisComputer(queryClient);
         toast({ title: `${name} successfully updated` });
       } else {
-        toast({ title: `Failed to update ${name}`, variant: 'destructive' });
+        const { error } = result as { error: AgentUpdateError };
+        toast({
+          title:
+            error.type === 'line-migration-unrestored'
+              ? `${name} isn't installed now`
+              : error.type === 'line-migration-failed'
+                ? `Couldn't upgrade ${name}`
+                : `Failed to update ${name}`,
+          description: getAgentUpdateErrorMessage(error),
+          variant: 'destructive',
+        });
       }
     },
     onError: (_, vars) => {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { getAgentInstallActionState, getAgentInstallErrorMessage } from './agent-install';
+import {
+  getAgentInstallActionState,
+  getAgentInstallErrorMessage,
+  getAgentUpdateErrorMessage,
+} from './agent-install';
 import {
   buildAgentGroups,
   canInstallAgentOption,
@@ -168,5 +172,33 @@ describe('buildAgentGroups', () => {
       installing: true,
       label: 'Install OpenCode',
     });
+  });
+});
+
+describe('getAgentUpdateErrorMessage across a release line', () => {
+  const cause = { type: 'command-failed' as const, message: 'npm failed', output: 'EACCES' };
+  it('says the earlier version is back and keeps working', () => {
+    const message = getAgentUpdateErrorMessage({
+      type: 'line-migration-failed',
+      id: 'opencode',
+      restoredVersion: '1.19.5',
+      cause,
+    });
+    expect(message).toContain('1.19.5 was put back');
+    expect(message).toContain('EACCES');
+  });
+  it('says nothing is installed and gives both commands when the restore failed too', () => {
+    const message = getAgentUpdateErrorMessage({
+      type: 'line-migration-unrestored',
+      id: 'opencode',
+      previousVersion: '1.19.5',
+      cause,
+      restoreError: cause,
+      installCommand: 'npm install -g @opencode/cli',
+      restoreCommand: 'npm install -g opencode-ai@1.19.5',
+    });
+    expect(message).toContain('not installed now');
+    expect(message).toContain('npm install -g @opencode/cli');
+    expect(message).toContain('npm install -g opencode-ai@1.19.5');
   });
 });

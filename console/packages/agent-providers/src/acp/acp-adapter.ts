@@ -9,8 +9,13 @@ import type {
   ProviderCapabilities,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderTurnStartResult,
 } from '../adapter';
-import { ProviderConversationUnavailableError, ProviderSessionError } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  ProviderSessionError,
+  SteerNotSentError,
+} from '../adapter';
 import type {
   ApprovalDecision,
   ProviderItem,
@@ -356,8 +361,29 @@ export class AcpAdapter implements ProviderAdapter {
     }
   }
 
-  async sendTurn(input: ProviderSendTurnInput) {
+  async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
     const state = this.require(input.sessionId);
+    const { steerMethod } = this.hooks;
+    if (steerMethod) {
+      const running = state.turn && !state.interrupted ? state.turn : null;
+      if (input.expectedTurnId && running !== input.expectedTurnId)
+        throw new SteerNotSentError('The authorized turn is no longer running.');
+      if (running) {
+        const answer = await state.client.request<{ outcome?: unknown }>(steerMethod, {
+          sessionId: state.nativeId,
+          prompt: await this.promptContent(state, input),
+        });
+        if (answer.outcome === 'injected') return { turnId: input.turnId, steeredInto: running };
+        if (answer.outcome !== 'promptRequired')
+          throw new ProviderSessionError(
+            this.hooks.provider,
+            state.id,
+            `${this.hooks.label} answered a steer with ${JSON.stringify(answer)}.`
+          );
+        if (input.expectedTurnId)
+          throw new SteerNotSentError(`${this.hooks.label} had no running turn to steer.`);
+      }
+    }
     state.queue.push(input);
     if (!state.turn) this.drain(state);
     return { turnId: input.turnId };
@@ -407,6 +433,19 @@ export class AcpAdapter implements ProviderAdapter {
 
   private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
     if (input.model) await this.setModel(state.id, input.model);
+    return (
+      await state.client.request<{ stopReason: string }>('session/prompt', {
+        sessionId: state.nativeId,
+        prompt: await this.promptContent(state, input),
+      })
+    ).stopReason;
+  }
+
+  /** The ACP prompt content for a message: its text, with any pending context first, and its attachments. */
+  private async promptContent(
+    state: State,
+    input: ProviderSendTurnInput
+  ): Promise<Array<Record<string, unknown>>> {
     const prompt: Array<Record<string, unknown>> = [
       { type: 'text', text: state.context ? `${state.context}\n\n${input.text}` : input.text },
     ];
@@ -440,12 +479,7 @@ export class AcpAdapter implements ProviderAdapter {
         });
       }
     }
-    return (
-      await state.client.request<{ stopReason: string }>('session/prompt', {
-        sessionId: state.nativeId,
-        prompt,
-      })
-    ).stopReason;
+    return prompt;
   }
 
   async interruptTurn(id: string): Promise<void> {
@@ -548,6 +582,7 @@ export class AcpAdapter implements ProviderAdapter {
       get turnId() {
         return active();
       },
+      runtimeMode: state.runtimeMode,
       mcpServerNames: state.mcpNames,
       askQuestions: async (questions, answer) => {
         const turnId = active();
