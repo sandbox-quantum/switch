@@ -12,6 +12,7 @@ import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
+  EDIT_TOO_LATE,
   followupCommandId,
   retryRefusal,
   roomControlFollowup,
@@ -19,8 +20,12 @@ import {
 } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
+  editedRoomText,
   planAttachments,
   roomCommand,
+  roomCommandId,
+  roomEditCommand,
+  roomEditSchema,
   roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
@@ -883,6 +888,27 @@ export async function runSharedHost(
               `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
             )
           );
+      // An edit that came after the agent started is answered where it was made.
+      if (
+        command.body.type === 'message.edit' &&
+        status?.code === 'TOO_LATE' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        command.origin.roomId
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body: EDIT_TOO_LATE,
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${command.origin.roomId} that an edit came too late: ${String(error)}`
+            )
+          );
       // A fresh conversation starts with the instructions this host was given,
       // and has been told no room's.
       if (command.body.type === 'session.reset' && status?.status === 'applied') {
@@ -894,6 +920,32 @@ export async function runSharedHost(
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
       for (const event of inbox.pending()) {
+        const edit = roomEditSchema.safeParse(event.event);
+        if (edit.success) {
+          // The turn the edited message queued, with its text as it stands.
+          const turnId = roomCommandId(agentId, event.roomId, edit.data.payload.message_id);
+          const shown = host!
+            .snapshot()
+            .items.find((item) => item.itemId === `user-${turnId}`)?.text;
+          const text = shown === undefined ? null : editedRoomText(shown, edit.data.payload.body);
+          // A message this session never ran has nothing here to edit.
+          if (text !== null)
+            await run(
+              roomEditCommand({
+                agentId,
+                sessionId: options.session.sessionId,
+                epoch: host!.snapshot().session.epoch,
+                roomId: event.roomId,
+                edit: edit.data,
+                surface: 'switch-web',
+                text,
+              }),
+              null,
+              false
+            );
+          await inbox.acknowledge(event);
+          continue;
+        }
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
           await host!.notice(

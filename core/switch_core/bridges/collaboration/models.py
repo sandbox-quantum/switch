@@ -197,6 +197,23 @@ class InboundMessage(BaseModel):
     extra_content: dict[str, object] = {}
 
 
+class InboundEdit(BaseModel):
+    """Someone edited a post on the platform. `message_ref` is the edited
+    post's reference, the one its `InboundMessage` carried, and `content` its
+    whole new text. Only the text changes; a platform reports an edit's
+    attachments, if any, as unchanged."""
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    content: str
+    message_ref: str
+    # What tells this edit apart from another edit of the same post (Slack's
+    # `event_ts`, Mattermost's `edit_at`), so a second delivery of one edit
+    # writes nothing twice while every later edit is still written.
+    revision: str
+
+
 class InboundCommand(BaseModel):
     channel_id: str
     channel_type: ChannelType

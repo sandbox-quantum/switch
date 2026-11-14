@@ -59,6 +59,21 @@ export interface MessagePayload {
   follow_up?: 'thread_follow_up' | 'channel_follow_up' | 'main_agent' | null;
 }
 
+/**
+ * Someone edited a message this agent received. `message_id` is the message
+ * as it was received, `body` its whole new text and `edit_id` the room event
+ * carrying the edit; the last edit of a message wins.
+ */
+export interface MessageEditPayload {
+  message_id: string;
+  edit_id: string;
+  body: string;
+  sender: string;
+  sender_name: string;
+  timestamp: number;
+  thread_id?: string | null;
+}
+
 export interface CommandPayload {
   command: string;
   // Command arguments. For `reset`/`compact` this carries the role name the
@@ -82,7 +97,7 @@ export interface RoomJoinPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload;
+  payload: MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message

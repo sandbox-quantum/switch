@@ -247,6 +247,7 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
     z.strictObject({ type: z.literal('session.reset') }),
     z.strictObject({ type: z.literal('session.compact') }),
     z.strictObject({ type: z.literal('message.retry'), messageId: id }),
+    z.strictObject({ type: z.literal('message.edit'), messageId: id, text: z.string() }),
     z.strictObject({
       type: z.literal('session.model.set'),
       modelId: id,

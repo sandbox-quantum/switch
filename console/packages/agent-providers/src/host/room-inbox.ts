@@ -6,6 +6,10 @@ import { z } from 'zod';
 import { Journal } from './journal';
 
 export function roomInputId(event: AgentBridgeEvent): string | null {
+  // An edit is delivered only to an agent the original was delivered to,
+  // so it is as addressed as that message was.
+  if (event.type === 'message_edit')
+    return 'edit_id' in event.payload ? `edit:${String(event.payload.edit_id)}` : null;
   if (event.type === 'message')
     return 'addressed' in event.payload &&
       event.payload.addressed === true &&

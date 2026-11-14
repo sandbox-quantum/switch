@@ -148,6 +148,8 @@ export class HostedSession {
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
+  /** The text a room message's turn was edited to while it waited, by command id. */
+  private readonly editedTexts = new Map<string, string>();
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
   /** Recent reasoning, in memory only: never published, journaled or replayed. */
@@ -933,13 +935,77 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
+    const text = this.editedTexts.get(original.commandId) ?? original.body.text;
     // Run as a turn of its own: steered into whatever turn runs now, it would
     // join work it was never meant for.
     return {
       ...command,
       origin: original.origin,
-      body: { ...original.body, delivery: 'queue' },
+      body: { ...original.body, text, delivery: 'queue' },
     };
+  }
+
+  /**
+   * The sender edited a room message: while its turn waits in the queue, the
+   * turn runs the new text and its card shows it. Once the turn has been taken
+   * to run, it runs as it was sent and the edit is refused with `TOO_LATE`.
+   * The queue is the boundary because `runNext` takes a turn off it before
+   * anything else happens, so a turn is either still editable or already gone.
+   */
+  private async edit(
+    command: Command,
+    body: Extract<Command['body'], { type: 'message.edit' }>
+  ): Promise<Snapshot['commandStatuses'][number]> {
+    if (eventBytes(command) > 60 * 1024)
+      throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
+    const index = this.queue.findIndex(
+      (each) => each.body.type === 'message.send' && each.origin.messageId === body.messageId
+    );
+    const queued = index < 0 ? undefined : this.queue[index];
+    await this.inbox.append({ type: 'accepted', command });
+    this.commands.set(command.commandId, command);
+    if (!queued || queued.body.type !== 'message.send') {
+      const started = [...this.commands.values()].some(
+        (each) => each.body.type === 'message.send' && each.origin.messageId === body.messageId
+      );
+      await this.publish({
+        type: 'command.status',
+        commandId: command.commandId,
+        status: 'rejected',
+        code: started ? 'TOO_LATE' : 'NOT_FOUND',
+        message: started
+          ? 'The agent had already started on this message, so it works from the message as it was sent.'
+          : 'This session has no turn for that message.',
+      });
+      return this.status(command.commandId);
+    }
+    this.queue[index] = { ...queued, body: { ...queued.body, text: body.text } };
+    this.editedTexts.set(queued.commandId, body.text);
+    const itemId = `user-${queued.commandId}`;
+    const item = this.snapshot().items.find((each) => each.itemId === itemId);
+    await this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId,
+        turnId: queued.commandId,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        attachments: queued.body.attachments,
+        origin: queued.origin,
+        ...item,
+        revision: (item?.revision ?? 1) + 1,
+        text: body.text,
+      },
+    });
+    await this.publish({
+      type: 'command.status',
+      commandId: command.commandId,
+      status: 'applied',
+      code: null,
+      message: null,
+    });
+    return this.status(command.commandId);
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -958,6 +1024,7 @@ export class HostedSession {
     if (this.fault) throw this.fault;
     if (command.epoch !== session.epoch) throw new Error('STALE_EPOCH');
     const body = command.body;
+    if (body.type === 'message.edit') return this.edit(command, body);
     if (this.decisionPending && body.type !== 'session.reset' && body.type !== 'session.stop')
       throw new Error(
         `UNSUPPORTED_CAPABILITY: ${this.decisionCode} — start a fresh conversation first.`
