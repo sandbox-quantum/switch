@@ -114,31 +114,54 @@ if [ -n "$VERSION" ]; then
   esac
   URL="https://github.com/$REPO/releases/download/$TAG_PREFIX$VERSION/switch-agent-controller-$VERSION.tgz"
 else
-  # The repository also releases Switch and Switch Console: take the highest
-  # controller release that carries its package, leaving out drafts and prereleases.
-  FOUND="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=100" |
+  # The repository also releases Switch and Switch Console, and a controller
+  # prerelease for every merge, so the newest page of releases need not hold a
+  # single published controller release. The controller's tags are listed
+  # whole instead: take the highest x.y.z tag whose release is published, is
+  # not a prerelease, and carries its package and the package's signature.
+  # A release without a signature is never one this installer can install.
+  VERSIONS="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/git/matching-refs/tags/$TAG_PREFIX" |
     TAG_PREFIX="$TAG_PREFIX" node -e '
       let input = "";
       process.stdin.on("data", (chunk) => (input += chunk));
       process.stdin.on("end", () => {
-        const prefix = process.env.TAG_PREFIX;
-        const parse = (v) => (/^\d+\.\d+\.\d+$/.test(v) ? v.split(".").map(Number) : null);
-        let best = null;
-        for (const release of JSON.parse(input)) {
-          if (release.draft || release.prerelease || !release.tag_name.startsWith(prefix)) continue;
-          const version = release.tag_name.slice(prefix.length);
-          const parts = parse(version);
-          const asset = release.assets.find((a) => a.name === `switch-agent-controller-${version}.tgz`);
-          if (!parts || !asset) continue;
-          const order = (x, y) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
-          if (!best || order(parts, best.parts) > 0) best = { parts, url: asset.browser_download_url };
+        const prefix = `refs/tags/${process.env.TAG_PREFIX}`;
+        const versions = [];
+        for (const tag of JSON.parse(input)) {
+          if (!tag.ref.startsWith(prefix)) continue;
+          const version = tag.ref.slice(prefix.length);
+          if (/^\d+\.\d+\.\d+$/.test(version)) versions.push(version.split(".").map(Number));
         }
-        if (best) process.stdout.write(`${best.parts.join(".")} ${best.url}`);
+        versions.sort((x, y) => y[0] - x[0] || y[1] - x[1] || y[2] - x[2]);
+        process.stdout.write(versions.map((v) => v.join(".")).join("\n"));
       });
-    ')" || fail "Could not list the releases of $REPO."
-  [ -n "$FOUND" ] || fail "$REPO has no switch-agent-controller release yet."
-  VERSION="${FOUND%% *}"
-  URL="${FOUND#* }"
+    ')" || fail "Could not list the controller tags of $REPO."
+  [ -n "$VERSIONS" ] || fail "$REPO has no switch-agent-controller release yet."
+  RELEASE="$(mktemp)"
+  URL=""
+  for CANDIDATE in $VERSIONS; do
+    STATUS="$(curl -sSL -o "$RELEASE" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/tags/$TAG_PREFIX$CANDIDATE")" ||
+      { rm -f "$RELEASE"; fail "Could not read the release $TAG_PREFIX$CANDIDATE of $REPO."; }
+    case "$STATUS" in
+      200) ;;
+      404) continue ;;
+      *) rm -f "$RELEASE"; fail "GitHub answered HTTP $STATUS for the release $TAG_PREFIX$CANDIDATE of $REPO." ;;
+    esac
+    URL="$(VERSION="$CANDIDATE" node -e '
+      const release = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+      const name = `switch-agent-controller-${process.env.VERSION}.tgz`;
+      const names = new Set((release.assets || []).map((a) => a.name));
+      const asset = (release.assets || []).find((a) => a.name === name);
+      if (!release.draft && !release.prerelease && asset && names.has(`${name}.sig`))
+        process.stdout.write(asset.browser_download_url);
+    ' "$RELEASE")" || { rm -f "$RELEASE"; fail "Could not read the release $TAG_PREFIX$CANDIDATE of $REPO."; }
+    if [ -n "$URL" ]; then
+      VERSION="$CANDIDATE"
+      break
+    fi
+  done
+  rm -f "$RELEASE"
+  [ -n "$URL" ] || fail "$REPO has no published, signed switch-agent-controller release yet. Releases made before signing began carry no signature, and this installer installs only signed releases."
 fi
 case "$URL" in
   https://*) ;;
