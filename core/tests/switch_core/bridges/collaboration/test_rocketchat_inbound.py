@@ -216,6 +216,39 @@ async def test_a_command_is_parsed(wired: tuple[RocketChatAdapter, Received]) ->
     assert received.messages == []
 
 
+async def test_a_command_split_from_its_arguments_by_a_line_break(
+    wired: tuple[RocketChatAdapter, Received],
+) -> None:
+    adapter, received = wired
+    await _deliver(adapter, _message(msg="!invite-agent\n@coder"))
+    [command] = received.commands
+    assert (command.command, command.args) == ("invite-agent", "@coder")
+
+
+@pytest.mark.parametrize("text", ["!!!", "! look", "!123"])
+async def test_only_a_named_command_is_run(
+    wired: tuple[RocketChatAdapter, Received], text: str
+) -> None:
+    adapter, received = wired
+    await _deliver(adapter, _message(msg=text))
+    assert received.commands == []
+    assert [m.content for m in received.messages] == [text]
+
+
+async def test_a_file_captioned_like_a_command_is_relayed_with_its_file(
+    wired: tuple[RocketChatAdapter, Received], fake: FakeRocketChat
+) -> None:
+    adapter, received = wired
+    fake.files["/file-upload/file1/shot.png"] = b"png"
+    file = {"_id": "file1", "name": "shot.png", "type": "image/png", "size": 3}
+    await _deliver(adapter, _message(msg="!look at this", files=[file], file=file))
+
+    assert received.commands == []
+    [message] = received.messages
+    assert message.content == "!look at this"
+    assert [a.filename for a in message.attachments] == ["shot.png"]
+
+
 async def test_an_integrations_post_cannot_run_a_command(
     wired: tuple[RocketChatAdapter, Received],
 ) -> None:
@@ -606,6 +639,43 @@ async def test_a_failed_message_is_read_back_without_waiting_for_a_reconnect(
 
     await asyncio.gather(*adapter._retries.values())
     assert [m.message_ref for m in received.messages] == ["lost"]
+    assert [c.body for c in fake.called("subscriptions.read")] == [{"rid": ROOM}]
+    assert adapter._unrelayed == set()
+
+
+async def test_a_room_that_failed_to_read_back_is_tried_again_before_it_is_marked_read(
+    wired: tuple[RocketChatAdapter, Received],
+    fake: FakeRocketChat,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, received = wired
+    monkeypatch.setattr(adapter_module, "_UNRELAYED_RETRY_SECONDS", (3600.0,))
+    fake.on(
+        "subscriptions.get", lambda _: {"update": [_subscription(ls=_ago(minutes=5))]}
+    )
+    fake.on(
+        "subscriptions.getOne",
+        lambda _: {"subscription": _subscription(ls=_ago(minutes=5))},
+    )
+    missed = {**_message(_id="missed"), "ts": _ago(minutes=1)}
+    fake.on(
+        "chat.syncMessages", lambda _: {"result": {"updated": [missed], "deleted": []}}
+    )
+    received.fail_next = True
+    await adapter._catch_up()
+
+    # A message said after the reconnect reaches Switch, but marking the room
+    # read for it would move the checkpoint past the one that failed.
+    await _deliver(adapter, _message(_id="later"))
+    assert [m.message_ref for m in received.messages] == ["later"]
+    assert fake.called("subscriptions.read") == []
+    assert ROOM in adapter._retries
+
+    # The retry, without waiting for its delay.
+    adapter._retries[ROOM].cancel()
+    monkeypatch.setattr(adapter_module, "_UNRELAYED_RETRY_SECONDS", (0.0,))
+    await adapter._retry_read_back(ROOM)
+    assert [m.message_ref for m in received.messages] == ["later", "missed"]
     assert [c.body for c in fake.called("subscriptions.read")] == [{"rid": ROOM}]
     assert adapter._unrelayed == set()
 
