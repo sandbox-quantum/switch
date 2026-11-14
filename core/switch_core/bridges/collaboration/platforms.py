@@ -20,6 +20,10 @@ from switch_core.bridges.collaboration.google_chat.adapter import (
     GoogleChatAdapter,
     GoogleChatConnectionConfig,
 )
+from switch_core.bridges.collaboration.lark.adapter import (
+    LarkAdapter,
+    LarkConnectionConfig,
+)
 from switch_core.bridges.collaboration.matrix.adapter import (
     MatrixAdapter,
     MatrixConnectionConfig,
@@ -117,6 +121,9 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     ),
     PlatformRegistration(
         "webex", WebexAdapter, WebexConnectionConfig, ADDITIONAL_MESSAGING_PLATFORMS
+    ),
+    PlatformRegistration(
+        "lark", LarkAdapter, LarkConnectionConfig, ADDITIONAL_MESSAGING_PLATFORMS
     ),
 )
 
