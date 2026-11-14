@@ -9,6 +9,8 @@ import {
 import { ArchivedFold } from "@switch-console/chat-ui/components/archived-fold";
 import { ChatPanel } from "@switch-console/chat-ui/components/chat-panel";
 import { ChatRow, RoomRow, UnsavedChatRow } from "@switch-console/chat-ui/components/chat-row";
+import { NewRoomRow } from "@switch-console/chat-ui/components/new-room-row";
+import { RoomAppChips } from "@switch-console/chat-ui/components/room-app-chips";
 import type { ChatSummary } from "@switch-console/chat-ui/contracts/chats";
 import { AgentAvatar, useChatHost, useOptionalChatHost } from "@switch-console/chat-ui/host";
 import {
@@ -16,22 +18,35 @@ import {
   byLatestDirectChat,
   isConsoleDirectChatSummary,
 } from "@switch-console/chat-ui/model/agent-conversations";
-import { roomActivityAt } from "@switch-console/chat-ui/model/room-order";
+import { appsOf, inApp } from "@switch-console/chat-ui/model/room-apps";
+import {
+  byActivity,
+  holdingOpenRoom,
+  roomActivityAt,
+} from "@switch-console/chat-ui/model/room-order";
 import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
+import { SegmentedControl } from "@switch-console/chat-ui/primitives/segmented-control";
 import { SidebarMenuRow } from "@switch-console/chat-ui/primitives/sidebar";
 import type { ChatsStore } from "@switch-console/chat-ui/stores/chats-store";
 import { useQuery } from "@tanstack/react-query";
 import { Laptop, Settings, UserRound } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Link as RouterLink,
   Navigate,
+  useLocation,
   useNavigate,
   useParams,
   useSearchParams,
 } from "react-router";
-import { type AgentListEntry, fetchAgent, fetchRoom, loadAgents } from "../../data/api";
+import {
+  type AgentListEntry,
+  fetchAgent,
+  fetchRoom,
+  loadAgents,
+  loadRooms,
+} from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useWebChats } from "./WebChatHost";
 import { WEB_SERVER_ID } from "./webServer";
@@ -74,7 +89,7 @@ const AgentList = observer(function AgentList({
   const unread = (agentId: string) =>
     chats.chatsOfAgent(agentId).reduce((sum, chat) => sum + chats.unread(chat.roomId), 0);
   return (
-    <div className="flex flex-col gap-[2px]" aria-label="Agents">
+    <div className="flex flex-col gap-[2px]" aria-label="Your agents">
       {listed.length === 0 && (
         <p className="px-[9px] py-2 text-xs text-foreground-muted">No agents yet.</p>
       )}
@@ -108,6 +123,144 @@ const AgentList = observer(function AgentList({
       })}
     </div>
   );
+});
+
+type ListedRoom = {
+  id: string;
+  name: string;
+  bridgeType: string | null;
+  bridgeDisplayName: string | null;
+  createdAt: string | null;
+  lastMessageAt: string | null;
+};
+
+const roomPath = (roomId: string) => `/chats/rooms/${encodeURIComponent(roomId)}`;
+const TAB_KEY = "gateway.chats.tab";
+const ROOM_APP_KEY = "gateway.chats.roomApp";
+type Tab = "agents" | "rooms";
+
+/**
+ * The rooms the Chats page lists, as Console's sidebar does: the person's
+ * rooms but their 1-1 chats with agents (those are under each agent), and the
+ * group chats they are in.
+ */
+function useListedRooms(chats: ChatsStore): ListedRoom[] | null {
+  const rooms = useQuery({ queryKey: ["chat-rooms"], queryFn: loadRooms });
+  if (!rooms.data) return null;
+  const listed: ListedRoom[] = rooms.data
+    .filter(
+      (room) =>
+        !room.archived &&
+        (room.viewer_is_member || chats.chat(room.id) !== undefined) &&
+        !(room.is_console_chat && room.channel_type === "direct"),
+    )
+    .map((room) => ({
+      id: room.id,
+      name: room.name,
+      bridgeType: room.bridge_type ?? null,
+      bridgeDisplayName: room.bridge_display_name,
+      createdAt: room.created_at,
+      lastMessageAt: room.last_message_at ?? null,
+    }));
+  const ids = new Set(listed.map((room) => room.id));
+  for (const chat of chats.chats.values()) {
+    if (ids.has(chat.roomId) || isConsoleDirectChatSummary(chat)) continue;
+    listed.push({
+      id: chat.roomId,
+      name: chat.name,
+      bridgeType: chat.bridgeType,
+      bridgeDisplayName: null,
+      createdAt: null,
+      lastMessageAt: chat.lastMessage?.sentAt ?? null,
+    });
+  }
+  return listed;
+}
+
+/** Where the open room sat in the list when it was opened, kept while it stays open (see `holdingOpenRoom`). */
+function useHeldPlace(openId: string | null) {
+  const held = useRef<{ id: string | null; place: number | null; shown: string[] }>({
+    id: null,
+    place: null,
+    shown: [],
+  });
+  if (held.current.id !== openId) {
+    const place = openId === null ? -1 : held.current.shown.indexOf(openId);
+    held.current = { ...held.current, id: openId, place: place >= 0 ? place : null };
+  }
+  return {
+    place: held.current.place,
+    remember: (shown: string[]) => {
+      held.current.shown = shown;
+    },
+  };
+}
+
+/** New Room, the messaging apps to narrow to, then the rooms: unread first, then the most recently active. */
+const RoomList = observer(function RoomList({
+  rooms: listed,
+  selected,
+}: {
+  rooms: ListedRoom[];
+  selected: string | null;
+}) {
+  const { chats } = useChatHost();
+  const navigate = useNavigate();
+  const [app, setApp] = useState<string | null>(() => localStorage.getItem(ROOM_APP_KEY));
+  const apps = appsOf(listed);
+  const chosen = app !== null && apps.includes(app) ? app : null;
+  const ordered = byActivity(inApp(listed, chosen), (room) => ({
+    name: room.name,
+    activityAt: roomActivityAt(chats.chat(room.id), room),
+    unread: chats.unread(room.id) > 0,
+  }));
+  const { place, remember } = useHeldPlace(selected);
+  const rooms = holdingOpenRoom(ordered, selected, place);
+  remember(rooms.map((room) => room.id));
+  return (
+    <div className="flex flex-col gap-[2px]" aria-label="Your rooms">
+      <NewRoomRow onCreate={() => navigate("/rooms/new")} />
+      <RoomAppChips
+        apps={apps}
+        selected={chosen}
+        onSelect={(next) => {
+          setApp(next);
+          if (next === null) localStorage.removeItem(ROOM_APP_KEY);
+          else localStorage.setItem(ROOM_APP_KEY, next);
+        }}
+      />
+      {rooms.length === 0 && (
+        <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms yet.</p>
+      )}
+      {rooms.map((room) => (
+        <RoomRow
+          key={room.id}
+          roomId={room.id}
+          room={room}
+          isActive={room.id === selected}
+          onOpen={() => navigate(roomPath(room.id))}
+        />
+      ))}
+    </div>
+  );
+});
+
+/** A room opened from the Rooms list: its conversation when it is one of the person's chats. */
+const RoomPane = observer(function RoomPane({ roomId }: { roomId: string }) {
+  const { chats } = useChatHost();
+  if (chats.chat(roomId))
+    return (
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <ChatPanel key={roomId} serverId={serverId} roomId={roomId} />
+      </div>
+    );
+  if (chats.userId === null && !chats.listError)
+    return (
+      <Typography color="text.secondary" sx={{ m: "auto" }}>
+        Loading the room…
+      </Typography>
+    );
+  return <NotYourChat roomId={roomId} />;
 });
 
 /** Where an agent runs, or whose it is when it runs on no device Switch knows of. */
@@ -341,14 +494,36 @@ const ChatByRoom = observer(function ChatByRoom({ roomId }: { roomId: string }) 
 });
 
 const Chats = observer(function Chats() {
-  const { agentId, roomId } = useParams<{ agentId?: string; roomId?: string }>();
+  const { agentId, roomId: linkedRoomId } = useParams<{ agentId?: string; roomId?: string }>();
+  const inRooms = useLocation().pathname.startsWith("/chats/rooms/");
+  const roomId = inRooms ? null : (linkedRoomId ?? null);
+  const shownRoom = inRooms ? (linkedRoomId ?? null) : null;
   const agents = useQuery({ queryKey: ["chat-agents"], queryFn: loadAgents });
   const { chats } = useChatHost();
   const userId = useAuth().user?.id ?? null;
+  const rooms = useListedRooms(chats);
+  const [tab, setTab] = useState<Tab>(() =>
+    shownRoom ? "rooms" : agentId ? "agents" : localStorage.getItem(TAB_KEY) === "rooms" ? "rooms" : "agents",
+  );
+  // Opening a room shows the Rooms list, an agent the Agents list; switching
+  // the list leaves what is open beside it, as in Console.
+  useEffect(() => {
+    if (shownRoom) setTab("rooms");
+    else if (agentId) setTab("agents");
+  }, [shownRoom, agentId]);
   const agent = agents.data?.find((each) => each.id === agentId) ?? null;
+  const listedCount =
+    tab === "agents"
+      ? agents.data
+        ? listedAgents(agents.data, chats, userId).length
+        : null
+      : (rooms?.length ?? null);
+  // While the agents show, a dot on Rooms says a room has something new.
+  const roomsUnread = (rooms ?? []).some((room) => chats.unread(room.id) > 0);
 
   let main = null;
-  if (roomId) main = <ChatByRoom roomId={roomId} />;
+  if (shownRoom) main = <RoomPane roomId={shownRoom} />;
+  else if (roomId) main = <ChatByRoom roomId={roomId} />;
   else if (agent) main = <AgentPage key={agent.id} agent={agent} />;
   else if (agents.error)
     main = (
@@ -363,12 +538,17 @@ const Chats = observer(function Chats() {
       </Typography>
     );
   else if (agents.data) {
-    const some = listedAgents(agents.data, chats, userId).length > 0;
+    const some =
+      tab === "agents" ? listedAgents(agents.data, chats, userId).length > 0 : true;
     main = (
       <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1, p: 4 }}>
         <ChatBubbleOutlineOutlined sx={{ fontSize: 40, opacity: 0.4 }} />
         <Typography color="text.secondary">
-          {some ? "Pick an agent to chat with." : "No agents to chat with yet."}
+          {tab === "rooms"
+            ? "Pick a room."
+            : some
+              ? "Pick an agent to chat with."
+              : "No agents to chat with yet."}
         </Typography>
         {!some && (
           <Button component={RouterLink} to="/agents">
@@ -381,9 +561,26 @@ const Chats = observer(function Chats() {
 
   return (
     <div className={`${SHARED_UI_CLASS} -m-8 flex min-h-0 flex-1 bg-background`}>
-      <div className="flex w-[240px] shrink-0 flex-col overflow-y-auto border-r border-border px-2 pt-4">
-        <p className="px-[9px] pb-1.5 text-xs font-medium text-foreground-muted">Agents</p>
-        {agents.data && <AgentList agents={agents.data} selected={agent?.id ?? null} />}
+      <div className="flex w-[260px] shrink-0 flex-col overflow-y-auto border-r border-border px-2">
+        <div className="flex items-center justify-between px-[9px] pt-4 pb-1.5">
+          <SegmentedControl
+            value={tab}
+            onChange={(next) => {
+              setTab(next);
+              localStorage.setItem(TAB_KEY, next);
+            }}
+            options={[
+              { value: "agents", label: "Agents" },
+              { value: "rooms", label: "Rooms", dot: roomsUnread && tab !== "rooms" },
+            ]}
+            ariaLabel="Show agents or rooms"
+            quiet
+          />
+          <span className="text-[11.5px] text-foreground-passive tabular-nums">{listedCount}</span>
+        </div>
+        {tab === "agents"
+          ? agents.data && <AgentList agents={agents.data} selected={agent?.id ?? null} />
+          : rooms && <RoomList rooms={rooms} selected={shownRoom} />}
       </div>
       {main}
     </div>

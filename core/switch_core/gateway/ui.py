@@ -68,6 +68,7 @@ PAGE_PATHS: tuple[str, ...] = (
     # Behind `gateway_chats`.
     "/chats",
     "/chats/agents/{agent_id}",
+    "/chats/rooms/{room_id}",
     "/chats/{room_id}",
     # The new layout's (`gateway_v2`). With it off they redirect to today's.
     "/overview",

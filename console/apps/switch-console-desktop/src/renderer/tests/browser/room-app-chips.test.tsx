@@ -19,11 +19,11 @@ vi.hoisted(() => {
 
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: () => () => {} }, rpc: {} }));
 import { RoomRow } from '@switch-console/chat-ui/components/chat-row';
+import { RoomAppChips } from '@switch-console/chat-ui/components/room-app-chips';
 import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import { appsOf, inApp } from '@switch-console/chat-ui/model/room-apps';
 import type { ChatsStore } from '@switch-console/chat-ui/stores/chats-store';
 import { stubChatHost } from '@switch-console/chat-ui/testing';
-import { RoomAppChips } from '@renderer/features/sidebar/room-app-chips';
-import { appsOf, inApp } from '@renderer/features/switch-servers/room-apps';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 
 // The rows as Console draws them: its own messaging-app icons, and a room with three unread.
@@ -99,6 +99,10 @@ it('narrows the rooms to one messaging app, and back to all of them', async () =
 
 it('offers no chips when every room is on one app', async () => {
   const only = ROOMS.filter((room) => room.bridgeType === 'slack');
-  const el = await mount(<RoomAppChips apps={appsOf(only)} selected={null} onSelect={() => {}} />);
+  const el = await mount(
+    <ChatHostProvider host={host}>
+      <RoomAppChips apps={appsOf(only)} selected={null} onSelect={() => {}} />
+    </ChatHostProvider>
+  );
   expect(el.querySelector('button')).toBeNull();
 });

@@ -70,6 +70,13 @@
   --sel: color-mix(in oklch, var(--sw-foreground) 9%, transparent);
   --sel-soft: color-mix(in oklch, var(--sw-foreground) 5%, transparent);
   --fg-icon: var(--sw-muted-foreground);
+  --fg-dim: var(--sw-muted-foreground);
+  --fg-name: var(--sw-foreground);
+  --fg-passive: var(--sw-foreground-tertiary);
+  --hair: var(--sw-border);
+  --hair-soft: color-mix(in oklch, var(--sw-foreground) 6%, transparent);
+  --menu-pill: var(--sw-card);
+  --menu-faint: var(--sw-muted);
 }
 
 /* Tailwind's reset, inside the chat only. */

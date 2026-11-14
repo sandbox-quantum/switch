@@ -29,6 +29,9 @@ export interface RoomSummary {
   connected_user_names: string[];
   bridge_id: string | null;
   bridge_display_name: string | null;
+  // The messaging app's type ("slack", "mattermost"), null when not bridged.
+  // Absent from servers that predate it.
+  bridge_type?: string | null;
   group_id: string | null;
   group_name: string | null;
   owner_id: string | null;
@@ -36,6 +39,9 @@ export interface RoomSummary {
   read_visibility: "public" | "private";
   write_visibility: "public" | "private";
   created_at: string;
+  // When its newest message was sent; null when it has none. Absent from
+  // servers that predate it.
+  last_message_at?: string | null;
   archived: boolean;
   // The viewer takes part in it: owns it, is in it (in Switch Console or
   // through a platform account they claimed), or owns an agent in it.

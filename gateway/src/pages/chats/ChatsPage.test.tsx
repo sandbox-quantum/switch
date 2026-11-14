@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   loadAgents: vi.fn(),
   fetchAgent: vi.fn(),
   fetchRoom: vi.fn(async () => null),
+  loadRooms: vi.fn(),
 }));
 vi.mock("../../data/api", () => api);
 vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ user: { id: "me" } }) }));
@@ -72,6 +73,22 @@ function chat(roomId: string, agentId: string, overrides: Partial<ChatSummary> =
   };
 }
 
+function room(id: string, name: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    name,
+    archived: false,
+    viewer_is_member: true,
+    is_console_chat: false,
+    channel_type: "channel_private",
+    bridge_type: null,
+    bridge_display_name: null,
+    created_at: "2026-01-01T00:00:00Z",
+    last_message_at: null,
+    ...overrides,
+  };
+}
+
 const sent = (seq: number, day: string) => ({
   seq,
   sentAt: `2026-01-${day}T00:00:00Z`,
@@ -122,6 +139,7 @@ function renderAt(path: string, store: ChatsStore) {
           <Routes>
             <Route path="/chats" element={<ChatsPage />} />
             <Route path="/chats/agents/:agentId" element={<ChatsPage />} />
+            <Route path="/chats/rooms/:roomId" element={<ChatsPage />} />
             <Route path="/chats/:roomId" element={<ChatsPage />} />
           </Routes>
           <Where />
@@ -139,6 +157,12 @@ beforeEach(() => {
     agent("a2", "researcher", "me"),
     agent("a3", "someone-elses", "u2"),
     agent("a4", "shared-helper", "u2"),
+  ]);
+  api.loadRooms.mockResolvedValue([
+    room("ops", "Ops room", { last_message_at: "2026-01-03T00:00:00Z", bridge_type: "slack" }),
+    room("old", "Old room", { last_message_at: "2026-01-01T00:00:00Z" }),
+    room("theirs", "Not mine", { viewer_is_member: false }),
+    room("c1", "c1", { is_console_chat: true, channel_type: "direct" }),
   ]);
   api.fetchAgent.mockResolvedValue({
     rooms: [
@@ -161,7 +185,7 @@ describe("ChatsPage", () => {
         chat("c-new", "a4", { lastMessage: sent(2, "02"), unreadCount: 3 }),
       ]),
     );
-    const list = await screen.findByLabelText("Agents");
+    const list = await screen.findByLabelText("Your agents");
     await waitFor(() => expect(within(list).getAllByTitle(/./)).toHaveLength(3));
     expect(within(list).getAllByTitle(/./).map((row) => row.getAttribute("title"))).toEqual([
       "shared-helper",
@@ -214,5 +238,39 @@ describe("ChatsPage", () => {
     await waitFor(() =>
       expect(screen.getByTestId("where").textContent).toBe("/chats/agents/a1?chat=c1"),
     );
+  });
+
+  it("lists the person's rooms and group chats under Rooms, newest first, with its app to narrow to", async () => {
+    renderAt(
+      "/chats",
+      storeWith([
+        chat("c1", "a1"),
+        chat("team", "a2", {
+          name: "Team chat",
+          channelType: "group",
+          lastMessage: sent(5, "05"),
+        }),
+      ]),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Rooms" }));
+    const list = await screen.findByLabelText("Your rooms");
+    await waitFor(() => expect(within(list).getByText("Ops room")).toBeTruthy());
+    expect(
+      within(list)
+        .getAllByRole("generic", { hidden: true })
+        .filter((each) => each.getAttribute("title") !== null)
+        .map((each) => each.getAttribute("title")),
+    ).toEqual(["Team chat", "Ops room", "Old room"]);
+    expect(within(list).getByRole("button", { name: "Slack" })).toBeTruthy();
+    expect(screen.getByText("New Room")).toBeTruthy();
+  });
+
+  it("opens a room that is one of the person's chats beside the Rooms list", async () => {
+    renderAt(
+      "/chats/rooms/team",
+      storeWith([chat("team", "a2", { name: "Team chat", channelType: "group" })]),
+    );
+    await waitFor(() => expect(screen.getByTestId("chat-panel").textContent).toBe("team"));
+    expect(screen.getByRole("button", { name: "Rooms" }).getAttribute("aria-pressed")).toBe("true");
   });
 });

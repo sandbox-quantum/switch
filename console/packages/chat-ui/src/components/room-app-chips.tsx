@@ -1,6 +1,7 @@
-import { appLabel, SWITCH_APP } from '@renderer/features/switch-servers/room-apps';
-import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
-import { cn } from '@renderer/utils/utils';
+import type { ReactNode } from 'react';
+import { BridgeIcon, useChatHost } from '../host';
+import { cn } from '../model/cn';
+import { appLabel, SWITCH_APP } from '../model/room-apps';
 
 /**
  * One chip per app the rooms are on, and All. There is nothing to choose
@@ -15,6 +16,7 @@ export function RoomAppChips({
   selected: string | null;
   onSelect: (app: string | null) => void;
 }) {
+  const { hasBridgeIcon } = useChatHost();
   if (apps.length < 2) return null;
   return (
     <div
@@ -28,7 +30,9 @@ export function RoomAppChips({
       {apps.map((app) => (
         <Chip key={app} pressed={selected === app} onClick={() => onSelect(app)}>
           {app !== SWITCH_APP && hasBridgeIcon(app) && (
-            <BridgeIcon bridgeType={app} size={12} className="shrink-0" />
+            <span className="shrink-0">
+              <BridgeIcon bridgeType={app} size={12} />
+            </span>
           )}
           {appLabel(app)}
         </Chip>
@@ -44,7 +48,7 @@ function Chip({
 }: {
   pressed: boolean;
   onClick: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button

@@ -1,4 +1,7 @@
 import { RoomRow } from '@switch-console/chat-ui/components/chat-row';
+import { NewRoomRow } from '@switch-console/chat-ui/components/new-room-row';
+import { RoomAppChips } from '@switch-console/chat-ui/components/room-app-chips';
+import { appsOf, inApp } from '@switch-console/chat-ui/model/room-apps';
 import {
   byActivity,
   holdingOpenRoom,
@@ -14,7 +17,6 @@ import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
-import { appsOf, inApp } from '@renderer/features/switch-servers/room-apps';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -24,8 +26,6 @@ import { appState } from '@renderer/lib/stores/app-state';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
-import { NewRoomRow } from './new-room-row';
-import { RoomAppChips } from './room-app-chips';
 import { SidebarMenuRow } from './sidebar-primitives';
 import { isRoomViewActive, openRoomView } from './sidebar-room-grouping';
 

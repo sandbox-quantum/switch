@@ -202,6 +202,7 @@ export const ROUTES: readonly AppRoute[] = [
   page("/ecosystem", BOTH, everyone, <EcosystemGraphPage />),
   page("/chats", BOTH, gatewayChats, chats),
   page("/chats/agents/:agentId", BOTH, gatewayChats, chats),
+  page("/chats/rooms/:roomId", BOTH, gatewayChats, chats),
   page("/chats/:roomId", BOTH, gatewayChats, chats),
   page("/rooms", BOTH, everyone, <RoomsPage />),
   page("/rooms/new", BOTH, everyone, <CreateRoomPage />),
