@@ -56,7 +56,7 @@ export default function WorkspaceGuardrailsPage() {
       </Card>
     );
   } else {
-    body = <GuardrailPolicyCard policyId={data.policy_id} policyUrl={data.policy_url} />;
+    body = <GuardrailPolicyCard policyId={data.policy_id} policyName={data.policy_name} policyUrl={data.policy_url} />;
   }
 
   const checking = data?.checking === true;

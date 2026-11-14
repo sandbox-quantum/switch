@@ -451,18 +451,24 @@ def stored_definition(definition: dict[str, Any]) -> dict[str, Any]:
     return {**definition, "auto_mode": definition.get("auto_mode", False)}
 
 
-def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
+def assignment_entry(
+    row: AgentDefinitionRow, agent: Agent, *, workspace_archived: bool
+) -> dict[str, Any]:
     """An `AgentAssignment`: the stored v1 definition, plus the agent's `name`,
     `display_name` and `icon_url` read from its own row.
 
     The definition is the v1 shape, `directory` included, rather than the
     target contract's (which nests it as `local.directory` and adds fields v1
-    does not have); `agent-controllers-v1.md` defines it this way."""
+    does not have); `agent-controllers-v1.md` defines it this way.
+
+    In an archived workspace every agent is assigned stopped, whatever its
+    owner set, and kept: the controller stops it and starts it again once the
+    workspace is restored, where leaving it out would have it removed."""
     definition = row.definition
     return {
         "agent_id": row.agent_id,
         "revision": row.revision,
-        "desired_state": row.desired_state,
+        "desired_state": "stopped" if workspace_archived else row.desired_state,
         "definition": {
             "name": agent.name,
             "display_name": agent.display_name,

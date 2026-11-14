@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent import dependencies as bridge_deps
@@ -50,13 +50,16 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
     Room,
+    Tenant,
     TenantMember,
     User,
     room_agents,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -291,6 +294,9 @@ def build_harness(
         session_factory
     )
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    gateway_app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
+        OrganizationStore()
+    )
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
     gateway_app.dependency_overrides[gw_deps.get_template_store] = lambda: (
         TemplateStore()
@@ -338,6 +344,25 @@ async def add_member(
         session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role="member"))
         await session.commit()
         return user
+
+
+async def set_archived(harness: Harness, *, archived: bool) -> None:
+    """Archive or restore tenant zero, as the route's commit does."""
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == TENANT_ZERO_ID)
+            .values(archived_at=harness.clock.now if archived else None)
+        )
+        await session.commit()
+
+
+async def archive_changed(harness: Harness) -> None:
+    """What `WorkspaceArchive` tells management once the change commits."""
+    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        await harness.management.service.workspace_archive_changed(
+            session, TENANT_ZERO_ID
+        )
 
 
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
@@ -411,9 +436,14 @@ class EnrolledController:
 
 
 async def enroll_console(
-    harness: Harness, client: httpx.AsyncClient, owner: User, name: str = "laptop"
+    harness: Harness,
+    client: httpx.AsyncClient,
+    owner: User,
+    name: str = "laptop",
+    tenant_id: str = TENANT_ZERO_ID,
 ) -> EnrolledController:
-    """Enroll a console controller for `owner` and exchange its credential."""
+    """Enroll a console controller for `owner` in `tenant_id` and exchange
+    its credential."""
     response = await client.post(
         "/gateway/management/controllers",
         json={
@@ -422,7 +452,7 @@ async def enroll_console(
             "platform": platform(),
             "version": "0.1.0",
         },
-        cookies=cookies_for(owner),
+        cookies=cookies_for(owner, tenant_id),
     )
     assert response.status_code == 201, response.text
     body = response.json()

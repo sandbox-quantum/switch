@@ -1924,6 +1924,7 @@ class TestCurrentTenantRoute:
             "role": "member",
             "organization_role": None,
             "organization_id": None,
+            "archived_at": None,
             "administers": False,
             "can_delete": False,
             "can_manage_data_protection": False,
@@ -2014,6 +2015,7 @@ class TestOrganizationAdmins:
             "role": "admin",
             "organization_role": "org_admin",
             "organization_id": organization_id,
+            "archived_at": None,
             "administers": True,
             # An organization admin administers it, but deletes it, erases
             # people and sets messages to be deleted only by an admin
@@ -2426,6 +2428,39 @@ class TestRenameWorkspace:
             [("tenant.renamed", details)],
             [("organization.workspace_renamed", details)],
         )
+
+    async def test_a_name_another_workspace_of_its_organization_has_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """In any case, as creating one is; its own name in another case is
+        not another's."""
+        organization_id = await self._in_organization(session_factory)
+        async with session_factory() as session:
+            session.add(
+                Tenant(
+                    id=TENANT_B,
+                    slug=TENANT_B,
+                    name="Labs",
+                    organization_id=organization_id,
+                )
+            )
+            await session.commit()
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            taken = await client.patch(f"/tenants/{TENANT_A}", json={"name": " labs "})
+            own = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": TENANT_A.upper()}
+            )
+
+        assert taken.status_code == 409
+        assert taken.json()["detail"] == "Acme already has a workspace called “Labs”."
+        assert own.status_code == 200, own.text
+        tenant = await self._tenant(session_factory, TENANT_A)
+        assert tenant.name == TENANT_A.upper()
 
     async def test_an_org_admin_with_no_membership_renames_it_unmarked(
         self, session_factory: async_sessionmaker[AsyncSession]

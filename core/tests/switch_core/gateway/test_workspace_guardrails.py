@@ -1,5 +1,6 @@
-"""Anyone in a workspace may read which Switch Trust policy checks its
-messages, and where to see it; nobody reads the key it is checked with."""
+"""Anyone in a workspace may read which Switch Trust policy its organization
+checks its messages against, and where to see it; nobody reads the key it is
+checked with."""
 
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ import httpx
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.stores.trust_settings_store import TrustSettingsStore
+from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.db.stores.organization_trust_settings_store import (
+    OrganizationTrustSettingsStore,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.workspace_guardrails import router
@@ -39,15 +43,20 @@ async def _save(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     endpoint: str = DEFAULT_TRUST_ENDPOINT,
-    policy_id: str | None,
-    api_key_encrypted: str | None,
+    policy_id: str,
+    policy_name: str | None,
 ) -> None:
+    """Connect `policy_id` for tenant zero's organization."""
+    admin = await add_member(session_factory, "olga")
     async with session_factory() as session:
-        await TrustSettingsStore().upsert(
+        await OrganizationTrustSettingsStore().save(
             session,
+            organization_id=TENANT_ZERO_ID,
             endpoint=endpoint,
             policy_id=policy_id,
-            api_key_encrypted=api_key_encrypted,
+            policy_name=policy_name,
+            api_key_encrypted="sealed-key",
+            updated_by=admin.id,
         )
         await session.commit()
 
@@ -67,7 +76,7 @@ async def _read(
 async def test_a_member_reads_the_policy_that_checks_the_workspace(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    await _save(session_factory, policy_id="policy/1", api_key_encrypted="sealed-key")
+    await _save(session_factory, policy_id="policy/1", policy_name="Baseline")
 
     read = await _read(session_factory)
 
@@ -75,31 +84,35 @@ async def test_a_member_reads_the_policy_that_checks_the_workspace(
     assert read.json() == {
         "checking": True,
         "policy_id": "policy/1",
+        "policy_name": "Baseline",
         "policy_url": "https://app.switchagents.ai/settings/guardrail-policies/policy%2F1",
     }
     assert "sealed-key" not in read.text
 
 
-async def test_nothing_checks_until_a_policy_and_a_key_are_saved(
+async def test_nothing_checks_until_the_organization_connects_a_policy(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    nothing = await _read(session_factory)
-    await _save(session_factory, policy_id="policy-1", api_key_encrypted=None)
-    no_key = await _read(session_factory, "another-reader")
+    read = await _read(session_factory)
 
-    for read in (nothing, no_key):
-        assert read.status_code == 200, read.text
-        assert read.json() == {"checking": False, "policy_id": None, "policy_url": None}
+    assert read.status_code == 200, read.text
+    assert read.json() == {
+        "checking": False,
+        "policy_id": None,
+        "policy_name": None,
+        "policy_url": None,
+    }
 
 
 async def test_a_policy_on_another_endpoint_is_not_linked(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """One copied from a server that named its own endpoint."""
     await _save(
         session_factory,
         endpoint="https://guardrails.example.test",
         policy_id="policy-1",
-        api_key_encrypted="sealed-key",
+        policy_name=None,
     )
 
     read = await _read(session_factory)
@@ -107,5 +120,6 @@ async def test_a_policy_on_another_endpoint_is_not_linked(
     assert read.json() == {
         "checking": True,
         "policy_id": "policy-1",
+        "policy_name": None,
         "policy_url": None,
     }

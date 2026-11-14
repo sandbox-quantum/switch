@@ -53,6 +53,52 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **An organization's admins can archive one of its workspaces, and restore
+  it.** An archived workspace keeps everything in it but is closed: its
+  members can no longer open it and are told it is archived (their open
+  dashboard and Console connections close too), while the organization's
+  admins still can. Its agents can't connect and those connected are cut
+  off, every agent on its devices is told to stop (nothing is revoked, so
+  Restore starts them again), no new device or managed agent can be set up
+  in it, its messaging apps stop relaying, invite links and domain joins into
+  it are refused, and its room schedules pause, with the runs missed
+  meanwhile skipped on Restore. The workspace you are in and
+  the one everyone joins on signing up can't be archived. Both changes are
+  recorded in the workspace's and the organization's audit logs.
+  `GET /organizations/current/workspaces` also reports each workspace's
+  counts, admins and archive state, and the operator's list of every
+  workspace says which are archived.
+- **An organization's admins see which of its workspaces each person is in,
+  and add someone already in the organization to another one.**
+  `GET /organizations/current/members` lists each person's workspaces in the
+  organization and their role in each, and
+  `POST /organizations/current/workspaces/{id}/members` adds an existing
+  member to a workspace as admin or member, recorded in both audit logs.
+  Someone outside the organization is pointed to an invite link instead.
+- **An organization's admins rename it, and run any of its workspaces from
+  the organization.** `PATCH /organizations/current` renames the
+  organization (its slug stays). Under
+  `/organizations/current/workspaces/{id}`, its admins rename a workspace,
+  choose its admins in one step (`PUT …/admins`), change someone's role or
+  remove them (with the same hand-over preview), and make invite links,
+  each checked as on the workspace's own pages, without switching into it.
+  Creating or renaming a workspace, here or on its own settings, refuses a
+  name another of the organization's workspaces has, in any case.
+- **Organization settings pages in the new dashboard layout.** Behind
+  `gateway_v2`: General renames the organization; Workspaces lists each
+  workspace with its status, people, agents and rooms, its admins and when it
+  was made, and creates, renames, chooses admins for, archives and restores
+  them; Users lists everyone in the organization with the workspaces they are
+  in, makes or unmakes Org admins, adds people to a workspace, changes their
+  role in one or removes them from it, and makes invite links to any
+  workspace; Guardrails connects and disconnects the organization's Switch
+  Trust policy; and, with agent management on, Devices lists every device
+  and managed agent in the organization's workspaces with the workspace each
+  is in, and removes a device or stops managing an agent there
+  (`GET /organizations/current/devices`, and `DELETE` on
+  `/organizations/current/workspaces/{id}/devices/{controller_id}` and
+  `…/managed-agents/{agent_id}`). Today's organization page gains the
+  Guardrails section too, since guardrails are now set only there.
 - **People connect their own connectors from the dashboard.** Behind
   `gateway_v2`, Connectors is a catalogue of every connector, with Yours and
   All tabs and a search. Each card shows its category, whether you have
@@ -114,8 +160,9 @@ version of their own to them without also giving them a release of their own.
     under.
   - Guardrails: everyone in a workspace sees which Switch Trust policy checks
     it, with its ID to copy and a link to it on Switch Trust
-    (`GET /workspace/guardrails`, which never returns the key). The policy's
-    name and detectors aren't shown: Switch can read only its ID.
+    (`GET /workspace/guardrails`, which never returns the key), and its
+    name where Switch Trust gave one as it was connected. Its detectors are
+    listed on Switch Trust.
   - Devices: a table of devices and one of managed agents. Admins see
     everyone's and remove any device or managed agent; everyone else sees and
     acts on their own. `GET /management/workspace` lists them as the caller
@@ -402,6 +449,16 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **Switch Trust guardrails are set per organization instead of once for
+  the whole server.** Each organization's admins connect its own policy, with
+  a policy ID and an API key, under Organization settings › Guardrails. Switch
+  Trust checks the policy before it is saved, and the dashboard shows its name,
+  ID and key ending. Every message in an organization's workspaces is checked
+  against that organization's policy, or not at all when it has none. On
+  upgrade, the policy the server had is copied into every existing
+  organization, so nothing checked before goes unchecked; a new organization
+  starts with none. The operator's server-wide setting is gone:
+  `/gateway/trust-settings` answers 410 saying where the setting went.
 - **Removing a device takes its agents off it.** They stop, and run again
   once their owner puts them on another device; they used to stay placed on
   the removed device until someone moved them.
@@ -4159,6 +4216,11 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Admin › Switch Trust points to the organization's guardrails on a server
+  that sets them per organization.** Such a server no longer has a
+  server-wide policy to edit, so the form gives way to its note and a button
+  that opens Organization settings › Guardrails in the dashboard. Servers that
+  still have the server-wide setting keep the form.
 - **Removing a device says what happens to its agents on any Switch:** they
   stop, and run again once you put them on another device. It used to say
   they stay placed on it, which newer Switch no longer does.

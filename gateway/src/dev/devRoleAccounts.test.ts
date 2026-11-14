@@ -24,6 +24,7 @@ const second: TenantMembership = {
   role: "admin",
   organization_role: "org_admin",
   organization_id: "o1",
+  archived_at: null,
 };
 
 type Answer = [status: number, body: unknown];

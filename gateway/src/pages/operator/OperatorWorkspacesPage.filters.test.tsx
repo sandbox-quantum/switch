@@ -20,6 +20,7 @@ function workspace(
     name,
     organization_id: organization?.id ?? null,
     organization_name: organization?.name ?? null,
+    archived_at: null,
   };
 }
 

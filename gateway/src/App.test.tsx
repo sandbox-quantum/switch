@@ -15,6 +15,7 @@ const acme: TenantMembership = {
   role: "admin",
   organization_role: "org_admin",
   organization_id: "o1",
+  archived_at: null,
 };
 const beta: TenantMembership = {
   id: "t2",
@@ -23,6 +24,7 @@ const beta: TenantMembership = {
   role: "member",
   organization_role: "member",
   organization_id: "o2",
+  archived_at: null,
 };
 
 function session(overrides: Partial<Session>): Session {
@@ -76,6 +78,7 @@ function signedInAs(
     role: role === "member" ? "member" : "admin",
     organization_role: !inOrganization ? null : role === "org_admin" ? "org_admin" : "member",
     organization_id: inOrganization ? "o1" : null,
+    archived_at: null,
   };
   return {
     "/auth/session": [
@@ -642,10 +645,15 @@ describe("the new layout (gateway_v2)", () => {
         "Workspaces",
         "Users",
         "Guardrails",
-        "Devices",
         "Audit log",
         "‹ Workspace settings",
       ]);
+    });
+
+    it("lists Devices where the server runs agent management", async () => {
+      mockFetch(signedInAs("org_admin", { flags: [...V2, "agent_management"] }));
+      renderAt("/settings/org/general");
+      expect(await menuLabels("Organization settings")).toContain("Devices");
     });
 
     it("lists Connectors and apps where the server lets organizations have them", async () => {
@@ -748,6 +756,7 @@ describe("the new layout (gateway_v2)", () => {
         role: "admin",
         organization_role: null,
         organization_id: "o9",
+        archived_at: null,
       };
       const operator = signedInAs("operator", { flags: V2, tenants: [beta] });
       mockFetch({
@@ -901,14 +910,6 @@ describe("the new layout (gateway_v2)", () => {
       expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
       expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
     });
-  });
-
-  it("shows a page that is not built yet as such", async () => {
-    mockFetch(signedInAs("org_admin", { flags: V2 }));
-    renderAt("/settings/org/guardrails");
-    expect(
-      await screen.findByText("This page is part of the new layout and isn't built yet."),
-    ).toBeTruthy();
   });
 });
 
@@ -1185,6 +1186,7 @@ describe("a link naming a workspace", () => {
       role: "admin",
       organization_role: "org_admin",
       organization_id: "o1",
+      archived_at: null,
     };
     mockFetch({
       ...signedInAs("org_admin", { tenants: [covered] }),

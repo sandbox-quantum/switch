@@ -63,8 +63,14 @@ from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.organization_connector_apps import (
     router as organization_connector_apps_router,
 )
+from switch_core.gateway.organization_guardrails import (
+    router as organization_guardrails_router,
+)
 from switch_core.gateway.organization_services import (
     router as organization_services_router,
+)
+from switch_core.gateway.organization_workspaces import (
+    router as organization_workspaces_router,
 )
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.origin_check import (
@@ -105,6 +111,7 @@ from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
+from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.user_changes import LocalUserChanges
 
 
@@ -137,7 +144,8 @@ def create_gateway_app(
     chat_service: ChatService,
     connector_apps: ConnectorApps,
     config: SwitchConfig,
-    trust_settings_changed: Callable[[], None] | None = None,
+    trust_connection_check: TrustConnectionCheck,
+    trust_settings_changed: Callable[[str], None] | None = None,
 ) -> FastAPI:
     init_dependencies(
         agent_store=agent_store,
@@ -165,6 +173,7 @@ def create_gateway_app(
         invite_mailer=invite_mailer,
         user_changes=user_changes,
         config=config,
+        trust_connection_check=trust_connection_check,
         trust_settings_changed=trust_settings_changed,
     )
 
@@ -247,6 +256,7 @@ def create_gateway_app(
     app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
+    app.include_router(organization_workspaces_router, tags=["organizations"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
@@ -269,6 +279,7 @@ def create_gateway_app(
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])
+    app.include_router(organization_guardrails_router, tags=["organizations"])
     app.include_router(workspace_guardrails_router, tags=["trust-settings"])
     app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])

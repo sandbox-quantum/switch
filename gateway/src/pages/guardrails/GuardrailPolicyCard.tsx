@@ -5,19 +5,21 @@ import { type ReactNode, useState } from "react";
 import { MONO_SX } from "../../theme/format";
 
 /**
- * The Switch Trust policy that checks messages, as a card: its ID, to copy,
- * and where to see it on Switch Trust. Switch reads no more of a policy than
- * its ID, so its name and detectors are on Switch Trust only.
+ * The Switch Trust policy that checks messages, as a card: its name, when
+ * Switch Trust gave one as the policy was connected, its ID, to copy, and
+ * where to see it on Switch Trust, which lists its detectors.
  *
  * `actions` go in the card's corner: the organization's page puts
  * Disconnect there; the workspace's, which only reads the policy, nothing.
  */
 export default function GuardrailPolicyCard({
   policyId,
+  policyName,
   policyUrl,
   actions,
 }: {
   policyId: string;
+  policyName: string | null;
   /** Null when the policy is on a Switch Trust Switch can't link into. */
   policyUrl: string | null;
   actions?: ReactNode;
@@ -41,6 +43,11 @@ export default function GuardrailPolicyCard({
             <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
               Switch Trust policy
             </Typography>
+            {policyName && (
+              <Typography variant="body1" sx={{ mt: 0.5 }}>
+                {policyName}
+              </Typography>
+            )}
             <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
               <Typography component="span" sx={{ ...MONO_SX, wordBreak: "break-all" }}>
                 {policyId}

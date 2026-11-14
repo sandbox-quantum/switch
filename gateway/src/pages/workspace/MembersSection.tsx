@@ -103,7 +103,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
     if (pending === null) return;
     const { member } = pending;
     const result = await removeMember(tenantId, member.user_id);
-    setNotice(removalNotice(member, result, selfId));
+    setNotice(removalNotice(member, result, selfId, null));
     setActionWarning(result.warning);
     if (member.user_id === selfId) {
       // The session is on another workspace now, or none, and the page
@@ -238,7 +238,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
       <ConfirmDialog
         open={confirming}
         title={leaving ? "Leave this workspace?" : `Remove ${pending?.member.name ?? ""}?`}
-        description={pending ? removalDescription(pending.member, pending.heir, selfId) : undefined}
+        description={pending ? removalDescription(pending.member, pending.heir, selfId, null) : undefined}
         confirmLabel={leaving ? "Leave" : "Remove"}
         tone="destructive"
         onConfirm={confirmRemoval}
