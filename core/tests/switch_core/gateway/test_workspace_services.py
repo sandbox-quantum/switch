@@ -256,6 +256,7 @@ class TestResults:
             "linear",
             "notion",
             "sentry",
+            "salesforce",
         }
         assert services["datadog"] == {
             "slug": "datadog",

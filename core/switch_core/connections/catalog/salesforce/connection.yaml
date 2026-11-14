@@ -1,7 +1,70 @@
 slug: salesforce
 name: Salesforce
 category: CRM
-description: Read and update Salesforce records.
-enabled: false
+description: Read, query, create and update Salesforce records, as you. It cannot delete records.
+enabled: true
+publisher: Salesforce
+links:
+  documentation: https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/sobject-mutations.html
+  support: https://help.salesforce.com/
+  privacy: https://www.salesforce.com/company/privacy/
+adapter: oauth
 auth:
   type: oauth
+  # Measured: every refresh returns a new refresh token (the old one kept
+  # working), and ends the access token it replaces.
+  refresh: rotating
+  oauth:
+    # Hosted MCP servers take no dynamic registration and no Connected App:
+    # a Salesforce admin creates an External Client App (OAuth on, PKCE,
+    # Require Secret, JWT-based access tokens) and enables the SObject
+    # Mutations server; each server's operator saves the app under Connector
+    # apps, or names it in SALESFORCE_CLIENT_CONFIG_PATH.
+    registration: static
+    client_settings: SALESFORCE
+    # Back to Core's own callback, as Google's and Airtable's are, so the
+    # server needs GATEWAY_PUBLIC_URL. Salesforce matches the callback URL
+    # exactly.
+    redirect: [core]
+    unchecked: >-
+      Switch can't check the consumer secret, the callback URL, that the
+      SObject Mutations server is enabled, or that the app has finished
+      activating, which Salesforce says can take 30 minutes. Connect once to
+      confirm.
+    # Measured with a made-up code: the right app, a wrong secret and a wrong
+    # callback URL all answer 400 unknown_error ("retry your request"), and a
+    # made-up consumer key answers invalid_client_id, which still fails.
+    check_inconclusive: [unknown_error]
+    # The MCP server's 401 names no metadata, and login.salesforce.com serves
+    # only OpenID configuration, so the endpoints are named, from it.
+    authorization_url: https://login.salesforce.com/services/oauth2/authorize
+    token_url: https://login.salesforce.com/services/oauth2/token
+    # Measured: revoking the refresh token ends it, the tokens refreshed from
+    # it and their access tokens, and is answered with a 302 to the org's own
+    # instance carrying the token; a token Salesforce does not know is a 400.
+    revocation_url: https://login.salesforce.com/services/oauth2/revoke
+    revocation_redirects: true
+  # Measured: 200 with user_id (18 characters) and email.
+  identity:
+    url: https://login.salesforce.com/services/oauth2/userinfo
+    account_id: user_id
+    label: email
+# Measured: expires_in 7200, and the JWT's exp is iat + 7200.
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    # SObject Mutations, as approved on the issue. Measured tools: find,
+    # soqlQuery, getObjectSchema, getRelatedRecords, listRecentSobjectRecords,
+    # getUserInfo, createSobjectRecord, updateSobjectRecord and
+    # updateRelatedRecord; none deletes. Not SObject All or SObject Deletes,
+    # which delete. Salesforce applies the person's object permissions,
+    # field-level security and sharing to every call.
+    - { name: salesforce, url: "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations" }
+access:
+  # One write level and no read level. mcp_api reaches whatever the enabled
+  # server does, and SObject Mutations creates and updates records, so no
+  # scope makes a sign-in read-only: every connection is write, and Console
+  # labels it "Read and write".
+  write:
+    scopes: [mcp_api, refresh_token, openid]
+tools: { mode: pass_through }

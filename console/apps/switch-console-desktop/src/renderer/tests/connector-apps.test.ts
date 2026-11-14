@@ -586,3 +586,44 @@ describe("an app's details", () => {
     ]);
   });
 });
+
+const SALESFORCE_CALLBACK = `${PUBLIC_URL}/gateway/service-connections/salesforce/flows/callback`;
+
+const SALESFORCE = app({
+  ...AIRTABLE,
+  slug: 'salesforce',
+  name: 'Salesforce',
+  configuration_variables: ['SALESFORCE_CLIENT_CONFIG_PATH'],
+  redirect_uri: SALESFORCE_CALLBACK,
+  redirect_uris: [SALESFORCE_CALLBACK],
+  needs_public_url: true,
+  scopes: ['mcp_api', 'refresh_token', 'openid'],
+});
+
+describe('Salesforce', () => {
+  it('walks Setup: the MCP server, the External Client App, its callback, scopes and security', () => {
+    const steps = setupInstructions(SALESFORCE, 'internal', null);
+    expect(steps[0]!.text).toMatch(
+      /enable SObject Mutations\. Leave SObject All and SObject Deletes off/
+    );
+    expect(steps.flatMap((s) => s.copy)).toEqual([SALESFORCE_CALLBACK]);
+    expect(steps.find((s) => s.text === 'Under OAuth Scopes, add exactly these:')?.items).toEqual([
+      'mcp_api',
+      'refresh_token',
+      'openid',
+    ]);
+    expect(steps.at(-1)!.text).toMatch(/JWT\)-based access tokens/);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+  });
+
+  it('needs the public URL: sign-ins come back to the server', () => {
+    expect(changeBlocked(SALESFORCE, null)).toBe(true);
+    expect(changeBlocked(SALESFORCE, PUBLIC_URL)).toBe(false);
+  });
+
+  it('names its Helm value when moving off configuration', () => {
+    expect(moveChecklist(app({ ...SALESFORCE, source: 'configuration' }))[1]!.text).toBe(
+      "Remove SALESFORCE_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.salesforceClientSecret."
+    );
+  });
+});

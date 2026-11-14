@@ -95,7 +95,8 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("notion") == "not_connected"
     assert result.pop("sentry") == "not_connected"
     assert result.pop("linear") == "not_connected"
-    assert len(result) == 8
+    assert result.pop("salesforce") == "not_connected"
+    assert len(result) == 7
     assert set(result.values()) == {"coming_soon"}
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"

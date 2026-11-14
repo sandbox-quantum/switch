@@ -714,6 +714,42 @@ class TestDisconnect:
         assert await adapter.revoke_connection(ConnectionSecret({}), "oauth") is False
         assert not any(path == f"{ISSUER}/revoke" for path in vendor.paths)
 
+    async def test_takes_a_redirect_as_revoked_where_the_catalog_says_so(
+        self, vendor
+    ) -> None:
+        vendor.revoke_redirects = True
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n"
+                "    revocation_redirects: true\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        assert await adapter.revoke_connection(secret, "oauth") is True
+        [revoked] = vendor.revoked
+        assert revoked["token"] == secret.values["refresh_token"]
+        # Not followed: the token goes nowhere else.
+        assert not any("pod.example.test" in path for path in vendor.paths)
+
+    async def test_a_redirect_is_a_refusal_unless_the_catalog_says_so(
+        self, vendor
+    ) -> None:
+        vendor.revoke_redirects = True
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(
+            ServiceAdapterError, match=r"refused to revoke the sign-in \(HTTP 302\)"
+        ):
+            await adapter.revoke_connection(secret, "oauth")
+
     async def test_says_it_cannot_revoke_where_the_vendor_offers_no_revocation(
         self, vendor
     ) -> None:

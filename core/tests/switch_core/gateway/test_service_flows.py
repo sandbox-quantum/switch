@@ -2581,6 +2581,37 @@ class TestConsentMarkers:
             assert (await console.status()).json()["status"] == "failed"
         assert await _connection(session_factory, ada.id) is None
 
+    async def test_a_write_only_entry_connects_as_write(
+        self, session_factory, tmp_path
+    ) -> None:
+        entry = OAUTH_ENTRY.replace('  read: { scopes: ["read:items"] }\n', "")
+        world = _world(session_factory, tmp_path / "catalog", entry=entry)
+        _granting(world.vendor, ["read:items", "write:items"])
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            connected = await _loopback_connect(world, Console(client, ada))
+        assert connected.json()["consent"] == "write"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None and connection.consent == "write"
+
+    async def test_a_write_only_entry_refuses_less_than_write(
+        self, session_factory, tmp_path
+    ) -> None:
+        entry = OAUTH_ENTRY.replace('  read: { scopes: ["read:items"] }\n', "")
+        world = _world(session_factory, tmp_path / "catalog", entry=entry)
+        # Enough for a read level, but the entry has none to fall back to.
+        _granting(world.vendor, ["read:items"])
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            refused = await console.complete(await _loopback_code(world, console))
+            assert refused.status_code == 400
+            assert refused.json()["detail"] == (
+                "Example granted less than Switch needs to connect. Connect again "
+                "and allow what it asks for."
+            )
+        assert await _connection(session_factory, ada.id) is None
+
     async def test_without_markers_the_scopes_asked_for_decide(
         self, session_factory, tmp_path
     ) -> None:
