@@ -2171,7 +2171,7 @@ class TestWorkspaceSwitch:
             await _connect_key(g, session_factory)
         assert (caught.value.status_code, caught.value.code) == (403, "forbidden")
         assert caught.value.message == (
-            "Telemetry keys do not expire and only Telemetry can revoke them, so "
+            "Telemetry keys are long-lived and only Telemetry can revoke them, so "
             "Switch does not hand them to agents."
         )
         assert "telemetry" not in {

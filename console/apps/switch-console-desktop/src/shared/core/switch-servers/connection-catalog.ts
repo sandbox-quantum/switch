@@ -1,12 +1,17 @@
 import { z } from 'zod';
 
-/** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
+/**
+ * One value a person pastes (a key: secret), picks (a site, among `choices`)
+ * or types to fit `pattern` (an account, matched in full) to connect. Older
+ * servers send no `pattern`.
+ */
 export const serviceKeyFieldSchema = z.object({
   name: z.string(),
   label: z.string(),
   secret: z.boolean(),
   help: z.string().nullable(),
   choices: z.array(z.string()).nullable(),
+  pattern: z.string().nullish(),
 });
 export type ServiceKeyField = z.infer<typeof serviceKeyFieldSchema>;
 

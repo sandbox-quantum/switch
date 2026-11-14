@@ -111,12 +111,12 @@ afterEach(async () => {
 async function render(
   status: ConnectionCatalogEntry['status'] = 'not_connected',
   replacing = false,
-  onBack: () => void = () => {}
+  onBack: () => void = () => {},
+  connection: ConnectionCatalogEntry = keyed(status)
 ): Promise<HTMLElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  const connection = keyed(status);
   await act(async () =>
     root!.render(
       <Dialog open>
@@ -189,7 +189,7 @@ it('is a form built from the catalog entry, not the sign-in', async () => {
   expect(step.textContent).toContain('Organization Settings, API Keys.');
   expect(step.textContent).toContain('The address you open Datadog at.');
   expect(step.textContent).toContain(
-    "Switch checks the key with Datadog, stores it encrypted, and never shows it again. The agent can do whatever this key allows. Keys don't expire; disconnecting removes the key from Switch but can't revoke it at Datadog — revoke it there too."
+    "Switch checks the key with Datadog, stores it encrypted, and never shows it again. The agent can do whatever this key allows. Keys are long-lived; disconnecting removes the key from Switch but can't revoke it at Datadog, so revoke it there too."
   );
   expect(switchServers.startServiceConnection).not.toHaveBeenCalled();
   await act(async () => button(/How to make a Datadog key/, step)!.click());
@@ -273,6 +273,45 @@ it('shows a connected key service as connected, with whose key it is', async () 
   expect(step.textContent).toContain('Connected with Datadog key · datadoghq.eu');
   expect(button(/^disconnect$/i, step)).toBeDefined();
   expect(step.querySelector('[aria-label="Datadog key"]')).toBeNull();
+});
+
+it('holds a typed field to its pattern before it can connect', async () => {
+  switchServers.connectServiceWithKey.mockResolvedValue({
+    warning: null,
+    external_identity: 'Datadog key · acme-eu',
+  });
+  const entry = keyed('not_connected');
+  entry.key = {
+    fields: [
+      { ...entry.key!.fields[0], name: 'api_key' },
+      {
+        name: 'account',
+        label: 'Account',
+        secret: false,
+        help: null,
+        choices: null,
+        pattern: '[a-z0-9](?:[a-z0-9-]*[a-z0-9])?',
+      },
+    ],
+    help_url: null,
+  };
+  const step = await render('not_connected', false, () => {}, entry);
+  await type(input(step, 'API key'), API_KEY);
+
+  await type(input(step, 'Account'), 'acme.evil.test');
+  expect(input(step, 'Account').getAttribute('aria-invalid')).toBe('true');
+  expect(step.textContent).toContain('Account is not in the form Datadog uses.');
+  expect(button(/^connect datadog$/i, step)?.disabled).toBe(true);
+
+  await type(input(step, 'Account'), 'acme-eu');
+  expect(input(step, 'Account').getAttribute('aria-invalid')).toBeNull();
+  expect(step.textContent).not.toContain('is not in the form');
+  await vi.waitFor(() => expect(button(/^connect datadog$/i, step)?.disabled).toBe(false));
+  await act(async () => button(/^connect datadog$/i, step)!.click());
+  expect(switchServers.connectServiceWithKey).toHaveBeenCalledWith('server', 'datadog', {
+    api_key: API_KEY,
+    account: 'acme-eu',
+  });
 });
 
 it('opened to replace a key, opens on the form and ends on Done', async () => {

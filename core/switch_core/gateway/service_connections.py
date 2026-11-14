@@ -442,6 +442,8 @@ def _field(field: ApiKeyField) -> dict[str, Any]:
         "secret": field.secret,
         "help": field.help,
         "choices": field.choices,
+        # Matched in full; Core matches it again, so a client may only help.
+        "pattern": field.pattern,
     }
 
 

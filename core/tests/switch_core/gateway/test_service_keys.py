@@ -24,7 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.broker import CheckedKey, ServiceBroker
-from switch_core.connections.loader import CATALOG_ROOT, Connection, load_catalog
+from switch_core.connections.loader import (
+    CATALOG,
+    CATALOG_ROOT,
+    Connection,
+    load_catalog,
+)
 from switch_core.db.models import ServiceConnection, ServiceTokenIssuance
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
@@ -44,7 +49,7 @@ from tests.switch_core.management.harness import (
 
 KEYS = {"api_key": "api-key-xxxxxxxx", "region": "eu.example.test"}
 NEVER_EXPIRES = (
-    "Example keys do not expire and only Example can revoke them, so Switch "
+    "Example keys are long-lived and only Example can revoke them, so Switch "
     "does not hand them to agents."
 )
 
@@ -215,6 +220,59 @@ class TestConnect:
         assert (entry["method"], entry["choices"]) == ("keys", {})
         # A key connection has no sign-in level, so nothing is said in its place.
         assert entry["access_note"] is None
+
+    async def test_snowflake_says_why_and_never_checks_a_token(self, service) -> None:
+        harness, broker = service
+        snowflake: list[httpx.Request] = []
+        broker._adapters["snowflake"] = ApiKeyAdapter(
+            CATALOG["snowflake"].definition,
+            httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: snowflake.append(request) or httpx.Response(200)
+                )
+            ),
+        )
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            listed = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(owner)
+            )
+            response = await client.put(
+                "/gateway/service-connections/snowflake/key",
+                json={
+                    "fields": {
+                        "account": "exampleorg-example1",
+                        "database": "SALES",
+                        "schema": "MCP",
+                        "server": "ANALYTICS_MCP",
+                        "pat": "SYNTHETIC-SNOWFLAKE-TOKEN",
+                    }
+                },
+                cookies=cookies_for(owner),
+            )
+
+        reason = (
+            "Snowflake keys are long-lived and only Snowflake can revoke them, so "
+            "Switch does not hand them to agents."
+        )
+        entry = next(
+            e for e in listed.json()["connections"] if e["slug"] == "snowflake"
+        )
+        assert entry["connectable"] is False
+        assert entry["auth_type"] == "api_key"
+        assert (entry["unavailable_code"], entry["unavailable_reason"]) == (
+            "key_never_expires",
+            reason,
+        )
+        # Console holds each typed name to its pattern; Core holds it again.
+        patterns = {f["name"]: f["pattern"] for f in entry["key"]["fields"]}
+        assert patterns["account"] == "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        assert patterns["server"] == "[A-Za-z_][A-Za-z0-9_]{0,254}"
+        assert patterns["pat"] is None
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == reason
+        assert snowflake == []
+        assert await _connections(harness) == []
 
     async def test_a_key_is_neither_checked_nor_stored(
         self, service, vendor: KeyVendor

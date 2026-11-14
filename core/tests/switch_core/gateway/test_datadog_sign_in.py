@@ -514,6 +514,7 @@ class TestUse:
                 "secret": False,
                 "help": "The address you open Datadog at, without app. On Datadog's consent page, Full access lets agents do all your user can, admin actions too; Limited is read-only.",
                 "choices": list(SITES),
+                "pattern": None,
             }
         ]
         assert entries["datadog"]["key"] is None
@@ -524,7 +525,7 @@ class TestUse:
 
 
 NEVER_EXPIRES = (
-    "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+    "Datadog keys are long-lived and only Datadog can revoke them, so Switch "
     "does not hand them to agents."
 )
 
