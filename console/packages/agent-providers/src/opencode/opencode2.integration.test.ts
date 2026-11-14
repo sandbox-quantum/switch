@@ -15,7 +15,9 @@ import { checkOpencodeSignInAnyLine, createOpencodeRuntimeAdapter } from './runt
  */
 const BINARY = process.env['SWITCH_OPENCODE2_BIN'];
 
-type Step = { tool: string; args: Record<string, unknown> } | { text: string; delayMs?: number };
+type Step =
+  | { tool: string; args: Record<string, unknown> }
+  | { text: string; delayMs?: number; reasoning?: string };
 
 let server: Server;
 let script: Step[] = [];
@@ -29,6 +31,16 @@ function chunk(delta: Record<string, unknown>, finish: string | null): string {
     created: 1,
     model: 'scripted',
     choices: [{ index: 0, delta, finish_reason: finish }],
+    ...(finish
+      ? {
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 7,
+            total_tokens: 127,
+            prompt_tokens_details: { cached_tokens: 100 },
+          },
+        }
+      : {}),
   })}\n\n`;
 }
 
@@ -68,7 +80,11 @@ async function startModel(): Promise<string> {
                 'tool_calls'
               )
             );
-          else response.write(chunk({ role: 'assistant', content: step.text }, 'stop'));
+          else {
+            if (step.reasoning)
+              response.write(chunk({ role: 'assistant', reasoning_content: step.reasoning }, null));
+            response.write(chunk({ role: 'assistant', content: step.text }, 'stop'));
+          }
           response.end('data: [DONE]\n\n');
         },
         'delayMs' in step ? (step.delayMs ?? 0) : 0
@@ -78,6 +94,37 @@ async function startModel(): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 }
+
+/** A summary in the shape OpenCode 2's compaction requires. */
+const COMPACTION_SUMMARY = [
+  '## Objective',
+  '- the word kiwi, compacted',
+  '',
+  '## Requirements',
+  '- (none)',
+  '',
+  '## Decisions',
+  '- (none)',
+  '',
+  '## Work State',
+  '### Completed',
+  '- (none)',
+  '',
+  '### Active',
+  '- (none)',
+  '',
+  '### Blocked',
+  '- (none)',
+  '',
+  '## Next Move',
+  '1. (none)',
+  '',
+  '## Relevant Files',
+  '- (none)',
+  '',
+  '## Important Context',
+  '- (none)',
+].join('\n');
 
 const ECHO_MCP = `
 const rl = require('node:readline').createInterface({ input: process.stdin });
@@ -259,6 +306,81 @@ describe.skipIf(!BINARY)('OpenCode 2 through opencode acp', () => {
     await runtime.respondToUserInput('q1', asked.requestId, { [question.id]: ['Red'] });
     expect((await next('turn.completed')).outcome).toBe('completed');
     expect(JSON.stringify(seen.at(-1))).toContain('Red');
+    await runtime.stopAll();
+  });
+
+  it('shows its reasoning, reports what a turn spent, and applies the effort chosen', async () => {
+    const { runtime, next, events } = adapter();
+    script = [{ text: 'answer', reasoning: 'thinking it over' }];
+    await runtime.startSession({
+      sessionId: 'r1',
+      cwd,
+      runtimeMode: 'approval-required',
+      env,
+      mcpServers: {},
+      connectorMcpServers: [],
+    });
+    const models = await runtime.listModels('r1');
+    expect(models.find((model) => model.id === 'scripted/model')?.options['effort']).toContain(
+      'high'
+    );
+    await runtime.setModel('r1', { id: 'scripted/model', options: { effort: 'high' } });
+    await runtime.sendTurn({ sessionId: 'r1', turnId: 't1', text: 'think' });
+    const done = await next('turn.completed');
+    expect(done.usage).toEqual([
+      {
+        model: 'scripted/model',
+        inputTokens: 20,
+        outputTokens: 7,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 0,
+      },
+    ]);
+    const reasoning = events.find(
+      (event) => event.type === 'item.completed' && event.item.type === 'reasoning'
+    );
+    expect(reasoning && 'item' in reasoning && reasoning.item.text).toBe('thinking it over');
+    expect(bodies.at(-1)).toContain('"reasoning_effort":"high"');
+    await runtime.stopAll();
+  });
+
+  it('compacts the conversation between turns', async () => {
+    const { runtime, next, events } = adapter();
+    script = [{ text: 'first' }, { text: COMPACTION_SUMMARY }, { text: 'after' }];
+    await runtime.startSession({
+      sessionId: 'c1',
+      cwd,
+      runtimeMode: 'approval-required',
+      env,
+      mcpServers: {},
+      connectorMcpServers: [],
+    });
+    expect(await runtime.canCompact('c1')).toBe(true);
+    await runtime.sendTurn({ sessionId: 'c1', turnId: 't1', text: 'remember the word kiwi' });
+    expect((await next('turn.completed')).outcome).toBe('completed');
+    await runtime.compactSession('c1');
+    expect(JSON.stringify(seen.at(-1))).toContain('summarize the conversation');
+    const before = events.length;
+    await runtime.sendTurn({ sessionId: 'c1', turnId: 't2', text: 'and now' });
+    expect((await next('turn.completed', before)).outcome).toBe('completed');
+    expect(JSON.stringify(seen.at(-1))).toContain('the word kiwi, compacted');
+    await runtime.stopAll();
+  });
+
+  it('reports a compaction OpenCode could not make', async () => {
+    const { runtime, next } = adapter();
+    script = [{ text: 'first' }, { text: 'not a summary' }];
+    await runtime.startSession({
+      sessionId: 'c2',
+      cwd,
+      runtimeMode: 'approval-required',
+      env,
+      mcpServers: {},
+      connectorMcpServers: [],
+    });
+    await runtime.sendTurn({ sessionId: 'c2', turnId: 't1', text: 'hi' });
+    expect((await next('turn.completed')).outcome).toBe('completed');
+    await expect(runtime.compactSession('c2')).rejects.toThrow('could not compact the session');
     await runtime.stopAll();
   });
 

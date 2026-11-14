@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, SteerNotSentError } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
-import type { AcpProviderHooks } from './hooks';
+import type { AcpCompactionProgress, AcpProviderHooks } from './hooks';
 
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof fs>()),
@@ -776,4 +776,197 @@ it('queues a message the agent will not steer, unless the caller required the st
   await expect(
     adapter.sendTurn({ sessionId: 's', turnId: 't4', text: 'x', expectedTurnId: 'gone' })
   ).rejects.toBeInstanceOf(SteerNotSentError);
+});
+
+const compacting: AcpProviderHooks = {
+  ...dummy,
+  compaction: {
+    prompt: '/compact',
+    progress: (update) => update._meta?.['compaction'] as AcpCompactionProgress | undefined,
+  },
+};
+function compactionUpdate(server: FakeAppServer, progress: AcpCompactionProgress): void {
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'session_info_update', _meta: { compaction: progress } },
+  });
+}
+
+it('offers compaction only where the hooks say how', async () => {
+  expect(await (await start()).adapter.canCompact('s')).toBe(false);
+  await expect((await start()).adapter.compactSession('s')).rejects.toThrow('cannot be compacted');
+  expect(await (await start(compacting)).adapter.canCompact('s')).toBe(true);
+});
+
+it('compacts with the hooks prompt between turns, holding messages until it has finished', async () => {
+  const { adapter, server, events } = await start(compacting);
+  const compaction = adapter.compactSession('s');
+  const prompt = await server.waitFor('session/prompt');
+  expect(prompt.params).toEqual({
+    sessionId: 'native',
+    prompt: [{ type: 'text', text: '/compact' }],
+  });
+  await expect(adapter.compactSession('s')).rejects.toThrow('SESSION_BUSY');
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'after' });
+  await flush();
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+  compactionUpdate(server, { status: 'started' });
+  compactionUpdate(server, { status: 'completed' });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await compaction;
+  await flush();
+  const prompts = server.received.filter((m) => m.method === 'session/prompt');
+  expect(prompts.at(-1)?.params?.['prompt']).toEqual([{ type: 'text', text: 'after' }]);
+  expect(events.some((e) => e.type === 'turn.started' && e.turnId === 't1')).toBe(true);
+  expect(events.some((e) => 'item' in e && e.item.type === 'context_compaction')).toBe(false);
+});
+
+it('refuses to compact while a turn runs', async () => {
+  const { adapter, server } = await start(compacting);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'go' });
+  await server.waitFor('session/prompt');
+  await expect(adapter.compactSession('s')).rejects.toThrow('SESSION_BUSY');
+});
+
+it('fails a compaction the agent reports failed, or answers without reporting', async () => {
+  const { adapter, server } = await start(compacting);
+  server.reply('session/prompt', () => {
+    compactionUpdate(server, { status: 'started' });
+    compactionUpdate(server, { status: 'failed', message: 'summary did not match' });
+    return { stopReason: 'end_turn' };
+  });
+  await expect(adapter.compactSession('s')).rejects.toThrow(
+    'Dummy ACP could not compact the session: summary did not match'
+  );
+  server.reply('session/prompt', { stopReason: 'end_turn' });
+  await expect(adapter.compactSession('s')).rejects.toThrow(
+    'Dummy ACP answered /compact (end_turn) without completing a compaction.'
+  );
+});
+
+it('shows a compaction the agent runs on its own as an item of the turn', async () => {
+  const { adapter, server, events } = await start(compacting);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'go' });
+  const prompt = await server.waitFor('session/prompt');
+  compactionUpdate(server, { status: 'started' });
+  compactionUpdate(server, { status: 'completed' });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  expect(
+    events.flatMap((e) =>
+      'item' in e && e.item.type === 'context_compaction' ? [`${e.type}:${e.item.status}`] : []
+    )
+  ).toEqual(['item.started:in_progress', 'item.completed:completed']);
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({ outcome: 'completed' });
+});
+
+it('shows the agents reasoning as one item per message, closed when it moves on', async () => {
+  const { adapter, server, events } = await start();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'go' });
+  const prompt = await server.waitFor('session/prompt');
+  const update = (update: Record<string, unknown>) =>
+    server.notify('session/update', { sessionId: 'native', update });
+  update({
+    sessionUpdate: 'agent_thought_chunk',
+    messageId: 'a',
+    content: { type: 'text', text: 'one ' },
+  });
+  update({
+    sessionUpdate: 'agent_thought_chunk',
+    messageId: 'a',
+    content: { type: 'text', text: 'two' },
+  });
+  update({
+    sessionUpdate: 'agent_thought_chunk',
+    messageId: 'b',
+    content: { type: 'text', text: 'three' },
+  });
+  update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer' } });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  const reasoning = events.flatMap((e) =>
+    e.type === 'item.completed' && e.item.type === 'reasoning' ? [e.item.text] : []
+  );
+  expect(reasoning).toEqual(['one two', 'three']);
+  expect(
+    events.filter((e) => e.type === 'item.started').map((e) => 'item' in e && e.item.type)
+  ).toEqual(['reasoning', 'reasoning', 'assistant_message']);
+});
+
+it('reports what a turn spent under the selected model', async () => {
+  agent.session = {
+    configOptions: [
+      {
+        id: 'model',
+        type: 'select',
+        currentValue: 'deep',
+        options: [{ value: 'deep', name: 'Deep' }],
+      },
+    ],
+  };
+  const { adapter, server, events } = await start();
+  server.reply('session/prompt', {
+    stopReason: 'end_turn',
+    usage: {
+      inputTokens: 20,
+      outputTokens: 7,
+      thoughtTokens: 3,
+      cachedReadTokens: 100,
+      totalTokens: 130,
+    },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't1', text: 'go' });
+  await flush();
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({
+    usage: [
+      {
+        model: 'deep',
+        inputTokens: 20,
+        outputTokens: 10,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 0,
+      },
+    ],
+  });
+});
+
+it("offers the current model's reasoning effort and applies the one chosen after the model", async () => {
+  agent.session = {
+    configOptions: [
+      {
+        id: 'model',
+        type: 'select',
+        currentValue: 'deep',
+        options: [
+          { value: 'deep', name: 'Deep' },
+          { value: 'fast', name: 'Fast' },
+        ],
+      },
+      {
+        id: 'effort',
+        type: 'select',
+        category: 'thought_level',
+        currentValue: 'default',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'high', name: 'High' },
+        ],
+      },
+    ],
+  };
+  const { adapter, server } = await start();
+  expect((await adapter.listModels('s')).map((model) => model.options)).toEqual([
+    { effort: ['low', 'high'] },
+    {},
+  ]);
+  await adapter.setModel('s', { id: 'deep', options: { effort: 'high' } });
+  expect(
+    server.received.filter((m) => m.method === 'session/set_config_option').map((m) => m.params)
+  ).toEqual([
+    { sessionId: 'native', configId: 'model', value: 'deep' },
+    { sessionId: 'native', configId: 'effort', value: 'high' },
+  ]);
+  await expect(adapter.setModel('s', { id: 'deep', options: { effort: 'max' } })).rejects.toThrow(
+    "does not offer 'max'"
+  );
 });

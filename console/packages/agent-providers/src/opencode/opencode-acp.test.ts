@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { AcpToolCall } from '../acp/protocol';
-import { opencodeAcpHooks, opencodeMcpServerOf, parseOpencodeProviders } from './opencode-acp';
+import {
+  opencodeAcpHooks,
+  opencodeCompactionProgress,
+  opencodeMcpServerOf,
+  parseOpencodeProviders,
+} from './opencode-acp';
 
 const list = (data: unknown[]) => JSON.stringify({ data });
 
@@ -69,5 +74,34 @@ describe('opencodeAcpHooks permission', () => {
   });
   it('leaves the ask to the person otherwise', () => {
     expect(permission!(context('approval-required'), request as never)).toBeUndefined();
+  });
+});
+
+describe('opencodeCompactionProgress', () => {
+  const info = (meta: unknown) => ({
+    sessionUpdate: 'session_info_update',
+    _meta: { 'opencode/compaction': meta },
+  });
+
+  it('reads the progress OpenCode reports in session_info_update', () => {
+    expect(opencodeCompactionProgress(info({ status: 'started', reason: 'manual' }))).toEqual({
+      status: 'started',
+    });
+    expect(opencodeCompactionProgress(info({ status: 'completed' }))).toEqual({
+      status: 'completed',
+    });
+    expect(
+      opencodeCompactionProgress(
+        info({ status: 'failed', error: { type: 'compaction.failed', message: 'no template' } })
+      )
+    ).toEqual({ status: 'failed', message: 'no template' });
+  });
+
+  it('ignores other updates and fails on progress it cannot read', () => {
+    expect(opencodeCompactionProgress({ sessionUpdate: 'session_info_update' })).toBeUndefined();
+    expect(opencodeCompactionProgress({ sessionUpdate: 'agent_message_chunk' })).toBeUndefined();
+    expect(opencodeCompactionProgress(info({ status: 'paused' }))).toMatchObject({
+      status: 'failed',
+    });
   });
 });

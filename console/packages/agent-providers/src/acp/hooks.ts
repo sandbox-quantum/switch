@@ -15,6 +15,7 @@ import type {
   AcpPermissionRequest,
   AcpPromptCapabilities,
   AcpSessionModes,
+  AcpSessionUpdate,
   AcpToolCall,
 } from './protocol';
 
@@ -205,6 +206,17 @@ export interface AcpProviderHooks {
    */
   steerMethod?: string;
   /**
+   * How the agent compacts its conversation, for one that can: the prompt
+   * that asks it to (OpenCode's `/compact`), and how a session update reports
+   * a compaction's progress. A compaction the agent runs on its own inside a
+   * turn is reported the same way and shows in that turn. Omit for an agent
+   * Switch cannot compact.
+   */
+  compaction?: {
+    prompt: string;
+    progress(update: AcpSessionUpdate): AcpCompactionProgress | undefined;
+  };
+  /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
    * without it starts a fresh conversation with `legacyMessage`.
@@ -252,6 +264,11 @@ export interface AcpProviderHooks {
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
 }
+
+export type AcpCompactionProgress =
+  | { status: 'started' }
+  | { status: 'completed' }
+  | { status: 'failed'; message: string };
 
 export interface AcpSignedInQuery {
   binaryPath: string;

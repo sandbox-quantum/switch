@@ -1,8 +1,8 @@
 import { rm } from 'node:fs/promises';
 import { z } from 'zod';
 import { answerFormElicitations, FORM_ELICITATION_CAPABILITIES } from '../acp/elicitation';
-import type { AcpProviderHooks } from '../acp/hooks';
-import type { AcpToolCall } from '../acp/protocol';
+import type { AcpCompactionProgress, AcpProviderHooks } from '../acp/hooks';
+import type { AcpSessionUpdate, AcpToolCall } from '../acp/protocol';
 import type { ProviderCapabilities } from '../adapter';
 import { execProvider } from '../provider-process';
 import { readiness, type ProviderReadiness, type SignInCheckInput } from '../readiness';
@@ -88,6 +88,33 @@ export function opencodeMcpServerOf(
  * servers and managed skills merged in. `opencode acp` runs a private server
  * for its process, so nothing here is shared with the person's own OpenCode.
  */
+const CompactionMeta = z.object({
+  status: z.enum(['started', 'completed', 'failed']),
+  error: z.object({ message: z.string() }).optional(),
+});
+
+/**
+ * OpenCode reports a compaction, asked for or its own, in
+ * `session_info_update`'s `_meta["opencode/compaction"]`.
+ */
+export function opencodeCompactionProgress(
+  update: AcpSessionUpdate
+): AcpCompactionProgress | undefined {
+  if (update.sessionUpdate !== 'session_info_update') return undefined;
+  const meta = update._meta?.['opencode/compaction'];
+  if (meta === undefined) return undefined;
+  const parsed = CompactionMeta.safeParse(meta);
+  if (!parsed.success)
+    return {
+      status: 'failed',
+      message: `OpenCode reported a compaction Switch cannot read: ${JSON.stringify(meta)}`,
+    };
+  const { status, error } = parsed.data;
+  return status === 'failed'
+    ? { status, message: error?.message ?? 'OpenCode gave no reason.' }
+    : { status };
+}
+
 export function opencodeAcpHooks(skills: OpencodeSkill[]): AcpProviderHooks {
   return {
     provider: 'opencode',
@@ -121,6 +148,7 @@ export function opencodeAcpHooks(skills: OpencodeSkill[]): AcpProviderHooks {
     },
     checkSignIn: checkOpencode2SignIn,
     steerMethod: '_session/steering',
+    compaction: { prompt: '/compact', progress: opencodeCompactionProgress },
     clientCapabilities: FORM_ELICITATION_CAPABILITIES,
     extensions: answerFormElicitations,
     // "Always allow" saves the permission in OpenCode's own database, where

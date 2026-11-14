@@ -20,6 +20,7 @@ import type {
   ApprovalDecision,
   ProviderItem,
   ProviderRuntimeEvent,
+  TokenUsage,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
@@ -39,6 +40,7 @@ import {
 } from '../transport/stdio-json-rpc';
 import type {
   AcpAdapterOptions,
+  AcpCompactionProgress,
   AcpProviderHooks,
   AcpSelectedAnswer,
   AcpSessionContext,
@@ -47,12 +49,14 @@ import { acpMcpServers, requireHttpMcp } from './mcp';
 import {
   ACP_CANCELLED,
   modelConfigOption,
+  effortConfigOption,
   modelsFromConfig,
   modelsFromList,
   type AcpConfigOption,
   type AcpInitializeResult,
   type AcpPermissionRequest,
   type AcpPromptCapabilities,
+  type AcpPromptUsage,
   type AcpSessionResult,
   type AcpSessionUpdate,
   type AcpToolCall,
@@ -143,6 +147,12 @@ interface State {
   questions: Map<string, PendingQuestion>;
   messageId: string;
   messageText: string;
+  /** The reasoning the agent is streaming now, shown as one item until something else arrives. */
+  thought: { id: string; agentMessageId: string | undefined; text: string } | null;
+  /** The running turn's spend, from the agent's answer to its prompt. */
+  usage: TokenUsage[];
+  /** The model the session's models list says is selected, for an agent with no `model` option. */
+  currentModelId: string | undefined;
   stopping: boolean;
   interrupted: boolean;
   /** Whether someone cancelled or declined one of this turn's approval requests. */
@@ -164,6 +174,8 @@ interface State {
   cleanup: (() => Promise<void>) | undefined;
   /** The removal of what `launch` prepared, once it has begun. */
   tidied: Promise<void> | undefined;
+  /** A compaction `compactSession` asked for, with the latest progress the agent reported. */
+  compaction: { progress: AcpCompactionProgress | undefined } | null;
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -232,11 +244,15 @@ export class AcpAdapter implements ProviderAdapter {
       client,
       turn: null,
       queue: [],
+      compaction: null,
       items: new Map(),
       decisions: new Map(),
       questions: new Map(),
       messageId: '',
       messageText: '',
+      thought: null,
+      usage: [],
+      currentModelId: undefined,
       stopping: false,
       interrupted: false,
       refusedRequest: false,
@@ -323,6 +339,7 @@ export class AcpAdapter implements ProviderAdapter {
       state.models = modelConfigOption(state.configOptions)
         ? modelsFromConfig(state.configOptions)
         : modelsFromList(result.models);
+      state.currentModelId = result.models?.currentModelId;
       const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
@@ -390,13 +407,15 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   private drain(state: State): void {
-    if (state.turn || state.stopping || !this.hasSession(state.id)) return;
+    if (state.turn || state.compaction || state.stopping || !this.hasSession(state.id)) return;
     const input = state.queue.shift();
     if (!input) return;
     state.turn = input.turnId;
     state.interrupted = false;
     state.refusedRequest = false;
     state.messageId = randomUUID();
+    state.thought = null;
+    state.usage = [];
     state.items.clear();
     state.mcpToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
@@ -433,12 +452,29 @@ export class AcpAdapter implements ProviderAdapter {
 
   private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
     if (input.model) await this.setModel(state.id, input.model);
-    return (
-      await state.client.request<{ stopReason: string }>('session/prompt', {
-        sessionId: state.nativeId,
-        prompt: await this.promptContent(state, input),
-      })
-    ).stopReason;
+    const { stopReason, usage } = await state.client.request<{
+      stopReason: string;
+      usage?: AcpPromptUsage;
+    }>('session/prompt', {
+      sessionId: state.nativeId,
+      prompt: await this.promptContent(state, input),
+    });
+    if (usage && state.turn === input.turnId) state.usage = this.turnUsage(state, usage);
+    return stopReason;
+  }
+
+  /** A turn's spend, under the model selected when it ended. */
+  private turnUsage(state: State, usage: AcpPromptUsage): TokenUsage[] {
+    const counts = {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: (usage.outputTokens ?? 0) + (usage.thoughtTokens ?? 0),
+      cacheReadTokens: usage.cachedReadTokens ?? 0,
+      cacheWriteTokens: usage.cachedWriteTokens ?? 0,
+    };
+    if (Object.values(counts).every((count) => count === 0)) return [];
+    const model =
+      modelConfigOption(state.configOptions)?.currentValue ?? state.currentModelId ?? 'unknown';
+    return [{ model, ...counts }];
   }
 
   /** The ACP prompt content for a message: its text, with any pending context first, and its attachments. */
@@ -482,6 +518,46 @@ export class AcpAdapter implements ProviderAdapter {
     return prompt;
   }
 
+  async canCompact(id: string): Promise<boolean> {
+    this.require(id);
+    return this.hooks.compaction !== undefined;
+  }
+
+  /**
+   * Sends the agent's compaction prompt between turns and resolves once the
+   * agent reports the compaction completed. Messages sent meanwhile wait
+   * behind it.
+   */
+  async compactSession(id: string): Promise<void> {
+    const state = this.require(id);
+    const { compaction, label } = this.hooks;
+    if (!compaction)
+      throw new ProviderSessionError(
+        this.provider,
+        id,
+        `${label} sessions cannot be compacted from Switch.`
+      );
+    if (state.turn || state.queue.length || state.compaction) throw new Error('SESSION_BUSY');
+    const requested: { progress: AcpCompactionProgress | undefined } = { progress: undefined };
+    state.compaction = requested;
+    try {
+      const { stopReason } = await state.client.request<{ stopReason: string }>('session/prompt', {
+        sessionId: state.nativeId,
+        prompt: [{ type: 'text', text: compaction.prompt }],
+      });
+      const progress = requested.progress as AcpCompactionProgress | undefined;
+      if (progress?.status === 'failed')
+        throw new Error(`${label} could not compact the session: ${progress.message}`);
+      if (progress?.status !== 'completed')
+        throw new Error(
+          `${label} answered ${compaction.prompt} (${stopReason}) without completing a compaction.`
+        );
+    } finally {
+      state.compaction = null;
+      this.drain(state);
+    }
+  }
+
   async interruptTurn(id: string): Promise<void> {
     const state = this.require(id);
     if (!state.turn) return;
@@ -494,6 +570,10 @@ export class AcpAdapter implements ProviderAdapter {
     return this.require(id).models;
   }
 
+  /**
+   * Selects the model, then the reasoning effort it was chosen with. The
+   * model goes first because selecting one can change the levels on offer.
+   */
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
     if (!modelConfigOption(state.configOptions)) {
@@ -501,11 +581,22 @@ export class AcpAdapter implements ProviderAdapter {
         sessionId: state.nativeId,
         modelId: model.id,
       });
-      return;
+      state.currentModelId = model.id;
+    } else {
+      if (!state.models.some((choice) => choice.id === model.id))
+        throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
+      await this.requestConfigOption(state, 'model', model.id);
     }
-    if (!state.models.some((choice) => choice.id === model.id))
-      throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
-    await this.requestConfigOption(state, 'model', model.id);
+    for (const [key, value] of Object.entries(model.options ?? {})) {
+      const effort = effortConfigOption(state.configOptions);
+      if (effort?.id === key) await this.setConfigOption(state, key, value);
+      else
+        this.logger.warn(`${this.hooks.label} offers no '${key}' option; it was not applied.`, {
+          sessionId: id,
+          model: model.id,
+          value,
+        });
+    }
   }
 
   /** Sets a session config option to a value it offers, as a provider's hooks ask for the runtime mode. */
@@ -713,13 +804,28 @@ export class AcpAdapter implements ProviderAdapter {
       this.applyConfigOptions(state, update.configOptions);
       return;
     }
+    const compaction = this.hooks.compaction?.progress(update);
+    if (compaction) {
+      this.compactionProgress(state, compaction);
+      return;
+    }
     if (!state.turn) return;
+    if (
+      update.sessionUpdate === 'agent_thought_chunk' &&
+      update.content &&
+      !Array.isArray(update.content) &&
+      update.content.type === 'text'
+    ) {
+      this.thoughtChunk(state, state.turn, update.messageId, update.content.text ?? '');
+      return;
+    }
     if (
       update.sessionUpdate === 'agent_message_chunk' &&
       update.content &&
       !Array.isArray(update.content) &&
       update.content.type === 'text'
     ) {
+      this.finishThought(state, 'completed');
       if (!state.messageText)
         this.emit(state, {
           type: 'item.started',
@@ -752,7 +858,81 @@ export class AcpAdapter implements ProviderAdapter {
       });
   }
 
+  /** A piece of the agent's reasoning: a new item when its message changes, else more of the current one. */
+  private thoughtChunk(
+    state: State,
+    turnId: string,
+    agentMessageId: string | undefined,
+    text: string
+  ): void {
+    if (state.thought && state.thought.agentMessageId !== agentMessageId)
+      this.finishThought(state, 'completed');
+    if (!state.thought) {
+      state.thought = { id: randomUUID(), agentMessageId, text: '' };
+      this.emit(state, {
+        type: 'item.started',
+        turnId,
+        item: {
+          id: state.thought.id,
+          type: 'reasoning',
+          status: 'in_progress',
+          title: 'Reasoning',
+          text: '',
+        },
+      });
+    }
+    state.thought.text += text;
+    this.emit(state, { type: 'item.delta', turnId, itemId: state.thought.id, delta: text });
+  }
+
+  private finishThought(state: State, status: 'completed' | 'failed'): void {
+    const thought = state.thought;
+    if (!state.turn || !thought) return;
+    state.thought = null;
+    this.emit(state, {
+      type: 'item.completed',
+      turnId: state.turn,
+      item: { id: thought.id, type: 'reasoning', status, title: 'Reasoning', text: thought.text },
+    });
+  }
+
+  /**
+   * Progress of a compaction: the one `compactSession` waits for, or one the
+   * agent ran on its own inside a turn, which shows there as an item.
+   */
+  private compactionProgress(state: State, progress: AcpCompactionProgress): void {
+    if (state.compaction) {
+      state.compaction.progress = progress;
+      return;
+    }
+    const turnId = state.turn;
+    if (!turnId) return;
+    const running = [...state.items.values()].find(
+      (item) => item.type === 'context_compaction' && item.status === 'in_progress'
+    );
+    const item: ProviderItem = running ?? {
+      id: randomUUID(),
+      type: 'context_compaction',
+      status: 'in_progress',
+      title: 'Context compaction',
+    };
+    if (progress.status === 'started') {
+      if (running) return;
+      state.items.set(item.id, item);
+      this.emit(state, { type: 'item.started', turnId, item });
+      return;
+    }
+    const done: ProviderItem = {
+      ...item,
+      status: progress.status,
+      ...(progress.status === 'failed' ? { text: progress.message } : {}),
+    };
+    state.items.set(item.id, done);
+    this.emit(state, { type: 'item.completed', turnId, item: done });
+  }
+
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
+    this.finishThought(state, 'completed');
     const old = state.items.get(update.toolCallId);
     const kind = this.hooks.toolKind?.(update) ?? update.kind;
     const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
@@ -839,6 +1019,7 @@ export class AcpAdapter implements ProviderAdapter {
   ): void {
     if (!state.turn) return;
     const turnId = state.turn;
+    this.finishThought(state, outcome === 'completed' ? 'completed' : 'failed');
     this.finishMessage(state, outcome === 'completed' ? 'completed' : 'failed');
     for (const item of state.items.values())
       if (item.status === 'in_progress') {
@@ -858,12 +1039,14 @@ export class AcpAdapter implements ProviderAdapter {
       }
     this.cancelPending(state);
     state.turn = null;
+    const usage = state.usage;
+    state.usage = [];
     this.emit(state, {
       type: 'turn.completed',
       turnId,
       outcome,
       ...(message ? { message } : {}),
-      usage: [],
+      usage,
     });
     if (!state.turn)
       this.emit(state, {
