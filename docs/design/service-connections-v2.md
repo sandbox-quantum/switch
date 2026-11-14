@@ -810,6 +810,14 @@ entry has no access profiles, and no access profile can be unscoped. Entries
 without the opt-in still need non-empty scopes. Core does not enforce a
 narrower level through the listed tools.
 
+An OAuth entry may offer a `write` level and no `read` level, for a vendor
+whose scopes cannot make a sign-in read-only (Salesforce's `mcp_api`). Every
+sign-in asks for the write scopes, and one that comes back with fewer is
+refused rather than recorded as Read, so nothing calls such a connection
+read-only. Consent markers and the other adapters still need a read level, an
+access profile names the same levels as its entry, and every entry offers at
+least one.
+
 Neither feature enables a connector. Each connector supplies its own verified
 identity mapping, evidence comments, skill, tests and live acceptance.
 

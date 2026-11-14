@@ -838,6 +838,36 @@ def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     assert oauth is not None and oauth.prompt == "consent select_account"
 
 
+WRITE_ONLY = OAUTH_ENTRY.replace('  read: { scopes: ["read:items"] }\n', "")
+
+
+def test_an_oauth_entry_may_offer_a_write_level_alone(catalog_copy):
+    _write_example(catalog_copy, WRITE_ONLY)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.access is not None and definition.access.read is None
+    assert definition.access.write is not None
+    assert definition.access.write.scopes == ["read:items", "write:items"]
+
+
+def test_an_entry_offers_at_least_one_level(catalog_copy):
+    write = 'access:\n  write: { scopes: ["read:items", "write:items"] }\n'
+    assert write in WRITE_ONLY
+    _write_example(catalog_copy, WRITE_ONLY.replace(write, "access: {}\n"))
+    with pytest.raises(CatalogError, match="a read level, a write level or both"):
+        load_catalog(catalog_copy)
+
+
+def test_consent_markers_need_a_read_level_to_tell_from(catalog_copy):
+    _write_example(
+        catalog_copy,
+        WRITE_ONLY.replace(
+            "tools: {", "  consent: { read: items_read, write: items_write }\ntools: {"
+        ),
+    )
+    with pytest.raises(CatalogError, match="the entry names both levels"):
+        load_catalog(catalog_copy)
+
+
 def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     _write_example(
         catalog_copy,

@@ -753,17 +753,23 @@ class ConsentMarkers(BaseModel):
 
 class ConnectionAccess(BaseModel):
     """What each level reaches, and, where the scopes cannot say which one a
-    sign-in was given, the markers that do (`consent`)."""
+    sign-in was given, the markers that do (`consent`).
+
+    An entry offers a read level, a write level, or both. A write level alone
+    is for an OAuth vendor whose scopes cannot make a sign-in read-only: every
+    connection to it is then write, and nothing calls it read."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
     unscoped: bool = False
     consent: ConsentMarkers | None = None
 
     @model_validator(mode="after")
     def _scopes_match_consent(self) -> "ConnectionAccess":
-        levels = [self.read, *([self.write] if self.write is not None else [])]
+        levels = [level for level in (self.read, self.write) if level is not None]
+        if not levels:
+            raise ValueError("access names a read level, a write level or both")
         if self.unscoped:
             if self.write is None or any(level.scopes != [] for level in levels):
                 raise ValueError("unscoped access needs empty read and write scopes")
@@ -865,10 +871,16 @@ class ConnectionDefinition(BaseModel):
         if self.access is not None and self.access.consent is not None:
             if self.adapter != "oauth":
                 raise ValueError("only an oauth entry reads its consent from markers")
-            if self.access.write is None:
+            if self.access.read is None or self.access.write is None:
                 raise ValueError(
                     "consent markers tell read from write: the entry names both levels"
                 )
+        if (
+            self.access is not None
+            and self.access.read is None
+            and self.adapter != "oauth"
+        ):
+            raise ValueError("only an oauth entry offers a write level alone")
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":
@@ -921,7 +933,9 @@ class ConnectionDefinition(BaseModel):
             if profile.access.unscoped:
                 raise ValueError(f"access profile {name} cannot be unscoped")
             # A grant keeps its level when the server changes profile.
-            if (profile.access.write is None) != (self.access.write is None):
+            if (profile.access.read is None) != (self.access.read is None) or (
+                profile.access.write is None
+            ) != (self.access.write is None):
                 raise ValueError(
                     f"access profile {name} must name the levels the entry does"
                 )
