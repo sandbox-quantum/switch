@@ -427,6 +427,43 @@ describe("a connector's page", () => {
     );
   });
 
+  it("says a pasted token keeps working after disconnecting, and shows why it was not revoked", async () => {
+    signedIn();
+    const calls = server(
+      pastedConnector({
+        status: "active",
+        can_revoke: true,
+        method: "token",
+        choices: { site: "datadoghq.eu" },
+        external_identity: "ada@example.test",
+      }),
+      [],
+      null,
+      {
+        "DELETE /service-connections/datadog": {
+          warning: "Switch has forgotten the pasted Datadog token but cannot revoke it.",
+        },
+      },
+    );
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(/Switch forgets your personal access token but cannot revoke it/),
+    ).toBeTruthy();
+    expect(within(dialog).queryByText(/what was handed out to them is revoked/)).toBeNull();
+    expect(within(dialog).getByRole("link", { name: "How to delete it" }).getAttribute("href")).toBe(
+      "https://docs.example.test/tokens",
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(calls.map((c) => `${c.method} ${c.path}`)).toContain("DELETE /service-connections/datadog"),
+    );
+    expect(await screen.findByText("Switch has forgotten the pasted Datadog token but cannot revoke it.")).toBeTruthy();
+  });
+
   it("goes back to the page that opened it", async () => {
     signedIn();
     server(serviceConnection());

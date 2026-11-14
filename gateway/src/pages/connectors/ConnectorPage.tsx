@@ -399,11 +399,11 @@ export default function ConnectorPage() {
   const off = offNotice(connection, workspaceName);
   const connected = isConnected(connection);
   const broken = brokenLine(connection);
-  // What a pasted connection is replaced with: pasted the same way where
-  // that is still offered here, else the first way that is.
   // Not connected, with a sign-in and a token in its place: both are offered
   // side by side below, in place of the buttons here.
   const choosing = !connected && way === "web" && offersChoices(connection);
+  // What a pasted connection is replaced with: pasted the same way where
+  // that is still offered here, else the first way that is.
   const replaceWith = isPasted(connection)
     ? (connection.paste.find((way) => way.method === connection.method) ?? connection.paste[0] ?? null)
     : null;
@@ -580,7 +580,22 @@ export default function ConnectorPage() {
       <ConfirmDialog
         open={disconnecting}
         title={`Disconnect ${connection.name}?`}
-        description={`Your agents lose ${connection.name}: their grants on it are removed, and what was handed out to them is revoked.`}
+        description={
+          replaceWith ? (
+            <>
+              Your agents lose {connection.name}: their grants on it are removed. Switch forgets your{" "}
+              {replaceWith.label.toLowerCase()} but cannot revoke it, so it keeps working in {connection.name} until it
+              expires or you delete it there.{" "}
+              {replaceWith.help_url && (
+                <Link href={replaceWith.help_url} target="_blank" rel="noopener noreferrer">
+                  How to delete it
+                </Link>
+              )}
+            </>
+          ) : (
+            `Your agents lose ${connection.name}: their grants on it are removed, and what was handed out to them is revoked.`
+          )
+        }
         confirmLabel="Disconnect"
         tone="destructive"
         onConfirm={async () => {
