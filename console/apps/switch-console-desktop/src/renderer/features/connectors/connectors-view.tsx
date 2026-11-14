@@ -344,12 +344,12 @@ function ConnectorGrid({
   );
   // Entries nobody can connect yet get a section of their own under the
   // rest, so a long list of them never pushes the usable ones out of sight.
-  const available = entries.filter((entry) => entry.status !== 'coming_soon');
+  const built = entries.filter((entry) => entry.status !== 'coming_soon');
   const comingSoon = entries.filter((entry) => entry.status === 'coming_soon');
   if (comingSoon.length === 0)
     return (
       <div role="group" aria-label="Connectors" className={GRID}>
-        {available.map(card)}
+        {built.map(card)}
         {more && (
           // Inside the grid, where the eye already is: the tabs alone did not
           // tell people that Yours is not the whole catalog.
@@ -366,11 +366,11 @@ function ConnectorGrid({
     );
   return (
     <div className="flex flex-col gap-8">
-      {available.length > 0 && (
-        <section aria-labelledby="connectors-available" className="flex flex-col gap-3">
-          <SectionTitle id="connectors-available" title="Available" count={available.length} />
+      {built.length > 0 && (
+        <section aria-labelledby="connectors-built" className="flex flex-col gap-3">
+          <SectionTitle id="connectors-built" title="Connectors" count={built.length} />
           <div role="group" aria-label="Connectors" className={GRID}>
-            {available.map(card)}
+            {built.map(card)}
           </div>
         </section>
       )}
