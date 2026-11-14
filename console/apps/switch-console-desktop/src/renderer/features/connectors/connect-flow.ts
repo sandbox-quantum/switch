@@ -187,6 +187,11 @@ export type ConnectWay = {
   bestFor: string | null;
   /** The way most people should pick: signing in, where it is offered beside a paste. */
   recommended: boolean;
+  /**
+   * Why it cannot be picked on this server (signing in where the app it
+   * goes through is not set up), shown on the row; null where it can.
+   */
+  unavailable: string | null;
 };
 
 const BEST_FOR: Record<string, Partial<Record<ConnectWayName, string>>> = {
@@ -208,7 +213,10 @@ const BEST_FOR: Record<string, Partial<Record<ConnectWayName, string>>> = {
  * they are never offered.
  */
 export function connectWays(
-  connection: Pick<ConnectionCatalogEntry, 'slug' | 'name' | 'token_lifetime' | 'paste'>
+  connection: Pick<
+    ConnectionCatalogEntry,
+    'slug' | 'name' | 'token_lifetime' | 'paste' | 'sign_in_unavailable_reason'
+  >
 ): ConnectWay[] {
   const name = connection.name;
   const best = BEST_FOR[connection.slug] ?? {};
@@ -219,7 +227,8 @@ export function connectWays(
       line: `You sign in at ${name} and allow what Switch asks for. Agents act as you there, and Switch can revoke it.`,
       lasts: safetyLine(connection, 'sign_in'),
       bestFor: best.sign_in ?? null,
-      recommended: connection.paste.length > 0,
+      recommended: connection.paste.length > 0 && connection.sign_in_unavailable_reason === null,
+      unavailable: connection.sign_in_unavailable_reason,
     },
     ...connection.paste.map((method) => ({
       way: method.method,
@@ -228,6 +237,7 @@ export function connectWays(
       lasts: safetyLine(connection, method),
       bestFor: best[method.method] ?? null,
       recommended: false,
+      unavailable: null,
     })),
   ];
 }
@@ -382,4 +392,10 @@ export function signInHint(flow: ServiceFlow | null, name: string): string | nul
 
 function isGone(cause: unknown): boolean {
   return cause instanceof RpcError && cause.numberField('status') === 410;
+}
+
+/** The way a list of `ways` starts on: `wanted` where it can be picked, else the first that can. */
+export function firstWay(ways: ConnectWay[], wanted: ConnectWayName): ConnectWayName {
+  const open = ways.filter((way) => way.unavailable === null);
+  return (open.find((way) => way.way === wanted) ?? open[0] ?? ways[0])?.way ?? wanted;
 }

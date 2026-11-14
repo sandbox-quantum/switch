@@ -3434,6 +3434,9 @@ export interface ServiceConnection {
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: string | null;
   /** Whether it waits on the server's operator setting up its app under Connectors. */
+  /** Why a person cannot sign in to it here though pasting a credential
+   * connects it (GitHub with no App set up); null where signing in works. */
+  sign_in_unavailable_reason: string | null;
   server_setup_needed: boolean;
   /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
   app_source: "organization" | "server";

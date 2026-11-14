@@ -84,6 +84,7 @@ export function ConnectServiceModal({
         onDone={onClose}
         onConnected={onConnected}
         onUseToken={githubToken === null ? undefined : () => setPastingToken(true)}
+        appUnavailable={connection.sign_in_unavailable_reason}
       />
     );
   if (connection.key)

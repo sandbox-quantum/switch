@@ -951,7 +951,7 @@ async def test_disconnect_works_once_the_app_is_removed(github_app):
         ),
     ],
 )
-async def test_with_no_app_every_route_says_why_github_cannot_be_used(
+async def test_with_no_app_every_sign_in_route_says_why_github_cannot_be_used(
     github_app, public_url, reason
 ):
     client, _, _, factory = github_app
@@ -960,10 +960,18 @@ async def test_with_no_app_every_route_says_why_github_cannot_be_used(
     assert started.status_code == 200, started.text
     client._transport.app.state.github_connections = None
     _rebroker(client, factory, adapters={}, disabled={}, public_url=public_url)
-    answers = [await client.get(BASE), await _start(client)]
-    for answer in answers:
-        assert answer.status_code == 503
-        assert answer.json()["detail"] == reason
+    # Where the person stands still reads, with nothing to install: a pasted
+    # token connects GitHub without the App.
+    status = await client.get(BASE)
+    assert status.status_code == 200, status.text
+    assert status.json() == {
+        "status": "not_connected",
+        "install_url": None,
+        "can_revoke": False,
+    }
+    answer = await _start(client)
+    assert answer.status_code == 503
+    assert answer.json()["detail"] == reason
     left = await client.get(BASE + "/authorize", params={"state": started.json()["id"]})
     assert left.status_code == 503
     assert html.escape(reason) in left.text

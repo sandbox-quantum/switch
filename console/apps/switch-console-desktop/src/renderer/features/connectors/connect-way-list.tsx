@@ -25,30 +25,38 @@ export function ConnectWayList({
       {ways.map((way) => {
         const on = way.way === picked;
         const Icon = way.way === 'sign_in' ? ShieldCheck : KeyRound;
+        const shut = way.unavailable !== null;
         return (
           <button
             key={way.way}
             type="button"
             role="radio"
             aria-checked={on}
-            disabled={busy}
+            disabled={busy || shut}
             onClick={() => onPick(way.way)}
             className={cn(
               'flex w-full gap-3 rounded-lg border p-3 text-left transition-colors disabled:cursor-not-allowed',
-              on ? 'border-foreground/40 bg-background-2' : 'hover:bg-background-2/60'
+              on ? 'border-foreground/40 bg-background-2' : !shut && 'hover:bg-background-2/60',
+              shut && 'bg-background-2/60'
             )}
           >
             <span
               aria-hidden
               className={cn(
                 'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border',
-                on && 'border-foreground'
+                on && 'border-foreground',
+                shut && 'opacity-40'
               )}
             >
               {on && <span className="size-2 rounded-full bg-foreground" />}
             </span>
             <span className="space-y-1">
-              <span className="flex items-center gap-2 text-sm font-medium">
+              <span
+                className={cn(
+                  'flex items-center gap-2 text-sm font-medium',
+                  shut && 'text-foreground-muted'
+                )}
+              >
                 <Icon aria-hidden className="size-4 text-foreground-muted" />
                 {way.title}
                 {way.recommended && (
@@ -56,12 +64,22 @@ export function ConnectWayList({
                     Recommended
                   </StatusBadge>
                 )}
+                {shut && (
+                  <StatusBadge tone="neutral" className="text-[10px]">
+                    Not set up here
+                  </StatusBadge>
+                )}
               </span>
               <span className="block text-xs text-foreground-muted">{way.line}</span>
+              {way.unavailable && (
+                <span className="block text-xs font-medium text-foreground-muted">
+                  {way.unavailable}
+                </span>
+              )}
               {way.lasts && (
                 <span className="block text-xs text-foreground-muted">{way.lasts}</span>
               )}
-              {way.bestFor && (
+              {way.bestFor && !shut && (
                 <span className="block text-xs font-medium text-foreground-muted">
                   {way.bestFor}
                 </span>

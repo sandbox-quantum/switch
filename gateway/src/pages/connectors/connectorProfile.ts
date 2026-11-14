@@ -195,14 +195,24 @@ export function offNotice(
 export function signInLabel(
   connection: Pick<
     ServiceConnection,
-    "auth_type" | "slug" | "publisher" | "name" | "pass_through" | "method" | "status" | "paste"
+    | "auth_type"
+    | "slug"
+    | "publisher"
+    | "name"
+    | "pass_through"
+    | "method"
+    | "status"
+    | "paste"
+    | "sign_in_unavailable_reason"
   >,
 ): string {
   if (connection.auth_type === "api_key") return "A key you paste";
   if (connection.method === "token") return "A token you pasted";
   if (connection.method === "keys") return "Keys you pasted";
   if (githubThroughApp(connection))
-    return connection.status !== "active" && connection.paste.some((way) => way.method === "token")
+    return connection.sign_in_unavailable_reason !== null
+      ? "A personal access token (the Switch GitHub App isn't set up here)"
+      : connection.status !== "active" && connection.paste.some((way) => way.method === "token")
       ? "The Switch GitHub App, or a personal access token"
       : "Sign in with GitHub, through the Switch GitHub App";
   return `Sign in at ${connection.publisher ?? connection.name}`;

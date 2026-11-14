@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   type ConnectWay,
   type ConnectWayName,
+  firstWay,
   SIGN_IN_HINT_AFTER_MS,
 } from '@renderer/features/connectors/connect-flow';
 import { ConnectWayList } from '@renderer/features/connectors/connect-way-list';
@@ -33,25 +34,36 @@ const NO_NEW_ACCESS =
 const SIGN_IN_HINT =
   'If GitHub showed an error, cancel, and ask the person who set up the GitHub App for Switch to check its Callback URL.';
 
-/** GitHub's two ways in, where the server takes a token in place of the App. */
-const GITHUB_WAYS: ConnectWay[] = [
-  {
-    way: 'sign_in',
-    title: 'Switch GitHub App',
-    line: 'Agents act as the Switch app, on the repositories you pick for each. Access lasts an hour at a time, and Switch can revoke it.',
-    lasts: null,
-    bestFor: 'Best for most people, and for teams',
-    recommended: true,
-  },
-  {
-    way: 'token',
-    title: 'Personal access token',
-    line: 'Agents act as you, wherever the token reaches. It ends on the date you set, and only GitHub can revoke it.',
-    lasts: null,
-    bestFor: 'Best when the App isn’t installed in your organization',
-    recommended: false,
-  },
-];
+/**
+ * GitHub's two ways in, where the server takes a token in place of the App:
+ * the App shown but not offered where `appUnavailable` says why it can't be
+ * used here, and the token then the way in.
+ */
+function githubWays(appUnavailable: string | null): ConnectWay[] {
+  return [
+    {
+      way: 'sign_in',
+      title: 'Switch GitHub App',
+      line: 'Agents act as the Switch app, on the repositories you pick for each. Access lasts an hour at a time, and Switch can revoke it.',
+      lasts: null,
+      bestFor: 'Best for most people, and for teams',
+      recommended: appUnavailable === null,
+      unavailable: appUnavailable,
+    },
+    {
+      way: 'token',
+      title: 'Personal access token',
+      line: 'Agents act as you, wherever the token reaches. It ends on the date you set, and only GitHub can revoke it.',
+      lasts: null,
+      bestFor:
+        appUnavailable === null
+          ? 'Best when the App isn’t installed in your organization'
+          : 'Works now, with nothing else to set up',
+      recommended: false,
+      unavailable: null,
+    },
+  ];
+}
 
 /** Whether an organization's single sign-on hides installations from this connection. */
 function ssoHidden(connection: GitHubConnection | null): boolean {
@@ -68,6 +80,7 @@ export function ManagedGitHubStep({
   onConnected,
   onDone,
   onUseToken,
+  appUnavailable,
 }: {
   serverId: string;
   onBack: () => void;
@@ -84,6 +97,8 @@ export function ManagedGitHubStep({
   onDone?: () => void;
   /** Offers connecting with a personal access token in place of the App, where the server takes one. */
   onUseToken?: () => void;
+  /** Why the App can't be used on this server, where a token connects GitHub instead; else null. */
+  appUnavailable: string | null;
 }) {
   const [connection, setConnection] = useState<GitHubConnection | null>(null);
   const [flowId, setFlowId] = useState<string | null>(null);
@@ -95,7 +110,8 @@ export function ManagedGitHubStep({
   // long enough for the hint.
   const [flowStatus, setFlowStatus] = useState<string | null>(null);
   const [slowFlowId, setSlowFlowId] = useState<string | null>(null);
-  const [way, setWay] = useState<ConnectWayName>('sign_in');
+  const ways = githubWays(appUnavailable);
+  const [way, setWay] = useState<ConnectWayName>(firstWay(ways, 'sign_in'));
   useCloseGuard(busy || flowId !== null);
   const load = useCallback(async () => {
     setBusy(true);
@@ -309,13 +325,7 @@ export function ManagedGitHubStep({
         ) : onUseToken ? (
           <>
             <p className="text-sm text-foreground-muted">How should your agents reach GitHub?</p>
-            <ConnectWayList
-              service="GitHub"
-              ways={GITHUB_WAYS}
-              picked={way}
-              busy={busy}
-              onPick={setWay}
-            />
+            <ConnectWayList service="GitHub" ways={ways} picked={way} busy={busy} onPick={setWay} />
             <p className="text-xs text-foreground-muted">
               Only the App lets you pick repositories for each agent, and lets Switch revoke access.
             </p>
@@ -446,7 +456,7 @@ export function ManagedGitHubStep({
             )}
             {(!connected || error) && !(onUseToken && way === 'token') && (
               <Button
-                disabled={busy}
+                disabled={busy || appUnavailable !== null}
                 onClick={() =>
                   void act(async () => {
                     setFlowId(await rpc.switchServers.startGitHubConnection(serverId));

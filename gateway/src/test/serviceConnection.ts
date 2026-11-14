@@ -13,6 +13,7 @@ export function serviceConnection(overrides: Partial<ServiceConnection> = {}): S
     configured: true,
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
     server_setup_needed: false,
     app_source: "server",
     read_only_reason: null,

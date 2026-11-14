@@ -78,11 +78,13 @@ def app() -> tuple[AsyncMock, AsyncMock]:
 
 def _broker(
     session_factory: async_sessionmaker[AsyncSession],
-    app: tuple[AsyncMock, AsyncMock],
+    app: tuple[AsyncMock, AsyncMock] | None,
     *,
     allow_non_expiring_keys: bool,
 ) -> ServiceBroker:
-    connections, signer = app
+    """`app` is the App's connections and signer; None for a server with no
+    App set up."""
+    connections, signer = (None, None) if app is None else app
     return ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
@@ -388,3 +390,49 @@ class TestDisconnect:
         assert warning is not None
         assert "cannot revoke" in warning
         assert PAT not in warning
+
+
+class TestWithoutTheApp:
+    """A server with no GitHub App set up: a pasted token still connects
+    GitHub, and is granted and handed out as it is; signing in is not
+    offered."""
+
+    @pytest.fixture
+    def broker(self, session_factory) -> ServiceBroker:
+        return _broker(session_factory, None, allow_non_expiring_keys=False)
+
+    async def test_github_connects_but_signing_in_waits_on_the_app(
+        self, broker
+    ) -> None:
+        async with broker._session_factory() as session:
+            standing = await broker.standing(session, "github")
+
+        assert standing.unavailable is None
+        assert standing.connectable is True
+        assert standing.sign_in_unavailable is not None
+        assert standing.sign_in_unavailable.code == "app_not_set_up"
+        assert standing.server_setup_needed is True
+        # Organizations fall back on the server's App only where there is one.
+        assert broker.server_serves("github") is False
+
+    async def test_a_pasted_token_is_granted_and_handed_out(
+        self, broker, session_factory, fake
+    ) -> None:
+        owner, agent = await _connected(broker, session_factory)
+        await _grant(broker, session_factory, owner, agent)
+
+        token = await _issue(broker, session_factory, agent.id)
+
+        assert token.token == PAT
+        assert token.resources == {}
+
+    async def test_disconnecting_says_only_github_can_revoke_the_token(
+        self, broker, session_factory, fake
+    ) -> None:
+        owner, _ = await _connected(broker, session_factory)
+
+        async with session_factory() as session:
+            warning = await broker.disconnect(session, owner.id, "github")
+
+        assert warning is not None
+        assert "cannot revoke" in warning

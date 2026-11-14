@@ -7,6 +7,12 @@ const ADDRESS = /(https:\/\/[^\s]+[^\s.,;:!?)])/;
  * opens in a new tab. An address moves to its own line rather than breaking
  * at a hyphen, and breaks only where it is wider than the line.
  */
+/** An address as it reads: without its scheme, and with non-breaking
+ * hyphens, so a line never ends at one of its hyphens. */
+function shown(address: string): string {
+  return address.replace(/^https:\/\//, "").replaceAll("-", "\u2011");
+}
+
 export default function LinkedText({ text }: { text: string }) {
   return (
     <>
@@ -23,7 +29,7 @@ export default function LinkedText({ text }: { text: string }) {
               overflowWrap: "anywhere",
             }}
           >
-            {part}
+            {shown(part)}
           </Link>
         ) : (
           part

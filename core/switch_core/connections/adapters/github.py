@@ -191,21 +191,37 @@ class GitHubAdapter:
     def __init__(
         self,
         definition: ConnectionDefinition,
-        connections: GitHubConnections,
+        connections: GitHubConnections | None,
         signer: GitHubInstallationCredentials | None,
         *,
         read_only: bool,
     ) -> None:
+        """`connections` is the App people sign in through; None where no App
+        is set up, so GitHub is connected only with a pasted token."""
         if definition.adapter != "github":
             raise ValueError(f"{definition.slug} is not a github entry.")
+        if connections is None and not definition.auth.paste:
+            raise ValueError("GitHub without its App needs a way to paste a token.")
         self._paste = definition.auth.paste
         self._connections = connections
         self._signer = signer
-        self.can_issue = signer is not None
+        self.app_set_up = connections is not None
+        # Without the App only a pasted token is issued, which needs no
+        # signing key; with it, an App token does.
+        self.can_issue = signer is not None or connections is None
         self.read_only = read_only
 
+    def _app(self) -> GitHubConnections:
+        """The App, for what only a sign-in through it does."""
+        if self._connections is None:
+            raise ServiceAdapterError(
+                "The Switch GitHub App isn't set up on this server, so only a "
+                "pasted personal access token connects GitHub here."
+            )
+        return self._connections
+
     def current_client_id(self, choices: Mapping[str, str]) -> str | None:
-        return self._connections.client_id
+        return None if self._connections is None else self._connections.client_id
 
     # ── A personal access token pasted in place of the sign-in ───────────────
 
@@ -295,7 +311,7 @@ class GitHubAdapter:
         ):
             raise ReauthorizationRequiredError("The GitHub sign-in has expired.")
         try:
-            refreshed = await self._connections.exchange(
+            refreshed = await self._app().exchange(
                 {"grant_type": "refresh_token", "refresh_token": refresh_token}
             )
         except GitHubError as error:
@@ -308,7 +324,7 @@ class GitHubAdapter:
         """A grant's resources for repositories named `owner/name`: the one
         installation of the App that reaches them all, and their ids."""
         try:
-            reach = await self._connections.repositories(access_token)
+            reach = await self._app().repositories(access_token)
         except GitHubError as error:
             raise _vendor_error(error) from None
         wanted = {name.lower(): name for name in names}
@@ -352,7 +368,7 @@ class GitHubAdapter:
             return {}
         installation_id, repository_ids = _reach(request.resources)
         try:
-            reached = await self._connections.installation_repositories(
+            reached = await self._app().installation_repositories(
                 access_token, installation_id, set(repository_ids)
             )
         except GitHubError as error:
@@ -430,7 +446,7 @@ class GitHubAdapter:
         if token is None:
             return False
         try:
-            await self._connections.revoke(token)
+            await self._app().revoke(token)
         except GitHubError as error:
             raise _vendor_error(error) from None
         return True

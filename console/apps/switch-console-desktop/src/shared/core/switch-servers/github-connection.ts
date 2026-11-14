@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
 export const gitHubConnectionSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('not_connected'), install_url: z.string() }),
+  /**
+   * `install_url` is null where the server has no GitHub App set up, so only
+   * a pasted token connects GitHub there.
+   */
+  z.object({ status: z.literal('not_connected'), install_url: z.string().nullable() }),
   z.object({
     status: z.literal('connected'),
     /**
@@ -11,7 +15,7 @@ export const gitHubConnectionSchema = z.discriminatedUnion('status', [
      */
     method: z.string().optional(),
     login: z.string(),
-    install_url: z.string(),
+    install_url: z.string().nullable(),
     installations: z.array(
       z.object({
         id: z.number(),

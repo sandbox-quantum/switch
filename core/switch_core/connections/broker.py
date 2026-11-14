@@ -54,6 +54,7 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
+from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter, credential_words
 from switch_core.connections.app_credentials import (
     app_kind,
@@ -225,6 +226,14 @@ class _Choice:
     source: AppSource
 
 
+def _app_choice(choice: _Choice) -> _Choice:
+    """`choice` as it stands for signing in: without an adapter where its
+    adapter takes only a pasted credential (GitHub with no App set up)."""
+    if isinstance(choice.adapter, GitHubAdapter) and not choice.adapter.app_set_up:
+        return _Choice(None, choice.problem, choice.source)
+    return choice
+
+
 def _client_replaced(
     connection: ServiceConnection, adapter: ServiceAdapter | None
 ) -> bool:
@@ -271,12 +280,17 @@ class ServiceStanding:
     connectable: bool
     adapter: ServiceAdapter | None
     source: AppSource
+    # Why a person cannot sign in to it here though a pasted credential
+    # connects it (GitHub with no App set up), or None.
+    sign_in_unavailable: Unavailable | None
 
     @property
     def server_setup_needed(self) -> bool:
-        """Whether it waits on the operator setting up its app here."""
-        return (
-            self.unavailable is not None and self.unavailable.code == "app_not_set_up"
+        """Whether it, or signing in to it, waits on the operator setting up
+        its app here."""
+        return any(
+            reason is not None and reason.code == "app_not_set_up"
+            for reason in (self.unavailable, self.sign_in_unavailable)
         )
 
     def client_replaced(self, connection: ServiceConnection) -> bool:
@@ -1770,7 +1784,11 @@ class ServiceBroker:
         the workspace."""
         choice = await self._choose(session, service)
         entry = self._catalog.get(service)
+        app = _app_choice(choice)
         return ServiceStanding(
+            sign_in_unavailable=None
+            if app is choice
+            else self._unavailable(service, app),
             unavailable=self._unavailable(service, choice),
             connectable=(
                 entry is not None
@@ -1914,7 +1932,8 @@ class ServiceBroker:
         """Why a workspace that goes through the server's app for `service`
         cannot be granted it, or None if it can."""
         unavailable = self._unavailable(
-            service, _Choice(self._adapters.get(service), None, "server")
+            service,
+            _app_choice(_Choice(self._adapters.get(service), None, "server")),
         )
         return None if unavailable is None else unavailable.reason
 

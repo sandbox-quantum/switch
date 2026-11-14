@@ -6,6 +6,7 @@ import {
   canCloseConnectFlow,
   connectFlowReducer,
   connectWays,
+  firstWay,
   initialConnectFlow,
   initialSignInChoices,
   pasteReady,
@@ -101,7 +102,7 @@ export function ServiceConnectStep({
   );
   const offersConnect = !connected || error !== null;
   const ways = connectWays(connection);
-  const [way, setWay] = useState<ConnectWayName>(startOn ?? 'sign_in');
+  const [way, setWay] = useState<ConnectWayName>(firstWay(ways, startOn ?? 'sign_in'));
   const choosing = ways.length > 1;
   useCloseGuard(!closable);
   // Callers build their calls as they render; polling follows the flow, not them.

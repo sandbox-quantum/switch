@@ -14,6 +14,8 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     status: 'coming_soon',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: false,
     token_lifetime: null,

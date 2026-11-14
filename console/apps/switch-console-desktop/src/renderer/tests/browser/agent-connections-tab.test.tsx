@@ -54,6 +54,8 @@ function entry(slug: string, overrides: Partial<ConnectionCatalogEntry>): Connec
     status: 'connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     pass_through: true,
     token_lifetime: 3600,
     agent_access_note: null,

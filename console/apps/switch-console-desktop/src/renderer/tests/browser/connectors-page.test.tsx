@@ -219,6 +219,8 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
@@ -614,7 +616,8 @@ it('shows the warning a disconnect gives, with the page it names as a link', asy
   await vi.waitFor(() => expect(dialog()?.textContent).toContain('M1 loses Atlassian.'));
   await act(async () => button(/^Disconnect$/, dialog()!)!.click());
   await vi.waitFor(() => expect(dialog()?.querySelector('a')?.getAttribute('href')).toBe(page_url));
-  expect(dialog()!.querySelector('a')!.textContent).toBe(page_url);
+  // Shown without its scheme, and with hyphens a line cannot end at.
+  expect(dialog()!.querySelector('a')!.textContent).toBe('vendor.example.test/settings/tokens');
 });
 
 it('offers Connect on the profile after a disconnect, made in the workspace shown', async () => {

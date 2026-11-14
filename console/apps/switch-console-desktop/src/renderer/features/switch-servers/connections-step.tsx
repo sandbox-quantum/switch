@@ -168,6 +168,7 @@ export function ConnectionsStep({
     void catalog.reload();
   };
 
+  const opened = catalog.connections?.find((connection) => connection.slug === open);
   if (open === 'github')
     return (
       <ManagedGitHubStep
@@ -175,9 +176,9 @@ export function ConnectionsStep({
         onBack={back}
         onSkip={onSkip}
         onContinue={onContinue}
+        appUnavailable={opened?.sign_in_unavailable_reason ?? null}
       />
     );
-  const opened = catalog.connections?.find((connection) => connection.slug === open);
   if (opened?.key)
     return (
       <ServiceKeyStep

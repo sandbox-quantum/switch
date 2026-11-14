@@ -118,6 +118,17 @@ export const connectionCatalogEntrySchema = z.object({
    */
   unavailable_code: z.enum(UNAVAILABLE_CODES).nullable(),
   /**
+   * Why a person cannot sign in to it here though pasting a credential
+   * connects it (GitHub with no App set up); null where signing in works,
+   * and from a server that predates it.
+   */
+  sign_in_unavailable_reason: z.string().nullable(),
+  /**
+   * Whether it, or signing in to it, waits on the server's operator setting
+   * up its app. False from a server that predates it.
+   */
+  server_setup_needed: z.boolean(),
+  /**
    * Why it can be granted for reading only on the server (its GitHub App
    * lacks the write permissions), for a form to say beside the write choice
    * it disables. Null where writing can be granted too, and from a server
@@ -207,6 +218,8 @@ export const connectionCatalogSchema = z.object({
         connectable: true,
         unavailable_reason: true,
         unavailable_code: true,
+        sign_in_unavailable_reason: true,
+        server_setup_needed: true,
         read_only_reason: true,
         pass_through: true,
         token_lifetime: true,
@@ -243,6 +256,8 @@ export const serviceConnectionsSchema = z.object({
       unavailable_reason: z.string().nullable(),
       // Absent from a Switch that predates them.
       unavailable_code: z.string().nullable().default(null),
+      sign_in_unavailable_reason: z.string().nullable().default(null),
+      server_setup_needed: z.boolean().default(false),
       read_only_reason: z.string().nullable().default(null),
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),

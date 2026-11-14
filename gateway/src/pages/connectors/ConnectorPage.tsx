@@ -402,7 +402,12 @@ export default function ConnectorPage() {
   const broken = brokenLine(connection);
   // Not connected, with a sign-in and a token in its place: both are offered
   // side by side below, in place of the buttons here.
-  const choosing = !connected && way === "web" && offersChoices(connection);
+  // So are they where its sign-in waits on an app this server lacks: the
+  // sign-in is shown as not set up, and the token is the way in.
+  const choosing =
+    !connected &&
+    offersChoices(connection) &&
+    (way === "web" || (way === "paste" && connection.sign_in_unavailable_reason !== null));
   // What a pasted connection is replaced with: pasted the same way where
   // that is still offered here, else the first way that is.
   const replaceWith = isPasted(connection)
@@ -462,7 +467,7 @@ export default function ConnectorPage() {
                   : "Use keys instead"}
               </Button>
             )}
-            {!connected && way === "paste" && (
+            {!connected && way === "paste" && !choosing && (
               <Button variant="contained" onClick={() => setPasteDialog("add")}>
                 Connect
               </Button>
@@ -525,6 +530,19 @@ export default function ConnectorPage() {
           leaving={leaving !== null}
           onSignIn={connect}
           onToken={() => setPasteDialog("add")}
+          setUp={
+            connection.server_setup_needed && capabilities.isOperator ? (
+              <Box>
+                <Button
+                  variant="outlined"
+                  component={RouterLink}
+                  to={capabilities.features.gateway_v2 ? "/platform/connectors" : "/connectors"}
+                >
+                  Set up the App
+                </Button>
+              </Box>
+            ) : null
+          }
         />
       )}
 

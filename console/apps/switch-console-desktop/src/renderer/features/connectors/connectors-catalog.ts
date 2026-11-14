@@ -178,6 +178,8 @@ export function signInLabel(entry: ConnectionCatalogEntry): string {
   const pasted = pastedConnection(entry);
   if (pasted !== null) return pasted.way;
   if (githubThroughApp(entry)) {
+    if (entry.sign_in_unavailable_reason !== null)
+      return 'A personal access token (the Switch GitHub App isn’t set up here)';
     const token = entry.paste.find((way) => way.method === 'token');
     return token && !isYours(entry)
       ? `Switch GitHub App, or a ${token.label.toLowerCase()}`

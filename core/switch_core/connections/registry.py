@@ -122,9 +122,12 @@ def build_adapter(
     entry, where its adapter needs one.
     """
     if definition.adapter == "github":
-        # With the App alone, GitHub can be connected but not granted.
+        # With the App alone, GitHub can be connected but not granted. Without
+        # it, a pasted token still connects it.
         if github_app is None:
-            return None
+            if not definition.auth.paste:
+                return None
+            return GitHubAdapter(definition, None, None, read_only=False)
         return GitHubAdapter(
             definition,
             github_app.connections,

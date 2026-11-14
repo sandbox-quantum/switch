@@ -87,6 +87,8 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
@@ -187,6 +189,21 @@ describe('what each person is told about a connector that cannot be used', () =>
     connectable: false,
     unavailable_reason: 'Example is not set up on this server.',
     unavailable_code: 'app_not_set_up',
+  });
+
+  it('offers the operator to set up an app a pasted token works without', () => {
+    const tokenOnly = entry({
+      slug: 'github',
+      name: 'GitHub',
+      sign_in_unavailable_reason: "GitHub's connector app isn't set up on this server yet.",
+      server_setup_needed: true,
+    });
+    expect(connectorCardState(tokenOnly, OPERATOR)).toMatchObject({
+      kind: 'connect',
+      fix: 'set_up',
+    });
+    for (const viewer of [ADMIN, MEMBER])
+      expect(connectorCardState(tokenOnly, viewer)).toMatchObject({ kind: 'connect', fix: null });
   });
   const github = entry({
     slug: 'github',
@@ -525,6 +542,9 @@ describe('the profile', () => {
     const github = entry({ slug: 'github', name: 'GitHub', pass_through: false, paste: [pat] });
     expect(signInLabel(github)).toBe('Switch GitHub App, or a personal access token');
     expect(signInLabel({ ...github, status: 'connected' })).toBe('GitHub App');
+    expect(signInLabel({ ...github, sign_in_unavailable_reason: 'Not set up.' })).toBe(
+      'A personal access token (the Switch GitHub App isn’t set up here)'
+    );
     expect(
       signInLabel({
         ...github,

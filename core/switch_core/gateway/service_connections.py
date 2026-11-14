@@ -158,6 +158,11 @@ async def list_service_connections(
                 # Why, for a client to say what each person can do about it:
                 # `UnavailableCode` in `connections/broker.py`.
                 "unavailable_code": None if unavailable is None else unavailable.code,
+                # Why a person cannot sign in to it here though pasting a
+                # credential connects it (GitHub with no App set up), or null.
+                "sign_in_unavailable_reason": None
+                if standing.sign_in_unavailable is None
+                else standing.sign_in_unavailable.reason,
                 # Whether it waits on the server's operator setting up its app
                 # under Connectors, so a client can offer them that.
                 "server_setup_needed": standing.server_setup_needed,
@@ -202,7 +207,9 @@ async def list_service_connections(
                 # the gateway: false where it can't be connected here at all,
                 # where it returns only to Switch Console's listener, and for
                 # a key.
-                "web_sign_in": standing.connectable and flows.web_ready(definition),
+                "web_sign_in": standing.connectable
+                and standing.sign_in_unavailable is None
+                and flows.web_ready(definition),
                 # The ports Switch Console's listener may take a sign-in back
                 # on, for a vendor that matches them; null for any port.
                 "loopback_ports": (

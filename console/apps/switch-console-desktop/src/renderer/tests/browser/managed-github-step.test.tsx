@@ -52,7 +52,8 @@ afterEach(async () => {
 async function render(
   onBack: () => void,
   onDone?: () => void,
-  onUseToken?: () => void
+  onUseToken?: () => void,
+  appUnavailable: string | null = null
 ): Promise<void> {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -66,6 +67,7 @@ async function render(
             onBack={onBack}
             onDone={onDone}
             onUseToken={onUseToken}
+            appUnavailable={appUnavailable}
           />
         </DialogContent>
       </Dialog>
@@ -207,7 +209,12 @@ it('keeps its minute when the page around it renders again', async () => {
       root!.render(
         <Dialog open>
           <DialogContent>
-            <ManagedGitHubStep serverId="server" onBack={() => {}} onConnected={() => {}} />
+            <ManagedGitHubStep
+              serverId="server"
+              onBack={() => {}}
+              onConnected={() => {}}
+              appUnavailable={null}
+            />
           </DialogContent>
         </Dialog>
       )
@@ -270,6 +277,35 @@ it('where the server takes a token, sets the App and a token out as a choice, th
   await act(async () => button(/^continue$/i, dialog())!.click());
   expect(onUseToken).toHaveBeenCalledOnce();
   expect(switchServers.startGitHubConnection).not.toHaveBeenCalled();
+});
+
+it('with no App on the server, shows the App as not set up and starts on the token', async () => {
+  switchServers.getGitHubConnection.mockResolvedValue({
+    status: 'not_connected',
+    install_url: null,
+  });
+  const onUseToken = vi.fn();
+  const reason =
+    "GitHub's connector app isn't set up on this server yet. Whoever runs Switch can set it up.";
+  await render(
+    () => {},
+    () => {},
+    onUseToken,
+    reason
+  );
+
+  await vi.waitFor(() => expect(way('Switch GitHub App')).toBeDefined());
+  const app = way('Switch GitHub App')!;
+  expect(app.disabled).toBe(true);
+  expect(app.getAttribute('aria-checked')).toBe('false');
+  expect(app.textContent).toContain('Not set up here');
+  expect(app.textContent).toContain(reason);
+  expect(app.textContent).not.toContain('Recommended');
+  expect(way('Personal access token')!.getAttribute('aria-checked')).toBe('true');
+  expect(way('Personal access token')!.textContent).toContain('Works now');
+  expect(button(/^connect github\s*$/i, dialog())).toBeUndefined();
+  await act(async () => button(/^continue$/i, dialog())!.click());
+  expect(onUseToken).toHaveBeenCalledOnce();
 });
 
 it('without a token in its place, offers the App alone', async () => {
