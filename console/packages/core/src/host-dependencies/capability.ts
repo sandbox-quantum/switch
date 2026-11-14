@@ -49,6 +49,12 @@ export const installOptionSchema = z.object({
       removeCommand: z.string(),
       restoreCommand: z.string(),
       summary: z.string(),
+      /**
+       * Run before anything is removed; the migration goes ahead only when it
+       * succeeds, and otherwise stops with `blockedMessage`, changing nothing.
+       * For a platform that cannot replace a program while it runs.
+       */
+      precheck: z.object({ command: z.string(), blockedMessage: z.string() }).optional(),
     })
     .optional(),
 });

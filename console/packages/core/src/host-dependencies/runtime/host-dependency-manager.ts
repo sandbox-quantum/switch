@@ -793,9 +793,27 @@ export class HostDependencyManager {
   private async migrateLine(
     id: DependencyId,
     installCommand: string,
-    migration: { removeCommand: string; restoreCommand: string },
+    migration: {
+      removeCommand: string;
+      restoreCommand: string;
+      precheck?: { command: string; blockedMessage: string };
+    },
     previousVersion: string
   ): Promise<Result<void, DependencyUpdateError>> {
+    if (migration.precheck) {
+      const checked = await this.runInstallCommand(migration.precheck.command);
+      if (!checked.success) {
+        this.logger.warn(
+          `[HostDependencyManager] Not moving ${id} ${previousVersion} to a new release line: ${migration.precheck.command} failed`,
+          checked.error
+        );
+        return err({
+          type: 'line-migration-blocked',
+          id,
+          message: migration.precheck.blockedMessage,
+        });
+      }
+    }
     this.logger.info(
       `[HostDependencyManager] Moving ${id} ${previousVersion} to a new release line: ${migration.removeCommand}; ${installCommand}`
     );

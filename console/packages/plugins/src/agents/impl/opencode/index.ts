@@ -38,13 +38,29 @@ const OPENCODE_2 = '2.0.0';
 const OPENCODE_2_SUMMARY =
   'Your sign-ins, opencode.json, agents, commands, skills and saved sessions carry over, and agents resume their conversations. The opencode command in your terminal becomes OpenCode 2 too. Sessions already running keep the version they started with until they stop. If OpenCode 2 does not install, this version is put back.';
 
+/**
+ * Windows will not delete a program while it runs, so npm cannot remove 1.x
+ * while any OpenCode is open: a session in Console or OpenCode in a terminal.
+ * The check fails when one is running, and the upgrade then changes nothing.
+ * Written without `$` or `%`, since the install shell may be PowerShell or cmd.exe.
+ */
+const OPENCODE_WINDOWS_PRECHECK = {
+  command:
+    'powershell -NoProfile -Command "if (Get-Process -Name opencode -ErrorAction SilentlyContinue) { exit 1 }"',
+  blockedMessage:
+    'OpenCode is running, and Windows cannot replace it while it runs. Stop the agents using OpenCode and close OpenCode wherever it is open, then upgrade again. Nothing was changed.',
+};
+
 const OPENCODE_HOST_DEPENDENCY = (() => {
   const base = npmDependency({ id: 'opencode', package: '@opencode/cli' });
 
   // Uninstall must target both the current package (@opencode/cli) and the
   // legacy name (opencode-ai) that Console used to install. Users may have
   // either one; npm silently skips whichever isn't present.
-  const patchUninstall = (options: typeof base.installCommands.macos) =>
+  const patchUninstall = (
+    options: typeof base.installCommands.macos,
+    precheck: { command: string; blockedMessage: string } | undefined
+  ) =>
     options?.map((opt) => ({
       ...opt,
       ...(opt.uninstallCommand ? { uninstallCommand: opt.uninstallCommand + ' opencode-ai' } : {}),
@@ -55,6 +71,7 @@ const OPENCODE_HOST_DEPENDENCY = (() => {
               removeCommand: 'npm uninstall -g opencode-ai',
               restoreCommand: 'npm install -g opencode-ai@{version}',
               summary: OPENCODE_2_SUMMARY,
+              ...(precheck ? { precheck } : {}),
             },
           }
         : {}),
@@ -63,8 +80,8 @@ const OPENCODE_HOST_DEPENDENCY = (() => {
   return {
     ...base,
     installCommands: {
-      macos: patchUninstall(base.installCommands.macos),
-      windows: patchUninstall(base.installCommands.windows),
+      macos: patchUninstall(base.installCommands.macos, undefined),
+      windows: patchUninstall(base.installCommands.windows, OPENCODE_WINDOWS_PRECHECK),
       linux: [
         {
           method: 'npm' as const,

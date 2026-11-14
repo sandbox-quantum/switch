@@ -68,6 +68,8 @@ export function getAgentUpdateErrorMessage(error: AgentUpdateError): string {
       return `No update strategy is available for ${error.id}.`;
     case 'not-detected-after-update':
       return 'The agent was not detected after update.';
+    case 'line-migration-blocked':
+      return error.message;
     case 'line-migration-failed':
       return `Installing the new version failed, so ${error.restoredVersion} was put back and keeps working. ${commandFailureText(error.cause)}`;
     case 'line-migration-unrestored':

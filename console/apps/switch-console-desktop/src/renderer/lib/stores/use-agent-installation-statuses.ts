@@ -125,7 +125,7 @@ export function useAgentInstallationStatuses(connectionId?: string) {
           title:
             error.type === 'line-migration-unrestored'
               ? `${name} isn't installed now`
-              : error.type === 'line-migration-failed'
+              : error.type === 'line-migration-failed' || error.type === 'line-migration-blocked'
                 ? `Couldn't upgrade ${name}`
                 : `Failed to update ${name}`,
           description: getAgentUpdateErrorMessage(error),

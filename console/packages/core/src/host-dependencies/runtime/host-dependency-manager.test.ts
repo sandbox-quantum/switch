@@ -1319,7 +1319,7 @@ describe('HostDependencyManager line migration', () => {
   ];
 
   /** A host with `version` of oc installed, or none; commands that fail are listed. */
-  function host(initial: string, failing: string[]) {
+  function host(initial: string, failing: string[], dependencies = MIGRATING) {
     let version: string | null = initial;
     const runInstallCommand = vi.fn(async (command: unknown) => {
       if (typeof command !== 'string') throw new Error('expected a shell command');
@@ -1338,7 +1338,7 @@ describe('HostDependencyManager line migration', () => {
       throw new Error('missing');
     });
     const manager = new HostDependencyManager(ctx, {
-      dependencies: MIGRATING,
+      dependencies,
       runInstallCommand,
       installMethodDetector: npmDetector,
       platform: 'linux',
@@ -1346,8 +1346,8 @@ describe('HostDependencyManager line migration', () => {
     return { manager, runInstallCommand };
   }
 
-  async function probed(initial: string, failing: string[] = []) {
-    const setup = host(initial, failing);
+  async function probed(initial: string, failing: string[] = [], dependencies = MIGRATING) {
+    const setup = host(initial, failing, dependencies);
     await setup.manager.probe('oc');
     await new Promise((r) => setTimeout(r, 50));
     return setup;
@@ -1401,6 +1401,41 @@ describe('HostDependencyManager line migration', () => {
       },
     });
     expect(manager.get('oc')?.status).toBe('missing');
+  });
+
+  describe('with a precheck', () => {
+    const CHECKED: DependencyDescriptor[] = MIGRATING.map((descriptor) => ({
+      ...descriptor,
+      installCommands: {
+        linux: descriptor.installCommands?.linux?.map((option) => ({
+          ...option,
+          lineMigration: option.lineMigration && {
+            ...option.lineMigration,
+            precheck: { command: 'check-oc-stopped', blockedMessage: 'OC is running.' },
+          },
+        })),
+      },
+    }));
+
+    it('runs it before removing anything', async () => {
+      const { manager, runInstallCommand } = await probed('1.19.5', [], CHECKED);
+      expect((await manager.update('oc')).success).toBe(true);
+      expect(runInstallCommand.mock.calls.map(([command]) => command)).toEqual([
+        'check-oc-stopped',
+        'npm uninstall -g old-oc',
+        'npm install -g new-oc',
+      ]);
+    });
+
+    it('stops with its message, changing nothing, when it fails', async () => {
+      const { manager, runInstallCommand } = await probed('1.19.5', ['check-oc-stopped'], CHECKED);
+      expect(await manager.update('oc')).toMatchObject({
+        success: false,
+        error: { type: 'line-migration-blocked', id: 'oc', message: 'OC is running.' },
+      });
+      expect(runInstallCommand).toHaveBeenCalledTimes(1);
+      expect(manager.get('oc')?.version).toBe('1.19.5');
+    });
   });
 
   it('changes nothing when the earlier line will not uninstall', async () => {

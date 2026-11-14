@@ -26,7 +26,13 @@ export type InstallOption = {
   updateCommand?: string;
   uninstallCommand?: string;
   /** See `lineMigration` on InstallOption in @switch-console/core: an update that replaces an earlier release line. */
-  lineMigration?: { below: string; removeCommand: string; restoreCommand: string; summary: string };
+  lineMigration?: {
+    below: string;
+    removeCommand: string;
+    restoreCommand: string;
+    summary: string;
+    precheck?: { command: string; blockedMessage: string };
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +139,7 @@ export type AgentUpdateError =
   | { type: 'no-update-strategy'; id: string }
   | InstallCommandError
   | { type: 'not-detected-after-update'; id: string }
+  | { type: 'line-migration-blocked'; id: string; message: string }
   | {
       type: 'line-migration-failed';
       id: string;

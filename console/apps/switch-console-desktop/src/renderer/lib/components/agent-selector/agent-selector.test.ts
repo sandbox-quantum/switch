@@ -178,6 +178,15 @@ describe('buildAgentGroups', () => {
 
 describe('getAgentUpdateErrorMessage across a release line', () => {
   const cause = { type: 'command-failed' as const, message: 'npm failed', output: 'EACCES' };
+  it('gives the reason an upgrade could not start', () => {
+    expect(
+      getAgentUpdateErrorMessage({
+        type: 'line-migration-blocked',
+        id: 'opencode',
+        message: 'OpenCode is running. Nothing was changed.',
+      })
+    ).toBe('OpenCode is running. Nothing was changed.');
+  });
   it('says the earlier version is back and keeps working', () => {
     const message = getAgentUpdateErrorMessage({
       type: 'line-migration-failed',

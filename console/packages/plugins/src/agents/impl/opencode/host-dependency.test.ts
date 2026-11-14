@@ -58,4 +58,14 @@ describe('opencode host dependency', () => {
     }
     expect(firstOption('linux').lineMigration?.restoreCommand).toContain('--prefix "$HOME/.local"');
   });
+
+  // Windows cannot delete opencode.exe while it runs, so the upgrade checks first.
+  it('checks for a running OpenCode before upgrading on Windows only', () => {
+    const precheck = firstOption('windows').lineMigration?.precheck;
+    expect(precheck?.command).toContain('Get-Process -Name opencode');
+    expect(precheck?.command).not.toMatch(/[$%]/);
+    expect(precheck?.blockedMessage).toContain('Nothing was changed.');
+    expect(firstOption('macos').lineMigration?.precheck).toBeUndefined();
+    expect(firstOption('linux').lineMigration?.precheck).toBeUndefined();
+  });
 });

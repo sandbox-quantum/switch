@@ -58,6 +58,8 @@ export type DependencyUpdateError =
   | { type: 'no-update-strategy'; id: string }
   | InstallCommandError
   | { type: 'not-detected-after-update'; id: string }
+  /** Moving to a new release line was refused by its precheck; nothing was changed. */
+  | { type: 'line-migration-blocked'; id: string; message: string }
   /** Moving to a new release line failed to install it; the earlier version is back. */
   | {
       type: 'line-migration-failed';
