@@ -1,10 +1,13 @@
 import Add from "@mui/icons-material/Add";
 import BlockOutlined from "@mui/icons-material/BlockOutlined";
 import Check from "@mui/icons-material/Check";
+import ExploreOutlined from "@mui/icons-material/ExploreOutlined";
 import PriorityHigh from "@mui/icons-material/PriorityHigh";
 import {
   Alert,
   Box,
+  Button,
+  ButtonBase,
   Chip,
   CircularProgress,
   IconButton,
@@ -17,7 +20,7 @@ import {
 } from "@mui/material";
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import CatalogueGrid from "../../components/connectors/CatalogueGrid";
+import CatalogueGrid, { matchesQuery } from "../../components/connectors/CatalogueGrid";
 import ConnectorCard from "../../components/connectors/ConnectorCard";
 import InfoTip from "../../components/InfoTip";
 import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
@@ -29,6 +32,23 @@ import PasteDialog from "./PasteDialog";
 import { useLeaveToSignIn } from "./signIn";
 
 type Tab = "yours" | "all";
+
+/** The trailing card on Yours, which opens All. */
+function browseMoreText(count: number, query: string): string {
+  const noun = count === 1 ? "connector" : "connectors";
+  const needle = query.trim();
+  return needle
+    ? `${count} more ${noun} ${count === 1 ? "matches" : "match"} "${needle}" under All`
+    : `Browse ${count} more ${noun}`;
+}
+
+/** What Yours says when nothing of the person's matches a search but All has some that do. */
+function yoursSearchEmptyText(query: string, count: number, soon: number): string {
+  const lead = `None of your connectors match "${query.trim()}".`;
+  return count > 0
+    ? `${lead} ${count} under All ${count === 1 ? "does" : "do"}.`
+    : `${lead} ${soon} coming soon under All.`;
+}
 
 /** A badge whose reason shows on hover, and is read out with the card by a
  * screen reader. It sits inside the card's button, so it can't take focus
@@ -52,10 +72,13 @@ function Reason({ label, why, icon }: { label: string; why: string; icon?: React
  * where disconnecting sits beside what it costs. */
 function CardState({
   connection,
+  onYours,
   leaving,
   onConnect,
 }: {
   connection: ServiceConnection;
+  /** On Yours every card is connected, so a tick there says nothing and makes a lone card read as the whole set. */
+  onYours: boolean;
   leaving: boolean;
   onConnect: () => void;
 }) {
@@ -69,7 +92,7 @@ function CardState({
       >
         <PriorityHigh fontSize="small" />
       </Box>
-    ) : (
+    ) : onYours ? null : (
       <Box
         role="img"
         aria-label={`Connected to ${connection.name}`}
@@ -154,6 +177,13 @@ export default function ConnectorsPage() {
 
   const connected = useMemo(() => (connections ?? []).filter(isConnected), [connections]);
   const shown: Tab = tab ?? "all";
+  // From Yours, what All has for the search that could be connected, and the
+  // coming soon services it finds, counted apart as All counts them.
+  const [beyond, soon] = useMemo(() => {
+    if (shown !== "yours") return [0, 0];
+    const found = (connections ?? []).filter((c) => !isConnected(c) && matchesQuery(c, query));
+    return [found.filter((c) => c.enabled).length, query.trim() ? found.filter((c) => !c.enabled).length : 0];
+  }, [connections, shown, query]);
 
   const connect = (connection: ServiceConnection) => {
     setConnectError(null);
@@ -222,11 +252,43 @@ export default function ConnectorsPage() {
                 </ToggleButtonGroup>
               }
               emptyMessage={
-                shown === "yours"
-                  ? query.trim()
-                    ? "You haven't connected anything that matches. The All tab lists every connector."
-                    : "You haven't connected anything yet. The All tab lists every connector."
-                  : `No connectors match "${query.trim()}".`
+                shown !== "yours" ? (
+                  `No connectors match "${query.trim()}".`
+                ) : beyond > 0 || soon > 0 ? (
+                  <>
+                    {query.trim() ? yoursSearchEmptyText(query, beyond, soon) : "You haven't connected anything yet."}{" "}
+                    <Button size="small" variant="outlined" onClick={() => setTab("all")} sx={{ ml: 1 }}>
+                      {query.trim() ? "Show" : `Browse ${beyond} ${beyond === 1 ? "connector" : "connectors"}`}
+                    </Button>
+                  </>
+                ) : query.trim() ? (
+                  `No connectors match "${query.trim()}".`
+                ) : (
+                  "You haven't connected anything yet."
+                )
+              }
+              trailing={
+                shown === "yours" &&
+                beyond > 0 && (
+                  <ButtonBase
+                    onClick={() => setTab("all")}
+                    sx={{
+                      justifyContent: "flex-start",
+                      gap: 1.5,
+                      p: 2,
+                      border: "1px dashed var(--sw-border)",
+                      borderRadius: "10px",
+                      textAlign: "left",
+                      fontSize: 14,
+                      fontWeight: 500,
+                      "&:hover": { backgroundColor: "var(--sw-muted)" },
+                      "&.Mui-focusVisible": { outline: "2px solid var(--sw-ring)", outlineOffset: "2px" },
+                    }}
+                  >
+                    <ExploreOutlined fontSize="small" sx={{ color: "text.secondary" }} />
+                    {browseMoreText(beyond, query)}
+                  </ButtonBase>
+                )
               }
               renderCard={(connection) => {
                 const off = connection.enabled ? offNotice(connection, workspaceName) : null;
@@ -253,6 +315,7 @@ export default function ConnectorsPage() {
                     trailing={
                       <CardState
                         connection={connection}
+                        onYours={shown === "yours"}
                         leaving={leaving === connection.slug}
                         onConnect={() => connect(connection)}
                       />

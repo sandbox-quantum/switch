@@ -324,6 +324,10 @@ it("shows the workspace's catalog, everything on Discover and what the person ha
   await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
   await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeUndefined());
   expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
+  expect(page.querySelector('[aria-label="Atlassian connected"]')).toBeNull();
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Discover"]')!.click());
+  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeDefined());
   expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
 });
 
@@ -357,6 +361,127 @@ it('marks a service the server cannot use with its reason, without offering to c
     'GitHub is not set up on this server.'
   );
   expect(page.querySelector('button[aria-label="Connect GitHub"]')).toBeNull();
+});
+
+const pressed = (page: HTMLElement, name: string) =>
+  page.querySelector(`button[aria-label="${name}"]`)?.getAttribute('aria-pressed');
+
+async function search(page: HTMLElement, text: string): Promise<void> {
+  const input = page.querySelector<HTMLInputElement>('input[aria-label="Search connectors"]')!;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    set.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function openYours(): Promise<HTMLElement> {
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Yours')).toBe('true'));
+  return page;
+}
+
+it('ends Yours with how many more Discover has, which opens Discover', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  // Example and GitHub are not connected; Linear is coming soon and not counted.
+  const more = button(/^Browse 2 more connectors$/, grid(page)!);
+  expect(more).toBeDefined();
+  await act(async () => more!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
+  expect(button(/^Example/, grid(page)!)).toBeDefined();
+});
+
+it('shows no trailing card when nothing more can be connected', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(
+    CATALOG.map((item) =>
+      item.status === 'coming_soon' ? item : { ...item, status: 'connected' as const }
+    )
+  );
+  const page = await openYours();
+  expect(button(/more connector/, grid(page)!)).toBeUndefined();
+});
+
+it('says what Discover has when a search on Yours matches nothing connected', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'github');
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain(
+      'None of your connectors match “github”. 1 on Discover does.'
+    )
+  );
+  expect(page.textContent).not.toContain('No connector matches');
+  await act(async () => button(/^Show$/, page)!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
+  expect(page.querySelector<HTMLInputElement>('input[aria-label="Search connectors"]')!.value).toBe(
+    'github'
+  );
+  expect(button(/^GitHub/, grid(page)!)).toBeDefined();
+});
+
+it('counts the further matches on Discover when Yours has some too', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  // Every fixture says "Example access": Atlassian on Yours, Example and
+  // GitHub on Discover. Linear matches too, but is counted as coming soon.
+  await search(page, 'access');
+  await vi.waitFor(() =>
+    expect(button(/^2 more connectors match “access” on Discover$/, grid(page)!)).toBeDefined()
+  );
+  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
+});
+
+it('says no connector matches only when nothing anywhere does', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'zzz');
+  await vi.waitFor(() => expect(page.textContent).toContain('No connector matches “zzz”.'));
+  expect(button(/^Show$/, page)).toBeUndefined();
+});
+
+it('keeps the badge of a connection that needs attention on Yours', async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    ...CATALOG,
+    entry({ slug: 'datadog', name: 'Datadog', status: 'needs_reauthorization' }),
+  ]);
+  const page = await openYours();
+  await vi.waitFor(() => expect(button(/^Datadog/, grid(page)!)).toBeDefined());
+  expect(button(/^Datadog/, grid(page)!)!.textContent).toMatch(/reauthori|Reconnect|sign in/i);
+});
+
+it('says when a search on Yours finds only a coming soon service on Discover', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await openYours();
+
+  await search(page, 'linear');
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain(
+      'None of your connectors match “linear”. 1 coming soon on Discover.'
+    )
+  );
+  await act(async () => button(/^Show$/, page)!.click());
+  await vi.waitFor(() => expect(button(/^Linear/, comingSoonGrid(page)!)).toBeDefined());
+});
+
+it('offers a way to Discover from an empty Yours', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(
+    CATALOG.map((item) =>
+      item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item
+    )
+  );
+  const page = await openYours();
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('You have not connected anything yet.')
+  );
+  await act(async () => button(/^Browse 3 connectors$/, page)!.click());
+  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
 });
 
 const NOT_SET_UP = entry({

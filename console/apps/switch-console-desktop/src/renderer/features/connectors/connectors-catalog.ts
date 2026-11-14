@@ -37,6 +37,57 @@ export function connectorsInTab(
 }
 
 /**
+ * What Discover lists for `query` that Yours does not, and that the person
+ * could connect: the way to the rest of the catalog from Yours. Coming soon
+ * services are left out, search or no search, because Discover counts them in
+ * a section of their own; `comingSoonMatches` is that count for a search.
+ */
+export function beyondYours(
+  entries: ConnectionCatalogEntry[],
+  query: string
+): ConnectionCatalogEntry[] {
+  return connectorsInTab(entries, 'discover', query).filter(
+    (entry) => !isYours(entry) && entry.status !== 'coming_soon'
+  );
+}
+
+/** The coming soon services a search on Discover finds; none without a search. */
+export function comingSoonMatches(
+  entries: ConnectionCatalogEntry[],
+  query: string
+): ConnectionCatalogEntry[] {
+  if (!query.trim()) return [];
+  return connectorsInTab(entries, 'discover', query).filter(
+    (entry) => entry.status === 'coming_soon'
+  );
+}
+
+/** The trailing card on Yours, which opens Discover. */
+export function browseMoreText(count: number, query: string): string {
+  const noun = count === 1 ? 'connector' : 'connectors';
+  const needle = query.trim();
+  return needle
+    ? `${count} more ${noun} ${count === 1 ? 'matches' : 'match'} “${needle}” on Discover`
+    : `Browse ${count} more ${noun}`;
+}
+
+/**
+ * What Yours says when nothing of the person's matches a search but Discover
+ * has `count` that could be connected, or else `soon` coming soon, that do.
+ */
+export function yoursSearchEmptyText(query: string, count: number, soon: number): string {
+  const lead = `None of your connectors match “${query.trim()}”.`;
+  return count > 0
+    ? `${lead} ${count} on Discover ${count === 1 ? 'does' : 'do'}.`
+    : `${lead} ${soon} coming soon on Discover.`;
+}
+
+/** The button on an empty Yours, which opens Discover. */
+export function browseAllText(count: number): string {
+  return `Browse ${count} ${count === 1 ? 'connector' : 'connectors'}`;
+}
+
+/**
  * The card's own control, beside the part that opens the profile: the fix
  * its state offers the person looking (set the app up, turn it on for the
  * workspace), a way to connect where the profile would offer Connect, and a

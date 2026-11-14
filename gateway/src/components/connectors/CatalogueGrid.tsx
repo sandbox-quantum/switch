@@ -13,7 +13,8 @@ import type { CatalogueConnector } from "./ConnectorCard";
  * `comingSoon` lists the catalogue's entries nobody can connect yet. They
  * get a section of their own under the rest, so a long list of them never
  * pushes the ones people can use out of sight, and the same search covers
- * both.
+ * both. `trailing` is a last cell after the cards people can use, for a
+ * page to point at more of the catalogue.
  */
 export default function CatalogueGrid<T extends CatalogueConnector>({
   connectors,
@@ -22,6 +23,7 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
   onQueryChange,
   controls,
   emptyMessage,
+  trailing,
   renderCard,
 }: {
   connectors: T[];
@@ -30,20 +32,12 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
   onQueryChange: (query: string) => void;
   controls?: ReactNode;
   /** Shown when nothing is left to show, worded by the page. */
-  emptyMessage: string;
+  emptyMessage: ReactNode;
+  trailing?: ReactNode;
   renderCard: (connector: T) => ReactNode;
 }) {
   const [visible, visibleSoon] = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    const matches = (list: T[]) =>
-      needle
-        ? list.filter((connector) =>
-            [connector.name, connector.category, connector.description]
-              .join(" ")
-              .toLocaleLowerCase()
-              .includes(needle),
-          )
-        : list;
+    const matches = (list: T[]) => list.filter((connector) => matchesQuery(connector, query));
     return [matches(connectors), matches(comingSoon ?? [])];
   }, [connectors, comingSoon, query]);
   const total = connectors.length + (comingSoon?.length ?? 0);
@@ -83,7 +77,7 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
         )}
       </Box>
       {visible.length > 0 && visibleSoon.length > 0 && <SectionTitle id="catalogue-available" title="Available" count={visible.length} />}
-      {visible.length > 0 && <Grid connectors={visible} renderCard={renderCard} />}
+      {visible.length > 0 && <Grid connectors={visible} renderCard={renderCard} trailing={trailing} />}
       {visibleSoon.length > 0 && (
         <Box component="section" aria-labelledby="catalogue-coming-soon" sx={{ mt: 2 }}>
           <SectionTitle id="catalogue-coming-soon" title="Coming soon" count={visibleSoon.length} />
@@ -94,6 +88,15 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
         </Box>
       )}
     </>
+  );
+}
+
+/** Whether a search finds this connector: its name, category or description holds the text. */
+export function matchesQuery(connector: CatalogueConnector, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  return (
+    !needle ||
+    [connector.name, connector.category, connector.description].join(" ").toLocaleLowerCase().includes(needle)
   );
 }
 
@@ -113,15 +116,18 @@ function SectionTitle({ id, title, count }: { id: string; title: string; count: 
 function Grid<T extends CatalogueConnector>({
   connectors,
   renderCard,
+  trailing,
 }: {
   connectors: T[];
   renderCard: (connector: T) => ReactNode;
+  trailing?: ReactNode;
 }) {
   return (
     <Box sx={{ mt: 2.5, display: "grid", gap: 1.5, gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" } }}>
       {connectors.map((connector) => (
         <Fragment key={connector.slug}>{renderCard(connector)}</Fragment>
       ))}
+      {trailing}
     </Box>
   );
 }
