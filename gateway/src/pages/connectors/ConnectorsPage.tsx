@@ -33,21 +33,9 @@ import { useLeaveToSignIn } from "./signIn";
 
 type Tab = "yours" | "discover";
 
-/** The trailing card on Yours, which opens Discover. */
-function browseMoreText(count: number, query: string): string {
-  const noun = count === 1 ? "connector" : "connectors";
-  const needle = query.trim();
-  return needle
-    ? `${count} more ${noun} ${count === 1 ? "matches" : "match"} “${needle}” on Discover`
-    : `Browse ${count} more ${noun}`;
-}
-
-/** What Yours says when nothing of the person's matches a search but Discover has some that do. */
-function yoursSearchEmptyText(query: string, count: number, soon: number): string {
-  const lead = `None of your connectors match “${query.trim()}”.`;
-  return count > 0
-    ? `${lead} ${count} on Discover ${count === 1 ? "does" : "do"}.`
-    : `${lead} ${soon} coming soon on Discover.`;
+/** The way from Yours to Discover, keeping the search. */
+function toDiscoverText(query: string): string {
+  return query.trim() ? `Search Discover for “${query.trim()}”` : "Browse all connectors";
 }
 
 /** A badge whose reason shows on hover, and is read out with the card by a
@@ -175,13 +163,13 @@ export default function ConnectorsPage() {
 
   const connected = useMemo(() => (connections ?? []).filter(isConnected), [connections]);
   const shown = tab;
-  // From Yours, what Discover has for the search that could be connected, and
-  // the coming soon services it finds, counted apart as Discover counts them.
-  const [beyond, soon] = useMemo(() => {
-    if (shown !== "yours") return [0, 0];
-    const found = (connections ?? []).filter((c) => !isConnected(c) && matchesQuery(c, query));
-    return [found.filter((c) => c.enabled).length, query.trim() ? found.filter((c) => !c.enabled).length : 0];
-  }, [connections, shown, query]);
+  // From Yours, whether Discover lists anything for the search that Yours
+  // does not. No number: one would have to say whether it counts services
+  // that are off here, not set up or coming soon.
+  const more = useMemo(
+    () => shown === "yours" && (connections ?? []).some((c) => !isConnected(c) && matchesQuery(c, query)),
+    [connections, shown, query],
+  );
 
   const connect = (connection: ServiceConnection) => {
     setConnectError(null);
@@ -252,11 +240,11 @@ export default function ConnectorsPage() {
               emptyMessage={
                 shown !== "yours" ? (
                   `No connector matches “${query.trim()}”.`
-                ) : beyond > 0 || soon > 0 ? (
+                ) : more ? (
                   <>
-                    {query.trim() ? yoursSearchEmptyText(query, beyond, soon) : "You haven't connected anything yet."}{" "}
+                    {query.trim() ? `None of your connectors match “${query.trim()}”.` : "You haven't connected anything yet."}{" "}
                     <Button size="small" variant="outlined" onClick={() => setTab("discover")} sx={{ ml: 1 }}>
-                      {query.trim() ? "Show" : `Browse ${beyond} ${beyond === 1 ? "connector" : "connectors"}`}
+                      {toDiscoverText(query)}
                     </Button>
                   </>
                 ) : query.trim() ? (
@@ -266,8 +254,7 @@ export default function ConnectorsPage() {
                 )
               }
               trailing={
-                shown === "yours" &&
-                beyond > 0 && (
+                more && (
                   <ButtonBase
                     onClick={() => setTab("discover")}
                     sx={{
@@ -284,7 +271,7 @@ export default function ConnectorsPage() {
                     }}
                   >
                     <ExploreOutlined fontSize="small" sx={{ color: "text.secondary" }} />
-                    {browseMoreText(beyond, query)}
+                    {toDiscoverText(query)}
                   </ButtonBase>
                 )
               }

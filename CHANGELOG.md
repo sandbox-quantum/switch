@@ -405,10 +405,9 @@ version of their own to them without also giving them a release of their own.
 - **The dashboard's Connectors page lists coming soon services in their own
   section**, faded, under the ones people can use, with a count for each, and
   the catalog lists 20 more of them. Its All tab is now Discover, where the
-  page always opens, as in Switch Console. Yours ends with a card saying how
-  many more services Discover offers, and a search there that matches nothing
-  connected says how many match on Discover, with a Show button that keeps the
-  search.
+  page always opens, as in Switch Console. Yours ends with a card that opens
+  Discover, and a search there that matches nothing connected offers to search
+  Discover instead, keeping the search.
   Cards on Yours no longer carry the green connected tick. A connector's
   category must now be one of a fixed list.
 - **Removing a device takes its agents off it.** They stop, and run again
@@ -4169,11 +4168,10 @@ version of their own to them without also giving them a release of their own.
 
 #### Changed
 - **The Connectors page lists coming soon services in their own section**,
-  under the ones people can use, with a count for each. Yours ends with a card
-  saying how many more services Discover offers ("Browse 3 more connectors"),
-  and a search there that matches nothing connected says how many match on
-  Discover, with a Show button that keeps the search, instead of "No connector
-  matches". Coming soon services are counted apart. Cards on Yours no longer
+  under the ones people can use, with a count for each. Yours ends with a
+  "Browse all connectors" card that opens Discover, and a search there that
+  matches nothing connected offers to search Discover instead, keeping the
+  search, rather than saying "No connector matches". Cards on Yours no longer
   carry the green connected tick; Discover keeps it.
 - **Removing a device says what happens to its agents on any Switch:** they
   stop, and run again once you put them on another device. It used to say

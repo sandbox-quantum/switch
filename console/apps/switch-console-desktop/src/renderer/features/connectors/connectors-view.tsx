@@ -34,14 +34,11 @@ import { ConnectorProfile } from './connector-profile';
 import { ConnectorTile } from './connector-tile';
 import {
   type ConnectorsTab,
-  beyondYours,
-  browseAllText,
-  browseMoreText,
-  comingSoonMatches,
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
-  yoursSearchEmptyText,
+  moreOnDiscover,
+  toDiscoverText,
 } from './connectors-catalog';
 import {
   useConnectorCatalog,
@@ -248,8 +245,7 @@ function Connectors({
       ) : (
         <ConnectorGrid
           entries={connectorsInTab(catalog.data, tab, query)}
-          beyond={tab === 'yours' ? beyondYours(catalog.data, query).length : 0}
-          soon={tab === 'yours' ? comingSoonMatches(catalog.data, query).length : 0}
+          more={tab === 'yours' && moreOnDiscover(catalog.data, query)}
           tab={tab}
           query={query}
           onBrowse={() => setTab('discover')}
@@ -286,8 +282,7 @@ function CatalogError({ error, onRetry }: { error: unknown; onRetry: () => void 
 
 function ConnectorGrid({
   entries,
-  beyond,
-  soon,
+  more,
   tab,
   query,
   onBrowse,
@@ -299,10 +294,8 @@ function ConnectorGrid({
   onConnect,
 }: {
   entries: ConnectionCatalogEntry[];
-  /** On Yours, how many services Discover lists for the search that Yours does not and that could be connected. */
-  beyond: number;
-  /** On Yours, how many coming soon services the search finds on Discover. */
-  soon: number;
+  /** On Yours, whether Discover lists anything for the search that Yours does not. */
+  more: boolean;
   tab: ConnectorsTab;
   query: string;
   /** Switches to Discover, keeping the search. */
@@ -315,14 +308,14 @@ function ConnectorGrid({
   onTurnOn: (entry: ConnectionCatalogEntry) => void;
   onConnect: (entry: ConnectionCatalogEntry) => void;
 }) {
-  if (entries.length === 0 && (beyond > 0 || soon > 0))
+  if (entries.length === 0 && more)
     return (
       <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
         {query.trim()
-          ? yoursSearchEmptyText(query, beyond, soon)
+          ? `None of your connectors match “${query.trim()}”.`
           : 'You have not connected anything yet.'}
         <Button size="sm" variant="outline" onClick={onBrowse}>
-          {query.trim() ? 'Show' : browseAllText(beyond)}
+          {toDiscoverText(query)}
         </Button>
       </p>
     );
@@ -357,7 +350,7 @@ function ConnectorGrid({
     return (
       <div role="group" aria-label="Connectors" className={GRID}>
         {available.map(card)}
-        {beyond > 0 && (
+        {more && (
           // Inside the grid, where the eye already is: the tabs alone did not
           // tell people that Yours is not the whole catalog.
           <button
@@ -366,7 +359,7 @@ function ConnectorGrid({
             className="focus-visible:ring-ring flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border p-4 text-left text-sm font-medium text-foreground transition-colors hover:bg-background-tertiary-2 focus-visible:ring-2 focus-visible:outline-none"
           >
             <Compass className="size-5 shrink-0 text-foreground-muted" />
-            {browseMoreText(beyond, query)}
+            {toDiscoverText(query)}
           </button>
         )}
       </div>

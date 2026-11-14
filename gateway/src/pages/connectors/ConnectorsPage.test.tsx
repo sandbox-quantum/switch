@@ -141,23 +141,23 @@ describe("the Connectors catalogue", () => {
     expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Yours" }));
     expect(screen.getByText(/You haven't connected anything yet\./)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Browse 1 connector" }));
+    fireEvent.click(screen.getByRole("button", { name: "Browse all connectors" }));
     expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("ends Yours with how many more Discover has that could be connected, which opens Discover", async () => {
+  it("ends Yours with a way to the rest of the catalogue on Discover", async () => {
     signedIn();
     const connected: ServiceConnection = { ...atlassian, status: "active", can_revoke: true };
     answer({ "GET /service-connections": { connections: [asana, connected, datadog, google] } });
     renderPage();
 
     fireEvent.click(await screen.findByRole("button", { name: "Yours" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Browse 2 more connectors" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Browse all connectors" }));
     expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Google Workspace")).toBeTruthy();
   });
 
-  it("says what Discover has when a search on Yours matches nothing connected, and Show keeps the search", async () => {
+  it("points a search on Yours that matches nothing connected at Discover, keeping the search", async () => {
     signedIn();
     const connected: ServiceConnection = { ...atlassian, status: "active", can_revoke: true };
     answer({ "GET /service-connections": { connections: [asana, connected, datadog, google] } });
@@ -167,10 +167,10 @@ describe("the Connectors catalogue", () => {
     const search = screen.getByRole("searchbox", { name: "Search connectors" });
 
     fireEvent.change(search, { target: { value: "drive" } });
-    expect(screen.getByText(/None of your connectors match “drive”\. 1 on Discover does\./)).toBeTruthy();
+    expect(screen.getByText(/None of your connectors match “drive”\./)).toBeTruthy();
     fireEvent.change(search, { target: { value: "asana" } });
-    expect(screen.getByText(/None of your connectors match “asana”\. 1 coming soon on Discover\./)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show" }));
+    expect(screen.getByText(/None of your connectors match “asana”\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Search Discover for “asana”" }));
     expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     expect((search as HTMLInputElement).value).toBe("asana");
     expect(within(screen.getByRole("region", { name: "Coming soon" })).getByText("Asana")).toBeTruthy();
@@ -178,7 +178,7 @@ describe("the Connectors catalogue", () => {
     fireEvent.click(screen.getByRole("button", { name: "Yours" }));
     fireEvent.change(search, { target: { value: "zzz" } });
     expect(screen.getByText('No connector matches “zzz”.')).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Show" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Search Discover/ })).toBeNull();
   });
 
   it("connects through the sign-in that comes back here, from the card's plus", async () => {
