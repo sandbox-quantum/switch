@@ -107,7 +107,7 @@ describe("the Connectors catalogue", () => {
     expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     const shown = screen.getAllByText(/^(Google Workspace|Atlassian|Datadog|Asana)$/).map((node) => node.textContent);
     expect(shown).toEqual(["Atlassian", "Datadog", "Google Workspace", "Asana"]);
-    expect(screen.getByRole("heading", { name: "Connectors", level: 2 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Released" })).toBeTruthy();
     const soon = screen.getByRole("region", { name: "Coming soon" });
     expect(within(soon).getByText("Asana")).toBeTruthy();
     expect(within(soon).queryByText("Datadog")).toBeNull();
@@ -125,7 +125,7 @@ describe("the Connectors catalogue", () => {
 
     expect(await screen.findByText("Google Workspace")).toBeTruthy();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search connectors" }), { target: { value: "asana" } });
-    expect(screen.queryByRole("heading", { name: "Connectors", level: 2 })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Released" })).toBeNull();
     expect(within(screen.getByRole("region", { name: "Coming soon" })).getByText("Asana")).toBeTruthy();
     expect(screen.queryByText("Datadog")).toBeNull();
   });
@@ -289,6 +289,18 @@ describe("the Connectors catalogue", () => {
 
     expect(await screen.findByText("Off here")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect Google Workspace" })).toBeNull();
+  });
+
+  it("lists the ones that can't be used here last in their section", async () => {
+    signedIn();
+    const off = { ...google, workspace_enabled: false, decided_by: "workspace" as const };
+    const unavailable = { ...atlassian, connectable: false, unavailable_reason: "Not set up." };
+    answer({ "GET /service-connections": { connections: [off, unavailable, datadog, asana] } });
+    renderPage();
+
+    expect(await screen.findByText("Off here")).toBeTruthy();
+    const shown = screen.getAllByText(/^(Google Workspace|Atlassian|Datadog|Asana)$/).map((node) => node.textContent);
+    expect(shown).toEqual(["Datadog", "Google Workspace", "Atlassian", "Asana"]);
   });
 
   it("says a connector nobody can connect here is unavailable", async () => {

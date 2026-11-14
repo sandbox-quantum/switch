@@ -25,6 +25,7 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
+  type ConnectorCardKind,
   type ConnectorViewer,
   FIX_LABEL,
   TONE_BADGE,
@@ -344,7 +345,11 @@ function ConnectorGrid({
   );
   // Entries nobody can connect yet get a section of their own under the
   // rest, so a long list of them never pushes the usable ones out of sight.
-  const built = entries.filter((entry) => entry.status !== 'coming_soon');
+  // Ones that can't be used here as things stand (off in the workspace, not
+  // set up, unavailable) go last in their section, so the usable ones lead.
+  const built = entries
+    .filter((entry) => entry.status !== 'coming_soon')
+    .sort((a, b) => Number(blocked(a, viewer)) - Number(blocked(b, viewer)));
   const comingSoon = entries.filter((entry) => entry.status === 'coming_soon');
   if (comingSoon.length === 0)
     return (
@@ -368,7 +373,7 @@ function ConnectorGrid({
     <div className="flex flex-col gap-8">
       {built.length > 0 && (
         <section aria-labelledby="connectors-built" className="flex flex-col gap-3">
-          <SectionTitle id="connectors-built" title="Connectors" count={built.length} />
+          <SectionTitle id="connectors-built" title="Released" count={built.length} />
           <div role="group" aria-label="Connectors" className={GRID}>
             {built.map(card)}
           </div>
@@ -387,6 +392,16 @@ function ConnectorGrid({
       </section>
     </div>
   );
+}
+
+const BLOCKED: ReadonlySet<ConnectorCardKind> = new Set([
+  'needs_setup',
+  'unavailable',
+  'workspace_off',
+]);
+
+function blocked(entry: ConnectionCatalogEntry, viewer: ConnectorViewer): boolean {
+  return BLOCKED.has(connectorCardState(entry, viewer).kind);
 }
 
 const GRID = 'grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3';

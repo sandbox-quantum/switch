@@ -33,6 +33,14 @@ import { useLeaveToSignIn } from "./signIn";
 
 type Tab = "yours" | "discover";
 
+/** Ones that can't be used here as things stand (off in the workspace, not
+ * set up, unavailable) go last, so the usable ones lead; the order is kept
+ * otherwise. These are the cards that carry an Off here or Unavailable badge. */
+function usableFirst(connections: ServiceConnection[]): ServiceConnection[] {
+  const blocked = (c: ServiceConnection) => !c.workspace_enabled || !c.connectable;
+  return [...connections.filter((c) => !blocked(c)), ...connections.filter(blocked)];
+}
+
 /** The way from Yours to Discover, keeping the search. */
 function toDiscoverText(query: string): string {
   return query.trim() ? `Search Discover for “${query.trim()}”` : "Browse all connectors";
@@ -219,7 +227,7 @@ export default function ConnectorsPage() {
         ) : (
           <Box>
             <CatalogueGrid
-              connectors={shown === "yours" ? connected : connections.filter((c) => c.enabled)}
+              connectors={shown === "yours" ? connected : usableFirst(connections.filter((c) => c.enabled))}
               comingSoon={shown === "yours" ? [] : connections.filter((c) => !c.enabled)}
               query={query}
               onQueryChange={setQuery}

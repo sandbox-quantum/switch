@@ -331,6 +331,28 @@ it("shows the workspace's catalog, everything on Discover and what the person ha
   expect(page.querySelector('[aria-label="Atlassian connected"]')).not.toBeNull();
 });
 
+it("lists the ones that can't be used here last in their section", async () => {
+  workspaces.getServiceConnections.mockResolvedValue([
+    entry({ slug: 'atlassian', name: 'Atlassian', workspace_enabled: false }),
+    entry({
+      slug: 'github',
+      name: 'GitHub',
+      connectable: false,
+      unavailable_reason: 'Not set up.',
+    }),
+    entry({ slug: 'example', name: 'Example' }),
+    entry({ slug: 'linear', name: 'Linear', enabled: false, status: 'coming_soon' }),
+  ]);
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  const names = [...grid(page)!.querySelectorAll('button')]
+    .map((b) => b.textContent ?? '')
+    .filter((text) => /^(Atlassian|GitHub|Example)/.test(text))
+    .map((text) => text.match(/^(Atlassian|GitHub|Example)/)![1]);
+  expect(names).toEqual(['Example', 'Atlassian', 'GitHub']);
+  expect(page.querySelector('#connectors-built')?.textContent).toMatch(/^Released/);
+});
+
 it('stays on the tab the person picks', async () => {
   const unconnected = CATALOG.map((item) =>
     item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item

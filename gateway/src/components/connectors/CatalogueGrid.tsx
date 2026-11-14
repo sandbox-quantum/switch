@@ -76,7 +76,7 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
           <Box sx={SCREEN_READER_ONLY}>{`${shown} of ${total} connectors`}</Box>
         )}
       </Box>
-      {visible.length > 0 && visibleSoon.length > 0 && <SectionTitle id="catalogue-built" title="Connectors" count={visible.length} />}
+      {visible.length > 0 && visibleSoon.length > 0 && <SectionTitle id="catalogue-built" title="Released" count={visible.length} />}
       {visible.length > 0 && <Grid connectors={visible} renderCard={renderCard} trailing={trailing} />}
       {visibleSoon.length > 0 && (
         <Box component="section" aria-labelledby="catalogue-coming-soon" sx={{ mt: 2 }}>
