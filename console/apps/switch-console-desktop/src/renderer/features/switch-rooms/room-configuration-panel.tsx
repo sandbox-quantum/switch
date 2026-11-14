@@ -1,3 +1,4 @@
+import { type ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { useQueryClient } from '@tanstack/react-query';
 import { Archive, FileText, Loader2, Lock, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -20,7 +21,6 @@ import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
-import { type ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { RoomAutoRouteSection } from './room-auto-route-section';
 import { channelOnDeleteSummary } from './room-delete-wording';

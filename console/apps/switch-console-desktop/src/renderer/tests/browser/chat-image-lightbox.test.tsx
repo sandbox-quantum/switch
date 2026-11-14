@@ -8,12 +8,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
 
 const media = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: () => () => {} },
-  rpc: { chats: { media } },
-}));
-
-import { ChatAttachments } from '@renderer/features/chats/components/chat-attachments';
+import { ChatAttachments } from '@switch-console/chat-ui/components/chat-attachments';
+import { withChatHost } from '@switch-console/chat-ui/testing';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;
@@ -48,19 +44,22 @@ async function render(): Promise<HTMLElement> {
   root = createRoot(container);
   await act(async () =>
     root!.render(
-      <ChatAttachments
-        serverId="s"
-        roomId="r"
-        attachments={[
-          {
-            uri: 'mxc://example.org/shot',
-            filename: 'shot.png',
-            mimetype: 'image/png',
-            size: 70,
-            msgtype: 'm.image',
-          },
-        ]}
-      />
+      withChatHost(
+        <ChatAttachments
+          serverId="s"
+          roomId="r"
+          attachments={[
+            {
+              uri: 'mxc://example.org/shot',
+              filename: 'shot.png',
+              mimetype: 'image/png',
+              size: 70,
+              msgtype: 'm.image',
+            },
+          ]}
+        />,
+        { media: (_serverId, roomId, uri) => media({ roomId, uri }) }
+      )
     )
   );
   await expect.poll(() => container!.querySelector('img')).toBeTruthy();

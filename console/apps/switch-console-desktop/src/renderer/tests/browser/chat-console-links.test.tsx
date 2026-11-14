@@ -21,7 +21,8 @@ vi.mock('@renderer/features/deeplinks/console-link-handler', () => ({
 }));
 vi.mock('@renderer/lib/open-external-link', () => ({ confirmOpenExternalLink }));
 
-import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
+import { ChatMarkdown } from '@switch-console/chat-ui/ui/chat-markdown';
+import { ConsoleChatHost } from '@renderer/features/chats/console-chat-host';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;
@@ -39,7 +40,13 @@ async function render(markdown: string) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<ChatMarkdown>{markdown}</ChatMarkdown>));
+  await act(async () =>
+    root!.render(
+      <ConsoleChatHost>
+        <ChatMarkdown>{markdown}</ChatMarkdown>
+      </ConsoleChatHost>
+    )
+  );
   // Streamdown renders after a tick.
   await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
 }

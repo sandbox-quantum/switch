@@ -1,3 +1,11 @@
+import { ChatActivityBlock } from '@switch-console/chat-ui/components/chat-activity-block';
+import type { ChatActivityItem } from '@switch-console/chat-ui/contracts/activity';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import {
+  type ActivityApi,
+  AgentActivities,
+} from '@switch-console/chat-ui/stores/chat-activity-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 /**
  * A turn's tool calls: only the latest gets a full line, the ones before it
  * fold into one "N tool calls" line that names failures and opens in place.
@@ -6,12 +14,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ChatActivityBlock } from '@renderer/features/chats/components/chat-activity-block';
-import {
-  type ActivityApi,
-  AgentActivities,
-} from '@renderer/features/chats/stores/chat-activity-store';
-import type { ChatActivityItem } from '@shared/core/chats/activity';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -72,14 +74,16 @@ async function render(items: ChatActivityItem[]): Promise<HTMLDivElement> {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatActivityBlock
-          activity={activity}
-          turn={turn}
-          agent={{ name: 'helper', iconUrl: null }}
-          head
-          endReason={null}
-          serverId="server"
-        />
+        <ChatHostProvider host={stubChatHost()}>
+          <ChatActivityBlock
+            activity={activity}
+            turn={turn}
+            agent={{ name: 'helper', iconUrl: null }}
+            head
+            endReason={null}
+            serverId="server"
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

@@ -1,3 +1,6 @@
+import { ChatActivityStream } from '@switch-console/chat-ui/client/activity-stream';
+import { ChatStream, defaultBackoffMs } from '@switch-console/chat-ui/client/chat-stream';
+import type { ChatStreamState } from '@switch-console/chat-ui/contracts/chats';
 import { GatewayError, gatewayRequest } from '@main/core/switch-servers/gateway-client';
 import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
@@ -14,9 +17,6 @@ import {
   chatStreamStateChannel,
   chatSummaryChannel,
 } from '@shared/core/chats/chatEvents';
-import type { ChatStreamState } from '@shared/core/chats/chats';
-import { ChatActivityStream } from './activity-stream';
-import { ChatStream, defaultBackoffMs } from './chat-stream';
 import { listChats } from './gateway';
 
 /**
@@ -54,6 +54,7 @@ function makeStream(serverId: string, workspaceId: string): ChatStream {
     isUnauthorized: (error) => error instanceof GatewayError && error.kind === 'unauthorized',
     backoffMs: defaultBackoffMs,
     setTimer,
+    warn: (message, context) => log.warn(message, context),
     sink: {
       message: (message) => events.emit(chatMessageChannel, { serverId, message }),
       summary: (chat) => events.emit(chatSummaryChannel, { serverId, chat }),
@@ -82,6 +83,7 @@ function makeActivityStream(serverId: string, workspaceId: string): ChatActivity
     isUnauthorized: (error) => error instanceof GatewayError && error.kind === 'unauthorized',
     backoffMs: defaultBackoffMs,
     setTimer,
+    warn: (message, context) => log.warn(message, context),
     sink: {
       activity: (item) => events.emit(chatActivityChannel, { serverId, item }),
       approval: (approval) => events.emit(chatApprovalChannel, { serverId, approval }),

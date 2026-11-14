@@ -1,6 +1,9 @@
+import {
+  isThirdPartyAvatarUrl,
+  randomAgentAvatarUrl,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import { useCallback, useEffect, useState } from 'react';
 import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
-import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';

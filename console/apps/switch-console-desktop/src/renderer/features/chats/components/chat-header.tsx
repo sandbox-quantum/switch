@@ -1,3 +1,5 @@
+import { type ChatSummary, chatAgentLabel } from '@switch-console/chat-ui/contracts/chats';
+import type { AgentActivity } from '@switch-console/chat-ui/stores/chat-activity-store';
 import { MoreVertical, RotateCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
@@ -14,8 +16,6 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { log } from '@renderer/utils/logger';
-import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
-import type { AgentActivity } from '../stores/chat-activity-store';
 import { chatsStore } from '../stores/chats';
 import { ChatActionItems, chatActions } from './chat-actions';
 

@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest';
 import {
   AVATAR_CHOICE_COUNT,
   agentAvatarChoices,
@@ -10,7 +9,8 @@ import {
   isThirdPartyAvatarUrl,
   randomAgentAvatarUrl,
   resolveAgentAvatarSrc,
-} from './agent-avatar';
+} from '@switch-console/chat-ui/model/agent-avatar';
+import { describe, expect, it } from 'vitest';
 
 describe('randomAgentAvatarUrl', () => {
   it('draws a different face each time', () => {

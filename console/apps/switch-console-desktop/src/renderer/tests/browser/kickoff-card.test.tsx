@@ -1,23 +1,22 @@
+import { ChatTimelineView } from '@switch-console/chat-ui/components/chat-timeline';
+import type { ChatAgent, ChatMessage } from '@switch-console/chat-ui/contracts/chats';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import { ChatTimeline, type TimelineApi } from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 /**
  * A template's kickoff in a room's chat, in real CSS: a card naming who sent
  * it, with that agent's own picture, and the run history for the agents folded
  * away. Saves a screenshot under the app's gitignored `build/acceptance/`.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import '@renderer/index.css';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
-import '@renderer/index.css';
-import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
-import {
-  ChatTimeline,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
-import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
-
-vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: { userId: 'me' } }));
+// The chat draws Console's own avatars here, switch-buddy's bundled picture included.
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 
 const SHOTS = '../../../../build/acceptance/kickoff';
 
@@ -125,14 +124,16 @@ it('draws a kickoff as a card from the agent that sent it', async () => {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatTimelineView
-          serverId="srv-1"
-          timeline={timeline}
-          agents={[tracker]}
-          people={[]}
-          activities={[]}
-          onReply={() => {}}
-        />
+        <ChatHostProvider host={stubChatHost({ AgentAvatar })}>
+          <ChatTimelineView
+            serverId="srv-1"
+            timeline={timeline}
+            agents={[tracker]}
+            people={[]}
+            activities={[]}
+            onReply={() => {}}
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

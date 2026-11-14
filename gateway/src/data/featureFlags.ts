@@ -8,12 +8,16 @@ export const AGENT_MANAGEMENT = "agent_management";
 export const SERVICE_CONNECTIONS = "service_connections";
 export const ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps";
 export const GATEWAY_V2 = "gateway_v2";
+export const GATEWAY_CHATS = "gateway_chats";
+export const GROUP_CHATS = "group_chats";
 
 const KNOWN = [
   AGENT_MANAGEMENT,
   SERVICE_CONNECTIONS,
   ORGANIZATION_CONNECTOR_APPS,
   GATEWAY_V2,
+  GATEWAY_CHATS,
+  GROUP_CHATS,
 ] as const;
 
 export type FeatureFlagKey = (typeof KNOWN)[number];

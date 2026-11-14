@@ -1,7 +1,7 @@
+import type { ToolDetail } from '@switch-console/chat-ui/contracts/reasoning';
+import { presentTool, shortPath } from '@switch-console/chat-ui/model/tool-presentation';
 import type { Item } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
-import { presentTool, shortPath } from '@renderer/features/chats/tool-presentation';
-import type { ToolDetail } from '@shared/core/sessions/reasoning';
 
 function item(title: string, status: Item['status'] = 'completed'): Item {
   return {

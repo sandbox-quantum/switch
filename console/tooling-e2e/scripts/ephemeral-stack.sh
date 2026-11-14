@@ -125,10 +125,10 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
 elif [ "$LANE" = browser ]; then
   # Every flag a page of the role matrix (gateway/src/routes/roleMatrix.ts)
   # needs, so every page is there to open: agent management (and the key it
-  # requires), connectors, the organization's connector apps, and the new
-  # layout when it is the one under test. Not follow-ups, nor their short
+  # requires), connectors, the organization's connector apps, chats, and the
+  # new layout when it is the one under test. Not follow-ups, nor their short
   # window: only the fast lane's follow-ups scenario uses them.
-  FLAGS=agent_management,service_connections,organization_connector_apps
+  FLAGS=agent_management,service_connections,organization_connector_apps,gateway_chats
   [ "$GATEWAY_LAYOUT" = v2 ] && FLAGS="$FLAGS,gateway_v2"
   sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" \
              -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"

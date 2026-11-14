@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  CONSOLE_PAGES,
+  type ConsolePage,
+  consoleLink,
+  parseConsoleLink,
+} from '@switch-console/chat-ui/model/console-links';
 import { describe, expect, it } from 'vitest';
-import { CONSOLE_PAGES, type ConsolePage, consoleLink, parseConsoleLink } from './console-links';
 
 const ok = (raw: string) => {
   const result = parseConsoleLink(raw);

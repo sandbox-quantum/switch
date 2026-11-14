@@ -1,5 +1,9 @@
+import {
+  reasoningLabel,
+  reasoningListSchema,
+  type ReasoningTurn,
+} from '@switch-console/chat-ui/contracts/reasoning';
 import { expect, it } from 'vitest';
-import { reasoningLabel, reasoningListSchema, type ReasoningTurn } from './reasoning';
 
 const turn = (startedAt: string | null, completedAt: string | null): ReasoningTurn => ({
   turnId: 'turn',

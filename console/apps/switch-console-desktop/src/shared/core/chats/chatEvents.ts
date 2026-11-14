@@ -1,6 +1,11 @@
+import type { ChatActivityItem, ChatApproval } from '@switch-console/chat-ui/contracts/activity';
+import type {
+  ChatMessage,
+  ChatRemovalReason,
+  ChatStreamState,
+  ChatSummary,
+} from '@switch-console/chat-ui/contracts/chats';
 import { defineEvent } from '@shared/lib/ipc/events';
-import type { ChatActivityItem, ChatApproval } from './activity';
-import type { ChatMessage, ChatRemovalReason, ChatStreamState, ChatSummary } from './chats';
 
 /**
  * The chats live feed, pushed by the main process. Every event names the

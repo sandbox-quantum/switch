@@ -1,3 +1,15 @@
+import {
+  ChatActivityBlock,
+  RETRY_UNANSWERED_MS,
+  RETRY_UNSUPPORTED_TEXT,
+} from '@switch-console/chat-ui/components/chat-activity-block';
+import type { ChatActivityItem } from '@switch-console/chat-ui/contracts/activity';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import {
+  type ActivityApi,
+  AgentActivities,
+} from '@switch-console/chat-ui/stores/chat-activity-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 /**
  * Retry on a failed turn: offered when the agent's session says it can, in its
  * place a plain reason when it cannot, held while it is being posted, the
@@ -7,16 +19,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import {
-  ChatActivityBlock,
-  RETRY_UNANSWERED_MS,
-  RETRY_UNSUPPORTED_TEXT,
-} from '@renderer/features/chats/components/chat-activity-block';
-import {
-  type ActivityApi,
-  AgentActivities,
-} from '@renderer/features/chats/stores/chat-activity-store';
-import type { ChatActivityItem } from '@shared/core/chats/activity';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 let container: HTMLDivElement | null = null;
@@ -85,14 +87,16 @@ async function render(
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatActivityBlock
-          activity={activity}
-          turn={turn}
-          agent={{ name: 'helper', iconUrl: null }}
-          head
-          endReason="model not supported"
-          serverId="server"
-        />
+        <ChatHostProvider host={stubChatHost()}>
+          <ChatActivityBlock
+            activity={activity}
+            turn={turn}
+            agent={{ name: 'helper', iconUrl: null }}
+            head
+            endReason="model not supported"
+            serverId="server"
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

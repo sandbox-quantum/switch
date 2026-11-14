@@ -1,12 +1,17 @@
-import { isObservableArray } from 'mobx';
-import { describe, expect, it, vi } from 'vitest';
+import type { ChatMessage } from '@switch-console/chat-ui/contracts/chats';
+import { configureFailures } from '@switch-console/chat-ui/model/failures';
 import {
   ChatTimeline,
   type ChatFile,
   type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
-import type { ChatMessage } from '@shared/core/chats/chats';
+} from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { isObservableArray } from 'mobx';
+import { describe, expect, it, vi } from 'vitest';
+import { consoleFailures } from '@renderer/features/chats/chat-errors';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
+
+// Console's own failures, as its chats are wired with them.
+configureFailures(consoleFailures);
 
 function message(seq: number, extra: Partial<ChatMessage> = {}): ChatMessage {
   return {

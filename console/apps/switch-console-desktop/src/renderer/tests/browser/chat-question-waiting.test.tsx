@@ -1,3 +1,13 @@
+import { ChatComposer } from '@switch-console/chat-ui/components/chat-composer';
+import type { ChatApproval } from '@switch-console/chat-ui/contracts/activity';
+import type { ChatAgent } from '@switch-console/chat-ui/contracts/chats';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import {
+  type ActivityApi,
+  AgentActivities,
+} from '@switch-console/chat-ui/stores/chat-activity-store';
+import { ChatTimeline, type TimelineApi } from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 /**
  * A message typed while an agent waits on a question is not taken as the
  * answer: it waits its turn. The composer says so and points at the question,
@@ -6,31 +16,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, expect, it, vi } from 'vitest';
-
-vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: () => () => {} },
-  rpc: { chats: { commands: async () => [] } },
-}));
-vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast: vi.fn() }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
-  useFeatureFlags: () => ({ group_chats: true }),
-}));
-
-import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
-import {
-  type ActivityApi,
-  AgentActivities,
-} from '@renderer/features/chats/stores/chat-activity-store';
-import {
-  ChatTimeline,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
-import type { ChatApproval } from '@shared/core/chats/activity';
-import type { ChatAgent } from '@shared/core/chats/chats';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+
+// Drafts are kept in local storage, which other test files share: start with none.
+beforeEach(() => localStorage.clear());
 
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -101,17 +93,19 @@ async function render(state: string) {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatComposer
-          serverId="s"
-          timeline={new ChatTimeline('room-1', {} as TimelineApi)}
-          agents={[buddy]}
-          people={[]}
-          groupName={null}
-          activities={[activity]}
-          replyTo={null}
-          onClearReply={() => {}}
-          disabled={null}
-        />
+        <ChatHostProvider host={stubChatHost()}>
+          <ChatComposer
+            serverId="s"
+            timeline={new ChatTimeline('room-1', {} as TimelineApi)}
+            agents={[buddy]}
+            people={[]}
+            groupName={null}
+            activities={[activity]}
+            replyTo={null}
+            onClearReply={() => {}}
+            disabled={null}
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

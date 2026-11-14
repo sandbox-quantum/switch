@@ -73,7 +73,7 @@ vi.mock('@renderer/features/chats/stores/chats', () => ({
   chatTitler: { created: () => {} },
 }));
 vi.mock('@renderer/features/deeplinks/console-link-handler', () => ({ followConsoleLink }));
-vi.mock('@renderer/features/chats/components/chat-composer', () => ({
+vi.mock('@switch-console/chat-ui/components/chat-composer', () => ({
   focusComposerWhenOpened: () => {},
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({

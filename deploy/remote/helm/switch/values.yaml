@@ -519,7 +519,8 @@ switchCore:
   # switch_buddy, buddy_slack_handoff, decision_routing,
   # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
   # Matrix, Rocket.Chat, Webex), gateway_v2
-  # (development and staging only until the new dashboard layout is finished).
+  # (development and staging only until the new dashboard layout is finished),
+  # gateway_chats (chats in the dashboard).
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people

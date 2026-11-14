@@ -129,6 +129,8 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
+              # The chat UI the gateway compiles from Console's package.
+              - 'console/packages/chat-ui/**'
               # The dashboard pages Switch Console opens, which the gateway's
               # tests check it still routes.
               - 'console/apps/switch-console-desktop/src/shared/core/switch-servers/dashboard-pages.ts'
@@ -157,6 +159,7 @@ jobs:
             e2e_browser:
               - *shared
               - 'gateway/**'
+              - 'console/packages/chat-ui/**'
               - 'core/**'
               - 'console/tooling-e2e/**'
               - 'console/pnpm-lock.yaml'

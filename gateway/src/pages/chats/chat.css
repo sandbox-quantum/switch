@@ -1,0 +1,129 @@
+/* Switch's shared chat UI is styled with Tailwind, the rest of the dashboard
+ * with MUI. Only Tailwind's theme and utilities are loaded, not its reset, so
+ * MUI's pages are left as they are; the reset the chat relies on is applied
+ * below, inside the chat alone (`.switch-ui`, which its popups carry too).
+ * The chat's colour names are mapped onto the dashboard's own tokens, so it
+ * follows the dashboard's palette, light and dark. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "tw-animate-css";
+
+@source "../../../../console/packages/chat-ui/src";
+/* Streamdown's built-in renderers carry Tailwind classes from its dist. */
+@source "../../../node_modules/streamdown/dist/*.js";
+
+@custom-variant dark (&:is([data-mui-color-scheme="dark"] *));
+
+@theme inline {
+  --font-sans: inherit;
+  --text-tiny: 0.6875rem;
+  --text-tiny--line-height: 1rem;
+  --text-micro: 0.625rem;
+  --text-micro--line-height: 0.875rem;
+
+  --color-background: var(--sw-card);
+  --color-background-1: var(--sw-muted);
+  --color-background-2: var(--sw-secondary);
+  --color-background-3: var(--sw-accent);
+  --color-background-quaternary: var(--sw-muted);
+  --color-background-quaternary-1: var(--sw-secondary);
+  --color-background-tertiary-1: var(--sw-muted);
+  --color-foreground: var(--sw-foreground);
+  --color-foreground-muted: var(--sw-muted-foreground);
+  --color-foreground-passive: var(--sw-foreground-tertiary);
+  --color-foreground-tertiary: var(--sw-foreground-secondary);
+  --color-foreground-tertiary-muted: var(--sw-foreground-secondary);
+  --color-background-tertiary-2: var(--sw-secondary);
+  --color-background-tertiary-3: var(--sw-accent);
+  --color-muted: var(--sw-muted);
+  --color-muted-foreground: var(--sw-muted-foreground);
+  --color-primary: var(--sw-primary);
+  --color-primary-button-background: var(--sw-primary);
+  --color-primary-button-background-hover: var(--sw-primary);
+  --color-primary-button-foreground: var(--sw-primary-foreground);
+  --color-primary-button-border: var(--sw-primary-border);
+  --color-border: var(--sw-border);
+  --color-border-1: var(--sw-border-strong);
+  --color-border-primary: var(--sw-primary-border);
+  --color-input: var(--sw-input);
+  --color-ring: var(--sw-ring);
+  --color-destructive: var(--sw-destructive);
+  --color-background-destructive: var(--sw-destructive-muted);
+  --color-foreground-destructive: var(--sw-destructive-text);
+  --color-border-destructive: var(--sw-destructive-border);
+  --color-background-error: var(--sw-destructive-muted);
+  --color-foreground-error: var(--sw-destructive-text);
+  --color-background-success: var(--sw-success-muted);
+  --color-foreground-success: var(--sw-success-text);
+  --color-foreground-warning: var(--sw-warning);
+
+  --radius-sm: var(--sw-radius-sm);
+  --radius-md: var(--sw-radius-md);
+  --radius-lg: var(--sw-radius-lg);
+  --radius-xl: var(--sw-radius-xl);
+}
+
+/* The few raw variables the chat reads, beside its colour names. */
+.switch-ui {
+  --fill-2: var(--sw-secondary);
+  --sel: color-mix(in oklch, var(--sw-foreground) 9%, transparent);
+  --sel-soft: color-mix(in oklch, var(--sw-foreground) 5%, transparent);
+  --fg-icon: var(--sw-muted-foreground);
+  --fg-dim: var(--sw-muted-foreground);
+  --fg-name: var(--sw-foreground);
+  --fg-passive: var(--sw-foreground-tertiary);
+  --hair: var(--sw-border);
+  --hair-soft: color-mix(in oklch, var(--sw-foreground) 6%, transparent);
+  --menu-pill: var(--sw-card);
+  --menu-faint: var(--sw-muted);
+}
+
+/* Tailwind's reset, inside the chat only. */
+@layer base {
+  .switch-ui,
+  .switch-ui *,
+  .switch-ui ::before,
+  .switch-ui ::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+  }
+  .switch-ui {
+    color: var(--color-foreground);
+    font-size: var(--sw-text-sm);
+    line-height: 1.5;
+  }
+  .switch-ui :is(button, input, select, textarea) {
+    font: inherit;
+    color: inherit;
+    background-color: transparent;
+    border-radius: 0;
+  }
+  .switch-ui :is(button, [role="button"]) {
+    cursor: pointer;
+  }
+  .switch-ui :is(img, svg, video) {
+    display: block;
+    max-width: 100%;
+  }
+  .switch-ui :is(ol, ul, menu) {
+    list-style: none;
+  }
+  .switch-ui textarea {
+    resize: vertical;
+  }
+  .switch-ui :is(h1, h2, h3, h4, h5, h6) {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  .switch-ui a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+  .switch-ui code,
+  .switch-ui pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+}

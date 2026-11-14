@@ -18,14 +18,20 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: () => () => {} }, rpc: {} }));
-vi.mock('@renderer/features/chats/stores/chats', () => ({
-  chatsStore: { unread: (roomId: string) => (roomId === 'planning' ? 3 : 0) },
-  chatTitler: { created: vi.fn(), sent: vi.fn() },
-}));
+import { RoomRow } from '@switch-console/chat-ui/components/chat-row';
+import { RoomAppChips } from '@switch-console/chat-ui/components/room-app-chips';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import { appsOf, inApp } from '@switch-console/chat-ui/model/room-apps';
+import type { ChatsStore } from '@switch-console/chat-ui/stores/chats-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
+import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 
-import { RoomListRow } from '@renderer/features/sidebar/main-section';
-import { RoomAppChips } from '@renderer/features/sidebar/room-app-chips';
-import { appsOf, inApp } from '@renderer/features/switch-servers/room-apps';
+// The rows as Console draws them: its own messaging-app icons, and a room with three unread.
+const host = stubChatHost({
+  chats: { unread: (roomId: string) => (roomId === 'planning' ? 3 : 0) } as unknown as ChatsStore,
+  hasBridgeIcon,
+  BridgeIcon,
+});
 
 const SHOTS = '../../../../build/acceptance/rooms-sidebar';
 
@@ -39,18 +45,14 @@ const ROOMS = [
 function Rooms({ initial }: { initial: string | null }) {
   const [app, setApp] = useState<string | null>(initial);
   return (
-    <div className="flex w-[260px] flex-col gap-[2px] bg-background p-2 text-foreground">
-      <RoomAppChips apps={appsOf(ROOMS)} selected={app} onSelect={setApp} />
-      {inApp(ROOMS, app).map((room) => (
-        <RoomListRow
-          key={room.id}
-          roomId={room.id}
-          room={room}
-          isActive={false}
-          onOpen={() => {}}
-        />
-      ))}
-    </div>
+    <ChatHostProvider host={host}>
+      <div className="flex w-[260px] flex-col gap-[2px] bg-background p-2 text-foreground">
+        <RoomAppChips apps={appsOf(ROOMS)} selected={app} onSelect={setApp} />
+        {inApp(ROOMS, app).map((room) => (
+          <RoomRow key={room.id} roomId={room.id} room={room} isActive={false} onOpen={() => {}} />
+        ))}
+      </div>
+    </ChatHostProvider>
   );
 }
 
@@ -97,6 +99,10 @@ it('narrows the rooms to one messaging app, and back to all of them', async () =
 
 it('offers no chips when every room is on one app', async () => {
   const only = ROOMS.filter((room) => room.bridgeType === 'slack');
-  const el = await mount(<RoomAppChips apps={appsOf(only)} selected={null} onSelect={() => {}} />);
+  const el = await mount(
+    <ChatHostProvider host={host}>
+      <RoomAppChips apps={appsOf(only)} selected={null} onSelect={() => {}} />
+    </ChatHostProvider>
+  );
   expect(el.querySelector('button')).toBeNull();
 });

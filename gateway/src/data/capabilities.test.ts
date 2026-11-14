@@ -50,6 +50,8 @@ describe("featureFlagsFrom", () => {
       service_connections: false,
       organization_connector_apps: false,
       gateway_v2: false,
+      gateway_chats: false,
+      group_chats: false,
     });
   });
 });

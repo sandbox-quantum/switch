@@ -1,0 +1,61 @@
+{
+  "name": "@switch-console/chat-ui",
+  "private": true,
+  "description": "Switch's chat UI, shared by Switch Console and the web dashboard",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Switch Console Contributors"
+  },
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    "./contracts/*": "./src/contracts/*.ts",
+    "./client/*": "./src/client/*.ts",
+    "./model/*": "./src/model/*.ts",
+    "./stores/*": "./src/stores/*.ts",
+    "./primitives/*": "./src/primitives/*.tsx",
+    "./ui/*": "./src/ui/*.tsx",
+    "./components/*": "./src/components/*.tsx",
+    "./host": "./src/host.tsx",
+    "./testing": "./src/testing.tsx",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "lint": "sh -c 'root=$(cd ../.. && pwd); cd \"$root/apps/switch-console-desktop\" && pnpm exec oxlint --config .oxlintrc.json \"$root/packages/chat-ui/src\"'",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "typecheck": "tsgo --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.3.0",
+    "@tanstack/react-query": "^5.90.21",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.564.0",
+    "mobx": "^6.15.0",
+    "mobx-react-lite": "^4.1.1",
+    "react-syntax-highlighter": "^15.6.6",
+    "streamdown": "^2.7.0",
+    "tailwind-merge": "^2.6.0",
+    "unified": "^11.0.5",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@typescript/native-preview": "7.0.0-dev.20260609.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "vitest": "^5.0.1"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

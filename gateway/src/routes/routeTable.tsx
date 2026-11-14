@@ -8,6 +8,7 @@ import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined";
 import DnsOutlined from "@mui/icons-material/DnsOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
+import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import PeopleOutlined from "@mui/icons-material/PeopleOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
@@ -15,7 +16,7 @@ import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import VpnKeyOutlined from "@mui/icons-material/VpnKeyOutlined";
 import WorkspacesOutlined from "@mui/icons-material/WorkspacesOutlined";
-import type { ComponentType, ReactNode } from "react";
+import { type ComponentType, type ReactNode, Suspense, lazy } from "react";
 import {
   type Access,
   type Capabilities,
@@ -23,6 +24,7 @@ import {
   agentManagement,
   allOf,
   everyone,
+  gatewayChats,
   inOrganization,
   operators,
   organizationAdmins,
@@ -75,6 +77,14 @@ import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage"
 import WorkspacePage, { WorkspaceGeneralPage } from "../pages/workspace/WorkspacePage";
 import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
 import { PlannedPage } from "./StatusPages";
+
+// The chat UI is loaded only when the page is opened.
+const ChatsPage = lazy(() => import("../pages/chats/ChatsPage"));
+const chats = (
+  <Suspense fallback={null}>
+    <ChatsPage />
+  </Suspense>
+);
 
 /** Every page the signed-in dashboard has, in one table: its URL, who may
  * open it, and which layout it belongs to. The routes, their guards, the
@@ -205,6 +215,10 @@ export const ROUTES: readonly AppRoute[] = [
   redirect("/overview", CURRENT, "/"),
 
   page("/ecosystem", BOTH, everyone, <EcosystemGraphPage />),
+  page("/chats", BOTH, gatewayChats, chats),
+  page("/chats/agents/:agentId", BOTH, gatewayChats, chats),
+  page("/chats/rooms/:roomId", BOTH, gatewayChats, chats),
+  page("/chats/:roomId", BOTH, gatewayChats, chats),
   page("/rooms", BOTH, everyone, <RoomsPage />),
   page("/rooms/new", BOTH, everyone, <CreateRoomPage />),
   page("/rooms/groups", BOTH, everyone, <GroupsPage />),
@@ -430,6 +444,7 @@ function railItem(
  * open the page it leads to (`accessTo`). */
 export const RAIL: Record<Layout, readonly RailItem[]> = {
   current: [
+    railItem("Chats", "/chats", ForumOutlined),
     railItem("Ecosystem", "/ecosystem", AccountTreeOutlined),
     railItem("Rooms", "/rooms", MeetingRoomOutlined),
     railItem("Resources", "/resources", FolderOutlined),
@@ -449,6 +464,7 @@ export const RAIL: Record<Layout, readonly RailItem[]> = {
     railItem("Overview", "/overview", DashboardOutlined, {
       activeFor: ["/overview", "/ecosystem"],
     }),
+    railItem("Chats", "/chats", ForumOutlined),
     railItem("Agents", "/agents", SmartToyOutlined),
     railItem("Rooms", "/rooms", MeetingRoomOutlined),
     railItem("Templates", "/templates", DescriptionOutlined),

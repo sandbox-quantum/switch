@@ -1,5 +1,5 @@
-import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
-import type { ChatSummary } from '@shared/core/chats/chats';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { chatFailure } from '@renderer/features/chats/chat-errors';
 import type { FeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { RpcError } from '@shared/lib/ipc/rpc-error';

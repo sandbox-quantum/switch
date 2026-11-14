@@ -1,6 +1,6 @@
+import { byLatestDirectChat } from '@switch-console/chat-ui/model/agent-conversations';
 import { Cloud, CloudOff, Server, ServerOff } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { byLatestDirectChat } from '@renderer/features/chats/agent-conversations';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';

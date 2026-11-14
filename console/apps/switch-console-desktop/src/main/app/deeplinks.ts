@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
+import { CONSOLE_LINK_PREFIX } from '@switch-console/chat-ui/model/console-links';
 import { app } from 'electron';
 import { consoleDeeplinkChannel } from '@shared/core/deeplinks/console-link-events';
-import { CONSOLE_LINK_PREFIX } from '@shared/core/deeplinks/console-links';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { events } from '../lib/events';
 import { log } from '../lib/logger';

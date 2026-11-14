@@ -1,8 +1,8 @@
+import { ChatPanel } from '@switch-console/chat-ui/components/chat-panel';
 import { DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useLayoutEffect, useRef } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import {
   ConsoleChatRedirect,
   opensAsConsoleChat,
