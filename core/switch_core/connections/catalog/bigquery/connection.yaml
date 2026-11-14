@@ -1,0 +1,84 @@
+slug: bigquery
+name: BigQuery
+category: Analytics
+description: Explore BigQuery datasets and run SQL on them, including SQL that changes data, as you.
+enabled: true
+publisher: Google
+links:
+  documentation: https://docs.cloud.google.com/bigquery/docs/use-bigquery-mcp
+  support: https://cloud.google.com/support
+  privacy: https://cloud.google.com/terms/cloud-privacy-notice
+adapter: oauth
+auth:
+  type: oauth
+  # Google's refresh tokens survive their use: a refresh returns none, and the
+  # same one refreshes again (measured).
+  refresh: reusable
+  oauth:
+    # Google offers no dynamic registration. Each server's operator registers
+    # a Google app (a Web client) and saves it under Connector apps, or names
+    # its settings in BIGQUERY_CLIENT_CONFIG_PATH. Its own setting, not Google
+    # Workspace's, so the two consent screens stay apart; one Web client can
+    # serve both. The project needs the BigQuery API, on by default.
+    registration: static
+    client_settings: BIGQUERY
+    # Sign-ins come back to Switch Console, so a server without a public
+    # address can connect BigQuery too. A Web client takes loopback redirect
+    # URIs and matches the port, so the ports are fixed: Atlassian's.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Google refuses a made-up code before it compares the redirect URI, so a
+    # client missing Switch's passes the check and fails the first sign-in.
+    unchecked: >-
+      Switch can't check the redirect URIs, or that the app lets everyone who
+      connects sign in. Connect once to confirm.
+    authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+    token_url: https://oauth2.googleapis.com/token
+    revocation_url: https://oauth2.googleapis.com/revoke
+    # Google revokes the account's whole grant to the client, not one token:
+    # revoking the sign-in a reconnect to the same account replaced would end
+    # the new one. Measured here too: after one sign-in was revoked, another to
+    # the same account was refused (invalid_grant).
+    revocation_ends_grant: true
+    # Google hands out a refresh token only for offline access, and again on a
+    # later sign-in only when consent is asked for. The account chooser comes
+    # first, so a browser signed in to another Google account does not pick it
+    # unasked.
+    prompt: consent select_account
+    authorization_params: { access_type: offline }
+  identity:
+    url: https://openidconnect.googleapis.com/v1/userinfo
+    account_id: sub
+    label: email
+# Google's access tokens lived 3599 s when measured, so one handed out never has
+# more than an hour left. A longer one is held back (retryable) until it has run
+# down to an hour. While the app is in Testing, Google ends a refresh token after
+# 7 days (refresh_token_expires_in: 604799, measured); publishing it lifts that.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # tools/list needs no sign-in; every call needs the bigquery scope, and the
+    # person's own IAM roles on the project (roles/mcp.toolUser,
+    # roles/bigquery.jobUser, roles/bigquery.dataViewer at least).
+    - { name: bigquery, url: "https://bigquery.googleapis.com/mcp" }
+access:
+  # One level, read and write. BigQuery's MCP server takes one scope, bigquery,
+  # so its scopes cannot make a connection read-only, and its execute_sql tool
+  # runs any SQL, DDL and DML included (measured: it created a dataset and a
+  # table). The loader needs a read level, so it lists the same scopes: Switch
+  # asks for them, every connection is granted the write level, and Console
+  # labels it "Read and write". The person's IAM roles narrow it on Google's
+  # side: with roles/bigquery.dataViewer and jobUser alone, writes are refused.
+  # Google lets the person untick the bigquery scope on its consent screen; a
+  # sign-in without it is refused, as granting less than a level needs.
+  read:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/bigquery
+  write:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/bigquery
+tools: { mode: pass_through }

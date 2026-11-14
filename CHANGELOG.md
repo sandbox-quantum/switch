@@ -269,6 +269,14 @@ version of their own to them without also giving them a release of their own.
 - **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
   per crashed collaboration bridge, tagged with its platform and display name,
   and 0 once it runs again, so the bridge alert can name it.
+- **The BigQuery connection.** A person connects BigQuery from Switch Console,
+  and a granted agent lists datasets and tables and runs SQL on them, as that
+  person, through BigQuery's MCP server. BigQuery has one scope, so a connection
+  reads and writes, and says so; the skill keeps agents to read-only SQL unless
+  asked. Each server's operator registers a Google Web client and saves it under
+  Connector apps, or names it in `BIGQUERY_CLIENT_CONFIG_PATH` (Helm:
+  `switchCore.bigqueryClientSecret`); see `docs/old/bigquery-setup.md`. Sign-ins
+  come back to Switch Console, so a server needs no public address.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption

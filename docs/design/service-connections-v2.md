@@ -1153,6 +1153,38 @@ Built from sign-ins against sentry.io with a test organization:
 To connect: Settings, Connections in Switch Console, then Sentry. Nothing
 needs configuring on the server. To roll back, add `sentry` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+## BigQuery
+
+Built from sign-ins against a Google Cloud project in the BigQuery sandbox, with
+a Web client of its own:
+
+- Google offers no dynamic registration, so each server's operator registers a
+  Google app with a Web client (`registration: static`,
+  `BIGQUERY_CLIENT_CONFIG_PATH`, Helm `switchCore.bigqueryClientSecret`); see
+  [`bigquery-setup.md`](../old/bigquery-setup.md). It is its own setting, so
+  the BigQuery and Google Workspace consent screens stay apart; one Web client
+  can serve both.
+- A Web client takes loopback redirect URIs, so sign-ins come back to Switch
+  Console (`redirect: [loopback]`), on the five fixed ports Atlassian uses, and a
+  server needs no public address.
+- Sign-in, refresh and revocation are Google's, as for Google Workspace: offline
+  access with `prompt: consent select_account`, reusable refresh tokens, access
+  tokens of 3599 s, and `revocation_ends_grant`, since Google ends the account's
+  whole grant to the client. While the app is in Testing, a refresh token lasts
+  7 days.
+- One level, read and write. The MCP server takes one scope, `bigquery`, and its
+  `execute_sql` runs any SQL, DDL and DML included; `execute_sql_readonly` runs
+  SELECT only. Scopes cannot make a connection read-only, so both levels name
+  the same scopes and Console labels every connection "Read and write"; the
+  person's IAM roles narrow it on Google's side. Google lets the person untick
+  `bigquery` on its consent screen; that sign-in is refused, as granting less
+  than a level needs.
+- Every query is billed to the project as the person, at least 10 MB each. The
+  skill steers agents to `execute_sql_readonly`, schemas and `LIMIT`.
+
+To connect: Settings, Connections in Switch Console, then BigQuery. To roll back,
+add `bigquery` to `DISABLED_SERVICES`, set the entry's `enabled: false`, or
+remove its client.
 
 ## Not yet
 
