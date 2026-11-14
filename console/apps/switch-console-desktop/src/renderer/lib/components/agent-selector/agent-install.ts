@@ -75,11 +75,22 @@ export function getAgentUpdateErrorMessage(error: AgentUpdateError): string {
   }
 }
 
-function commandFailureText(
+/**
+ * The cause of a failed upgrade, short enough for a toast. A package manager's
+ * output runs to dozens of lines of stack and warnings; its error code, or else
+ * its last line, says what went wrong.
+ */
+export function commandFailureText(
   error: Extract<AgentUpdateError, { type: 'line-migration-failed' }>['cause']
 ): string {
-  if (error.type === 'command-failed' && error.output) return `${error.message} ${error.output}`;
-  return error.message;
+  if (error.type !== 'command-failed' || !error.output) return error.message;
+  const lines = error.output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const code = lines.find((line) => /^npm error code \S+$/.test(line));
+  const detail = code ?? lines.at(-1) ?? '';
+  return detail.length > 160 ? `${detail.slice(0, 159)}…` : detail;
 }
 
 export function getAgentUpdateActionState({

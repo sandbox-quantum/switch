@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getAgentInstallActionState,
   getAgentInstallErrorMessage,
+  commandFailureText,
   getAgentUpdateErrorMessage,
 } from './agent-install';
 import {
@@ -186,6 +187,21 @@ describe('getAgentUpdateErrorMessage across a release line', () => {
     });
     expect(message).toContain('1.19.5 was put back');
     expect(message).toContain('EACCES');
+  });
+  it("names npm's error code rather than repeating its whole output", () => {
+    const output = [
+      '(node:1) Warning: EnvHttpProxyAgent is experimental',
+      'npm error code ECONNREFUSED',
+      'npm error syscall connect',
+      'npm error FetchError: request to http://127.0.0.1:9/@opencode%2fcli failed',
+      'npm error A complete log of this run can be found in: /tmp/x.log',
+    ].join('\n');
+    expect(commandFailureText({ type: 'command-failed', message: 'failed', output })).toBe(
+      'npm error code ECONNREFUSED'
+    );
+    expect(
+      commandFailureText({ type: 'command-failed', message: 'failed', output: 'x\nlast line' })
+    ).toBe('last line');
   });
   it('says nothing is installed and gives both commands when the restore failed too', () => {
     const message = getAgentUpdateErrorMessage({
