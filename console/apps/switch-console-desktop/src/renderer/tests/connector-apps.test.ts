@@ -586,3 +586,42 @@ describe("an app's details", () => {
     ]);
   });
 });
+
+const BOX = app({
+  ...AIRTABLE,
+  slug: 'box',
+  name: 'Box',
+  configuration_variables: ['BOX_CLIENT_CONFIG_PATH'],
+  redirect_uri: LOOPBACK_REDIRECTS[0]!,
+  redirect_uris: LOOPBACK_REDIRECTS,
+  needs_public_url: false,
+  scopes: ['root_readonly', 'root_readwrite'],
+});
+
+describe('Box', () => {
+  it('walks the Box Admin Console, with every loopback redirect', () => {
+    const steps = setupInstructions(BOX, 'internal', null);
+    expect(steps[0]!.link).toEqual({
+      label: 'Open the Admin Console',
+      href: 'https://app.box.com/master',
+    });
+    expect(steps[0]!.text).toMatch(/search for Box MCP and enable it/);
+    expect(steps.flatMap((s) => s.copy)).toEqual(LOOPBACK_REDIRECTS);
+    expect(steps.map((s) => s.text).join(' ')).toMatch(
+      /tick root_readwrite\. Leave the AI and Doc Gen/
+    );
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+    expect(steps.at(-1)!.text).toMatch(/Client ID and the Client Secret/);
+  });
+
+  it('needs no public URL: sign-ins come back to Switch Console', () => {
+    expect(changeBlocked(BOX, null)).toBe(false);
+    expect(confirmBeforeCheck(BOX)).toBeNull();
+  });
+
+  it("names Box's Helm value when moving off configuration", () => {
+    expect(moveChecklist(app({ ...BOX, source: 'configuration' }))[1]!.text).toBe(
+      "Remove BOX_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.boxClientSecret."
+    );
+  });
+});

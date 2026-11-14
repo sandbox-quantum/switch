@@ -269,6 +269,14 @@ version of their own to them without also giving them a release of their own.
 - **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
   per crashed collaboration bridge, tagged with its platform and display name,
   and 0 once it runs again, so the bridge alert can name it.
+- **The Box connection.** A person connects Box from Switch Console, and a
+  granted agent searches, reads and adds to the files and folders they can
+  reach, as that person, through Box's MCP server. A Box admin enables the
+  server and adds Integration Credentials; each server's operator saves them
+  under Connector apps, or names them in `BOX_CLIENT_CONFIG_PATH` (Helm:
+  `switchCore.boxClientSecret`); see `docs/old/box-setup.md`. Sign-ins come back
+  to Switch Console, so a server needs no public address. Disconnecting revokes
+  the sign-in at Box.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
