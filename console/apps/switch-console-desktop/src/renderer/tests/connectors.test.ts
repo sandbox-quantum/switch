@@ -513,6 +513,26 @@ describe('the profile', () => {
     expect(signInLabel(entry())).toBe('Sign in at Example');
     expect(signInLabel(entry({ auth_type: 'api_key' }))).toBe('Key');
     expect(signInLabel(entry({ slug: 'github', pass_through: false }))).toBe('GitHub App');
+    const pat: ServicePasteMethod = {
+      method: 'token',
+      label: 'Personal access token',
+      fields: [{ name: 'pat', label: 'Token', secret: true, help: null, choices: null }],
+      help_url: null,
+      create_url: null,
+      expires: 'vendor',
+      access_note: 'Reaches what your token allows.',
+    };
+    const github = entry({ slug: 'github', name: 'GitHub', pass_through: false, paste: [pat] });
+    expect(signInLabel(github)).toBe('Switch GitHub App, or a personal access token');
+    expect(signInLabel({ ...github, status: 'connected' })).toBe('GitHub App');
+    expect(
+      signInLabel({
+        ...github,
+        status: 'connected',
+        method: 'token',
+        access_note: 'Reaches what your token allows.',
+      })
+    ).toBe('Personal access token');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 3600 }))).toBe('1 hour');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 28_800 }))).toBe('8 hours');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 900 }))).toBe('15 minutes');
@@ -1071,7 +1091,9 @@ describe('the paste step', () => {
       title: 'Sign in with Datadog',
       lasts: 'Expires: 1 hour, refreshed by Switch',
       bestFor: 'Best for most people',
+      recommended: true,
     });
+    expect(ways.slice(1).map((way) => way.recommended)).toEqual([false, false]);
     expect(ways[2]).toMatchObject({
       title: keys.label,
       line: keys.access_note,
@@ -1215,12 +1237,18 @@ describe('the disconnect dialog', () => {
     expect(disconnectCopy(entry({ auth_type: 'oauth' }), ['M1']).lines).not.toContain(note);
   });
 
-  it('describes a pasted credential as pasted rather than a sign-in', () => {
+  it('says a pasted credential is forgotten, not revoked, and keeps working until deleted', () => {
+    const until = {
+      token: 'it expires or you delete it there',
+      keys: 'you delete it there',
+    } as const;
     for (const auth_type of ['oauth', 'api_key'] as const) {
       for (const method of ['token', 'keys'] as const) {
         const lines = disconnectCopy(entry({ auth_type, method }), ['M1']).lines;
-        expect(lines).toContain('Switch removes what you pasted for Example.');
-        expect(lines).not.toContain('Switch removes the sign-in it keeps for Example.');
+        expect(lines).toEqual([
+          'M1 loses Example.',
+          `Switch forgets what you pasted for Example but can't revoke it, so it keeps working in Example until ${until[method]}.`,
+        ]);
       }
     }
   });
@@ -1228,7 +1256,8 @@ describe('the disconnect dialog', () => {
   it('keeps the vendor-revocation warning for pasted API-key credentials', () => {
     for (const method of ['token', 'keys']) {
       const lines = disconnectCopy(entry({ auth_type: 'api_key', method }), ['M1']).lines;
-      expect(lines).toContain("Switch can't revoke this key at Example; delete it there.");
+      expect(lines.join(' ')).toContain("can't revoke it");
+      expect(lines).not.toContain("Switch can't revoke this key at Example; delete it there.");
     }
   });
 

@@ -175,9 +175,14 @@ export function keyAccessText(entry: ConnectionCatalogEntry): string | null {
 
 /** How the service is connected, for the profile's side column. */
 export function signInLabel(entry: ConnectionCatalogEntry): string {
-  if (githubThroughApp(entry)) return 'GitHub App';
   const pasted = pastedConnection(entry);
   if (pasted !== null) return pasted.way;
+  if (githubThroughApp(entry)) {
+    const token = entry.paste.find((way) => way.method === 'token');
+    return token && !isYours(entry)
+      ? `Switch GitHub App, or a ${token.label.toLowerCase()}`
+      : 'GitHub App';
+  }
   return entry.auth_type === 'api_key' ? 'Key' : `Sign in at ${entry.name}`;
 }
 

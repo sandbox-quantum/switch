@@ -278,6 +278,8 @@ def test_github_takes_a_personal_access_token_its_vendor_ends():
     )
     assert "contents=write" in method.create_url
     assert "pull_requests=write" in method.create_url
+    # Where a token made there is deleted, since Switch cannot revoke it.
+    assert method.manage_url == "https://github.com/settings/personal-access-tokens"
     assert definition.methods() == ["oauth", "token"]
 
 

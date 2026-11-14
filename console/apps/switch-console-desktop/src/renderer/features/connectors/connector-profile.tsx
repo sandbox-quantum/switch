@@ -35,7 +35,7 @@ import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
 const ACTION_LABEL = {
-  connect: 'Connect to Switch',
+  connect: 'Connect',
   reconnect: 'Reconnect',
   paste_again: 'Paste a new one',
   replace: 'Replace key',
@@ -156,7 +156,7 @@ export function ConnectorProfile({
                 disabled={!connection.connectable}
                 onClick={() => connect(connection, action, afterConnected)}
               >
-                {ACTION_LABEL[action]}
+                {action === 'connect' ? `Connect ${connection.name}` : ACTION_LABEL[action]}
               </Button>
             )}
             {hasConnection && (

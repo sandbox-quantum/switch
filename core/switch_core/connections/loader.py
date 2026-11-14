@@ -454,7 +454,9 @@ class PasteMethod(BaseModel):
     vendor shows people (a token's public portion): it names the connection
     where the vendor will not say whose the credential is. `help_url` is where
     the person reads how to make one; `create_url`, where the vendor offers
-    it, opens the vendor's form for a new one already filled in for Switch.
+    it, opens the vendor's form for a new one already filled in for Switch;
+    `manage_url` is the vendor's page listing the ones a person has made,
+    where one is deleted.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -467,6 +469,7 @@ class PasteMethod(BaseModel):
     expires: PasteExpiry
     alias: str | None = Field(default=None, min_length=3, max_length=200)
     create_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    manage_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
 
     @model_validator(mode="after")

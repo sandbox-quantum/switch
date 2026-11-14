@@ -18,6 +18,7 @@ import {
 import { ConnectWayList } from '@renderer/features/connectors/connect-way-list';
 import { reconnectNote } from '@renderer/features/connectors/connectors-catalog';
 import { CreateCredential } from '@renderer/features/connectors/create-credential';
+import { LinkedText } from '@renderer/features/connectors/linked-text';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { Button } from '@renderer/lib/ui/button';
@@ -295,7 +296,7 @@ export function ServiceConnectStep({
         )}
         {warning && (
           <p role="status" className="rounded-md border p-3 text-sm text-foreground-muted">
-            {warning}
+            <LinkedText text={warning} />
           </p>
         )}
         {error && (

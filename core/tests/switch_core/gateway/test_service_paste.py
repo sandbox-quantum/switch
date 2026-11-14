@@ -163,6 +163,7 @@ class TestList:
                 ],
                 "help_url": "https://docs.example.test/tokens",
                 "create_url": None,
+                "manage_url": None,
                 "expires": "vendor",
                 "access_note": "Reaches what your token allows.",
             }

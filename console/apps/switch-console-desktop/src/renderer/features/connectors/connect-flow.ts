@@ -185,6 +185,8 @@ export type ConnectWay = {
   lasts: string | null;
   /** Who it suits, for a service this Console knows; null for any other. */
   bestFor: string | null;
+  /** The way most people should pick: signing in, where it is offered beside a paste. */
+  recommended: boolean;
 };
 
 const BEST_FOR: Record<string, Partial<Record<ConnectWayName, string>>> = {
@@ -217,6 +219,7 @@ export function connectWays(
       line: `You sign in at ${name} and allow what Switch asks for. Agents act as you there, and Switch can revoke it.`,
       lasts: safetyLine(connection, 'sign_in'),
       bestFor: best.sign_in ?? null,
+      recommended: connection.paste.length > 0,
     },
     ...connection.paste.map((method) => ({
       way: method.method,
@@ -224,6 +227,7 @@ export function connectWays(
       line: method.access_note,
       lasts: safetyLine(connection, method),
       bestFor: best[method.method] ?? null,
+      recommended: false,
     })),
   ];
 }

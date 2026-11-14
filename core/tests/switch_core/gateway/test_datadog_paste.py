@@ -81,6 +81,7 @@ class TestList:
                     "personal-access-tokens/"
                 ),
                 "create_url": None,
+                "manage_url": None,
                 "expires": "vendor",
                 "access_note": "Reaches what your token allows.",
             }

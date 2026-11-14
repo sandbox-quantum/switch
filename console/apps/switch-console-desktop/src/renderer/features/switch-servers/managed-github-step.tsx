@@ -6,9 +6,11 @@ import {
   SIGN_IN_HINT_AFTER_MS,
 } from '@renderer/features/connectors/connect-flow';
 import { ConnectWayList } from '@renderer/features/connectors/connect-way-list';
+import { LinkedText } from '@renderer/features/connectors/linked-text';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DialogContentArea,
@@ -19,6 +21,9 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { GitHubConnection } from '@shared/core/switch-servers/github-connection';
+
+/** Where a person's fine-grained tokens are listed, and one is deleted. */
+const GITHUB_TOKENS_PAGE = 'https://github.com/settings/personal-access-tokens';
 
 const SSO_HIDDEN =
   'An organization’s single sign-on hides its installation of the app from this GitHub connection. Disconnect and connect GitHub again, and authorize the organization when GitHub asks.';
@@ -36,6 +41,7 @@ const GITHUB_WAYS: ConnectWay[] = [
     line: 'Agents act as the Switch app, on the repositories you pick for each. Access lasts an hour at a time, and Switch can revoke it.',
     lasts: null,
     bestFor: 'Best for most people, and for teams',
+    recommended: true,
   },
   {
     way: 'token',
@@ -43,6 +49,7 @@ const GITHUB_WAYS: ConnectWay[] = [
     line: 'Agents act as you, wherever the token reaches. It ends on the date you set, and only GitHub can revoke it.',
     lasts: null,
     bestFor: 'Best when the App isn’t installed in your organization',
+    recommended: false,
   },
 ];
 
@@ -225,8 +232,15 @@ export function ManagedGitHubStep({
               GitHub ends the token on the date you set; paste a new one then.
             </p>
             <p className="text-xs text-foreground-muted">
-              Disconnecting removes the token from Switch. Only GitHub can revoke it: delete it in
-              GitHub to stop it working.
+              Disconnecting removes the token from Switch. Only GitHub can revoke it:{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2 hover:text-foreground"
+                onClick={() => void openExternalUrl(GITHUB_TOKENS_PAGE, 'Could not open GitHub')}
+              >
+                delete it in GitHub
+              </button>{' '}
+              to stop it working.
             </p>
           </>
         ) : connected ? (
@@ -355,7 +369,7 @@ export function ManagedGitHubStep({
         </p>
         {warning && (
           <p role="status" className="rounded-md border p-3 text-sm text-foreground-muted">
-            {warning}
+            <LinkedText text={warning} />
           </p>
         )}
         {error && (

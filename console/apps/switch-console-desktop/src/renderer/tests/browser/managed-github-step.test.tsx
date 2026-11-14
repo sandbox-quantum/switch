@@ -260,7 +260,9 @@ it('where the server takes a token, sets the App and a token out as a choice, th
   await vi.waitFor(() => expect(way('Switch GitHub App')).toBeDefined());
   expect(way('Switch GitHub App')!.getAttribute('aria-checked')).toBe('true');
   expect(way('Switch GitHub App')!.textContent).toContain('Best for most people, and for teams');
+  expect(way('Switch GitHub App')!.textContent).toContain('Recommended');
   expect(way('Personal access token')!.textContent).toContain('only GitHub can revoke it');
+  expect(way('Personal access token')!.textContent).not.toContain('Recommended');
   expect(button(/^connect github\s*$/i, dialog())).toBeDefined();
 
   await act(async () => way('Personal access token')!.click());

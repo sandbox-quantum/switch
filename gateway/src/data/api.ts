@@ -3507,6 +3507,8 @@ export interface ServicePasteMethod {
   help_url: string | null;
   /** The vendor's form for a new one, already filled in for Switch, where it offers one. */
   create_url: string | null;
+  /** The vendor's page listing the ones a person has made, where one is deleted. */
+  manage_url: string | null;
   expires: "vendor" | "never";
   access_note: string;
 }

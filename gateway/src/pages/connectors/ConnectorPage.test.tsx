@@ -464,6 +464,40 @@ describe("a connector's page", () => {
     expect(await screen.findByText("Switch has forgotten the pasted Datadog token but cannot revoke it.")).toBeTruthy();
   });
 
+  it("links a pasted GitHub token's disconnect to the page it is deleted on", async () => {
+    signedIn();
+    const token = pastedConnector().paste[0]!;
+    const page = "https://github.com/settings/personal-access-tokens";
+    server(
+      serviceConnection({
+        slug: "github",
+        name: "GitHub",
+        publisher: "GitHub",
+        status: "active",
+        can_revoke: true,
+        method: "token",
+        external_identity: "octocat",
+        paste: [{ ...token, manage_url: page }],
+      }),
+      [],
+      null,
+      {
+        "DELETE /service-connections/github": {
+          warning: `Switch has forgotten the pasted GitHub token but cannot revoke it. Delete it in GitHub to stop it working: ${page}`,
+        },
+      },
+    );
+    renderPage("github");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("link", { name: "Delete it in GitHub" }).getAttribute("href")).toBe(page);
+    expect(within(dialog).queryByRole("link", { name: "How to delete it" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    expect((await screen.findByRole("link", { name: page })).getAttribute("href")).toBe(page);
+  });
+
   it("goes back to the page that opened it", async () => {
     signedIn();
     server(serviceConnection());

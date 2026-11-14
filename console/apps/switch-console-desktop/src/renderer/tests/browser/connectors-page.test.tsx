@@ -384,7 +384,7 @@ it("offers the server's operator to set up an app that is not set up, on the car
 
   navigation.navigate('connectors', { connector: 'example' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
-  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  expect(button(/^Connect Example$/, page)).toBeUndefined();
   await act(async () => button(/^Set up$/, page)!.click());
   expect(navigation.view()).toBe('admin');
   expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
@@ -460,7 +460,7 @@ it('tells anyone else who sets the app up, with no button to press', async () =>
   await act(async () => card.click());
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
   expect(button(/^Set up$/, page)).toBeUndefined();
-  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  expect(button(/^Connect Example$/, page)).toBeUndefined();
 });
 
 it("says GitHub can't work on a server without https, and offers this computer's sign-in instead", async () => {
@@ -610,7 +610,7 @@ it('offers Connect on the profile after a disconnect, made in the workspace show
     workspaceId: 'workspace',
     service: 'atlassian',
   });
-  expect(button(/^Connect to Switch$/, page)).toBeDefined();
+  expect(button(/^Connect Atlassian$/, page)).toBeDefined();
   expect(button(/^Disconnect$/, page)).toBeUndefined();
   expect(page.textContent).not.toContain('Connected as ada');
   expect(page.textContent).toContain('None of your agents use Atlassian yet.');
@@ -633,7 +633,7 @@ it('says on the profile when re-reading the catalog fails, with Retry', async ()
 
   workspaces.getServiceConnections.mockImplementation(serve);
   await act(async () => button(/^retry$/i, page)!.click());
-  await vi.waitFor(() => expect(button(/^Connect to Switch$/, page)).toBeDefined());
+  await vi.waitFor(() => expect(button(/^Connect Atlassian$/, page)).toBeDefined());
   expect(page.querySelector('[role="alert"]')).toBeNull();
 });
 

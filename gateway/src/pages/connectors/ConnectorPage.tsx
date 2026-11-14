@@ -18,6 +18,7 @@ import { Link as RouterLink, useLocation, useNavigate, useParams, useSearchParam
 import BrandTile from "../../components/connectors/BrandTile";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import InfoTip from "../../components/InfoTip";
+import LinkedText from "../../components/LinkedText";
 import PageBanner from "../../components/PageBanner";
 import {
   ApiError,
@@ -514,7 +515,7 @@ export default function ConnectorPage() {
       )}
       {notice && (
         <Alert severity="info" onClose={() => setNotice(null)}>
-          {notice}
+          <LinkedText text={notice} />
         </Alert>
       )}
 
@@ -586,10 +587,16 @@ export default function ConnectorPage() {
               Your agents lose {connection.name}: their grants on it are removed. Switch forgets your{" "}
               {replaceWith.label.toLowerCase()} but cannot revoke it, so it keeps working in {connection.name} until it
               expires or you delete it there.{" "}
-              {replaceWith.help_url && (
-                <Link href={replaceWith.help_url} target="_blank" rel="noopener noreferrer">
-                  How to delete it
+              {replaceWith.manage_url ? (
+                <Link href={replaceWith.manage_url} target="_blank" rel="noopener noreferrer">
+                  Delete it in {connection.name}
                 </Link>
+              ) : (
+                replaceWith.help_url && (
+                  <Link href={replaceWith.help_url} target="_blank" rel="noopener noreferrer">
+                    How to delete it
+                  </Link>
+                )
               )}
             </>
           ) : (
