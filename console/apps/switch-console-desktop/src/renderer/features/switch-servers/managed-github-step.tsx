@@ -1,6 +1,11 @@
 import { CircleCheck, ExternalLink, GitBranch, GitPullRequest, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { SIGN_IN_HINT_AFTER_MS } from '@renderer/features/connectors/connect-flow';
+import {
+  type ConnectWay,
+  type ConnectWayName,
+  SIGN_IN_HINT_AFTER_MS,
+} from '@renderer/features/connectors/connect-flow';
+import { ConnectWayList } from '@renderer/features/connectors/connect-way-list';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
@@ -22,6 +27,24 @@ const NO_NEW_ACCESS =
 
 const SIGN_IN_HINT =
   'If GitHub showed an error, cancel, and ask the person who set up the GitHub App for Switch to check its Callback URL.';
+
+/** GitHub's two ways in, where the server takes a token in place of the App. */
+const GITHUB_WAYS: ConnectWay[] = [
+  {
+    way: 'sign_in',
+    title: 'Switch GitHub App',
+    line: 'Agents act as the Switch app, on the repositories you pick for each. Access lasts an hour at a time, and Switch can revoke it.',
+    lasts: null,
+    bestFor: 'Best for most people, and for teams',
+  },
+  {
+    way: 'token',
+    title: 'Personal access token',
+    line: 'Agents act as you, wherever the token reaches. It ends on the date you set, and only GitHub can revoke it.',
+    lasts: null,
+    bestFor: 'Best when the App isn’t installed in your organization',
+  },
+];
 
 /** Whether an organization's single sign-on hides installations from this connection. */
 function ssoHidden(connection: GitHubConnection | null): boolean {
@@ -65,6 +88,7 @@ export function ManagedGitHubStep({
   // long enough for the hint.
   const [flowStatus, setFlowStatus] = useState<string | null>(null);
   const [slowFlowId, setSlowFlowId] = useState<string | null>(null);
+  const [way, setWay] = useState<ConnectWayName>('sign_in');
   useCloseGuard(busy || flowId !== null);
   const load = useCallback(async () => {
     setBusy(true);
@@ -268,6 +292,20 @@ export function ManagedGitHubStep({
               </p>
             )}
           </>
+        ) : onUseToken ? (
+          <>
+            <p className="text-sm text-foreground-muted">How should your agents reach GitHub?</p>
+            <ConnectWayList
+              service="GitHub"
+              ways={GITHUB_WAYS}
+              picked={way}
+              busy={busy}
+              onPick={setWay}
+            />
+            <p className="text-xs text-foreground-muted">
+              Only the App lets you pick repositories for each agent, and lets Switch revoke access.
+            </p>
+          </>
         ) : (
           <>
             <p className="text-sm text-foreground-muted">
@@ -306,16 +344,6 @@ export function ManagedGitHubStep({
                 </div>
               </div>
             </div>
-            {onUseToken && (
-              <button
-                type="button"
-                disabled={busy}
-                className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-not-allowed"
-                onClick={onUseToken}
-              >
-                Use a personal access token instead
-              </button>
-            )}
           </>
         )}
         <p
@@ -397,7 +425,12 @@ export function ManagedGitHubStep({
                 Continue to agent
               </Button>
             )}
-            {(!connected || error) && (
+            {(!connected || error) && onUseToken && way === 'token' && (
+              <Button disabled={busy} onClick={onUseToken}>
+                Continue
+              </Button>
+            )}
+            {(!connected || error) && !(onUseToken && way === 'token') && (
               <Button
                 disabled={busy}
                 onClick={() =>

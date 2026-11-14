@@ -507,6 +507,7 @@ const PASTED_TOKEN = {
     },
   ],
   help_url: 'https://docs.datadoghq.com/account_management/personal-access-tokens/',
+  create_url: null,
   expires: 'vendor' as const,
   access_note: 'Reaches what your token allows.',
 };
@@ -518,6 +519,7 @@ const PASTED_KEYS = {
     { name: 'application_key', label: 'Application key', secret: true, help: null, choices: null },
   ],
   help_url: 'https://docs.datadoghq.com/account_management/api-app-keys/',
+  create_url: null,
   expires: 'never' as const,
   access_note: 'Reaches what your keys allow.',
 };
@@ -527,8 +529,16 @@ const PASTABLE: ConnectionCatalogEntry = {
   paste: [PASTED_TOKEN, PASTED_KEYS],
 };
 
-function link(text: string): HTMLButtonElement | undefined {
-  return button(new RegExp(`^${text}$`), dialog());
+function way(title: string): HTMLButtonElement | undefined {
+  return [...dialog().querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((row) =>
+    row.textContent?.includes(title)
+  );
+}
+
+/** Picks a way to connect in the chooser, and goes on to it. */
+async function choose(title: string) {
+  await act(async () => way(title)!.click());
+  await act(async () => button(/^continue$/i, dialog())!.click());
 }
 
 function input(label: string): HTMLInputElement {
@@ -547,11 +557,17 @@ async function type(target: HTMLInputElement, value: string) {
 it('offers a token and keys under the sign-in, each with how long it lasts', async () => {
   await render(connectStep(() => {}, PASTABLE));
 
-  await vi.waitFor(() => expect(link('Use a token instead')).toBeDefined());
-  expect(link('Use API keys instead')).toBeDefined();
-  expect(dialog().textContent).toContain('Expires: 1 hour, refreshed by Switch');
+  await vi.waitFor(() => expect(way('Personal access token')).toBeDefined());
+  expect(way('API and application keys')).toBeDefined();
+  expect(way('Sign in with Datadog')!.getAttribute('aria-checked')).toBe('true');
+  expect(way('Sign in with Datadog')!.textContent).toContain(
+    'Expires: 1 hour, refreshed by Switch'
+  );
+  expect(way('Personal access token')!.textContent).toContain(
+    'Expires: on the date you set in Datadog'
+  );
 
-  await act(async () => link('Use API keys instead')!.click());
+  await choose('API and application keys');
   expect(input('API key').type).toBe('password');
   expect(input('Application key').type).toBe('password');
   expect(dialog().textContent).toContain('Never expires; only Datadog can revoke it');
@@ -562,8 +578,8 @@ it('offers a token and keys under the sign-in, each with how long it lasts', asy
 it('offers only the ways to paste the server lists', async () => {
   await render(connectStep(() => {}, { ...PASTABLE, paste: [PASTED_TOKEN] }));
 
-  await vi.waitFor(() => expect(link('Use a token instead')).toBeDefined());
-  expect(link('Use API keys instead')).toBeUndefined();
+  await vi.waitFor(() => expect(way('Personal access token')).toBeDefined());
+  expect(way('API and application keys')).toBeUndefined();
 });
 
 it('pastes a token at the site picked, and is connected once the server keeps it', async () => {
@@ -575,8 +591,8 @@ it('pastes a token at the site picked, and is connected once the server keeps it
   });
   const onConnected = vi.fn();
   await render(connectStep(onConnected, PASTABLE));
-  await vi.waitFor(() => expect(link('Use a token instead')).toBeDefined());
-  await act(async () => link('Use a token instead')!.click());
+  await vi.waitFor(() => expect(way('Personal access token')).toBeDefined());
+  await choose('Personal access token');
 
   // The site picker sits above what is pasted, as it does above the sign-in.
   const picker = dialog().querySelector<HTMLElement>('[aria-label="Datadog site"]')!;
@@ -613,28 +629,31 @@ it('pastes a token at the site picked, and is connected once the server keeps it
 
 it('goes back to the sign-in from the paste step, with the site still picked', async () => {
   await render(connectStep(() => {}, PASTABLE));
-  await vi.waitFor(() => expect(link('Use a token instead')).toBeDefined());
-  await act(async () => link('Use a token instead')!.click());
+  await vi.waitFor(() => expect(way('Personal access token')).toBeDefined());
+  await choose('Personal access token');
   await pick('Datadog site', 'us5.datadoghq.com');
 
   await act(async () => button(/^back$/i, dialog())!.click());
 
   expect(dialog().querySelector('label[for^="service-key-"]')).toBeNull();
-  expect(link('Use a token instead')).toBeDefined();
+  // The token stays picked, and the sign-in is a pick away.
+  expect(way('Personal access token')!.getAttribute('aria-checked')).toBe('true');
+  expect(button(/^continue$/i, dialog())).toBeDefined();
   expect(dialog().querySelector('[aria-label="Datadog site"]')?.textContent).toContain(
     'us5.datadoghq.com'
   );
+  await act(async () => way('Sign in with Datadog')!.click());
   expect(button(/^connect datadog/i, dialog())!.disabled).toBe(false);
 });
 
 it('forgets a typed token once the person goes back from the paste step', async () => {
   await render(connectStep(() => {}, PASTABLE));
-  await vi.waitFor(() => expect(link('Use a token instead')).toBeDefined());
-  await act(async () => link('Use a token instead')!.click());
+  await vi.waitFor(() => expect(way('Personal access token')).toBeDefined());
+  await choose('Personal access token');
   await type(input('Personal access token'), TOKEN);
 
   await act(async () => button(/^back$/i, dialog())!.click());
-  await act(async () => link('Use a token instead')!.click());
+  await act(async () => button(/^continue$/i, dialog())!.click());
 
   expect(input('Personal access token').value).toBe('');
 });

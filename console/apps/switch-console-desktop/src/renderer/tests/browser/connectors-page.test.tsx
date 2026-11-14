@@ -799,6 +799,7 @@ const PASTED_TOKEN = {
     { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
   ],
   help_url: null,
+  create_url: null,
   expires: 'vendor' as const,
   access_note: 'Reaches what your token allows.',
 };

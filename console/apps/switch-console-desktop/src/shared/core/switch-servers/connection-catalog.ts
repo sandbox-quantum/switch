@@ -31,6 +31,11 @@ export const servicePasteMethodSchema = z.object({
   label: z.string(),
   fields: z.array(serviceKeyFieldSchema).min(1),
   help_url: z.string().nullable(),
+  /**
+   * The vendor's form for a new one, already filled in with what Switch asks
+   * for, where it has one; a server from before it sends none.
+   */
+  create_url: z.string().nullable().default(null),
   /** `vendor`: it ends on the date it was made to end; `never`: only the vendor can revoke it. */
   expires: z.enum(['vendor', 'never']),
   /** What a connection made with it reaches, said in place of an access level. */

@@ -8,7 +8,8 @@ import {
   initialSignInChoices,
   lifetimeText,
   pasteAgainMethod,
-  pasteLinks,
+  connectWays,
+  prefilledAccess,
   pasteReady,
   pastedConnection,
   safetyLine,
@@ -569,6 +570,7 @@ describe('the profile', () => {
         { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
       ],
       help_url: null,
+      create_url: null,
       expires: 'vendor',
       access_note: 'Reaches what your token allows.',
     };
@@ -628,6 +630,7 @@ describe('the profile', () => {
           label: 'Personal access token',
           fields: [{ name: 'pat', label: 'Token', secret: true, help: null, choices: null }],
           help_url: null,
+          create_url: null,
           expires: 'vendor',
           access_note: 'Reaches what your token allows.',
         },
@@ -998,6 +1001,7 @@ describe('the paste step', () => {
       { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
     ],
     help_url: null,
+    create_url: null,
     expires: 'vendor',
     access_note: 'Reaches what your token allows.',
   };
@@ -1015,6 +1019,7 @@ describe('the paste step', () => {
       },
     ],
     help_url: null,
+    create_url: null,
     expires: 'never',
     access_note: 'Reaches what your keys allow.',
   };
@@ -1053,13 +1058,42 @@ describe('the paste step', () => {
     });
   });
 
-  it('is offered under the sign-in for each way the server lists', () => {
-    expect(pasteLinks([token, keys])).toEqual([
-      { method: 'token', text: 'Use a token instead' },
-      { method: 'keys', text: 'Use API keys instead' },
+  it('lists the sign-in first, then each way the server lists, with who each suits', () => {
+    const datadog = entry({
+      slug: 'datadog',
+      name: 'Datadog',
+      token_lifetime: 3600,
+      paste: [token, keys],
+    });
+    const ways = connectWays(datadog);
+    expect(ways.map((way) => way.way)).toEqual(['sign_in', 'token', 'keys']);
+    expect(ways[0]).toMatchObject({
+      title: 'Sign in with Datadog',
+      lasts: 'Expires: 1 hour, refreshed by Switch',
+      bestFor: 'Best for most people',
+    });
+    expect(ways[2]).toMatchObject({
+      title: keys.label,
+      line: keys.access_note,
+      lasts: 'Never expires; only Datadog can revoke it',
+    });
+    // A server that does not take keys that never expire lists only the token.
+    expect(connectWays({ ...datadog, paste: [token] }).map((way) => way.way)).toEqual([
+      'sign_in',
+      'token',
     ]);
-    expect(pasteLinks([token])).toEqual([{ method: 'token', text: 'Use a token instead' }]);
-    expect(pasteLinks([])).toEqual([]);
+    expect(connectWays(entry({ slug: 'other', paste: [token] }))[1]!.bestFor).toBeNull();
+  });
+
+  it('reads what a prefilled form for a new token asks for off its link', () => {
+    expect(
+      prefilledAccess(
+        'https://github.com/settings/personal-access-tokens/new?name=Switch&expires_in=30&contents=write&pull_requests=read'
+      )
+    ).toEqual(['Code: read and write', 'Pull requests: read', 'Expires in 30 days']);
+    expect(prefilledAccess('https://vendor.example.test/new?expires_in=none&issues=write')).toEqual(
+      ['Issues: read and write']
+    );
   });
 
   it('says in one line how long what Switch keeps lasts, each way', () => {

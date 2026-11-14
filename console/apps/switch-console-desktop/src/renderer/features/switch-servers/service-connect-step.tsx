@@ -2,11 +2,12 @@ import { ExternalLink } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   allowListHint,
+  type ConnectWayName,
   canCloseConnectFlow,
   connectFlowReducer,
+  connectWays,
   initialConnectFlow,
   initialSignInChoices,
-  pasteLinks,
   pasteReady,
   SIGN_IN_HINT_AFTER_MS,
   safetyLine,
@@ -14,7 +15,9 @@ import {
   signInHint,
   signInProgress,
 } from '@renderer/features/connectors/connect-flow';
+import { ConnectWayList } from '@renderer/features/connectors/connect-way-list';
 import { reconnectNote } from '@renderer/features/connectors/connectors-catalog';
+import { CreateCredential } from '@renderer/features/connectors/create-credential';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { Button } from '@renderer/lib/ui/button';
@@ -50,9 +53,10 @@ import { ServiceKeyFields } from './service-key-step';
  * starts only once each is. GitHub has its own step.
  *
  * A service that also takes a credential pasted in place of the sign-in (a
- * token, or keys) offers each under the sign-in; its paste step asks for the
- * same choices, and Switch checks what is pasted at the vendor before keeping
- * it. Each way says in one line how long what Switch keeps lasts.
+ * token, or keys) lists every way, the sign-in first, and the person picks one
+ * before going on; its paste step asks for the same choices, and Switch checks
+ * what is pasted at the vendor before keeping it. Each way says who agents act
+ * as, how long what Switch keeps lasts, and who it suits.
  */
 export function ServiceConnectStep({
   calls,
@@ -95,6 +99,9 @@ export function ServiceConnectStep({
       : null
   );
   const offersConnect = !connected || error !== null;
+  const ways = connectWays(connection);
+  const [way, setWay] = useState<ConnectWayName>(startOn ?? 'sign_in');
+  const choosing = ways.length > 1;
   useCloseGuard(!closable);
   // Callers build their calls as they render; polling follows the flow, not them.
   const callsRef = useRef(calls);
@@ -196,7 +203,6 @@ export function ServiceConnectStep({
       onPick={(field, value) => setPicked((current) => ({ ...current, [field]: value }))}
     />
   );
-  const signInLine = connection.paste.length > 0 ? safetyLine(connection, 'sign_in') : null;
   const showsPaste = offersConnect && !flowId && pasteMethod !== null;
   return (
     <>
@@ -228,6 +234,7 @@ export function ServiceConnectStep({
                 : `Paste keys you made in ${name}. Switch checks them at ${name}, stores them encrypted, and never shows them again.`}
             </p>
             {pickers}
+            <CreateCredential name={name} method={pasteMethod} busy={busy} />
             <ServiceKeyFields
               service={service}
               name={name}
@@ -235,7 +242,7 @@ export function ServiceConnectStep({
               fields={pasteMethod.fields}
               values={values}
               busy={busy}
-              helpUrl={pasteMethod.help_url}
+              helpUrl={pasteMethod.create_url ? null : pasteMethod.help_url}
               helpText={
                 pasteMethod.method === 'token'
                   ? `How to make a token in ${name}`
@@ -252,13 +259,15 @@ export function ServiceConnectStep({
             {connection.agent_access_note && (
               <p className="text-sm text-foreground-muted">{connection.agent_access_note}</p>
             )}
-            <p className="text-sm text-foreground-muted">
-              {connected
-                ? pastedReach
-                  ? `Agents you turn ${name} on for use what you pasted. ${pastedReach}`
-                  : `Agents you turn ${name} on for act as you there, with what you allowed when you signed in.`
-                : `You sign in at ${name}, and allow what Switch asks for. Agents you then turn ${name} on for act as you there.`}
-            </p>
+            {(connected || !choosing) && (
+              <p className="text-sm text-foreground-muted">
+                {connected
+                  ? pastedReach
+                    ? `Agents you turn ${name} on for use what you pasted. ${pastedReach}`
+                    : `Agents you turn ${name} on for act as you there, with what you allowed when you signed in.`
+                  : `You sign in at ${name}, and allow what Switch asks for. Agents you then turn ${name} on for act as you there.`}
+              </p>
+            )}
             {needsReconnect && !connected && (
               <p className="text-sm text-destructive">
                 {connection.reconnect_reason ??
@@ -276,26 +285,8 @@ export function ServiceConnectStep({
               </p>
             )}
             {offersConnect && pickers}
-            {offersConnect && signInLine && (
-              <p className="text-xs text-foreground-muted">{signInLine}</p>
-            )}
-            {offersConnect && connection.paste.length > 0 && (
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {pasteLinks(connection.paste).map((link) => (
-                  <button
-                    key={link.method}
-                    type="button"
-                    disabled={busy}
-                    className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-not-allowed"
-                    onClick={() => {
-                      setValues({});
-                      dispatch({ type: 'paste', method: link.method });
-                    }}
-                  >
-                    {link.text}
-                  </button>
-                ))}
-              </div>
+            {offersConnect && choosing && (
+              <ConnectWayList service={name} ways={ways} picked={way} busy={busy} onPick={setWay} />
             )}
           </>
         )}
@@ -349,7 +340,18 @@ export function ServiceConnectStep({
                 Disconnect
               </Button>
             )}
-            {offersConnect && (
+            {offersConnect && way !== 'sign_in' && (
+              <Button
+                disabled={busy}
+                onClick={() => {
+                  setValues({});
+                  dispatch({ type: 'paste', method: way });
+                }}
+              >
+                Continue
+              </Button>
+            )}
+            {offersConnect && way === 'sign_in' && (
               <Button
                 disabled={busy || !connection.connectable || choices === null}
                 onClick={() => {

@@ -172,17 +172,86 @@ export function signInChoicesReady(
   return ready;
 }
 
+/** A way to connect a service: its sign-in, or a credential pasted in its place. */
+export type ConnectWayName = 'sign_in' | PasteMethodName;
+
+/** A way to connect as the chooser lists it, one row each. */
+export type ConnectWay = {
+  way: ConnectWayName;
+  title: string;
+  /** Who agents act as, what it reaches, and who can end it. */
+  line: string;
+  /** How long what Switch keeps lasts; null where the server does not say. */
+  lasts: string | null;
+  /** Who it suits, for a service this Console knows; null for any other. */
+  bestFor: string | null;
+};
+
+const BEST_FOR: Record<string, Partial<Record<ConnectWayName, string>>> = {
+  github: {
+    sign_in: 'Best for most people, and for teams',
+    token: 'Best when the App isn’t installed in your organization',
+  },
+  datadog: {
+    sign_in: 'Best for most people',
+    token: 'Best when you can’t sign in through Datadog',
+    keys: 'Best for a setup that already uses keys',
+  },
+};
+
 /**
- * The links under the sign-in that open the paste step in its place, one for
- * each credential the server lets the service take pasted.
+ * Every way a service can be connected here, the sign-in first, then each
+ * credential the server takes pasted in its place, in its order. A server that
+ * does not allow credentials that never expire leaves those out of `paste`, so
+ * they are never offered.
  */
-export function pasteLinks(
-  paste: ServicePasteMethod[]
-): { method: PasteMethodName; text: string }[] {
-  return paste.map(({ method }) => ({
-    method,
-    text: method === 'token' ? 'Use a token instead' : 'Use API keys instead',
-  }));
+export function connectWays(
+  connection: Pick<ConnectionCatalogEntry, 'slug' | 'name' | 'token_lifetime' | 'paste'>
+): ConnectWay[] {
+  const name = connection.name;
+  const best = BEST_FOR[connection.slug] ?? {};
+  return [
+    {
+      way: 'sign_in',
+      title: `Sign in with ${name}`,
+      line: `You sign in at ${name} and allow what Switch asks for. Agents act as you there, and Switch can revoke it.`,
+      lasts: safetyLine(connection, 'sign_in'),
+      bestFor: best.sign_in ?? null,
+    },
+    ...connection.paste.map((method) => ({
+      way: method.method,
+      title: method.label,
+      line: method.access_note,
+      lasts: safetyLine(connection, method),
+      bestFor: best[method.method] ?? null,
+    })),
+  ];
+}
+
+const PERMISSION_NAMES: Record<string, string> = {
+  contents: 'Code',
+  pull_requests: 'Pull requests',
+  issues: 'Issues',
+  workflows: 'Workflows',
+};
+
+/**
+ * What a vendor's prefilled form for a new token asks for, read off its link:
+ * each permission and level, then how long it lasts.
+ */
+export function prefilledAccess(createUrl: string): string[] {
+  const params = new URL(createUrl).searchParams;
+  const access: string[] = [];
+  let expires: string | null = null;
+  for (const [key, value] of params) {
+    if (key === 'expires_in') expires = value;
+    else if (value === 'read' || value === 'write') {
+      const label = PERMISSION_NAMES[key] ?? key.replaceAll('_', ' ');
+      access.push(`${label}: ${value === 'write' ? 'read and write' : 'read'}`);
+    }
+  }
+  if (expires !== null && expires !== 'none') access.push(`Expires in ${expires} days`);
+  return access;
 }
 
 /**

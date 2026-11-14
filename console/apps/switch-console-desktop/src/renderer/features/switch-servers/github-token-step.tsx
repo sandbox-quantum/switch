@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { pasteReady, safetyLine } from '@renderer/features/connectors/connect-flow';
+import { CreateCredential } from '@renderer/features/connectors/create-credential';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { Button } from '@renderer/lib/ui/button';
@@ -61,14 +62,18 @@ export function GitHubTokenStep({
   return (
     <>
       <DialogHeader showCloseButton={!busy}>
-        <DialogTitle>Connect GitHub with a token</DialogTitle>
+        <DialogTitle>Connect GitHub with a personal access token</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
-        <p className="text-sm text-foreground-muted">
-          Paste a personal access token you made in GitHub. Switch checks it with GitHub, stores it
-          encrypted, and never shows it again. Give it an expiration date: Switch does not hand
-          agents a token that never expires.
-        </p>
+        {method.create_url ? (
+          <CreateCredential name="GitHub" method={method} busy={busy} />
+        ) : (
+          <p className="text-sm text-foreground-muted">
+            Paste a personal access token you made in GitHub. Switch checks it with GitHub, stores
+            it encrypted, and never shows it again. Give it an expiration date: Switch does not hand
+            agents a token that never expires.
+          </p>
+        )}
         <ServiceKeyFields
           service="github"
           name="GitHub"
@@ -76,10 +81,15 @@ export function GitHubTokenStep({
           fields={method.fields}
           values={values}
           busy={busy}
-          helpUrl={method.help_url}
+          helpUrl={method.create_url ? null : method.help_url}
           helpText="How to make a token in GitHub"
           onChange={(field, next) => setValues((current) => ({ ...current, [field]: next }))}
         />
+        {method.create_url && (
+          <p className="text-xs text-foreground-muted">
+            Switch checks it with GitHub, stores it encrypted, and never shows it again.
+          </p>
+        )}
         <p className="text-xs text-foreground-muted">
           Agents you turn GitHub on for act as you, in every repository the token reaches, not only
           ones you choose here. Pushes and pull requests show your name, not the Switch GitHub

@@ -1693,7 +1693,10 @@ describe('GitHub connection transport', () => {
       expect.objectContaining({
         slug: 'datadog',
         status: 'needs_reauthorization',
-        paste: [token, keys],
+        paste: [
+          { ...token, create_url: null },
+          { ...keys, create_url: null },
+        ],
         method: 'token',
         access_note: 'Reaches what your token allows.',
         reconnect_code: 'token_refused',
