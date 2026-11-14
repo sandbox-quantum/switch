@@ -16,6 +16,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.email.adapter import (
+    EmailAdapter,
+    EmailConnectionConfig,
+)
 from switch_core.bridges.collaboration.google_chat.adapter import (
     GoogleChatAdapter,
     GoogleChatConnectionConfig,
@@ -117,6 +121,9 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     ),
     PlatformRegistration(
         "webex", WebexAdapter, WebexConnectionConfig, ADDITIONAL_MESSAGING_PLATFORMS
+    ),
+    PlatformRegistration(
+        "email", EmailAdapter, EmailConnectionConfig, ADDITIONAL_MESSAGING_PLATFORMS
     ),
 )
 
